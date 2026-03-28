@@ -1,0 +1,7 @@
+.github/
+.vscode/
+data/eccc/*
+data/twc/*
+__pycache__/
+output/*
+piper-tts/*
