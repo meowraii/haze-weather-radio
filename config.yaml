@@ -232,20 +232,6 @@ same:
     - TOR: WXR
   
   alert_ready_on_NAADS_BIP: true # use the NPAS attention tone for NAADS CAP-CP alerts if they are marked for BI (Broadcast Immediate) on Alert Ready.
-      # 1. Broadcast Immediate Parameter
-
-      # The Broadcast Immediate Parameter (BIP) provides an indicator that the content of an alert message is intended for immediate broadcast by LMDs.
-
-          #1.1. A CAP <parameter> shall be used to indicate when the criteria for a BI alert, as defined by the “Broadcast Immediate Events List”, have been met.
-          #1.2. This <parameter> will be described as the Broadcast Immediate Parameter or BIP.
-          #1.3. A BIP is an optional CAP element and is not required for non-BI alerts.  This includes alerts that don't meet the BI criteria and those do meet the BI criteria (Event, Urgency, Severity, Certainty) but are not intended for broadcast distribution.
-          #1.4. For alerts that do meet the BI criteria, a BIP is required in order to properly indicate whether the alert is intended for immediate broadcast.
-          #1.5. The <valueName> of the BIP <parameter> is “layer:SOREM:1.0:Broadcast_Immediately”. This <valueName> shall conform to the CAP-CP <valueName> Scheme. (i.e., naming conventions, versioning, case-insensitivity, etc.).
-          #1.6. The BIP <parameter> <value> shall be either “yes” to indicate the alert is intended for immediate broadcast or “no” to indicate it is not. The <value> is case-insensitive and shall contain no other characters or whitespace.
-          #1.7. A single BIP element is allowed in an <info> element.
-          #1.8. When an alert contains multiple <info> elements, each <info> element should have a single respective BIP to indicate whether the <info> element meets the BI criteria. An alert therefore may have <info> elements that are BI and non-BI.
-          #1.9. Multiple languages are supported via multiple <info> elements, each with a single respective BIP. Where the content of <info> elements differs only by language, i.e. translated free form text, the BIP <value> of those <info> elements should be the same.
-          #1.10. The audience alert message for a BI alert shall be derived from <info> elements that have a BIP <value> of “yes”.
 
   send_txp_on_startup: true # whether to send a Transmitter Primary On SAME message on startup. there is no audio message or attention tone associated with this message.
 
@@ -273,7 +259,7 @@ tts:
         piper:
           male:
             model: ./piper-tts/en_US-hfc_male-medium.onnx
-            speaker: 0 # 0 for default speaker, or the index of the speaker in the model if it contains multiple speakers. this allows for voice customization without needing separate models for each voice. the available speakers can be found in the model's config json file under the "speakers" field. if the model only contains one speaker, this can be left as 0 or undefined.
+            speaker: 0 # 0 for default speaker, or the index of the speaker in the model if it contains multiple speakers.
             config: ./piper-tts/en_US-hfc_male-medium.onnx.json
           female:
             model: ./piper-tts/en_US-lessac-high.onnx

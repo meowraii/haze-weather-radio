@@ -344,7 +344,7 @@ async def _playout_main(
         while not shutdown.is_set():
             if await _drain_thread_alerts(thread_alert_q, alert_queue):
                 alert_interrupt.set()
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(1.0)
 
     poller = asyncio.create_task(_poll_alerts(), name=f'{feed_id}:alert_poll')
     try:

@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import wave
+from collections import OrderedDict
 from typing import Any, Optional, cast
 from urllib.parse import unquote, urlparse
 
@@ -18,7 +19,8 @@ log = logging.getLogger(__name__)
 
 _FILE_URI_RE = re.compile(r'^file://', re.IGNORECASE)
 
-_voice_cache: dict[str, PiperVoice] = {}
+_VOICE_CACHE_MAX = 2
+_voice_cache: OrderedDict[str, PiperVoice] = OrderedDict()
 
 
 def _resolve_file_uri(uri: str) -> pathlib.Path | None:
@@ -48,9 +50,15 @@ def _transcode_to_wav(src: pathlib.Path, dst: pathlib.Path) -> bool:
 
 
 def _load_voice(model_path: str, config_path: Optional[str] = None) -> PiperVoice:
-    if model_path not in _voice_cache:
-        _voice_cache[model_path] = PiperVoice.load(model_path, config_path=config_path)
-    return _voice_cache[model_path]
+    if model_path in _voice_cache:
+        _voice_cache.move_to_end(model_path)
+        return _voice_cache[model_path]
+    loaded = PiperVoice.load(model_path, config_path=config_path)
+    _voice_cache[model_path] = loaded
+    _voice_cache.move_to_end(model_path)
+    while len(_voice_cache) > _VOICE_CACHE_MAX:
+        _voice_cache.popitem(last=False)
+    return loaded
 
 
 def synthesize(

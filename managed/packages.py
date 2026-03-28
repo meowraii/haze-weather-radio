@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import datetime
 import os
 import pathlib
+import re
 from typing import Any, ClassVar, Optional, cast
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,242 @@ def _scalar(field: Any) -> Any:
 
 def get_feed_info(config: dict[str, Any], feed_id: str) -> Optional[dict[str, Any]]:
     return next((feed for feed in config['feeds'] if feed['id'] == feed_id), None)
+
+
+_DT_PREFIXES: dict[str, dict[str, str]] = {
+    'en-CA': {
+        "morning": "Good morning.",
+        "afternoon": "Good afternoon.",
+        "evening": "Good evening.",
+        "night": "Good night.",
+    },
+    'fr-CA': {
+        "morning": "Bonjour.",
+        "afternoon": "Bon après-midi.",
+        "evening": "Bonsoir.",
+        "night": "Bonne nuit.",
+    },
+    'es-US': {
+        "morning": "Buenos días.",
+        "afternoon": "Buenas tardes.",
+        "evening": "Buenas noches.",
+        "night": "Buenas noches.",
+    },
+}
+
+_DT_ORDINALS: dict[str, list[str]] = {
+    'en': ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth', 'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth', 'sixteenth', 'seventeenth', 'eighteenth', 'nineteenth', 'twentieth', 'twenty-first', 'twenty-second', 'twenty-third', 'twenty-fourth', 'twenty-fifth', 'twenty-sixth', 'twenty-seventh', 'twenty-eighth', 'twenty-ninth', 'thirtieth', 'thirty-first'],
+}
+
+_DT_DAYS: dict[str, list[str]] = {
+    'en': ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+    'fr': ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'],
+    'es': ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'],
+}
+
+_DT_MONTHS: dict[str, list[str]] = {
+    'en': ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],
+    'fr': ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'],
+    'es': ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'],
+}
+
+_DT_SENTENCES: dict[str, list[str]] = {
+    'en': ["The current time is {hour}. {minute}. {ampm}. {tzabbr}."],
+    'fr': ["Il est actuellement {hour} {minute} {ampm} {tzabbr}."],
+    'es': ["La hora actual es {hour} {minute} {ampm} {tzabbr}."],
+}
+
+_CC_SOURCE: dict[str, dict[str, str]] = {
+    'en': {
+        "eccc": "Environment Canada",
+        "nws": "the National Weather Service",
+        "weatherdotcom": "Weather Dot Com",
+    },
+    'fr': {
+        "eccc": "Environnement Canada",
+        "nws": "le Service météorologique national",
+        "weatherdotcom": "Weather Dot Com",
+    },
+    'es': {
+        "eccc": "Environment Canada",
+        "nws": "el Servicio Meteorológico Nacional",
+        "weatherdotcom": "Weather Dot Com",
+    },
+}
+
+_CC_PH: dict[str, dict[str, str]] = {
+    'en': {
+        'opener':            "The current weather conditions. Issued by {source} at {time}.",
+        'unavailable':       "The report at {name} was not available.",
+        'condition':         "The weather at {name} was {cond}.",
+        'secondary_no_cond': "At {name}.",
+        'no_cond':           "At {name}. The sky conditions were not available.",
+        'temp':              "The temperature was {val} degrees Celsius.",
+        'dewpoint':          "dewpoint {val} degrees.",
+        'humidity':          "and the relative humidity was {val} percent.",
+        'no_temp':           "The temperature was not available.",
+        'wind':              "Winds were {dir}at {spd} kilometres per hour.",
+        'wind_dir':          "out of the {dir} ",
+        'no_wind':           "The wind information was not available.",
+        'gust':              "Gusting to {val} kilometres per hour.",
+        'no_humidity':       "The relative humidity was not available.",
+        'visibility':        "The visibility was {val} kilometres.",
+        'no_visibility':     "The visibility was not available.",
+        'pressure':          "The pressure was {val} kilopascals{tend}.",
+        'no_pressure':       "The barometric pressure was not available.",
+        'tendency':          ", and {val}",
+        'windchill':         "The wind chill was {val}.",
+        'humidex':           "The humidex was {val}.",
+        'station':           "this station",
+    },
+    'fr': {
+        'opener':            "Les conditions météorologiques actuelles. Émis par {source} à {time}.",
+        'unavailable':       "Les conditions actuelles à {name} ne sont pas disponibles pour le moment.",
+        'condition':         "La météo à {name} était {cond}.",
+        'secondary_no_cond': "À {name}.",
+        'no_cond':           "À {name}. Les conditions du ciel n'étaient pas disponibles.",
+        'temp':              "La température est de {val} degrés Celsius.",
+        'dewpoint':          "Le point de rosée était de {val} degrés Celsius.",
+        'no_temp':           "La température n'était pas disponible.",
+        'wind':              "Les vents soufflaient {dir}à {spd} kilomètres par heure.",
+        'wind_dir':          "du {dir} ",
+        'no_wind':           "Les informations sur le vent n'étaient pas disponibles.",
+        'gust':              "Avec des rafales atteignant {val} kilomètres par heure.",
+        'humidity':          "L'humidité relative était de {val} pour cent.",
+        'no_humidity':       "L'humidité relative n'était pas disponible.",
+        'visibility':        "La visibilité était de {val} kilomètres.",
+        'no_visibility':     "La visibilité n'était pas disponible.",
+        'pressure':          "La pression barométrique était de {val} kilopascals{tend}.",
+        'no_pressure':       "La pression barométrique n'était pas disponible.",
+        'tendency':          ", et {val}",
+        'windchill':         "Le refroidissement éolien était de {val}.",
+        'humidex':           "L'humidex était de {val}.",
+        'station':           "cette station",
+    },
+    'es': {
+        'opener':            "Las condiciones meteorológicas actuales. Emitido por {source} a las {time}.",
+        'unavailable':       "Las condiciones actuales en {name} no están disponibles en este momento.",
+        'condition':         "El tiempo en {name} era {cond}.",
+        'secondary_no_cond': "En {name}.",
+        'no_cond':           "En {name}. Las condiciones del cielo no estaban disponibles.",
+        'temp':              "La temperatura es de {val} grados Celsius.",
+        'dewpoint':          "El punto de rocío era de {val} grados Celsius.",
+        'no_temp':           "La temperatura no estaba disponible.",
+        'wind':              "Los vientos soplaban {dir}a {spd} kilómetros por hora.",
+        'wind_dir':          "del {dir} ",
+        'no_wind':           "La información sobre el viento no estaba disponible.",
+        'gust':              "Con rachas de hasta {val} kilómetros por hora.",
+        'humidity':          "La humedad relativa era del {val} por ciento.",
+        'no_humidity':       "La humedad relativa no estaba disponible.",
+        'visibility':        "La visibilidad era de {val} kilómetros.",
+        'no_visibility':     "La visibilidad no estaba disponible.",
+        'pressure':          "La presión barométrica era de {val} kilopascales{tend}.",
+        'no_pressure':       "La presión barométrica no estaba disponible.",
+        'tendency':          ", y {val}",
+        'windchill':         "La sensación térmica era de {val}.",
+        'humidex':           "El humidex era de {val}.",
+        'station':           "esta estación",
+    },
+}
+
+_FX_PH: dict[str, dict[str, str]] = {
+    'en': {
+        'intro':       "Here is the forecast for {name}.",
+        'unavailable': "Forecast information for {name} is unavailable at this time.",
+        'station':     "this station",
+    },
+    'fr': {
+        'intro':       "Voici les prévisions pour {name}.",
+        'unavailable': "Les informations de prévision pour {name} ne sont pas disponibles pour le moment.",
+        'station':     "cette station",
+    },
+    'es': {
+        'intro':       "Aquí está el pronóstico para {name}.",
+        'unavailable': "La información del pronóstico para {name} no está disponible en este momento.",
+        'station':     "esta estación",
+    },
+}
+
+_DISCUSSION_SECTION_HEADERS: dict[str, str] = {
+    'SYNOPTIC OVERVIEW': 'Synoptic overview.',
+    'DISCUSSION': 'Discussion.',
+    'ALERTS IN EFFECT': 'Alerts in effect.',
+}
+
+_DISCUSSION_GEO_ABBR: dict[str, str] = {
+    'AB': 'Alberta',
+    'SK': 'Saskatchewan',
+    'MB': 'Manitoba',
+    'ON': 'Ontario',
+    'QC': 'Quebec',
+    'BC': 'British Columbia',
+    'NT': 'Northwest Territories',
+    'NU': 'Nunavut',
+    'YT': 'Yukon',
+    'NRN': 'northern',
+    'SRN': 'southern',
+    'NWT': 'Northwest Territories',
+}
+
+_DISCUSSION_KEEP_UPPER: set[str] = set(_DISCUSSION_GEO_ABBR.keys()) | {
+    'AM', 'PM', 'CDT', 'CST', 'MDT', 'MST', 'PDT', 'PST', 'EDT', 'EST',
+    'ADT', 'AST', 'NDT', 'NST', 'UTC', 'GMT',
+    'NWS', 'NOAA', 'ECCC', 'MSC', 'WFO', 'SPC', 'NHC',
+    'UV', 'AQI', 'RH',
+}
+_DISCUSSION_KEEP_UPPER -= {'ON', 'IN', 'IS', 'AS', 'AT', 'BE', 'BY', 'DO', 'GO', 'IF', 'IT', 'NO', 'OF', 'OR', 'SO', 'TO', 'UP', 'US', 'WE'}
+
+_DISCUSSION_GEO_HEADER_RE = re.compile(
+    r'^([A-Z]{2,}(?:[/,][A-Z]{2,})*(?:\s+[A-Z]{2,}(?:[/,][A-Z]{2,})*)*)\.\.\.'
+)
+_DISCUSSION_SECTION_HEADER_RE = re.compile(r'^([A-Z][A-Z ]{4,})\.\.\.')
+_DISCUSSION_BYLINE_RE = re.compile(r'^END/')
+_DISCUSSION_FOCN_RE = re.compile(r'^(?:FOCN|CWWG)\d')
+_DISCUSSION_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
+_DISCUSSION_GEO_SPLIT_RE = re.compile(r'[/,]')
+
+
+def _expand_geo_header(header: str) -> str:
+    header = header.rstrip('.').rstrip('/')
+    parts = _DISCUSSION_GEO_SPLIT_RE.split(header)
+    expanded: list[str] = []
+    for raw in parts:
+        raw = raw.strip()
+        tokens = raw.split()
+        out_tokens: list[str] = []
+        for tok in tokens:
+            out_tokens.append(_DISCUSSION_GEO_ABBR.get(tok, tok.title()))
+        expanded.append(' '.join(out_tokens))
+    return ', '.join(expanded)
+
+
+def _titlecase_sentence(sentence: str) -> str:
+    sentence = sentence.strip()
+    if not sentence:
+        return sentence
+    words = sentence.split()
+    result: list[str] = []
+    for i, word in enumerate(words):
+        clean = word.strip('.,;:!?()/\'-')
+        if clean in _DISCUSSION_KEEP_UPPER:
+            result.append(word)
+        elif clean.isupper() and len(clean) >= 1:
+            lowered = word.lower()
+            if i == 0:
+                result.append(lowered[0].upper() + lowered[1:])
+            else:
+                result.append(lowered)
+        elif i == 0 and word:
+            result.append(word[0].upper() + word[1:].lower() if word.isupper() else word[0].upper() + word[1:])
+        else:
+            result.append(word)
+    return ' '.join(result)
+
+
+def _flush_discussion(para_lines: list[str]) -> str:
+    joined = ' '.join(para_lines)
+    sentences = _DISCUSSION_SENTENCE_SPLIT_RE.split(joined)
+    return ' '.join(_titlecase_sentence(s) for s in sentences)
 
 @dataclass
 class Package_Config:
@@ -56,27 +293,7 @@ class Package_Config:
 
 def date_time_package(tz: str, lang: Optional[str] = "en-CA") -> str:
     _lang = lang or 'en-CA'
-    prefixes: dict[str, dict[str, str]] = {
-        'en-CA': {
-            "morning": "Good morning.",
-            "afternoon": "Good afternoon.",
-            "evening": "Good evening.",
-            "night": "Good night.",
-        },
-        'fr-CA': {
-            "morning": "Bonjour.",
-            "afternoon": "Bon après-midi.",
-            "evening": "Bonsoir.",
-            "night": "Bonne nuit.",
-        },
-        'es-US': {
-            "morning": "Buenos días.",
-            "afternoon": "Buenas tardes.",
-            "evening": "Buenas noches.",
-            "night": "Buenas noches.",
-        },
-    }
-    locale_prefixes = prefixes.get(_lang, prefixes['en-CA'])
+    locale_prefixes = _DT_PREFIXES.get(_lang, _DT_PREFIXES['en-CA'])
     zone = ZoneInfo(tz)
     now = datetime.datetime.now(tz=zone)
     hour = now.hour
@@ -90,27 +307,9 @@ def date_time_package(tz: str, lang: Optional[str] = "en-CA") -> str:
         prefix = locale_prefixes["night"]
 
     lang_short = _lang[:2]
-    _ORDINALS: dict[str, list[str]] = {
-        'en': ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth', 'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth', 'sixteenth', 'seventeenth', 'eighteenth', 'nineteenth', 'twentieth', 'twenty-first', 'twenty-second', 'twenty-third', 'twenty-fourth', 'twenty-fifth', 'twenty-sixth', 'twenty-seventh', 'twenty-eighth', 'twenty-ninth', 'thirtieth', 'thirty-first' ],
-    }
-    _DAYS: dict[str, list[str]] = {
-        'en': ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
-        'fr': ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'],
-        'es': ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'],
-    }
-    _MONTHS: dict[str, list[str]] = {
-        'en': ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],
-        'fr': ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'],
-        'es': ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'],
-    }
-    _TIME_SENTENCES: dict[str, list[str]] = {
-        'en': ["The current time is {hour}. {minute}. {ampm}. {tzabbr}."],
-        'fr': ["Il est actuellement {hour} {minute} {ampm} {tzabbr}."],
-        'es': ["La hora actual es {hour} {minute} {ampm} {tzabbr}."],
-    }
     return " ".join([
         prefix,
-        _TIME_SENTENCES.get(lang_short, _TIME_SENTENCES['en'])[0].format(
+        _DT_SENTENCES.get(lang_short, _DT_SENTENCES['en'])[0].format(
             hour=now.strftime('%-I').replace('0', ''),
             minute=now.strftime('%M'),
             ampm=now.strftime('%p'),
@@ -246,99 +445,7 @@ def current_conditions_package(
     _lang = lang or 'en-CA'
     lang_short = _lang[:2]
 
-    source = {
-        'en': {
-            "eccc": "Environment Canada",
-            "nws": "the National Weather Service",
-            "weatherdotcom": "Weather Dot Com",
-        },
-        'fr': {
-            "eccc": "Environnement Canada",
-            "nws": "le Service météorologique national",
-            "weatherdotcom": "Weather Dot Com",
-        },
-        'es': {
-            "eccc": "Environment Canada",
-            "nws": "el Servicio Meteorológico Nacional",
-            "weatherdotcom": "Weather Dot Com",
-        },
-    }
-
-    _PH: dict[str, dict[str, str]] = {
-        'en': {
-            'opener':            "The current weather conditions. Issued by {source} at {time}.",
-            'unavailable':       "The report at {name} was not available.",
-            'condition':         "The weather at {name} was {cond}.",
-            'secondary_no_cond': "At {name}.",
-            'no_cond':           "At {name}. The sky conditions were not available.",
-            'temp':              "The temperature was {val} degrees Celsius.",
-            'dewpoint':          "dewpoint {val} degrees.",
-            'humidity':          "and the relative humidity was {val} percent.",
-            'no_temp':           "The temperature was not available.",
-            'wind':              "Winds were {dir}at {spd} kilometres per hour.",
-            'wind_dir':          "out of the {dir} ",
-            'no_wind':           "The wind information was not available.",
-            'gust':              "Gusting to {val} kilometres per hour.",
-            'no_humidity':       "The relative humidity was not available.",
-            'visibility':        "The visibility was {val} kilometres.",
-            'no_visibility':     "The visibility was not available.",
-            'pressure':          "The pressure was {val} kilopascals{tend}.",
-            'no_pressure':       "The barometric pressure was not available.",
-            'tendency':          ", and {val}",
-            'windchill':         "The wind chill was {val}.",
-            'humidex':           "The humidex was {val}.",
-            'station':           "this station",
-        },
-        'fr': {
-            'opener':            "Les conditions météorologiques actuelles. Émis par {source} à {time}.",
-            'unavailable':       "Les conditions actuelles à {name} ne sont pas disponibles pour le moment.",
-            'condition':         "La météo à {name} était {cond}.",
-            'secondary_no_cond': "À {name}.",
-            'no_cond':           "À {name}. Les conditions du ciel n'étaient pas disponibles.",
-            'temp':              "La température est de {val} degrés Celsius.",
-            'dewpoint':          "Le point de rosée était de {val} degrés Celsius.",
-            'no_temp':           "La température n'était pas disponible.",
-            'wind':              "Les vents soufflaient {dir}à {spd} kilomètres par heure.",
-            'wind_dir':          "du {dir} ",
-            'no_wind':           "Les informations sur le vent n'étaient pas disponibles.",
-            'gust':              "Avec des rafales atteignant {val} kilomètres par heure.",
-            'humidity':          "L'humidité relative était de {val} pour cent.",
-            'no_humidity':       "L'humidité relative n'était pas disponible.",
-            'visibility':        "La visibilité était de {val} kilomètres.",
-            'no_visibility':     "La visibilité n'était pas disponible.",
-            'pressure':          "La pression barométrique était de {val} kilopascals{tend}.",
-            'no_pressure':       "La pression barométrique n'était pas disponible.",
-            'tendency':          ", et {val}",
-            'windchill':         "Le refroidissement éolien était de {val}.",
-            'humidex':           "L'humidex était de {val}.",
-            'station':           "cette station",
-        },
-        'es': {
-            'opener':            "Las condiciones meteorológicas actuales. Emitido por {source} a las {time}.",
-            'unavailable':       "Las condiciones actuales en {name} no están disponibles en este momento.",
-            'condition':         "El tiempo en {name} era {cond}.",
-            'secondary_no_cond': "En {name}.",
-            'no_cond':           "En {name}. Las condiciones del cielo no estaban disponibles.",
-            'temp':              "La temperatura es de {val} grados Celsius.",
-            'dewpoint':          "El punto de rocío era de {val} grados Celsius.",
-            'no_temp':           "La temperatura no estaba disponible.",
-            'wind':              "Los vientos soplaban {dir}a {spd} kilómetros por hora.",
-            'wind_dir':          "del {dir} ",
-            'no_wind':           "La información sobre el viento no estaba disponible.",
-            'gust':              "Con rachas de hasta {val} kilómetros por hora.",
-            'humidity':          "La humedad relativa era del {val} por ciento.",
-            'no_humidity':       "La humedad relativa no estaba disponible.",
-            'visibility':        "La visibilidad era de {val} kilómetros.",
-            'no_visibility':     "La visibilidad no estaba disponible.",
-            'pressure':          "La presión barométrica era de {val} kilopascales{tend}.",
-            'no_pressure':       "La presión barométrica no estaba disponible.",
-            'tendency':          ", y {val}",
-            'windchill':         "La sensación térmica era de {val}.",
-            'humidex':           "El humidex era de {val}.",
-            'station':           "esta estación",
-        },
-    }
-    ph = _PH.get(lang_short, _PH['en'])
+    ph = _CC_PH.get(lang_short, _CC_PH['en'])
 
     if weather_data is None:
         if secondary:
@@ -370,7 +477,7 @@ def current_conditions_package(
     _src_key = weather_data.get('source') if isinstance(weather_data, dict) else None
     _obs_at = weather_data.get('observed_at') if isinstance(weather_data, dict) else None
     if _src_key and _obs_at:
-        _source_map = source.get(lang_short, source['en'])
+        _source_map = _CC_SOURCE.get(lang_short, _CC_SOURCE['en'])
         _source_name = _source_map.get(str(_src_key), str(_src_key).upper())
         try:
             _dt = datetime.datetime.fromisoformat(str(_obs_at).replace('Z', '+00:00'))
@@ -465,23 +572,6 @@ def forecast_package(
 ) -> str:
     _lang = lang or 'en-CA'
     lang_short = _lang[:2]
-    _FX_PH: dict[str, dict[str, str]] = {
-        'en': {
-            'intro':       "Here is the forecast for {name}.",
-            'unavailable': "Forecast information for {name} is unavailable at this time.",
-            'station':     "this station",
-        },
-        'fr': {
-            'intro':       "Voici les prévisions pour {name}.",
-            'unavailable': "Les informations de prévision pour {name} ne sont pas disponibles pour le moment.",
-            'station':     "cette station",
-        },
-        'es': {
-            'intro':       "Aquí está el pronóstico para {name}.",
-            'unavailable': "La información del pronóstico para {name} no está disponible en este momento.",
-            'station':     "esta estación",
-        },
-    }
     fx = _FX_PH.get(lang_short, _FX_PH['en'])
     loc_name = location_name or fx['station']
     if forecast_data is None:
@@ -523,122 +613,41 @@ def eccc_discussion_package(
     location_name: Optional[str] = None,
     lang: Optional[str] = "en-CA",
 ) -> str:
-    import re
-
     if not discussion_text:
         return ""
-
-    _SECTION_HEADERS = {
-        'SYNOPTIC OVERVIEW': 'Synoptic overview.',
-        'DISCUSSION': 'Discussion.',
-        'ALERTS IN EFFECT': 'Alerts in effect.',
-    }
-
-    _GEO_ABBR: dict[str, str] = {
-        'AB': 'Alberta',
-        'SK': 'Saskatchewan',
-        'MB': 'Manitoba',
-        'ON': 'Ontario',
-        'QC': 'Quebec',
-        'BC': 'British Columbia',
-        'NT': 'Northwest Territories',
-        'NU': 'Nunavut',
-        'YT': 'Yukon',
-        'NRN': 'northern',
-        'SRN': 'southern',
-        'NWT': 'Northwest Territories',
-    }
-
-    def _expand_geo_header(header: str) -> str:
-        header = header.rstrip('.').rstrip('/')
-        parts = re.split(r'[/,]', header)
-        expanded: list[str] = []
-        for raw in parts:
-            raw = raw.strip()
-            tokens = raw.split()
-            out_tokens: list[str] = []
-            for tok in tokens:
-                out_tokens.append(_GEO_ABBR.get(tok, tok.title()))
-            expanded.append(' '.join(out_tokens))
-        return ', '.join(expanded)
-
-    _KEEP_UPPER: set[str] = set(_GEO_ABBR.keys()) | {
-        'AM', 'PM', 'CDT', 'CST', 'MDT', 'MST', 'PDT', 'PST', 'EDT', 'EST',
-        'ADT', 'AST', 'NDT', 'NST', 'UTC', 'GMT',
-        'NWS', 'NOAA', 'ECCC', 'MSC', 'WFO', 'SPC', 'NHC',
-        'UV', 'AQI', 'RH',
-    }
-    _KEEP_UPPER -= {'ON', 'IN', 'IS', 'AS', 'AT', 'BE', 'BY', 'DO', 'GO', 'IF', 'IT', 'NO', 'OF', 'OR', 'SO', 'TO', 'UP', 'US', 'WE'}
-
-    def _titlecase_sentence(sentence: str) -> str:
-        sentence = sentence.strip()
-        if not sentence:
-            return sentence
-        words = sentence.split()
-        result: list[str] = []
-        for i, word in enumerate(words):
-            clean = word.strip('.,;:!?()/\'-')
-            if clean in _KEEP_UPPER:
-                result.append(word)
-            elif clean.isupper() and len(clean) >= 1:
-                lowered = word.lower()
-                if i == 0:
-                    result.append(lowered[0].upper() + lowered[1:])
-                else:
-                    result.append(lowered)
-            elif i == 0 and word:
-                result.append(word[0].upper() + word[1:].lower() if word.isupper() else word[0].upper() + word[1:])
-            else:
-                result.append(word)
-        return ' '.join(result)
 
     lines = discussion_text.splitlines()
 
     paragraphs: list[str] = []
     current_para: list[str] = []
 
-    geo_header_re = re.compile(
-        r'^([A-Z]{2,}(?:[/,][A-Z]{2,})*(?:\s+[A-Z]{2,}(?:[/,][A-Z]{2,})*)*)\.\.\.'
-    )
-    section_header_re = re.compile(r'^([A-Z][A-Z ]{4,})\.\.\.')
-    byline_re = re.compile(r'^END/')
-    focn_re = re.compile(r'^(?:FOCN|CWWG)\d')
-
     in_body = False
-
-    def _flush(para_lines: list[str]) -> str:
-        joined = ' '.join(para_lines)
-        sentences = re.split(r'(?<=[.!?])\s+', joined)
-        out: list[str] = []
-        for s in sentences:
-            out.append(_titlecase_sentence(s))
-        return ' '.join(out)
 
     for line in lines:
         stripped = line.strip()
 
         if not stripped:
             if in_body and current_para:
-                paragraphs.append(_flush(current_para))
+                paragraphs.append(_flush_discussion(current_para))
                 current_para = []
             continue
 
-        if focn_re.match(stripped):
+        if _DISCUSSION_FOCN_RE.match(stripped):
             continue
 
-        if byline_re.match(stripped) or stripped.upper() == 'END':
+        if _DISCUSSION_BYLINE_RE.match(stripped) or stripped.upper() == 'END':
             break
 
-        m_geo = geo_header_re.match(stripped)
-        m_sec = section_header_re.match(stripped)
+        m_geo = _DISCUSSION_GEO_HEADER_RE.match(stripped)
+        m_sec = _DISCUSSION_SECTION_HEADER_RE.match(stripped)
 
         if m_sec and not m_geo:
             key = m_sec.group(1).strip()
-            label = _SECTION_HEADERS.get(key)
+            label = _DISCUSSION_SECTION_HEADERS.get(key)
             if label is None:
                 label = key.capitalize() + '.'
             if in_body and current_para:
-                paragraphs.append(_flush(current_para))
+                paragraphs.append(_flush_discussion(current_para))
                 current_para = []
             in_body = True
             paragraphs.append(label)
@@ -650,7 +659,7 @@ def eccc_discussion_package(
         if m_geo:
             geo_label = _expand_geo_header(m_geo.group(1))
             if in_body and current_para:
-                paragraphs.append(_flush(current_para))
+                paragraphs.append(_flush_discussion(current_para))
                 current_para = []
             in_body = True
             rest = stripped[m_geo.end():].strip()

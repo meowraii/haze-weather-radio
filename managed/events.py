@@ -30,7 +30,7 @@ _runtime_state: dict[str, Any] = {
 
 def register_alert_queue(feed_id: str) -> queue.Queue[tuple[int, pathlib.Path]]:
     with _alert_queues_lock:
-        q: queue.Queue[tuple[int, pathlib.Path]] = queue.Queue()
+        q: queue.Queue[tuple[int, pathlib.Path]] = queue.Queue(maxsize=128)
         _alert_queues[feed_id] = q
         return q
 
