@@ -43,7 +43,6 @@ class CAPAlert:
     msg_type: str
     references: str
     infos: tuple[CAPInfo, ...]
-    raw_xml: bytes
 
     @property
     def event(self) -> str:
@@ -122,7 +121,7 @@ NAAD_PORT = 8080
 CAP_NS = "urn:oasis:names:tc:emergency:cap:1.2"
 HEARTBEAT_IDENTIFIER = "Heartbeat"
 BUFFER_SIZE = 4096
-MAX_BUFFER_SIZE = 16 * 1024 * 1024
+MAX_BUFFER_SIZE = 4 * 1024 * 1024
 RECONNECT_DELAY_S = 5.0
 READ_TIMEOUT_S = 90.0
 
@@ -222,7 +221,6 @@ def parse_cap(raw: bytes) -> CAPAlert | None:
         msg_type=root.findtext(_t("msgType"), ""),
         references=root.findtext(_t("references"), ""),
         infos=infos,
-        raw_xml=raw,
     )
 
 

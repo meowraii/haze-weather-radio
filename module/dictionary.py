@@ -6,6 +6,8 @@ from typing import Optional
 _DICT_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'dictionary.json'
 
 _loaded: Optional[dict[str, dict[str, str]]] = None
+_compiled: dict[str, list[tuple[re.Pattern[str], str]]] = {}
+_MB_RE = re.compile(r'(\d+)\s+MB\b')
 
 
 def _load() -> dict[str, dict[str, str]]:
@@ -31,11 +33,19 @@ def _get_entries(lang: str) -> list[tuple[str, str]]:
     return list(combined.items())
 
 
+def _get_compiled(lang: str) -> list[tuple[re.Pattern[str], str]]:
+    if lang not in _compiled:
+        entries = _get_entries(lang)
+        entries.sort(key=lambda x: len(x[0]), reverse=True)
+        _compiled[lang] = [
+            (re.compile(r'(?<![A-Za-z0-9])' + re.escape(term) + r'(?![A-Za-z0-9])'), replacement)
+            for term, replacement in entries
+        ]
+    return _compiled[lang]
+
+
 def apply(text: str, lang: str = 'en-CA') -> str:
-    text = re.sub(r'(\d+)\s+MB\b', r'\1 millibars', text)
-    entries = _get_entries(lang)
-    entries.sort(key=lambda x: len(x[0]), reverse=True)
-    for term, replacement in entries:
-        pattern = r'(?<![A-Za-z0-9])' + re.escape(term) + r'(?![A-Za-z0-9])'
-        text = re.sub(pattern, replacement, text)
+    text = _MB_RE.sub(r'\1 millibars', text)
+    for pattern, replacement in _get_compiled(lang):
+        text = pattern.sub(replacement, text)
     return text

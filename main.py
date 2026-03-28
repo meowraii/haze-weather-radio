@@ -2,9 +2,13 @@ import asyncio
 import datetime
 import logging
 import logging.handlers
+import os
 import pathlib
 import threading
 from typing import Any
+
+os.environ.setdefault('OMP_NUM_THREADS', '2')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '2')
 
 from managed.events import (
     append_runtime_event,

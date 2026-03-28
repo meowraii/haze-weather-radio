@@ -24,6 +24,8 @@ log = logging.getLogger(__name__)
 
 _last_synth: dict[str, float] = {}
 _bulletins_mtime: float = 0.0
+_bulletins_cache: list[Any] = []
+_bulletins_cached_mtime: float = -1.0
 
 
 def _get_bulletins_mtime() -> float:
@@ -61,11 +63,16 @@ def _mark_synthesized(pkg_id: str, feed_id: str, lang: str) -> None:
 
 
 def _load_bulletins() -> list[Any]:
-    try:
-        with open(_BULLETINS_PATH, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return []
+    global _bulletins_cache, _bulletins_cached_mtime
+    current_mtime = _get_bulletins_mtime()
+    if current_mtime != _bulletins_cached_mtime:
+        try:
+            with open(_BULLETINS_PATH, encoding='utf-8') as f:
+                _bulletins_cache = json.load(f)
+        except Exception:
+            _bulletins_cache = []
+        _bulletins_cached_mtime = current_mtime
+    return _bulletins_cache
 
 def playlist_thread_worker(config: dict[str, Any]) -> None:
     feeds = [f for f in config.get('feeds', []) if f.get('enabled', True)]
