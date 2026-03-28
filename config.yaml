@@ -288,12 +288,12 @@ tts:
             config: ./piper-tts/fr_FR-upmc-medium.onnx.json
           female: None
 
-  pyttsx3:
-    enabled: true
-    voice: english
-    rate: 180
-    volume: 1.0
+#  pyttsx3:   for future implementation
+#    enabled: true
+#    voice: english
+#    rate: 180
+#    volume: 1.0
 
-  fallback_order:
-    - piper
-    - pyttsx3
+#  fallback_order:
+#    - piper
+#    - pyttsx3
