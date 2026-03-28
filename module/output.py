@@ -155,28 +155,19 @@ class PiFmAdvSink:
     def __init__(self, config: dict[str, Any]) -> None:
         freq = config['frequency_hz']
         dev = config.get('deviation_hz', 5000)
-        out_sr = config.get('sample_rate_hz', 22050)
         bw = config.get('bandwidth_hz', 12500)
         host = config.get('host')
         bin_root = config.get('bin_root', '/home/pi/PiFmAdv/src')
         pi_fm_adv_path = f"{bin_root}/pi_fm_adv"
-        callsign = config.get('callsign', '')
 
         lpf = min(bw // 2 - 100, 7500)
 
         audio_filter = (
-            'highpass=f=100,'
-            'acompressor=threshold=-30dB:ratio=20:attack=1:release=120:makeup=10dB,'
-            'equalizer=f=30:width_type=o:width=2:g=0.1,'
-            'equalizer=f=55:width_type=o:width=2:g=0.6,'
-            'equalizer=f=60:width_type=o:width=2:g=0.7,'
-            'equalizer=f=640:width_type=o:width=2:g=1.8,'
-            'equalizer=f=1500:width_type=o:width=2:g=2.0,'
-            'equalizer=f=3000:width_type=o:width=1.5:g=3.5,'
-            'equalizer=f=5000:width_type=o:width=1.5:g=3.0,'
-            'dynaudnorm=f=80:g=7:p=0.92:m=3,'
+            f'highpass=f=100,'
+            f'acompressor=threshold=-24dB:ratio=8:attack=5:release=200:makeup=4dB,'
+            f'dynaudnorm=f=80:g=7:p=0.75:m=3,'
             f'lowpass=f={lpf},'
-            'alimiter=limit=0.95'
+            f'alimiter=limit=0.70:attack=0.5:release=5'
         )
 
         ffmpeg_cmd = [
@@ -191,7 +182,7 @@ class PiFmAdvSink:
         fm_args = [
             'sudo', pi_fm_adv_path,
             '--audio', '-',
-            '--freq', f'{freq / 1_000_000.0:.4f}',
+            '--freq', freq,
             '--dev', str(dev),
             '--preemph', '75us',
             '--rds', '0',
