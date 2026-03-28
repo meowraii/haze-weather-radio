@@ -1,0 +1,14 @@
+:Product: Geophysical Alert Message wwv.txt
+:Issued: 2026 Mar 28 2105 UTC
+# Prepared by the US Dept. of Commerce, NOAA, Space Weather Prediction Center
+#
+#          Geophysical Alert Message
+#
+Solar-terrestrial indices for 28 March follow.
+Solar flux 162 and estimated planetary A-index 9.
+The estimated planetary K-index at 2100 UTC on 28 March was 1.33.
+
+Space weather for the past 24 hours has been minor.
+Radio blackouts reaching the R1 level occurred.
+
+No space weather storms are predicted for the next 24 hours.

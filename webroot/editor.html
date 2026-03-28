@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>File Editor — Haze Weather Radio</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+    <div class="app-shell">
+
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-mark"></div>
+                <div>
+                    <p class="brand-name">Haze WXR</p>
+                    <p class="brand-sub">File Editor</p>
+                </div>
+            </div>
+
+            <nav class="sidebar-section">
+                <p class="sidebar-label">Navigation</p>
+                <a class="sidebar-link" href="/">
+                    <i data-lucide="house" width="15" height="15"></i>
+                    Dashboard
+                </a>
+                <a class="sidebar-link active" href="/editor">
+                    <i data-lucide="pencil-line" width="15" height="15"></i>
+                    File Editor
+                </a>
+                <a class="sidebar-link" href="/same">
+                    <i data-lucide="radio-tower" width="15" height="15"></i>
+                    SAME Broadcast
+                </a>
+            </nav>
+
+            <div class="sidebar-section">
+                <p class="sidebar-label">Files</p>
+                <a class="sidebar-link" href="#" data-file="userbulletins.json" id="nav-userbulletins">
+                    <i data-lucide="file-text" width="15" height="15"></i>
+                    userbulletins.json
+                </a>
+                <a class="sidebar-link" href="#" data-file="dictionary.json" id="nav-dictionary">
+                    <i data-lucide="file-text" width="15" height="15"></i>
+                    dictionary.json
+                </a>
+                <a class="sidebar-link" href="#" data-file="packages.py" id="nav-packages">
+                    <i data-lucide="file-text" width="15" height="15"></i>
+                    packages.py
+                </a>
+            </div>
+
+            <div class="sidebar-footer">
+                <button id="themeToggle" type="button" class="theme-toggle">
+                    <i data-lucide="sun" width="13" height="13"></i>
+                    <span id="themeLabel">Dark mode</span>
+                </button>
+            </div>
+        </aside>
+
+        <div class="main-wrap">
+            <header class="topbar">
+                <div class="topbar-title">
+                    <h1 id="editorTitle">Select a file to edit</h1>
+                    <p id="editorSubtitle">Changes are written directly to disk. Backend must be restarted to apply most changes.</p>
+                </div>
+            </header>
+
+            <main class="dashboard">
+                <section class="section-block">
+                    <div class="section-hd">
+                        <span id="sectionFilename">No file loaded</span>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <button id="loadBtn" type="button" class="hd-select" style="min-height:24px;padding:2px 10px;cursor:pointer;border-radius:4px;font-size:0.78rem;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;width:auto;white-space:nowrap;" disabled>Load</button>
+                            <button id="saveBtn" type="button" class="hd-select" style="min-height:24px;padding:2px 10px;cursor:pointer;border-radius:4px;font-size:0.78rem;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;width:auto;white-space:nowrap;" disabled>Save</button>
+                        </div>
+                    </div>
+                    <div class="section-body">
+                        <p id="statusBanner" class="status-banner"></p>
+                        <p id="emptyState" style="color:var(--text-muted);font-size:0.88rem;">Select a file from the sidebar to begin editing.</p>
+                        <textarea id="editorArea" class="code-editor" spellcheck="false" style="display:none;width:100%;"></textarea>
+                    </div>
+                </section>
+            </main>
+        </div>
+
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script src="/assets/editor.js" defer></script>
+</body>
+</html>

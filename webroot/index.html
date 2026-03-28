@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Haze Weather Radio control and monitoring panel">
+    <title>Haze Weather Radio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+    <div class="app-shell">
+
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-mark"></div>
+                <div>
+                    <p class="brand-name">Haze WXR</p>
+                    <p class="brand-sub">Operations Panel</p>
+                </div>
+            </div>
+
+            <nav class="sidebar-section" aria-label="Dashboard sections">
+                <p class="sidebar-label">Dashboard</p>
+                <a class="sidebar-link" href="#summary" data-section="summary">
+                    <i data-lucide="layout-dashboard" width="15" height="15"></i>
+                    Overview
+                </a>
+                <a class="sidebar-link" href="#feeds" data-section="feeds">
+                    <i data-lucide="radio" width="15" height="15"></i>
+                    Feeds
+                </a>
+                <a class="sidebar-link" href="#events" data-section="events">
+                    <i data-lucide="clock" width="15" height="15"></i>
+                    Events
+                </a>
+                <a class="sidebar-link" href="#logs" data-section="logs">
+                    <i data-lucide="align-left" width="15" height="15"></i>
+                    Logs
+                </a>
+                <a class="sidebar-link" href="#datapool" data-section="datapool">
+                    <i data-lucide="database" width="15" height="15"></i>
+                    Data Pool
+                </a>
+                <a class="sidebar-link" href="#config" data-section="config">
+                    <i data-lucide="settings" width="15" height="15"></i>
+                    Configuration
+                </a>
+            </nav>
+
+            <nav class="sidebar-section" aria-label="Tools">
+                <p class="sidebar-label">Tools</p>
+                <a class="sidebar-link" href="/editor">
+                    <i data-lucide="pencil-line" width="15" height="15"></i>
+                    File Editor
+                </a>
+                <a class="sidebar-link" href="/same">
+                    <i data-lucide="radio-tower" width="15" height="15"></i>
+                    SAME Broadcast
+                </a>
+            </nav>
+
+            <div class="sidebar-section">
+                <p class="sidebar-label">System</p>
+                <div class="status-row">
+                    <span class="status-dot" id="apiDot" data-state="pending"></span>
+                    <span class="status-key">API</span>
+                    <span class="status-val" id="healthPill">Checking…</span>
+                </div>
+                <div class="status-row">
+                    <span class="status-dot" id="authDot" data-state="pending"></span>
+                    <span class="status-key">Auth</span>
+                    <span class="status-val" id="authPill">Unknown</span>
+                </div>
+            </div>
+
+            <div class="sidebar-feeds-section">
+                <div class="sidebar-section" style="padding-bottom:0">
+                    <p class="sidebar-label">Active Feeds</p>
+                </div>
+                <div id="sidebarFeeds" class="sidebar-feeds">
+                    <p class="sidebar-empty">Awaiting data</p>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <button id="refreshButton" type="button" class="sidebar-icon-btn" title="Refresh dashboard" aria-label="Refresh">
+                    <i data-lucide="refresh-cw" width="15" height="15"></i>
+                </button>
+                <button id="themeToggle" type="button" class="sidebar-icon-btn" title="Toggle theme" aria-label="Toggle theme">
+                    <i data-lucide="sun" width="15" height="15"></i>
+                </button>
+                <span id="themeLabel" class="sr-only">Theme</span>
+                <button id="logoutButton" type="button" class="sidebar-icon-btn sidebar-logout-btn" title="Log out" aria-label="Log out">
+                    <i data-lucide="log-out" width="15" height="15"></i>
+                </button>
+            </div>
+        </aside>
+
+        <div class="main-wrap">
+            <header class="topbar">
+                <h1 id="heroTitle">Haze Weather Radio</h1>
+                <p id="heroSubtitle">Waiting for server response.</p>
+            </header>
+
+            <main class="dashboard">
+
+                <div id="summaryCards" class="metric-grid"></div>
+
+                <section class="section-block" id="feeds">
+                    <div class="section-hd">
+                        <span>Broadcast Runtime</span>
+                        <span class="section-hd-sub">Per-feed outputs, active playlist, queue depth, and latest alert activity.</span>
+                        <div class="section-hd-actions">
+                            <button id="rwtButton" type="button" class="btn-action" title="Send Required Weekly Test to all enabled feeds">
+                                <i data-lucide="clock" width="13" height="13"></i>
+                                Send RWT
+                            </button>
+                        </div>
+                    </div>
+                    <div class="section-body">
+                        <div class="feed-grid" id="feedsGrid"></div>
+                    </div>
+                </section>
+
+                <section class="section-block" id="events">
+                    <div class="section-hd"><span>Runtime Events</span></div>
+                    <div class="section-body">
+                        <div class="event-list" id="eventsList"></div>
+                    </div>
+                </section>
+
+                <div class="two-col">
+                    <section class="section-block" id="logs" style="margin-top:0">
+                        <div class="section-hd">
+                            <span>Log Tail</span>
+                            <select id="logSourceSelect" class="hd-select">
+                                <option value="app">Application</option>
+                                <option value="same">SAME Audit</option>
+                            </select>
+                        </div>
+                        <div class="section-body">
+                            <pre class="code-view" id="logsView">No logs loaded.</pre>
+                        </div>
+                    </section>
+
+                    <section class="section-block" id="datapool" style="margin-top:0">
+                        <div class="section-hd"><span>Shared Weather State</span></div>
+                        <div class="section-body">
+                            <pre class="code-view" id="datapoolView">No data loaded.</pre>
+                        </div>
+                    </section>
+                </div>
+
+                <section class="section-block" id="config">
+                    <div class="section-hd"><span>Runtime Configuration</span></div>
+                    <div class="section-body">
+                        <pre class="code-view" id="configView">No configuration loaded.</pre>
+                    </div>
+                </section>
+
+            </main>
+        </div>
+
+    </div>
+
+    <div class="auth-overlay" id="authOverlay">
+        <div class="auth-card">
+            <p class="auth-eyebrow">Protected Access</p>
+            <h2>Authenticate to continue</h2>
+            <p class="auth-desc">This panel exposes live playout state, alert events, recent logs, and configuration details for the station.</p>
+            <form id="loginForm" class="auth-form">
+                <label for="passwordInput">Password</label>
+                <input id="passwordInput" name="password" type="password" autocomplete="current-password" placeholder="Enter panel password">
+                <button type="submit">Unlock Panel</button>
+            </form>
+            <p class="auth-status" id="authStatus">Waiting for server health check.</p>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script src="/assets/index.js" defer></script>
+</body>
+</html>
