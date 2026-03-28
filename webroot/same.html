@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SAME Broadcast — Haze Weather Radio</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+    <div class="app-shell">
+
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-mark"></div>
+                <div>
+                    <p class="brand-name">Haze WXR</p>
+                    <p class="brand-sub">SAME Broadcast</p>
+                </div>
+            </div>
+
+            <nav class="sidebar-section">
+                <p class="sidebar-label">Navigation</p>
+                <a class="sidebar-link" href="/">
+                    <i data-lucide="house" width="15" height="15"></i>
+                    Dashboard
+                </a>
+                <a class="sidebar-link" href="/editor">
+                    <i data-lucide="pencil-line" width="15" height="15"></i>
+                    File Editor
+                </a>
+                <a class="sidebar-link active" href="/same">
+                    <i data-lucide="radio-tower" width="15" height="15"></i>
+                    SAME Broadcast
+                </a>
+            </nav>
+
+            <div class="sidebar-section">
+                <p class="sidebar-label">Reference</p>
+                <div class="status-row">
+                    <span class="status-dot" id="apiDot" data-state="pending"></span>
+                    <span class="status-key">API</span>
+                    <span class="status-val" id="healthPill">Checking…</span>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <button id="themeToggle" type="button" class="theme-toggle">
+                    <i data-lucide="sun" width="13" height="13"></i>
+                    <span id="themeLabel">Dark mode</span>
+                </button>
+            </div>
+        </aside>
+
+        <div class="main-wrap">
+            <header class="topbar">
+                <div class="topbar-title">
+                    <h1>SAME Broadcast</h1>
+                    <p>Manually generate and air a SAME/EAS alert sequence to a feed's playout queue.</p>
+                </div>
+            </header>
+
+            <main class="dashboard">
+
+                <p id="statusBanner" class="status-banner"></p>
+
+                <div class="same-grid">
+
+                    <!-- Col 1: Alert Parameters -->
+                    <section class="section-block">
+                        <div class="section-hd"><span>Alert Parameters</span></div>
+                        <div class="section-body">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="origSelect">Originator</label>
+                                    <select id="origSelect">
+                                        <option value="WXR">WXR — Weather</option>
+                                        <option value="EAS">EAS — EAS Participant</option>
+                                        <option value="CIV">CIV — Civil Authority</option>
+                                        <option value="PEP">PEP — Primary Entry Point</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="eventSelect">Event Code</label>
+                                    <select id="eventSelect"></select>
+                                </div>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="durationHours">Duration — Hours</label>
+                                    <input id="durationHours" type="number" min="0" max="99" value="1">
+                                </div>
+                                <div class="form-group">
+                                    <label for="durationMinutes">Duration — Minutes</label>
+                                    <input id="durationMinutes" type="number" min="0" max="59" value="0">
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="toneSelect">Attention Tone</label>
+                                <select id="toneSelect">
+                                    <option value="WXR">WXR — 1050 Hz single</option>
+                                    <option value="EAS">EAS — dual 853/960 Hz</option>
+                                    <option value="NPAS">NPAS — Alert Ready</option>
+                                    <option value="EGG_TIMER">EGG_TIMER — Legacy Ontario</option>
+                                    <option value="NONE">None</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group" style="margin-top:10px;">
+                                <p class="sidebar-label" style="margin:0 0 5px;">Encoded Header</p>
+                                <div class="same-preview" id="headerPreview">Complete the form.</div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Col 2: Target & Locations -->
+                    <section class="section-block">
+                        <div class="section-hd"><span>Target &amp; Locations</span></div>
+                        <div class="section-body">
+                            <div class="form-group">
+                                <label for="feedSelect">Target Feed</label>
+                                <select id="feedSelect">
+                                    <option value="">Loading feeds…</option>
+                                </select>
+                                <label class="check-row">
+                                    <input type="checkbox" id="allFeedsCheck">
+                                    Air on all configured feeds
+                                </label>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="locationsInput">Location Codes (CLC)</label>
+                                <textarea id="locationsInput" rows="6" placeholder="One per line, e.g.&#10;047031&#10;047039"></textarea>
+                                <label class="check-row">
+                                    <input type="checkbox" id="allLocationsCheck">
+                                    Load all feed location codes
+                                </label>
+                                <p class="hint">Six-digit CLC codes, one per line.</p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Col 3: Audio & Air -->
+                    <section class="section-block">
+                        <div class="section-hd"><span>Audio Message</span></div>
+                        <div class="section-body" style="display:flex;flex-direction:column;gap:10px;">
+                            <div class="form-group" style="margin-bottom:0;">
+                                <label>Audio Source</label>
+                                <div class="radio-group" style="margin-top:4px;">
+                                    <label><input type="radio" name="audioMode" id="audioModeTts" value="tts" checked> TTS Text</label>
+                                    <label><input type="radio" name="audioMode" id="audioModeFile" value="file"> Upload File</label>
+                                    <label><input type="radio" name="audioMode" id="audioModeNone" value="none"> Tone Only</label>
+                                </div>
+                            </div>
+
+                            <div id="ttsSection">
+                                <div class="form-group" style="margin-bottom:0;">
+                                    <label for="voiceInput">Text to Synthesize</label>
+                                    <textarea id="voiceInput" rows="4" placeholder="Text will be synthesized via configured TTS engine and appended after the attention tone."></textarea>
+                                </div>
+                            </div>
+
+                            <div id="fileSection" style="display:none;">
+                                <div class="form-group" style="margin-bottom:0;">
+                                    <label>Audio File</label>
+                                    <div class="upload-area" id="uploadArea">
+                                        <input type="file" id="audioFile" accept="audio/*,video/*">
+                                        <div class="upload-area-text">
+                                            <p id="uploadPromptEl">Click or drag to select an audio or video file.<br>ffmpeg will encode it to PCM WAV.</p>
+                                            <p id="uploadFilenameEl" style="display:none;"></p>
+                                        </div>
+                                    </div>
+                                    <div id="uploadActions" style="display:none;margin-top:6px;gap:6px;" class="form-actions">
+                                        <button id="uploadBtn" type="button">Upload &amp; Encode</button>
+                                        <button id="clearUploadBtn" type="button" class="btn-ghost">Clear</button>
+                                    </div>
+                                    <p id="uploadStatusEl" class="hint" style="margin-top:4px;"></p>
+                                </div>
+                            </div>
+
+                            <div class="form-actions" style="padding-top:4px;">
+                                <button id="airBtn" type="button" class="btn-danger">Air Now</button>
+                            </div>
+                        </div>
+                    </section>
+
+                </div>
+
+                <!-- SAME Test Template Manager — full width -->
+                <section class="section-block" id="templateManager">
+                    <div class="section-hd">
+                        <span>SAME Test Templates</span>
+                        <span class="section-hd-sub">Manage the broadcast messages for RWT, RMT, and custom test codes stored in <code style="font-family:var(--mono-font);font-size:0.9em">sameTemplate.json</code>.</span>
+                        <div class="section-hd-actions">
+                            <button id="templateAddBtn" type="button" class="btn-action">+ New Template</button>
+                            <button id="templateSaveBtn" type="button" class="btn-action">Save All</button>
+                        </div>
+                    </div>
+                    <div class="section-body">
+                        <p id="templateStatus" class="status-banner" style="margin-bottom:10px;"></p>
+                        <div id="templateList" style="display:flex;flex-direction:column;gap:10px;"></div>
+                    </div>
+                </section>
+
+                <!-- Recent Broadcasts — full width -->
+                <section class="section-block">
+                    <div class="section-hd"><span>Recent Broadcasts</span></div>
+                    <div class="section-body">
+                        <div id="recentList">
+                            <p style="color:var(--text-muted);font-size:0.82rem;">No broadcasts in current session.</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- SAME Event Code Reference — full width -->
+                <section class="section-block">
+                    <div class="section-hd"><span>SAME Event Code Reference</span></div>
+                    <div class="section-body" style="max-height:340px;overflow-y:auto;">
+                        <table id="eventTable" style="width:100%;border-collapse:collapse;font-size:0.8rem;">
+                            <thead>
+                                <tr>
+                                    <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);color:var(--text-muted);font-weight:600;position:sticky;top:0;background:var(--surface);">Code</th>
+                                    <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);color:var(--text-muted);font-weight:600;position:sticky;top:0;background:var(--surface);">Description</th>
+                                </tr>
+                            </thead>
+                            <tbody id="eventTableBody"></tbody>
+                        </table>
+                    </div>
+                </section>
+
+            </main>
+        </div>
+
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script src="/assets/same.js" defer></script>
+</body>
+</html>

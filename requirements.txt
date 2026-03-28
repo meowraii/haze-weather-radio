@@ -1,0 +1,12 @@
+pyyaml>=6.0.2
+sounddevice>=0.5.1
+numpy>=2.2.0
+soundfile>=0.13.1
+mutagen>=1.47.0
+websockets>=14.2
+fastapi
+python-multipart>=0.0.9
+uvicorn>=0.34.0
+flask-socketio>=5.5.1
+aiohttp>=3.11.0
+piper-tts>=1.2.0
