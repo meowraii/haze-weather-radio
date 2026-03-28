@@ -287,15 +287,6 @@ tts:
             speaker: 1
             config: ./piper-tts/fr_FR-upmc-medium.onnx.json
           female: None
-    
-    es-US:
-      backend:
-        piper:
-          male:
-            model: ./piper-tts/es_MX-claude-high.onnx
-            speaker: 0
-            config: ./piper-tts/es_MX-claude-high.onnx.json
-          female: None
 
   pyttsx3:
     enabled: true
