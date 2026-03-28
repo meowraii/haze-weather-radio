@@ -151,9 +151,8 @@ feeds:
 
       PiFmAdv:
         bin_root: /home/rai/PiFmAdv/src
-        enabled: false
-        frequency_hz: 162475000 # 162.550 Mhz (XLF322) is currently taken because Environment Canada is burning cash by looping a discontinuation bulletin instead of just shutting down the transmitters.
-        sample_rate_hz: 8000 # reencode audio input to this sample rate for transmission
+        enabled: true
+        frequency_hz: 162.450 # 162.450 Mhz (XLF322) is currently taken because Environment Canada is burning cash by looping a discontinuation bulletin instead of just shutting down the transmitters.
         bandwidth_hz: 12500 # bandwidth of the actual transmitted signal
         modulation: fm
         deviation_hz: 5000 # frequency deviation for fm modulation
