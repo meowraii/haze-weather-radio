@@ -547,8 +547,6 @@ def current_conditions_package(
     vis_val = _scalar(_d(props, 'visibility') or _s(props, 'visibility'))
     if vis_val is not None:
         sentences.append(ph['visibility'].format(val=vis_val))
-    elif not secondary:
-        sentences.append(ph['no_visibility'])
 
     pressure = _d(props, 'pressure')
     if pressure:
