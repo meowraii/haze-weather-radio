@@ -219,6 +219,9 @@ def generate_eom_burst(sample_rate: int = _SAME_SAMPLE_RATE) -> np.ndarray:
     pilot_suffix = _pilot_tone(sample_rate, _PILOT_SUFFIX_DURATION_S, 2100.0)
     return np.concatenate([pilot_prefix, pre, data, pilot_suffix])
 
+_TONE_AMPLITUDE = 0.25
+
+
 def generate_same(
     header: Optional[SAMEHeader] = None,
     attn_duration_s: float = _DEFAULT_ATTN_DURATION_S,
@@ -228,7 +231,8 @@ def generate_same(
 ) -> np.ndarray:
     _init_same_log()
     gap = _silence(_HEADER_SILENCE_S, sample_rate)
-    parts: list[np.ndarray] = []
+    pre_voice: list[np.ndarray] = []
+    voice_part: Optional[np.ndarray] = None
 
     if header is not None:
         encoded = header.encode()
@@ -236,27 +240,27 @@ def generate_same(
 
         burst = generate_header_burst(header, sample_rate)
         for i in range(3):
-            parts.append(burst)
+            pre_voice.append(burst)
             if i < 2:
-                parts.append(gap)
+                pre_voice.append(gap)
 
         if tone_type is not None:
-            parts.append(_silence(1.0, sample_rate))
+            pre_voice.append(_silence(1.0, sample_rate))
             if tone_type == "WXR":
-                parts.append(_attention_tone_wxr(attn_duration_s, sample_rate))
+                pre_voice.append(_attention_tone_wxr(attn_duration_s, sample_rate))
             elif tone_type == "NPAS":
-                parts.append(_attention_tone_alert_ready(attn_duration_s, sample_rate))
+                pre_voice.append(_attention_tone_alert_ready(attn_duration_s, sample_rate))
             elif tone_type == "EGG_TIMER":
-                parts.append(_attention_tone_egg_timer(attn_duration_s, sample_rate))
+                pre_voice.append(_attention_tone_egg_timer(attn_duration_s, sample_rate))
             elif tone_type == "EAS":
-                parts.append(_attention_tone_eas(attn_duration_s, sample_rate))
+                pre_voice.append(_attention_tone_eas(attn_duration_s, sample_rate))
             else:
                 log.warning("Unknown tone_type '%s', using silence", tone_type)
-                parts.append(_silence(0.1, sample_rate))
+                pre_voice.append(_silence(0.1, sample_rate))
 
         if audio_msg_fp32 is not None:
             log.info("Appending audio message from %s", audio_msg_fp32)
-            parts.append(_silence(1.0, sample_rate))
+            pre_voice.append(_silence(1.0, sample_rate))
             audio, sr = sf.read(audio_msg_fp32)  # type: ignore[no-untyped-call]
             if audio.ndim > 1:
                 audio = np.mean(audio, axis=1)
@@ -269,20 +273,28 @@ def generate_same(
                     np.arange(len(audio)),
                     audio,
                 ).astype(np.float32)
-            parts.append(audio)
+            voice_part = audio
     else:
         encoded = "EOM"
         log.info("Generating EOM-only sequence @ %d Hz", sample_rate)
 
     eom_burst = generate_eom_burst(sample_rate)
-    parts.append(_silence(1.0, sample_rate))
+    post_voice: list[np.ndarray] = [_silence(1.0, sample_rate)]
     for i in range(3):
-        parts.append(eom_burst)
+        post_voice.append(eom_burst)
         if i < 2:
-            parts.append(gap)
-    parts.append(_silence(1.0, sample_rate))
+            post_voice.append(gap)
+    post_voice.append(_silence(1.0, sample_rate))
 
-    total_s = sum(len(p) for p in parts) / sample_rate
+    segments: list[np.ndarray] = []
+    if pre_voice:
+        segments.append(np.concatenate(pre_voice) * _TONE_AMPLITUDE)
+    if voice_part is not None:
+        segments.append(voice_part)
+    segments.append(np.concatenate(post_voice) * _TONE_AMPLITUDE)
+
+    out = np.concatenate(segments)
+    total_s = len(out) / sample_rate
     log.info("SAME sequence generated: %s (%.2fs at %d Hz)", encoded, total_s, sample_rate)
     _same_log.info(
         "SAME_GENERATED | header=%s | tone=%s | attn=%.1fs | audio=%s | duration=%.2fs | sr=%d",
@@ -290,8 +302,7 @@ def generate_same(
         str(audio_msg_fp32) if audio_msg_fp32 else "none", total_s, sample_rate,
     )
 
-    out = np.concatenate(parts)
-    return (out * 0.96).astype(np.float32)
+    return out.astype(np.float32)
 
 
 def resample(signal: np.ndarray, from_sr: int, to_sr: int) -> np.ndarray:

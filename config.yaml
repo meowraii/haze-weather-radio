@@ -170,11 +170,11 @@ cap:
         poll_interval_seconds: 60
         timeout_seconds: 10
     filter:
-      use_feed_locations: false # whether to filter alerts based on the locations defined in the feed. if true, only alerts that match the SAME location codes of the feed's locations will be included. if false, all alerts are subject to the settings below.
-      geocodes: [] # can wild card with * to match any geocode that starts with the specified string.
+      use_feed_locations: true # whether to filter alerts based on the locations defined in the feed. if true, only alerts that match the SAME location codes of the feed's locations will be included. if false, all alerts are subject to the settings below.
+      geocodes: ["4711*", "4712*"] # can wild card with * to match any geocode that starts with the specified string.
       blocklist: [ # leave any array empty to not filter by that parameter.
-        severity: [], # block alerts with these severities. valid values are Extreme, Severe, Moderate, Minor, and Unknown.
-        certainty: [],
+        severity: ["Minor", "Unknown"], # block alerts with these severities. valid values are Extreme, Severe, Moderate, Minor, and Unknown.
+        certainty: ["Unknown", "Past"], # block alerts with these certainties. valid values are Immediate, Expected, Future, Past, and Unknown.
         urgency: [],
         status: [],
         scope: [],
@@ -202,7 +202,7 @@ cap:
         - Severe
 
 same:
-  sender: "BTTRADIO" # SAME header sender field (callsign or other identifier, max 8 chars. will be either truncated or padded with spaces to 8 chars in the actual SAME message).
+  sender: "MEWRAI:3" # SAME header sender field (callsign or other identifier, max 8 chars. will be either truncated or padded with spaces to 8 chars in the actual SAME message).
 
   weeklytest: # parameters for Required Weekly Test or Required Monthly Test SAME messages
   #               Typically on Weatheradio Canada, the RWT is broadcast every Wednesday at noon local time, and RMT is broadcast on the first Wednesday of each month at noon local time.
@@ -218,7 +218,7 @@ same:
   monthlytest:
     enabled: false
     week: 1 # broadcast the monthly test on this week of the month on the specified weekday at the specified time.
-    weekday: wed
+    weekday: wed # wed
     hour: 12
     minute: 0
     second: 0
