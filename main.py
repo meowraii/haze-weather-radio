@@ -29,7 +29,6 @@ from module.webserve import start_web_server
 
 config = load_config()
 
-
 def _check_static_audio(config: dict[str, Any]) -> None:
     static_root = pathlib.Path(config.get('static', 'audio'))
     static_root.mkdir(parents=True, exist_ok=True)
@@ -97,7 +96,6 @@ def main() -> None:
 
     feeds = [f for f in config.get('feeds', []) if f.get('enabled', True)]
 
-    # --- Phase 1: Infrastructure (web panel + alert listener) ---
     infra: list[threading.Thread] = [
         _thread(_naads_thread_worker, config, feeds, name='naads'),
     ]
