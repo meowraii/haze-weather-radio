@@ -24,10 +24,10 @@ _CODEC_MAP: dict[str, tuple[str, str, str]] = {
 }
 
 _STREAM_DYNAMICS = (
-    'volume=4dB,'
+    'volume=6dB,'
     'lowpass=f=2500,'
-    'loudnorm=i=-23:lra=6:tp=-2,'
-    'alimiter=limit=0.8:attack=1:release=100'
+    'loudnorm=i=-20:lra=6:tp=-4.5,'
+    'alimiter=limit=0.75:attack=1:release=100'
 )
 
 
