@@ -1,14 +1,15 @@
+import hashlib
 import json
 import logging
 import os
 import pathlib
-import time
 from typing import Any
 
 from managed.events import data_ready, initial_synthesis_done, read_data_pool, shutdown_event, tts_queue, update_playout_sequence
 from module.tts import synthesize
 from managed.packages import (
     Package_Config,
+    alerts_package,
     current_conditions_package,
     date_time_package,
     eccc_discussion_package,
@@ -19,13 +20,15 @@ from managed.packages import (
 )
 
 _BULLETINS_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'userbulletins.json'
+_REGISTRY_PATH = pathlib.Path(__file__).parent.parent / 'data' / 'alertsRegistry.json'
 
 log = logging.getLogger(__name__)
 
-_last_synth: dict[str, float] = {}
-_bulletins_mtime: float = 0.0
+_last_text_hash: dict[str, str] = {}
 _bulletins_cache: list[Any] = []
 _bulletins_cached_mtime: float = -1.0
+_registry_cache: list[Any] = []
+_registry_cached_mtime: float = -1.0
 
 
 def _get_bulletins_mtime() -> float:
@@ -35,31 +38,13 @@ def _get_bulletins_mtime() -> float:
         return 0.0
 
 
-def _needs_synthesis(pkg_id: str, feed_id: str, lang: str) -> bool:
-    global _bulletins_mtime
+def _needs_synthesis(pkg_id: str, feed_id: str, lang: str, text: str) -> bool:
     key = f"{feed_id}:{lang}:{pkg_id}"
-    now = time.monotonic()
-
-    if pkg_id == 'station_id':
-        return key not in _last_synth
-
-    if pkg_id == 'user_bulletin':
-        current_mtime = _get_bulletins_mtime()
-        changed = current_mtime != _bulletins_mtime
-        if changed:
-            _bulletins_mtime = current_mtime
-        return changed or key not in _last_synth
-
-    base_id = 'forecast' if pkg_id.startswith('forecast') else pkg_id
-    ttl = Package_Config.ttl.get(base_id)
-    if ttl is None:
-        return True
-    last = _last_synth.get(key, 0.0)
-    return (now - last) >= ttl
+    return _last_text_hash.get(key) != hashlib.md5(text.encode()).hexdigest()
 
 
-def _mark_synthesized(pkg_id: str, feed_id: str, lang: str) -> None:
-    _last_synth[f"{feed_id}:{lang}:{pkg_id}"] = time.monotonic()
+def _mark_synthesized(pkg_id: str, feed_id: str, lang: str, text: str) -> None:
+    _last_text_hash[f"{feed_id}:{lang}:{pkg_id}"] = hashlib.md5(text.encode()).hexdigest()
 
 
 def _load_bulletins() -> list[Any]:
@@ -73,6 +58,22 @@ def _load_bulletins() -> list[Any]:
             _bulletins_cache = []
         _bulletins_cached_mtime = current_mtime
     return _bulletins_cache
+
+
+def _load_registry() -> list[Any]:
+    global _registry_cache, _registry_cached_mtime
+    try:
+        current_mtime = os.path.getmtime(_REGISTRY_PATH)
+    except OSError:
+        return []
+    if current_mtime != _registry_cached_mtime:
+        try:
+            with open(_REGISTRY_PATH, encoding='utf-8') as f:
+                _registry_cache = json.load(f)
+        except Exception:
+            _registry_cache = []
+        _registry_cached_mtime = current_mtime
+    return _registry_cache
 
 def playlist_thread_worker(config: dict[str, Any]) -> None:
     feeds = [f for f in config.get('feeds', []) if f.get('enabled', True)]
@@ -118,6 +119,16 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
         )
 
     bulletins = _load_bulletins()
+    registry = _load_registry()
+    raw_order = config.get('playout', {}).get('playlist_order') or []
+    parsed_order: list[str] = []
+    for entry in raw_order:
+        if isinstance(entry, str):
+            parsed_order.append(entry)
+        elif isinstance(entry, dict):
+            pkg_id_entry = next((k for k in entry if k != 'ttl'), None)
+            if pkg_id_entry:
+                parsed_order.append(pkg_id_entry)
     max_items = feed.get('playlist', {}).get('max_items', None)
     sequence: list[pathlib.Path] = []
     ready_seq: list[pathlib.Path] = []
@@ -153,9 +164,10 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
             'eccc_discussion': eccc_discussion_package(discussion_text, loc_name, lang),
             'geophysical_alert': geophysical_alert_package(wwv_text),
             'user_bulletin': user_bulletin_package(bulletins, lang, tz),
+            'alerts': alerts_package(registry, lang, tz, feed),
         }
         default_order = list(pkg_lookup.keys())
-        playlist_order: list[str] = config.get('playout', {}).get('playlist_order') or default_order
+        playlist_order: list[str] = parsed_order or default_order
 
         limit = max_items if max_items is not None else len(playlist_order)
         for pkg_id in playlist_order[:limit]:
@@ -169,7 +181,7 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
                 continue
             out_wav = out_root / lang / f'{pkg_id}.wav'
             sequence.append(out_wav)
-            if not _needs_synthesis(pkg_id, feed_id, lang):
+            if not _needs_synthesis(pkg_id, feed_id, lang, text):
                 if out_wav.exists():
                     ready_seq.append(out_wav)
                 continue
@@ -183,5 +195,5 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
                 if result:
                     ready_seq.append(out_wav)
                     update_playout_sequence(feed_id, ready_seq[:])
-            _mark_synthesized(pkg_id, feed_id, lang)
+            _mark_synthesized(pkg_id, feed_id, lang, text)
     update_playout_sequence(feed_id, ready_seq)

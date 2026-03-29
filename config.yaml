@@ -16,18 +16,25 @@ logging:
 playout:
   sample_rate: 16000
   channels: 1
-  default_playlist: null
-  shuffle: true
-  shuffle_carry_over: 3
+
   playlist_order:
-    - date_time
+    - alerts:
+      ttl: 120
     - station_id
-    - current_conditions
-    - forecast
-    - date_time
-    - eccc_discussion
-    - geophysical_alert
-    - user_bulletin
+    - date_time:
+      ttl: 10
+    - current_conditions:
+      ttl: 2700
+    - forecast:
+      ttl: 7200
+    - date_time:
+      ttl: 10
+    - eccc_discussion:
+      ttl: 10800
+    - geophysical_alert:
+      ttl: 10800
+    - user_bulletin:
+      ttl: 3600
 
 operator:
   on_air_name: "Betteradio Canada"
@@ -150,12 +157,23 @@ feeds:
         device_name: null # if null, the default audio output device will be used. otherwise, specify the name of the audio output device to use for playback. this can be found using tools like `aplay -l` on linux or `ffmpeg -hide_banner -list_devices true -f dshow -i dummy` on windows.
 
       PiFmAdv: # it is unknown if this is actually working as it bottlenecks my raspberry pi model 3b+. maybe someone with a powerful enough raspberry pi can help optimize this and make a pull request?
-      #  bin_root: /home/rai/PiFmAdv/src
-        enabled: false
-      #  frequency_hz: 162.450
-      #  bandwidth_hz: 12500 # bandwidth of the actual transmitted signal
-      #  modulation: fm
-      #  deviation_hz: 5000 # frequency deviation for fm modulation
+        bin_root: /home/rai/PiFmAdv/src # root directory of the PiFmAdv binary on your local machine or the remote machine if using ssh.
+        enabled: true # enable this output?
+        frequency_mhz: 162.450 # frequency to broadcast on in hertz.
+        alternative_frequencies: [] # PiAdvFm accepts this parameter but i dont know how to use it. so ill just pass whatever you put here to the binary.
+        bandwidth_hz: 12000 # bandwidth of the actual transmitted signal
+        deviation_hz: 5000 # frequency deviation for fm modulation. weather radio is typically 5000 hz.
+        ssh: # i have this wonderful idea where i can have the audio generated on a more powerful machine and then use ssh to run the PiFmAdv binary on the raspberry pi
+        #      and stream raw pcm to it 
+          enabled: true # if false, the PiFmAdv binary will be run locally on the same machine as this app. if true, the binary will be run on a remote machine over ssh.
+          ffmpeg_bin: ffmpeg # path to ffmpeg binary on this machine (local). if it is in the PATH, then just the name of the binary is fine.
+          ssh_bin: ssh
+          host: 172.16.1.37
+          port: 22
+          username: rai
+          password:
+          public_key_path: ~/.ssh/almora
+
 
 cap:
   cap_cp:
@@ -206,7 +224,7 @@ same:
 
   weeklytest: # parameters for Required Weekly Test or Required Monthly Test SAME messages
   #               Typically on Weatheradio Canada, the RWT is broadcast every Wednesday at noon local time, and RMT is broadcast on the first Wednesday of each month at noon local time.
-    enabled: false
+    enabled: true
     weeks: [2, 3, 4] # broadcast the weekly test on these weeks of the month on the specified weekday at the specified time.
     weekday: wed
     hour: 12 # in local time of the station.
@@ -216,7 +234,7 @@ same:
     same_expir: 0030 # 30 minutes in SAME.
   
   monthlytest:
-    enabled: false
+    enabled: true
     week: 1 # broadcast the monthly test on this week of the month on the specified weekday at the specified time.
     weekday: wed # wed
     hour: 12
@@ -232,7 +250,7 @@ same:
   
   alert_ready_on_NAADS_BIP: true # use the NPAS attention tone for NAADS CAP-CP alerts if they are marked for BI (Broadcast Immediate) on Alert Ready.
 
-  send_txp_on_startup: true # whether to send a Transmitter Primary On SAME message on startup. there is no audio message or attention tone associated with this message.
+  send_txp_on_startup: false # whether to send a Transmitter Primary On SAME message on startup. there is no audio message or attention tone associated with this message.
 
 network:
   use_system_defaults: true

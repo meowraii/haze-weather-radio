@@ -532,6 +532,200 @@ def user_bulletin_package(
     return '  '.join(active)
 
 
+_ALERT_VERBS: dict[str, dict[str, str]] = {
+    'en': {
+        'Alert': 'has issued',
+        'Update': 'has updated',
+        'Cancel': 'has ended',
+    },
+    'fr': {
+        'Alert': 'a émis',
+        'Update': 'a mis à jour',
+        'Cancel': 'a annulé',
+    },
+}
+
+_AN_PREFIXES = ('a', 'e', 'i', 'o', 'u')
+
+_FORECAST_LOC_DB: dict[str, tuple[str, str]] | None = None
+_FORECAST_LOC_CSV = pathlib.Path(__file__).parent / 'FORECAST_LOCATIONS.csv'
+
+
+def _load_forecast_loc_db() -> dict[str, tuple[str, str]]:
+    global _FORECAST_LOC_DB
+    if _FORECAST_LOC_DB is not None:
+        return _FORECAST_LOC_DB
+    db: dict[str, tuple[str, str]] = {}
+    try:
+        with open(_FORECAST_LOC_CSV, encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split(',')
+                if len(parts) >= 3 and parts[0][:1].isdigit():
+                    code = parts[0].strip()
+                    if code not in db:
+                        db[code] = (parts[1].strip(), parts[2].strip())
+    except Exception:
+        pass
+    _FORECAST_LOC_DB = db
+    return db
+
+
+def _alert_param(params: list[dict[str, Any]], name: str) -> Any:
+    for p in params:
+        if p.get('valueName') == name:
+            return p.get('value', '')
+    return ''
+
+
+def _format_date_spoken(dt: datetime.datetime, lang_short: str) -> str:
+    day_name = _DT_DAYS.get(lang_short, _DT_DAYS['en'])[dt.weekday()]
+    month_name = _DT_MONTHS.get(lang_short, _DT_MONTHS['en'])[dt.month - 1]
+    ordinals = _DT_ORDINALS.get(lang_short, _DT_ORDINALS['en'])
+    ordinal = ordinals[dt.day - 1] if dt.day <= len(ordinals) else str(dt.day)
+    return f"{day_name}, {month_name} {ordinal}, {dt.year}"
+
+
+def _resolve_alert_areas(
+    params: list[dict[str, Any]],
+    feed: dict[str, Any],
+    lang_short: str,
+) -> list[str]:
+    raw = _alert_param(params, 'layer:EC-MSC-SMC:1.1:Newly_Active_Areas')
+    if isinstance(raw, list):
+        alert_clcs = [str(c).strip() for c in raw]
+    elif isinstance(raw, str) and raw:
+        alert_clcs = [c.strip() for c in raw.split(',')]
+    else:
+        return []
+
+    feed_sames: list[str] = []
+    for loc in feed.get('locations', []):
+        same = loc.get('same')
+        if same:
+            feed_sames.append(str(same).strip())
+
+    if not feed_sames:
+        return []
+
+    matched: list[str] = []
+    for clc in alert_clcs:
+        for same in feed_sames:
+            if same.endswith('*'):
+                if clc.startswith(same[:-1]):
+                    matched.append(clc)
+                    break
+            elif clc == same:
+                matched.append(clc)
+                break
+
+    if not matched:
+        return []
+
+    db = _load_forecast_loc_db()
+    lang_idx = 1 if lang_short == 'fr' else 0
+    seen: set[str] = set()
+    names: list[str] = []
+    for clc in matched:
+        parent = clc[:4] + "00"
+        if parent in db:
+            if parent not in seen:
+                seen.add(parent)
+                name = db[parent][lang_idx].replace(' - ', ', ')
+                names.append(name)
+        elif clc in db:
+            if clc not in seen:
+                seen.add(clc)
+                names.append(db[clc][lang_idx])
+    return names
+
+
+def alerts_package(
+    registry: list[Any] | None = None,
+    lang: str | None = "en-CA",
+    tz: str | None = "UTC",
+    feed: dict[str, Any] | None = None,
+) -> str:
+    if not registry:
+        return ""
+
+    _lang = lang or 'en-CA'
+    lang_short = _lang[:2]
+    zone = ZoneInfo(tz or 'UTC')
+    now = datetime.datetime.now(tz=zone)
+    verbs = _ALERT_VERBS.get(lang_short, _ALERT_VERBS['en'])
+
+    parts: list[str] = []
+    for entry in registry:
+        if not isinstance(entry, dict):
+            continue
+
+        meta = entry.get('metadata', {})
+        source = entry.get('source', {})
+        params = entry.get('parameters', [])
+
+        expires_raw = meta.get('expires')
+        expires_dt: datetime.datetime | None = None
+        if expires_raw:
+            try:
+                expires_dt = datetime.datetime.fromisoformat(expires_raw)
+                if expires_dt.tzinfo is None:
+                    expires_dt = expires_dt.replace(tzinfo=zone)
+                if now > expires_dt:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+        sender_name = meta.get('senderName', '')
+        msg_type = source.get('msgType', 'Alert')
+        verb = verbs.get(msg_type, verbs['Alert'])
+
+        alert_name = _alert_param(params, 'layer:EC-MSC-SMC:1.0:Alert_Name')
+        if not alert_name:
+            alert_name = meta.get('headline', meta.get('event', ''))
+        alert_name_tc = str(alert_name).title()
+
+        article = 'an' if alert_name_tc[:1].lower() in _AN_PREFIXES else 'a'
+
+        coverage = _alert_param(params, 'layer:EC-MSC-SMC:1.0:Alert_Coverage')
+
+        sentence = f"{sender_name} {verb} {article} {alert_name_tc}"
+        if coverage:
+            sentence += f", for {coverage}"
+        sentence += "."
+
+        onset_raw = meta.get('onset') or meta.get('effective')
+        if onset_raw:
+            try:
+                onset_dt = datetime.datetime.fromisoformat(onset_raw).astimezone(zone)
+                sentence += f" Starting {_format_date_spoken(onset_dt, lang_short)}."
+            except (ValueError, TypeError):
+                pass
+
+        if expires_dt:
+            exp_local = expires_dt.astimezone(zone)
+            areas = _resolve_alert_areas(params, feed, lang_short) if feed else []
+            exp_str = f"Until {_format_date_spoken(exp_local, lang_short)}"
+            if areas:
+                exp_str += f", for {', '.join(areas)}"
+            exp_str += "."
+            sentence += " " + exp_str
+
+        text_block = entry.get('text', {})
+        desc = (text_block.get('description') or '').strip()
+        instr = (text_block.get('instruction') or '').strip()
+        if desc:
+            sentence += " " + desc
+        if instr:
+            sentence += " " + instr
+
+        parts.append(sentence)
+
+    if not parts:
+        return ""
+
+    return '  '.join(parts)
+
+
 def current_conditions_package(
     weather_data: Optional[dict[str, Any]] = None,
     location_name: Optional[str] = None,

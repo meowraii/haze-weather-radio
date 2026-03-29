@@ -30,6 +30,7 @@ class CAPInfo:
     geocodes: tuple[str, ...]
     clc_codes: tuple[str, ...]
     resources: tuple[CAPResource, ...]
+    area_geocodes: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = ()
     parameters: dict[str, str] = field(default_factory=lambda: {})
 
 
@@ -135,6 +136,7 @@ def _parse_info(info: ET.Element) -> CAPInfo:
     geocodes: list[str] = []
     clc_codes: list[str] = []
     resources: list[CAPResource] = []
+    area_geocode_pairs: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
 
     same_event: str = ""
     for ec in info.findall(_t("eventCode")):
@@ -146,6 +148,8 @@ def _parse_info(info: ET.Element) -> CAPInfo:
         desc = area.findtext(_t("areaDesc"), "")
         if desc:
             areas.append(desc)
+        area_gcs: list[str] = []
+        area_clcs: list[str] = []
         for gc in area.findall(_t("geocode")):
             vn = gc.findtext(_t("valueName"))
             val = gc.findtext(_t("value"))
@@ -153,8 +157,12 @@ def _parse_info(info: ET.Element) -> CAPInfo:
                 continue
             if vn == "profile:CAP-CP:Location:0.3":
                 geocodes.append(val)
+                area_gcs.append(val)
             elif vn == "layer:EC-MSC-SMC:1.0:CLC":
                 clc_codes.append(val)
+                area_clcs.append(val)
+        if desc:
+            area_geocode_pairs.append((desc, tuple(area_gcs), tuple(area_clcs)))
 
     for res in info.findall(_t("resource")):
         mime = res.findtext(_t("mimeType"), "")
@@ -188,6 +196,7 @@ def _parse_info(info: ET.Element) -> CAPInfo:
         geocodes=tuple(geocodes),
         clc_codes=tuple(clc_codes),
         resources=tuple(resources),
+        area_geocodes=tuple(area_geocode_pairs),
         parameters=parameters,
     )
 
