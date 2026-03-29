@@ -24,9 +24,9 @@ _CODEC_MAP: dict[str, tuple[str, str, str]] = {
 }
 
 _STREAM_DYNAMICS = (
-    'acompressor=threshold=-50dB:ratio=20:attack=0.1:release=50:makeup=46dB,'
-    'loudnorm=i=-6.0:lra=1.0:tp=-0.1,'
-    'alimiter=limit=1.0:attack=0.1:release=10:level=1'
+    'acompressor=threshold=-50dB:ratio=20:attack=0.1:release=15:makeup=46,'
+    'loudnorm=i=-4.0:lra=1.0:tp=0,'
+    'alimiter=limit=1.0:attack=0.1:release=5:level=1'
 )
 
 
@@ -175,7 +175,7 @@ class PiFmAdvSink:
             '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
             '-i', 'pipe:0',
             '-af', audio_filter,
-            '-ac', '1', '-ar', str(out_sr),
+            '-ac', '1', '-ar', '44100',
             '-f', 'wav', 'pipe:1',
         ]
 
