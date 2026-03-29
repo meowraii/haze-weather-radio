@@ -24,8 +24,8 @@ _CODEC_MAP: dict[str, tuple[str, str, str]] = {
 }
 
 _STREAM_DYNAMICS = (
-    'acompressor=threshold=-50dB:ratio=20:attack=0.1:release=15:makeup=46,'
-    'loudnorm=i=-4.0:lra=1.0:tp=0,'
+    'acompressor=threshold=-50dB:ratio=20:attack=0.1:release=15:makeup=36,'
+    'loudnorm=i=-5:lra=1:tp=0,'
     'alimiter=limit=1.0:attack=0.1:release=5:level=1'
 )
 
