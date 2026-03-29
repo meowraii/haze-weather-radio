@@ -98,6 +98,8 @@ _CC_PH: dict[str, dict[str, str]] = {
         'temp':              "The temperature was {val} degrees Celsius.",
         'dewpoint':          "dewpoint {val} degrees.",
         'humidity':          "and the relative humidity was {val} percent.",
+        'windchill':         "With a wind chill of {val}.",
+        'humidex':           "With a humidex of {val}.",
         'no_temp':           "The temperature was not available.",
         'wind':              "Winds were {dir}at {spd} kilometres per hour.",
         'wind_dir':          "out of the {dir} ",
@@ -109,8 +111,6 @@ _CC_PH: dict[str, dict[str, str]] = {
         'pressure':          "The pressure was {val} kilopascals{tend}.",
         'no_pressure':       "The barometric pressure was not available.",
         'tendency':          ", and {val}",
-        'windchill':         "The wind chill was {val}.",
-        'humidex':           "The humidex was {val}.",
         'station':           "this station",
     },
     'fr': {
@@ -199,6 +199,10 @@ _DISCUSSION_GEO_ABBR: dict[str, str] = {
     'YT': 'Yukon',
     'NRN': 'northern',
     'SRN': 'southern',
+    'NW': 'northwestern',
+    'NE': 'northeastern',
+    'SW': 'southwestern',
+    'SE': 'southeastern',
     'NWT': 'Northwest Territories',
 }
 
@@ -504,6 +508,14 @@ def current_conditions_package(
     elif not secondary:
         sentences.append(ph['no_temp'])
 
+    wc_val = _scalar(_d(props, 'windChill') or _s(props, 'windChill'))
+    if wc_val is not None:
+        sentences.append(ph['windchill'].format(val=wc_val))
+
+    hx_val = _scalar(_d(props, 'humidex') or _s(props, 'humidex'))
+    if hx_val is not None:
+        sentences.append(ph['humidex'].format(val=hx_val))
+
     dp_val = _scalar(_d(props, 'dewpoint') or _s(props, 'dewpoint'))
     if dp_val is not None:
         sentences.append(ph['dewpoint'].format(val=dp_val))
@@ -554,14 +566,6 @@ def current_conditions_package(
             sentences.append(ph['no_pressure'])
     elif not secondary:
         sentences.append(ph['no_pressure'])
-
-    wc_val = _scalar(_d(props, 'windChill') or _s(props, 'windChill'))
-    if wc_val is not None:
-        sentences.append(ph['windchill'].format(val=wc_val))
-
-    hx_val = _scalar(_d(props, 'humidex') or _s(props, 'humidex'))
-    if hx_val is not None:
-        sentences.append(ph['humidex'].format(val=hx_val))
 
     return " ".join(sentences)
 
