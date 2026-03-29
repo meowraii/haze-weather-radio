@@ -24,9 +24,10 @@ _CODEC_MAP: dict[str, tuple[str, str, str]] = {
 }
 
 _STREAM_DYNAMICS = (
-    'acompressor=threshold=-50dB:ratio=18:attack=0.1:release=15:makeup=36,'
-    'loudnorm=i=-5:lra=1:tp=0,'
-    'alimiter=limit=0.988:attack=0.1:release=5:level=1'
+    'volume=4dB,'
+    'lowpass=f=2500,'
+    'loudnorm=i=-23:lra=6:tp=-2,'
+    'alimiter=limit=0.8:attack=1:release=100'
 )
 
 
@@ -164,10 +165,10 @@ class PiFmAdvSink:
 
         audio_filter = (
             f'highpass=f=100,'
-            f'acompressor=threshold=-24dB:ratio=8:attack=5:release=200:makeup=4dB,'
-            f'loudnorm=I=-23:LRA=7:TP=-3,'
+            f'acompressor=threshold=-28dB:ratio=6:attack=5:release=100:makeup=6,'
+            f'loudnorm=I=-23:LRA=4:TP=-3,'
             f'lowpass=f={lpf},'
-            f'alimiter=limit=0.70:attack=0.5:release=5'
+            f'alimiter=limit=0.25:attack=0.5:release=5'
         )
 
         ffmpeg_cmd = [

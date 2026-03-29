@@ -65,10 +65,91 @@ _DT_MONTHS: dict[str, list[str]] = {
 }
 
 _DT_SENTENCES: dict[str, list[str]] = {
-    'en': ["The current time is {hour}. {minute}. {ampm}. {tzabbr}."],
-    'fr': ["Il est actuellement {hour} {minute} {ampm} {tzabbr}."],
-    'es': ["La hora actual es {hour} {minute} {ampm} {tzabbr}."],
+    'en': ["The current time is {time_str}."],
+    'fr': ["Il est actuellement {time_str}."],
+    'es': ["La hora actual es {time_str}."],
 }
+
+_TZ_NAMES: dict[str, str] = {
+    'CDT': 'Central Daylight Time',
+    'CST': 'Central Standard Time',
+    'MDT': 'Mountain Daylight Time',
+    'MST': 'Mountain Standard Time',
+    'EDT': 'Eastern Daylight Time',
+    'EST': 'Eastern Standard Time',
+    'PDT': 'Pacific Daylight Time',
+    'PST': 'Pacific Standard Time',
+    'ADT': 'Atlantic Daylight Time',
+    'AST': 'Atlantic Standard Time',
+    'NDT': 'Newfoundland Daylight Time',
+    'NST': 'Newfoundland Standard Time',
+    'UTC': 'Coordinated Universal Time',
+    'GMT': 'Greenwich Mean Time',
+}
+
+_TIME_RE = re.compile(
+    r'\b(\d{1,2}):(\d{2})\s*(AM|PM)\s*([A-Z]{2,4})\b',
+    re.IGNORECASE,
+)
+
+_ZULU_TIME_RE = re.compile(
+    r'\b(\d{4})\s*(UTC|GMT)\b',
+    re.IGNORECASE,
+)
+
+
+def _spoken_minute(mm: str) -> str:
+    n = int(mm)
+    if n == 0:
+        return ''
+    if n < 10:
+        return f'oh {n}'
+    return str(n)
+
+
+def _spoken_ampm(ampm: str) -> str:
+    return 'a m' if ampm.upper() == 'AM' else 'p m'
+
+
+def _spoken_zulu_hour(hh: int) -> str:
+    if hh == 0:
+        return 'zero zero'
+    if hh < 10:
+        return f'zero {hh}'
+    return str(hh)
+
+
+def _spoken_tz(abbr: str) -> str:
+    return _TZ_NAMES.get(abbr.upper(), abbr)
+
+
+def _format_time_spoken(dt: datetime.datetime) -> str:
+    hour = dt.strftime('%-I')
+    minute = _spoken_minute(dt.strftime('%M'))
+    ampm = _spoken_ampm(dt.strftime('%p'))
+    tzname = _spoken_tz(dt.strftime('%Z'))
+    if minute:
+        return f"{hour} {minute} {ampm}, {tzname}"
+    return f"{hour} {ampm}, {tzname}"
+
+
+def _reformat_times_in_text(text: str) -> str:
+    def _replace_ampm(m: re.Match[str]) -> str:
+        hour = m.group(1)
+        minute = _spoken_minute(m.group(2))
+        ampm = _spoken_ampm(m.group(3))
+        tz = _spoken_tz(m.group(4))
+        if minute:
+            return f"{hour} {minute} {ampm}, {tz}"
+        return f"{hour} {ampm}, {tz}"
+    def _replace_zulu(m: re.Match[str]) -> str:
+        hhmm = m.group(1)
+        h_str = _spoken_zulu_hour(int(hhmm[:2]))
+        m_str = _spoken_minute(hhmm[2:]) or 'hundred'
+        tz = _spoken_tz(m.group(2))
+        return f"{h_str} {m_str}, {tz}"
+    text = _TIME_RE.sub(_replace_ampm, text)
+    return _ZULU_TIME_RE.sub(_replace_zulu, text)
 
 _CC_SOURCE: dict[str, dict[str, str]] = {
     'en': {
@@ -263,6 +344,7 @@ def _titlecase_sentence(sentence: str) -> str:
 
 def _flush_discussion(para_lines: list[str]) -> str:
     joined = ' '.join(para_lines)
+    joined = _reformat_times_in_text(joined)
     sentences = _DISCUSSION_SENTENCE_SPLIT_RE.split(joined)
     return ' '.join(_titlecase_sentence(s) for s in sentences)
 
@@ -314,10 +396,7 @@ def date_time_package(tz: str, lang: Optional[str] = "en-CA") -> str:
     return " ".join([
         prefix,
         _DT_SENTENCES.get(lang_short, _DT_SENTENCES['en'])[0].format(
-            hour=now.strftime('%-I').replace('0', ''),
-            minute=now.strftime('%M'),
-            ampm=now.strftime('%p'),
-            tzabbr=now.strftime('%Z'),
+            time_str=_format_time_spoken(now),
         )
     ])
 
@@ -485,9 +564,9 @@ def current_conditions_package(
         _source_name = _source_map.get(str(_src_key), str(_src_key).upper())
         try:
             _dt = datetime.datetime.fromisoformat(str(_obs_at).replace('Z', '+00:00'))
-            _time_str = _dt.strftime("%-I:%M %p %Z")
+            _time_str = _format_time_spoken(_dt)
         except ValueError:
-            _time_str = str(_obs_at)
+            _time_str = _reformat_times_in_text(str(_obs_at))
         opener_text = ph['opener'].format(source=_source_name, time=_time_str)
 
     sentences: list[str] = []
@@ -697,4 +776,5 @@ def geophysical_alert_package(
     sentences = wwv_text.splitlines()
     sentences = [s.strip() for s in sentences if s.strip()]
     sentences = [s for s in sentences if not s.startswith('#') if not s.startswith(':Product:') and not s.startswith(':Issued:') and not s.startswith('Prepared by')]
+    sentences = [_reformat_times_in_text(s) for s in sentences]
     return '  '.join(sentences)

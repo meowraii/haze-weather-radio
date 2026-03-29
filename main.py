@@ -14,7 +14,6 @@ from managed.events import (
     append_runtime_event,
     initial_synthesis_done,
     shutdown_event,
-    tts_queue,
     update_runtime_status,
 )
 from module.alert import alert_worker
@@ -112,14 +111,8 @@ def main() -> None:
     for t in data:
         t.start()
 
-    log.info('Waiting for initial data fetch and audio synthesis...')
-    initial_synthesis_done.wait()
-
     tts = _thread(tts_thread_worker, config, name='tts')
     tts.start()
-
-    log.info('Waiting for TTS queue to drain...')
-    tts_queue.join()
 
     playout: list[threading.Thread] = [
         _thread(playout_thread_worker, config, feed, name=f'playout:{feed["id"]}')
@@ -128,6 +121,8 @@ def main() -> None:
     for t in playout:
         t.start()
 
+    log.info('Waiting for initial data fetch and audio synthesis...')
+    initial_synthesis_done.wait()
     log.info('All systems nominal. Playout active for %d feed(s).', len(feeds))
 
     scheduler = _thread(scheduler_thread_worker, config, feeds, name='scheduler')
