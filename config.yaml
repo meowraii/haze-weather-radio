@@ -14,7 +14,7 @@ logging:
     enabled: true
 
 playout:
-  sample_rate: 11025
+  sample_rate: 16000
   channels: 1
   default_playlist: null
   shuffle: true
@@ -149,13 +149,13 @@ feeds:
         enabled: false
         device_name: null # if null, the default audio output device will be used. otherwise, specify the name of the audio output device to use for playback. this can be found using tools like `aplay -l` on linux or `ffmpeg -hide_banner -list_devices true -f dshow -i dummy` on windows.
 
-      PiFmAdv:
-        bin_root: /home/rai/PiFmAdv/src
+      PiFmAdv: # it is unknown if this is actually working as it bottlenecks my raspberry pi model 3b+. maybe someone with a powerful enough raspberry pi can help optimize this and make a pull request?
+      #  bin_root: /home/rai/PiFmAdv/src
         enabled: false
-        frequency_hz: 162.450 # 162.450 Mhz (XLF322) is currently taken because Environment Canada is burning cash by looping a discontinuation bulletin instead of just shutting down the transmitters.
-        bandwidth_hz: 12500 # bandwidth of the actual transmitted signal
-        modulation: fm
-        deviation_hz: 5000 # frequency deviation for fm modulation
+      #  frequency_hz: 162.450
+      #  bandwidth_hz: 12500 # bandwidth of the actual transmitted signal
+      #  modulation: fm
+      #  deviation_hz: 5000 # frequency deviation for fm modulation
 
 cap:
   cap_cp:

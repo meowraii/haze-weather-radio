@@ -98,13 +98,26 @@ _ZULU_TIME_RE = re.compile(
 )
 
 
+_ONES = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+         'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+         'seventeen', 'eighteen', 'nineteen']
+_TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty']
+
+
+def _num_to_words(n: int) -> str:
+    if n < 20:
+        return _ONES[n]
+    t, o = divmod(n, 10)
+    return f'{_TENS[t]} {_ONES[o]}'.strip() if o else _TENS[t]
+
+
 def _spoken_minute(mm: str) -> str:
     n = int(mm)
     if n == 0:
         return ''
     if n < 10:
-        return f'oh {n}'
-    return str(n)
+        return f'oh {_num_to_words(n)}'
+    return _num_to_words(n)
 
 
 def _spoken_ampm(ampm: str) -> str:
@@ -115,8 +128,8 @@ def _spoken_zulu_hour(hh: int) -> str:
     if hh == 0:
         return 'zero zero'
     if hh < 10:
-        return f'zero {hh}'
-    return str(hh)
+        return f'zero {_num_to_words(hh)}'
+    return _num_to_words(hh)
 
 
 def _spoken_tz(abbr: str) -> str:
@@ -124,7 +137,7 @@ def _spoken_tz(abbr: str) -> str:
 
 
 def _format_time_spoken(dt: datetime.datetime) -> str:
-    hour = dt.strftime('%-I')
+    hour = _num_to_words(int(dt.strftime('%-I')))
     minute = _spoken_minute(dt.strftime('%M'))
     ampm = _spoken_ampm(dt.strftime('%p'))
     tzname = _spoken_tz(dt.strftime('%Z'))
@@ -135,7 +148,7 @@ def _format_time_spoken(dt: datetime.datetime) -> str:
 
 def _reformat_times_in_text(text: str) -> str:
     def _replace_ampm(m: re.Match[str]) -> str:
-        hour = m.group(1)
+        hour = _num_to_words(int(m.group(1)))
         minute = _spoken_minute(m.group(2))
         ampm = _spoken_ampm(m.group(3))
         tz = _spoken_tz(m.group(4))
