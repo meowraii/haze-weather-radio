@@ -165,7 +165,7 @@ class PiFmAdvSink:
         audio_filter = (
             f'highpass=f=100,'
             f'acompressor=threshold=-24dB:ratio=8:attack=5:release=200:makeup=4dB,'
-            f'dynaudnorm=f=80:g=7:p=0.75:m=3,'
+            f'loudnorm=I=-23:LRA=7:TP=-3,'
             f'lowpass=f={lpf},'
             f'alimiter=limit=0.70:attack=0.5:release=5'
         )
