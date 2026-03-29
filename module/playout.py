@@ -5,7 +5,6 @@ import datetime
 import logging
 import pathlib
 import queue
-import random
 import wave
 from typing import Any
 
@@ -92,14 +91,10 @@ async def pipe_writer(
     feed_id: str = '',
     on_air_name: str = '',
     metadata_cb: Any = None,
-    shuffle: bool = False,
-    shuffle_carry_over: int = 0,
     txp_pcm: bytes | None = None,
 ) -> None:
     silence_path = _ensure_silence(feed_id)
     silence_pcm: bytes | None = None
-    _pinned = {'date_time', 'station_id'}
-    _prev_tail: list[pathlib.Path] = []
 
     if txp_pcm:
         log.info('[%s] Sending TXP (Transmitter Primary On)', feed_id)
@@ -149,30 +144,6 @@ async def pipe_writer(
             if not seq:
                 await asyncio.sleep(0.5)
                 continue
-
-            if shuffle:
-                pinned = [(i, p) for i, p in enumerate(seq) if p.stem in _pinned]
-                shuffleable = [p for p in seq if p.stem not in _pinned]
-
-                carry = set(str(p) for p in _prev_tail) if shuffle_carry_over else set()
-                front: list[pathlib.Path] = []
-                rest: list[pathlib.Path] = []
-                for p in shuffleable:
-                    (front if str(p) in carry else rest).append(p)
-
-                random.shuffle(rest)
-                random.shuffle(front)
-                shuffled = rest + front
-
-                ordered: list[pathlib.Path] = list(shuffled)
-                for idx, p in pinned:
-                    pos = min(idx, len(ordered))
-                    ordered.insert(pos, p)
-
-                if shuffle_carry_over and ordered:
-                    _prev_tail = ordered[-shuffle_carry_over:]
-
-                seq = ordered
 
             interrupted = False
             for path in seq:
@@ -289,7 +260,6 @@ async def feed_runner(
             except Exception:
                 pass
 
-    playout_cfg = config.get('playout', {})
     txp_pcm = _generate_txp(config, feed)
 
     writer_task = asyncio.create_task(
@@ -298,8 +268,6 @@ async def feed_runner(
             feed_id=feed_id,
             on_air_name=on_air_name,
             metadata_cb=_update_metadata if metadata_cbs else None,
-            shuffle=playout_cfg.get('shuffle', False),
-            shuffle_carry_over=playout_cfg.get('shuffle_carry_over', 0),
             txp_pcm=txp_pcm,
         ),
         name=f'{feed_id}:writer',

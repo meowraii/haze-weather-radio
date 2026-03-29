@@ -372,6 +372,7 @@ def build_alert_audio(
     alert: CAPAlert,
     config: dict[str, Any],
     feed: dict[str, Any],
+    cap_filter: dict[str, Any] | None = None,
 ) -> pathlib.Path | None:
     feed_id = feed["id"]
     info = alert.infos[0] if alert.infos else None
@@ -394,7 +395,7 @@ def build_alert_audio(
     )
 
     tone_type = _attention_tone_type(alert, config)
-    voice_path = _generate_voice_wav(alert, config, feed)
+    voice_path = _generate_voice_wav(alert, config, feed, cap_filter)
 
     same_sr = config.get('same', {}).get('sample_rate_hz', 22050)
     full_signal = generate_same(
@@ -426,6 +427,7 @@ def _generate_voice_wav(
     alert: CAPAlert,
     config: dict[str, Any],
     feed: dict[str, Any],
+    cap_filter: dict[str, Any] | None = None,
 ) -> pathlib.Path | None:
     feed_id = feed["id"]
     langs = list(feed.get("languages", {}).keys())
@@ -456,7 +458,17 @@ def _generate_voice_wav(
     if info.instruction:
         text_parts.append(info.instruction)
     if info.areas:
-        text_parts.append("Affected areas: " + ", ".join(info.areas) + ".")
+        use_feed_locs = bool((cap_filter or {}).get("use_feed_locations"))
+        if use_feed_locs and info.area_geocodes:
+            feed_set = set(feed_same_codes(feed))
+            filtered = [
+                desc for desc, _gcs, area_clcs in info.area_geocodes
+                if any(clc in feed_set for clc in area_clcs)
+            ]
+            areas_to_read = filtered if filtered else list(info.areas)
+        else:
+            areas_to_read = list(info.areas)
+        text_parts.append("Affected areas: " + ", ".join(areas_to_read) + ".")
 
     if not text_parts:
         return None
@@ -590,7 +602,7 @@ async def alert_worker(
             matched_any = True
             log.info("[%s] Alert matched: %s — %s (%s)", feed_id, alert.event, alert.headline, reason)
 
-            wav_path = await asyncio.to_thread(build_alert_audio, alert, config, feed)
+            wav_path = await asyncio.to_thread(build_alert_audio, alert, config, feed, cap_filter)
             if wav_path:
                 priority = _SEVERITY_PRIORITY.get(alert.severity, 3)
                 push_alert(feed_id, priority, wav_path)

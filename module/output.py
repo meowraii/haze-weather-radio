@@ -9,25 +9,22 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from module.queue import CHANNELS, SAMPLE_RATE
-
 import sounddevice as sd
 
+from module.queue import CHANNELS, SAMPLE_RATE
 
 log = logging.getLogger(__name__)
 
 _CODEC_MAP: dict[str, tuple[str, str, str]] = {
-    'opus': ('libopus',   'audio/ogg',   'ogg'),
-    'ogg':  ('libvorbis', 'audio/ogg',   'ogg'),
-    'mp3':  ('libmp3lame','audio/mpeg',  'mp3'),
-    'aac':  ('aac',       'audio/aac',   'adts'),
+    'opus': ('libopus',    'audio/ogg',  'ogg'),
+    'ogg':  ('libvorbis',  'audio/ogg',  'ogg'),
+    'mp3':  ('libmp3lame', 'audio/mpeg', 'mp3'),
+    'aac':  ('aac',        'audio/aac',  'adts'),
 }
 
 _STREAM_DYNAMICS = (
-    'volume=6dB,'
-    'lowpass=f=2500,'
-    'loudnorm=i=-20:lra=6:tp=-4.5,'
-    'alimiter=limit=0.75:attack=1:release=100'
+    'loudnorm=I=-12:LRA=6:TP=-1,'
+    'alimiter=limit=0.89'
 )
 
 
@@ -42,14 +39,17 @@ class IcecastSink:
         self._username: str = username
         self._password: str = password
         self._ssl: bool = config.get('ssl', False)
+
         url = (
             f"icecast://{username}:{password}@"
             f"{config['host']}:{config['port']}{mount}"
         )
+
         fmt = config.get('format', 'opus')
         codec, content_type, container = _CODEC_MAP.get(fmt, ('libopus', 'audio/ogg', 'ogg'))
         bitrate = config.get('bitrate_kbps', 96)
-        self._cmd = [
+
+        self._cmd: list[str] = [
             'ffmpeg', '-loglevel', 'error', '-re',
             '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
             '-i', 'pipe:0',
@@ -59,6 +59,7 @@ class IcecastSink:
             '-f', container,
             url,
         ]
+
         self._proc = subprocess.Popen(self._cmd, stdin=subprocess.PIPE)
         self._closed = False
 
@@ -68,11 +69,13 @@ class IcecastSink:
                 self._proc.stdin.close()
         except Exception:
             pass
+
         try:
             self._proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             self._proc.kill()
             self._proc.wait()
+
         self._proc = subprocess.Popen(self._cmd, stdin=subprocess.PIPE)
 
     async def write(self, pcm: bytes) -> None:
@@ -101,11 +104,22 @@ class IcecastSink:
     async def set_metadata(self, title: str) -> None:
         if self._closed:
             return
+
         scheme = 'https' if self._ssl else 'http'
         song_encoded = urllib.parse.quote(title, safe='')
-        url = f"{scheme}://{self._host}:{self._port}/admin/metadata?mount={self._mount}&mode=updinfo&song={song_encoded}"
-        credentials = base64.b64encode(f"{self._username}:{self._password}".encode()).decode()
-        req = urllib.request.Request(url, headers={'Authorization': f'Basic {credentials}'})
+        url = (
+            f"{scheme}://{self._host}:{self._port}/admin/metadata"
+            f"?mount={self._mount}&mode=updinfo&song={song_encoded}"
+        )
+
+        credentials = base64.b64encode(
+            f"{self._username}:{self._password}".encode()
+        ).decode()
+
+        req = urllib.request.Request(
+            url, headers={'Authorization': f'Basic {credentials}'}
+        )
+
         for attempt in range(5):
             try:
                 await asyncio.to_thread(urllib.request.urlopen, req, timeout=3)
@@ -154,60 +168,108 @@ class FileSink:
 
 class PiFmAdvSink:
     def __init__(self, config: dict[str, Any]) -> None:
-        freq = config['frequency_hz']
-        dev = config.get('deviation_hz', 5000)
-        bw = config.get('bandwidth_hz', 12500)
-        host = config.get('host')
-        bin_root = config.get('bin_root', '/home/pi/PiFmAdv/src')
-        pi_fm_adv_path = f"{bin_root}/pi_fm_adv"
+        freq_mhz: str = str(config['frequency_mhz'])
+        dev: int = config.get('deviation_hz', 5000)
+        bw: int = config.get('bandwidth_hz', 12000)
 
-        lpf = min(bw // 2 - 100, 7500)
+        bin_root: str = config.get('bin_root', '/home/pi/PiFmAdv/src')
+        pi_fm_adv_bin: str = f"{bin_root}/pi_fm_adv"
 
-        audio_filter = (
-            f'highpass=f=100,'
-            f'acompressor=threshold=-28dB:ratio=6:attack=5:release=100:makeup=6,'
-            f'loudnorm=I=-23:LRA=4:TP=-3,'
-            f'lowpass=f={lpf},'
-            f'alimiter=limit=0.25:attack=0.5:release=5'
-        )
+        alt_freqs: list = config.get('alternative_frequencies', [])
 
-        ffmpeg_cmd = [
-            'ffmpeg', '-loglevel', 'error',
-            '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-            '-i', 'pipe:0',
-            '-af', audio_filter,
-            '-ac', '1', '-ar', '44100',
-            '-f', 'wav', 'pipe:1',
-        ]
+        ssh_cfg: dict = config.get('ssh', {})
+        use_ssh: bool = ssh_cfg.get('enabled', False)
 
-        fm_args = [
-            'sudo', pi_fm_adv_path,
+        ssh_bin: str = ssh_cfg.get('ssh_bin', 'ssh')
+        ssh_host: str = ssh_cfg.get('host', '')
+        ssh_key: str = ssh_cfg.get('public_key_path', '~/.ssh/id_rsa')
+        ssh_user: str = ssh_cfg.get('username', 'pi')
+
+        use_sudo: bool = config.get('use_sudo', True)
+
+        lpf: int = min(bw // 2 - 100, 7500)
+
+        fm_args: list[str] = []
+        if use_sudo:
+            fm_args += ['sudo', '-n']
+
+        fm_args += [
+            pi_fm_adv_bin,
             '--audio', '-',
-            '--freq', freq,
+            '--freq', freq_mhz,
             '--dev', str(dev),
+            '--cutoff', str(lpf),
             '--preemph', '75us',
             '--rds', '0',
         ]
 
-        if host:
-            remote_cmd = ' '.join(fm_args)
-            fm_cmd = ['ssh', '-o', 'StrictHostKeyChecking=accept-new',
-                      '-o', 'ServerAliveInterval=15', host, remote_cmd]
-        else:
-            fm_cmd = fm_args
+        if alt_freqs:
+            fm_args += ['--af', ','.join(str(f) for f in alt_freqs)]
 
-        self._ffmpeg = subprocess.Popen(
-            ffmpeg_cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-        )
-        self._fm = subprocess.Popen(
-            fm_cmd,
-            stdin=self._ffmpeg.stdout,
-        )
-        self._ffmpeg.stdout.close()
+        ffmpeg_local_cmd: list[str] = [
+            'ffmpeg', '-loglevel', 'error',
+            '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
+            '-i', 'pipe:0',
+            '-af', _STREAM_DYNAMICS,
+            '-ac', '1', '-ar', '11025',
+            '-f', 'wav', 'pipe:1',
+        ]
+
+        self._stderr_task: asyncio.Task | None = None
+
+        if use_ssh:
+            remote_cmd = f"{' '.join(fm_args)}"
+
+            self._fm = subprocess.Popen(
+                [
+                    ssh_bin,
+                    '-T',
+                    '-i', ssh_key,
+                    '-l', ssh_user,
+                    '-o', 'StrictHostKeyChecking=accept-new',
+                    '-o', 'ServerAliveInterval=15',
+                    '-o', 'ServerAliveCountMax=3',
+                    '-o', 'Compression=no',
+                    ssh_host,
+                    remote_cmd,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+
+            self._ffmpeg = subprocess.Popen(
+                ffmpeg_local_cmd,
+                stdin=subprocess.PIPE,
+                stdout=self._fm.stdin,
+                stderr=subprocess.DEVNULL,
+            )
+
+            self._fm.stdin.close()
+
+        else:
+            self._ffmpeg = subprocess.Popen(
+                ffmpeg_local_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+
+            self._fm = subprocess.Popen(
+                fm_args,
+                stdin=self._ffmpeg.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+
+            self._ffmpeg.stdout.close()
+
         self._closed = False
-        log.info('pi_fm_adv sink started: %.4f MHz dev=±%d Hz', freq / 1_000_000.0, dev)
+
+        log.info(
+            'PiFmAdv sink started: %s MHz dev=±%d Hz lpf=%d Hz ssh=%s',
+            freq_mhz, dev, lpf, ssh_host if use_ssh else 'disabled',
+        )
 
     async def write(self, pcm: bytes) -> None:
         if self._closed or self._ffmpeg.stdin is None:
@@ -215,14 +277,21 @@ class PiFmAdvSink:
         try:
             await asyncio.to_thread(self._ffmpeg.stdin.write, pcm)
         except BrokenPipeError:
-            log.warning('pi_fm_adv pipe broken')
+            log.warning('PiFmAdv: pipe broken')
             self._closed = True
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+
         if self._ffmpeg.stdin:
-            self._ffmpeg.stdin.close()
+            try:
+                self._ffmpeg.stdin.close()
+            except OSError:
+                pass
+
         await asyncio.to_thread(self._ffmpeg.wait)
         await asyncio.to_thread(self._fm.wait)
+
+        log.info('PiFmAdv sink closed')
