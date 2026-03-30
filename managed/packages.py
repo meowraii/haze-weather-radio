@@ -417,6 +417,8 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
     _lang = lang or 'en-CA'
     operator: dict[str, Any] = config['operator']
     feed = get_feed_info(config, feed_id)
+    callsign = feed.get('callsign') if feed else None
+    frequency = feed['output']['PiFmAdv'].get('frequency') if feed else None
     if feed is None:
         return "Feed not found."
 
@@ -425,34 +427,45 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
 
     sentences: list[str] = []
 
-    prefix = _s(desc, 'prefix')
-    if prefix:
-        sentences.append(str(prefix))
-    else:
-        on_air_name: str = operator.get('on_air_name') or feed['name']
-        rf_cfg = _d(feed, 'rf')
-        callsign_raw = rf_cfg.get('callsign')
-        callsign: Optional[str] = str(callsign_raw) if callsign_raw else None
-        freq_hz_raw = rf_cfg.get('frequency_hz')
-        freq_mhz: Optional[str] = (
-            f"{float(freq_hz_raw) / 1_000_000:.3f}".rstrip('0').rstrip('.')
-            if freq_hz_raw is not None
-            else None
-        )
-        callsign_spelled = " ".join(callsign) if callsign else None
-        if callsign_spelled and freq_mhz:
-            sentences.append(
-                f"You are listening to {on_air_name}, "
-                f"call sign {callsign_spelled}, "
-                f"broadcasting on {freq_mhz} megahertz."
-            )
-        elif callsign_spelled:
-            sentences.append(
-                f"You are listening to {on_air_name}, "
-                f"call sign {callsign_spelled}."
-            )
-        else:
+    operator_name = operator.get('operator_name')
+    on_air_name = operator.get('on_air_name')
+    email = operator.get('email')
+    phone = operator.get('phone')
+
+    email_clean = str(email).strip() if email and str(email) != 'None' else None
+    email_clean = email_clean.replace('.', ' dot ').replace('@', ' at ') if email_clean else None
+
+    phone_clean = str(phone).strip() if phone and str(phone) != 'None' else None
+    phone_clean = re.sub(r'\D', ' ', phone_clean) if phone_clean else None
+
+    if on_air_name:
+        if 'en' in _lang:
             sentences.append(f"You are listening to {on_air_name}.")
+        elif 'fr' in _lang:
+            sentences.append(f"Vous écoutez {on_air_name}.")
+        elif 'es' in _lang:
+            sentences.append(f"Está escuchando {on_air_name}.")
+    if callsign:
+        if 'en' in _lang:
+            sentences.append(f"Callsign {callsign}.")
+        elif 'fr' in _lang:
+            sentences.append(f"Indicatif d'appel {callsign}.")
+        elif 'es' in _lang:
+            sentences.append(f"Indicativo de llamada {callsign}.")
+    if frequency and feed['output']['PiFmAdv'].get('enabled', False) is True:
+        if 'en' in _lang:
+            sentences.append(f"Broadcasting on a frequency of {frequency} megahertz.")
+        elif 'fr' in _lang:
+            sentences.append(f"Diffusion sur une fréquence de {frequency} mégahertz.")
+        elif 'es' in _lang:
+            sentences.append(f"Transmitiendo en una frecuencia de {frequency} megahercios.")
+    if operator_name:
+        if 'en' in _lang:
+            sentences.append(f"This service is operated by {operator_name}.")
+        elif 'fr' in _lang:
+            sentences.append(f"Ce service est opéré par {operator_name}.")
+        elif 'es' in _lang:
+            sentences.append(f"Este servicio es operado por {operator_name}.")
 
     if desc:
         text = _s(desc, 'text')
@@ -461,16 +474,28 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
             sentences.append(str(text))
         if suffix:
             sentences.append(str(suffix))
-
-    contact: list[str] = []
-    email = operator.get('email')
-    phone = operator.get('phone')
-    if email and str(email) != 'None':
-        contact.append(f"email us at {email}")
-    if phone and str(phone) != 'None':
-        contact.append(f"call us at {phone}")
-    if contact:
-        sentences.append(f"If you have comments or concerns, please direct them to {' or '.join(contact)}.")
+    
+    if email_clean and phone_clean:
+        if 'en' in _lang:
+            sentences.append(f"You can contact us by email at {email_clean}, or by phone at {phone_clean}.")
+        elif 'fr' in _lang:
+            sentences.append(f"Vous pouvez nous contacter par email à {email_clean}, ou par téléphone au {phone_clean}.")
+        elif 'es' in _lang:
+            sentences.append(f"Puede contactarnos por correo electrónico a {email_clean}, o por teléfono al {phone_clean}.")
+    elif email_clean and not phone_clean:
+        if 'en' in _lang:
+            sentences.append(f"You can contact us by email at {email_clean}.")
+        elif 'fr' in _lang:
+            sentences.append(f"Vous pouvez nous contacter par email à {email_clean}.")
+        elif 'es' in _lang:
+            sentences.append(f"Puede contactarnos por correo electrónico a {email_clean}.")
+    elif phone_clean and not email_clean:
+        if 'en' in _lang:
+            sentences.append(f"You can contact us by phone at {phone_clean}.")
+        elif 'fr' in _lang:
+            sentences.append(f"Vous pouvez nous contacter par téléphone au {phone_clean}.")
+        elif 'es' in _lang:
+            sentences.append(f"Puede contactarnos por teléfono al {phone_clean}.")
 
     return " ".join(sentences)
 
