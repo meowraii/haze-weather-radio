@@ -38,9 +38,9 @@ playout:
 
 operator:
   on_air_name: "Betteradio Canada"
-  owner: "meowraii"
-  email: ""
-  phone: ""
+  operator_name: "meow raii"
+  email: "meow raii @mist w x .com"
+  phone: "639-872-9088"
 
 wx_on_demand: # haze can accept a POST request from external applications with a location code, request packages, and other parameters to generate on demand packages for that location which is then returned to the requester. if the location code matches one of the feed's locations, it will re-use the data and TTS audio files that it has already generated for that location to create the requested package.
 
@@ -77,7 +77,7 @@ webpanel:
 
 feeds:
   - id: sk-saskatoon
-    name: Saskatoon Regional Broadcast
+    callsign: VDI651
     enabled: true
     timezone: America/Regina
     data_source: eccc # api.weather.gc.ca (ECCC), api.weather.gov (NWS), or api.weather.com (TWC).
@@ -90,12 +90,10 @@ feeds:
 
     description: # for station identification.
       en-CA:
-        prefix: ""
         text: "This is an automated broadcast, servicing the city of Saskatoon with the latest weather alerts and forecasts originating from Environment Canada."
         suffix: "This service is not affiliated with Environment Canada."
 
       fr-CA:
-        prefix: ""
         text: "Ceci est une diffusion automatisée desservant la ville de Saskatoon avec les dernières alertes météorologiques et prévisions provenant d'Environnement Canada."
         suffix: "Ce service n'est pas affilié à Environnement Canada."
     
