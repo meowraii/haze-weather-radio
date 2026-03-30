@@ -18,7 +18,7 @@ _sequences_lock: threading.Lock = threading.Lock()
 playout_sequences: dict[str, list[pathlib.Path]] = {}
 
 _alert_queues_lock: threading.Lock = threading.Lock()
-_alert_queues: dict[str, queue.Queue[tuple[int, pathlib.Path]]] = {}
+_alert_queues: dict[str, queue.Queue[tuple[int, pathlib.Path, str]]] = {}
 
 _runtime_lock: threading.Lock = threading.Lock()
 _runtime_state: dict[str, Any] = {
@@ -27,19 +27,17 @@ _runtime_state: dict[str, Any] = {
     'events': [],
 }
 
-
-def register_alert_queue(feed_id: str) -> queue.Queue[tuple[int, pathlib.Path]]:
+def register_alert_queue(feed_id: str) -> queue.Queue[tuple[int, pathlib.Path, str]]:
     with _alert_queues_lock:
-        q: queue.Queue[tuple[int, pathlib.Path]] = queue.Queue(maxsize=128)
+        q: queue.Queue[tuple[int, pathlib.Path, str]] = queue.Queue(maxsize=128)
         _alert_queues[feed_id] = q
         return q
 
-
-def push_alert(feed_id: str, priority: int, path: pathlib.Path) -> None:
+def push_alert(feed_id: str, priority: int, path: pathlib.Path, identifier: str = '') -> None:
     with _alert_queues_lock:
         q = _alert_queues.get(feed_id)
-    if q is not None:
-        q.put((priority, path))
+        if q is not None:
+            q.put((priority, path, identifier))
 
 
 def update_playout_sequence(feed_id: str, sequence: list[pathlib.Path]) -> None:

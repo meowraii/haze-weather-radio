@@ -7,6 +7,7 @@ import pathlib
 import queue
 import wave
 from typing import Any
+import json
 
 from managed.events import (
     append_runtime_event,
@@ -31,6 +32,36 @@ _PKG_LABELS: dict[str, str] = {
     'eccc_discussion': 'Discussion',
     'geophysical_alert': 'Geophysical Alert',
 }
+
+
+_REGISTRY_PATH = pathlib.Path('data') / 'alertsRegistry.json'
+
+def _write_registry_entry(feed_id: str, identifier: str, alert_path: pathlib.Path) -> None:
+    _REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if _REGISTRY_PATH.exists():
+            with open(_REGISTRY_PATH, encoding='utf-8') as f:
+                registry: list[dict] = json.load(f)
+        else:
+            registry = []
+    except Exception:
+        registry = []
+
+    entry = {
+        'identifier': identifier,
+        'feed_id': feed_id,
+        'aired_at': datetime.datetime.now(datetime.UTC).isoformat(),
+        'path': str(alert_path),
+    }
+
+    if not any(r.get('identifier') == identifier and r.get('feed_id') == feed_id for r in registry):
+        registry.append(entry)
+        try:
+            with open(_REGISTRY_PATH, 'w', encoding='utf-8') as f:
+                json.dump(registry, f, indent=2)
+            log.debug('Registry updated: %s', identifier)
+        except Exception as e:
+            log.error('Failed to write alert registry: %s', e)
 
 def _ensure_silence(feed_id: str) -> pathlib.Path:
     path = pathlib.Path('output') / feed_id / 'silence_1s.wav'
@@ -85,7 +116,7 @@ def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
 
 async def pipe_writer(
     bus: AudioBus,
-    alert_queue: asyncio.PriorityQueue[tuple[int, pathlib.Path]],
+    alert_queue: asyncio.PriorityQueue[tuple[int, pathlib.Path, str]] = asyncio.PriorityQueue(),
     shutdown: asyncio.Event,
     alert_interrupt: asyncio.Event,
     feed_id: str = '',
@@ -131,8 +162,10 @@ async def pipe_writer(
     async def _drain_alerts() -> None:
         while not alert_queue.empty():
             try:
-                _, alert_path = alert_queue.get_nowait()
+                _, alert_path, identifier = alert_queue.get_nowait()
                 await _play(alert_path)
+                if identifier:
+                    _write_registry_entry(feed_id, identifier, alert_path)
             except asyncio.QueueEmpty:
                 break
 
@@ -283,8 +316,8 @@ async def _watch_shutdown(shutdown: asyncio.Event) -> None:
 
 
 async def _drain_thread_alerts(
-    thread_q: queue.Queue[tuple[int, pathlib.Path]],
-    async_q: asyncio.PriorityQueue[tuple[int, pathlib.Path]],
+    thread_q: queue.Queue[tuple[int, pathlib.Path, str]],
+    async_q: asyncio.PriorityQueue[tuple[int, pathlib.Path, str]],
 ) -> bool:
     drained = False
     while True:

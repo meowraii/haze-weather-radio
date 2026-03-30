@@ -300,33 +300,45 @@ def _alert_blocked(alert: CAPAlert, cap_filter: dict[str, Any]) -> tuple[bool, s
     return False, None
 
 
-def cap_event_to_same(event: str) -> str:
-    _, cap_to_same = _load_same_mapping()
-    return cap_to_same.get(event, 'CEM')
+def cap_event_to_same(alert: CAPAlert, event: str) -> str:
+    _, same_map = _load_same_mapping()
+
+    info = alert.infos[0] if alert.infos else None
+    if not info:
+        return "DMO"
+
+    event_codes = info.get("eventCode", [])
+
+    for ec in event_codes:
+        if ec.get("valueName") == "SAME":
+            return ec.get("value", "DMO")
+
+    for ec in event_codes:
+        val = ec.get("value")
+        if val in same_map["naadsToEas"]:
+            return same_map["naadsToEas"][val]
+
+    return "DMO"
 
 
 def _resolve_same_event(alert: CAPAlert) -> str:
     if alert.same_event:
         return alert.same_event
-    return cap_event_to_same(alert.infos[0].event) if alert.infos else 'CEM'
-
+    if alert.infos:
+        return cap_event_to_same(alert, alert.infos[0].event)
+    return 'ADR'
 
 def _same_originator(alert: CAPAlert) -> str:
     info = alert.infos[0] if alert.infos else None
     if not info:
         return "WXR"
-    same_code = _resolve_same_event(alert)
-    wx_codes = {
-        "SVR", "TOR", "FFW", "FLW", "WSW", "BZW", "HUW", "TRW", "TSW", "SSW",
-        "AVW", "DSW", "EQW", "VOW", "WFW", "SPS", "SVS", "HWW", "SMW", "FSW",
-        "IBW", "LSW",
-    }
-    if same_code in wx_codes:
+
+    sender = info.get("senderName", "").lower()
+
+    if any(x in sender for x in ["environment canada", "eccc", "weather"]):
         return "WXR"
-    ev = info.event
-    if ev in ("civilEmerg", "civil", "amber"):
-        return "CIV"
-    return "EAS"
+
+    return "CIV"
 
 
 def _duration_code(alert: CAPAlert) -> str:
