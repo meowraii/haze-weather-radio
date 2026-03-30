@@ -116,9 +116,9 @@ def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
 
 async def pipe_writer(
     bus: AudioBus,
-    alert_queue: asyncio.PriorityQueue[tuple[int, pathlib.Path, str]] = asyncio.PriorityQueue(),
     shutdown: asyncio.Event,
     alert_interrupt: asyncio.Event,
+    alert_queue: asyncio.PriorityQueue[tuple[int, pathlib.Path, str]] = asyncio.PriorityQueue(),
     feed_id: str = '',
     on_air_name: str = '',
     metadata_cb: Any = None,
