@@ -2,6 +2,7 @@
 .vscode/
 data/eccc/*
 data/twc/*
+data/nws/*
 data/alertsRegistry.json
 __pycache__/
 output/*

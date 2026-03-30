@@ -1,116 +1,12 @@
+from __future__ import annotations
 import asyncio
 import base64
 import logging
+import random
 from xml.etree import ElementTree as ET
 from typing import Awaitable, Callable
-from dataclasses import dataclass, field
-
-
-@dataclass(frozen=True, slots=True)
-class CAPResource:
-    description: str
-    mime_type: str
-    uri: str
-    data: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class CAPInfo:
-    language: str
-    event: str
-    urgency: str
-    severity: str
-    certainty: str
-    expires: str
-    headline: str
-    description: str
-    instruction: str
-    same_event: str
-    areas: tuple[str, ...]
-    geocodes: tuple[str, ...]
-    clc_codes: tuple[str, ...]
-    resources: tuple[CAPResource, ...]
-    area_geocodes: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = ()
-    parameters: dict[str, str] = field(default_factory=lambda: {})
-
-
-@dataclass(frozen=True, slots=True)
-class CAPAlert:
-    identifier: str
-    sender: str
-    sent: str
-    status: str
-    scope: str
-    msg_type: str
-    references: str
-    infos: tuple[CAPInfo, ...]
-
-    @property
-    def event(self) -> str:
-        return self.infos[0].event if self.infos else ''
-
-    @property
-    def severity(self) -> str:
-        return self.infos[0].severity if self.infos else ''
-
-    @property
-    def urgency(self) -> str:
-        return self.infos[0].urgency if self.infos else ''
-
-    @property
-    def certainty(self) -> str:
-        return self.infos[0].certainty if self.infos else ''
-
-    @property
-    def headline(self) -> str:
-        return self.infos[0].headline if self.infos else ''
-
-    @property
-    def geocodes(self) -> tuple[str, ...]:
-        return self.infos[0].geocodes if self.infos else ()
-
-    @property
-    def all_geocodes(self) -> tuple[str, ...]:
-        seen: set[str] = set()
-        result: list[str] = []
-        for info in self.infos:
-            for gc in info.geocodes:
-                if gc not in seen:
-                    seen.add(gc)
-                    result.append(gc)
-        return tuple(result)
-
-    @property
-    def clc_codes(self) -> tuple[str, ...]:
-        seen: set[str] = set()
-        result: list[str] = []
-        for info in self.infos:
-            for code in info.clc_codes:
-                if code not in seen:
-                    seen.add(code)
-                    result.append(code)
-        return tuple(result)
-
-    @property
-    def same_event(self) -> str:
-        for info in self.infos:
-            if info.same_event:
-                return info.same_event
-        return ""
-
-    @property
-    def broadcast_immediately(self) -> bool:
-        return any(
-            info.parameters.get("layer:sorem:1.0:broadcast_immediately", "").lower() == "yes"
-            for info in self.infos
-        )
-
-    def info_for_lang(self, lang_prefix: str) -> CAPInfo | None:
-        for info in self.infos:
-            if info.language.startswith(lang_prefix):
-                return info
-        return self.infos[0] if self.infos else None
-
+from dataclasses import dataclass
+from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -118,158 +14,264 @@ NAAD_HOSTS = [
     "streaming1.naad-adna.pelmorex.com",
     "streaming2.naad-adna.pelmorex.com",
 ]
+
 NAAD_PORT = 8080
+
 CAP_NS = "urn:oasis:names:tc:emergency:cap:1.2"
-HEARTBEAT_IDENTIFIER = "Heartbeat"
+_DELIMITER = b"</alert>"
+
 BUFFER_SIZE = 4096
 MAX_BUFFER_SIZE = 4 * 1024 * 1024
-RECONNECT_DELAY_S = 5.0
-READ_TIMEOUT_S = 90.0
 
+READ_TIMEOUT_S = 90
+BASE_RECONNECT_DELAY = 3
+MAX_RECONNECT_DELAY = 30
+
+HEARTBEAT_IDENTIFIER = "Heartbeat"
 
 def _t(tag: str) -> str:
     return f"{{{CAP_NS}}}{tag}"
 
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
-def _parse_info(info: ET.Element) -> CAPInfo:
-    areas: list[str] = []
-    geocodes: list[str] = []
-    clc_codes: list[str] = []
-    resources: list[CAPResource] = []
-    area_geocode_pairs: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+@dataclass(slots=True, frozen=True)
+class CAPResource:
+    description: str
+    mime_type: str
+    uri: str
+    data: bytes
 
-    same_event: str = ""
-    for ec in info.findall(_t("eventCode")):
-        if ec.findtext(_t("valueName")) == "SAME":
-            same_event = (ec.findtext(_t("value")) or "").strip()
-            break
+@dataclass(slots=True, frozen=True)
+class CAPParameter:
+    name: str
+    value: str
 
-    for area in info.findall(_t("area")):
-        desc = area.findtext(_t("areaDesc"), "")
-        if desc:
-            areas.append(desc)
-        area_gcs: list[str] = []
-        area_clcs: list[str] = []
-        for gc in area.findall(_t("geocode")):
-            vn = gc.findtext(_t("valueName"))
-            val = gc.findtext(_t("value"))
-            if not val:
-                continue
-            if vn == "profile:CAP-CP:Location:0.3":
-                geocodes.append(val)
-                area_gcs.append(val)
-            elif vn == "layer:EC-MSC-SMC:1.0:CLC":
-                clc_codes.append(val)
-                area_clcs.append(val)
-        if desc:
-            area_geocode_pairs.append((desc, tuple(area_gcs), tuple(area_clcs)))
+@dataclass(slots=True, frozen=True)
+class CAPArea:
+    description: str
+    geocodes: tuple[str, ...]
+    clc_codes: tuple[str, ...]
+    polygons: tuple[str, ...]
 
-    for res in info.findall(_t("resource")):
-        mime = res.findtext(_t("mimeType"), "")
-        uri = res.findtext(_t("uri"), "")
-        desc = res.findtext(_t("resourceDesc"), "")
-        b64 = res.findtext(_t("derefUri"), "")
-        data = base64.b64decode(b64) if b64 else b""
-        resources.append(CAPResource(description=desc, mime_type=mime, uri=uri, data=data))
+@dataclass(slots=True, frozen=True)
+class CAPInfo:
+    language: str
+    event: str
+    categories: tuple[str, ...]
+    response_types: tuple[str, ...]
+    urgency: str
+    severity: str
+    certainty: str
+    effective: datetime | None
+    onset: datetime | None
+    expires: datetime | None
+    sender_name: str
+    headline: str
+    description: str
+    instruction: str
+    audience: str
+    contact: str
+    web: str
+    areas: tuple[CAPArea, ...]
+    resources: tuple[CAPResource, ...]
+    event_codes: tuple[tuple[str, str], ...]
+    parameters: tuple[CAPParameter, ...]
+    def param_dict(self) -> dict[str, str]:
+        return {p.name.lower(): p.value for p in self.parameters}
 
-    parameters: dict[str, str] = {}
-    for param in info.findall(_t("parameter")):
-        vn = (param.findtext(_t("valueName")) or "").strip()
-        val = (param.findtext(_t("value")) or "").strip()
-        if vn:
-            parameters[vn.lower()] = val
-    
-    log.debug("Parsed CAP info: %s — %s", info.findtext(_t("event"), ""), info.findtext(_t("headline"), ""))
+@dataclass(slots=True, frozen=True)
+class CAPAlert:
+    identifier: str
+    sender: str
+    sent: datetime | None
+    status: str
+    msg_type: str
+    scope: str
+    source: str
+    note: str
+    references: str
+    incidents: str
+    codes: tuple[str, ...]
+    infos: tuple[CAPInfo, ...]
 
-    return CAPInfo(
-        language=info.findtext(_t("language"), "en-CA"),
-        event=info.findtext(_t("event"), ""),
-        urgency=info.findtext(_t("urgency"), ""),
-        severity=info.findtext(_t("severity"), ""),
-        certainty=info.findtext(_t("certainty"), ""),
-        expires=info.findtext(_t("expires"), ""),
-        headline=info.findtext(_t("headline"), ""),
-        description=info.findtext(_t("description"), ""),
-        instruction=info.findtext(_t("instruction"), ""),
-        same_event=same_event,
-        areas=tuple(areas),
-        geocodes=tuple(geocodes),
-        clc_codes=tuple(clc_codes),
-        resources=tuple(resources),
-        area_geocodes=tuple(area_geocode_pairs),
-        parameters=parameters,
+    @property
+    def parameters(self) -> tuple[CAPParameter, ...]:
+        i = self.english or (self.infos[0] if self.infos else None)
+        return i.parameters if i else ()
+
+    def param_dict(self) -> dict[str, str]:
+        return {p.name.lower(): p.value for p in self.parameters}
+
+    def info_for_lang(self, lang: str) -> CAPInfo | None:
+        for i in self.infos:
+            if i.language.lower().startswith(lang.lower()):
+                return i
+        return self.infos[0] if self.infos else None
+
+    @property
+    def english(self) -> CAPInfo | None:
+        return self.info_for_lang("en")
+
+    @property
+    def french(self) -> CAPInfo | None:
+        return self.info_for_lang("fr")
+
+    @property
+    def headline(self) -> str:
+        i = self.english or (self.infos[0] if self.infos else None)
+        return i.headline if i else ""
+
+
+def _parse_resource(el: ET.Element) -> CAPResource:
+    b64 = el.findtext(_t("derefUri"))
+    data = base64.b64decode(b64) if b64 else b""
+
+    return CAPResource(
+        description=el.findtext(_t("resourceDesc"), ""),
+        mime_type=el.findtext(_t("mimeType"), ""),
+        uri=el.findtext(_t("uri"), ""),
+        data=data,
     )
 
+def _parse_area(el: ET.Element) -> CAPArea:
+    geocodes = []
+    clc_codes = []
+    polygons = []
+    for g in el.findall(_t("geocode")):
+        name = g.findtext(_t("valueName"))
+        val = g.findtext(_t("value"))
+        if not val:
+            continue
+        if name == "profile:CAP-CP:Location:0.3":
+            geocodes.append(val)
+        elif name == "layer:EC-MSC-SMC:1.0:CLC":
+            clc_codes.append(val)
+    for p in el.findall(_t("polygon")):
+        if p.text:
+            polygons.append(p.text.strip())
+
+    return CAPArea(
+        description=el.findtext(_t("areaDesc"), ""),
+        geocodes=tuple(geocodes),
+        clc_codes=tuple(clc_codes),
+        polygons=tuple(polygons),
+    )
+
+def _parse_info(el: ET.Element) -> CAPInfo:
+    resources = tuple(_parse_resource(r) for r in el.findall(_t("resource")))
+    areas = tuple(_parse_area(a) for a in el.findall(_t("area")))
+
+    event_codes = tuple(
+        (
+            (ec.findtext(_t("valueName")) or "").strip(),
+            (ec.findtext(_t("value")) or "").strip(),
+        )
+        for ec in el.findall(_t("eventCode"))
+    )
+
+    parameters = tuple(
+        CAPParameter(
+            name=(p.findtext(_t("valueName")) or "").strip(),
+            value=(p.findtext(_t("value")) or "").strip(),
+        )
+        for p in el.findall(_t("parameter"))
+    )
+
+    return CAPInfo(
+        language=el.findtext(_t("language"), "en-CA"),
+        event=el.findtext(_t("event"), ""),
+        categories=tuple(c.text.strip() for c in el.findall(_t("category")) if c.text),
+        response_types=tuple(r.text.strip() for r in el.findall(_t("responseType")) if r.text),
+        urgency=el.findtext(_t("urgency"), ""),
+        severity=el.findtext(_t("severity"), ""),
+        certainty=el.findtext(_t("certainty"), ""),
+        effective=_parse_dt(el.findtext(_t("effective"))),
+        onset=_parse_dt(el.findtext(_t("onset"))),
+        expires=_parse_dt(el.findtext(_t("expires"))),
+        sender_name=el.findtext(_t("senderName"), ""),
+        headline=el.findtext(_t("headline"), ""),
+        description=el.findtext(_t("description"), ""),
+        instruction=el.findtext(_t("instruction"), ""),
+        audience=el.findtext(_t("audience"), ""),
+        contact=el.findtext(_t("contact"), ""),
+        web=el.findtext(_t("web"), ""),
+        areas=areas,
+        resources=resources,
+        event_codes=event_codes,
+        parameters=parameters,
+    )
 
 def parse_cap(raw: bytes) -> CAPAlert | None:
     try:
         root = ET.fromstring(raw)
-    except ET.ParseError as e:
-        log.error("CAP XML parse error: %s", e)
+    except ET.ParseError:
         return None
 
     identifier = root.findtext(_t("identifier"), "")
     sender = root.findtext(_t("sender"), "")
+
     if HEARTBEAT_IDENTIFIER in identifier or HEARTBEAT_IDENTIFIER in sender:
-        log.debug("NAAD heartbeat received")
         return None
 
-    info_elems = root.findall(_t("info"))
-    if not info_elems:
-        log.warning("CAP alert %s has no <info> elements, skipping", identifier)
-        return None
-
-    infos = tuple(_parse_info(el) for el in info_elems)
+    infos = tuple(_parse_info(i) for i in root.findall(_t("info")))
 
     return CAPAlert(
         identifier=identifier,
-        sender=root.findtext(_t("sender"), ""),
-        sent=root.findtext(_t("sent"), ""),
+        sender=sender,
+        sent=_parse_dt(root.findtext(_t("sent"))),
+
         status=root.findtext(_t("status"), ""),
-        scope=root.findtext(_t("scope"), ""),
         msg_type=root.findtext(_t("msgType"), ""),
+        scope=root.findtext(_t("scope"), ""),
+
+        source=root.findtext(_t("source"), ""),
+        note=root.findtext(_t("note"), ""),
         references=root.findtext(_t("references"), ""),
+        incidents=root.findtext(_t("incidents"), ""),
+
+        codes=tuple(c.text or "" for c in root.findall(_t("code"))),
         infos=infos,
     )
 
-
-_DELIMITER = b"</alert>"
-
-
-async def _iter_cap_messages(reader: asyncio.StreamReader):
+async def _iter_messages(reader: asyncio.StreamReader):
     buf = b""
     while True:
         chunk = await asyncio.wait_for(reader.read(BUFFER_SIZE), timeout=READ_TIMEOUT_S)
+
         if not chunk:
-            raise ConnectionResetError("NAAD connection closed by remote")
+            raise ConnectionResetError("Connection closed")
+
         buf += chunk
+
         if len(buf) > MAX_BUFFER_SIZE:
-            log.error("NAAD buffer exceeded %d bytes without a complete message, resetting", MAX_BUFFER_SIZE)
+            log.warning("Buffer overflow, resetting")
             buf = b""
             continue
+
         while _DELIMITER in buf:
             msg, buf = buf.split(_DELIMITER, 1)
-            msg = msg.strip() + _DELIMITER
-            if msg:
-                yield msg
+            yield msg.strip() + _DELIMITER
 
 
-async def _run_connection(
-    host: str,
-    on_alert: Callable[[CAPAlert], Awaitable[None]],
-    shutdown: asyncio.Event,
-) -> None:
-    log.info("Connecting to NAAD at %s:%d", host, NAAD_PORT)
+async def _run_connection(host: str, cb, shutdown):
     reader, writer = await asyncio.open_connection(host, NAAD_PORT)
-    log.info("Connected to %s", host)
+
     try:
-        async for raw in _iter_cap_messages(reader):
+        async for raw in _iter_messages(reader):
             if shutdown.is_set():
                 break
+
             alert = parse_cap(raw)
             if alert:
-                log.info("CAP alert: %s — %s", alert.event, alert.headline)
-                await on_alert(alert)
+                log.info("Alert: %s", alert.headline)
+                await cb(alert)
+
     finally:
         writer.close()
         try:
@@ -281,17 +283,27 @@ async def _run_connection(
 async def naad_listener(
     on_alert: Callable[[CAPAlert], Awaitable[None]],
     shutdown: asyncio.Event,
-) -> None:
-    host_index = 0
+):
+    attempt = 0
+
     while not shutdown.is_set():
-        host = NAAD_HOSTS[host_index % len(NAAD_HOSTS)]
+        host = NAAD_HOSTS[attempt % len(NAAD_HOSTS)]
+
         try:
             await _run_connection(host, on_alert, shutdown)
-        except (OSError, ConnectionResetError, TimeoutError, asyncio.TimeoutError) as e:
-            log.warning("NAAD connection lost (%s): %s — reconnecting in %ds", host, e, RECONNECT_DELAY_S)
-            host_index += 1
-        except asyncio.CancelledError:
-            break
+            attempt = 0
 
-        if not shutdown.is_set():
-            await asyncio.sleep(RECONNECT_DELAY_S)
+        except Exception as e:
+            delay = min(MAX_RECONNECT_DELAY, BASE_RECONNECT_DELAY * 2 ** attempt)
+            delay += random.uniform(0, 2)
+
+            log.warning("Reconnect in %.1fs (%s)", delay, e)
+
+            try:
+                await asyncio.wait_for(shutdown.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
+            except asyncio.CancelledError:
+                break
+
+            attempt += 1
