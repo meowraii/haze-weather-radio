@@ -20,6 +20,7 @@ I, the developer of Haze Weather Radio, disclaim any responsibility for misuse o
 - Integration with official CAP feeds such as NAADS (Alert Ready/NPAS) for real-time weather alerts.
 
 # Planned Features
+- Make the web interface not look vibecoded by Claude.
 - Support for additional data sources such as NOAA, TWC, and more.
 - Support for additional TTS engines such as PyTTSx3, eSpeak NG, Maki, and more.
 - Package generation on demand via POST request with specified parameters such as location code, feed ID, and package type.
