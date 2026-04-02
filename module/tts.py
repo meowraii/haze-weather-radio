@@ -1,65 +1,457 @@
+import io
+import importlib
+import json
 import logging
 import os
 import pathlib
 import queue
 import re
 import shutil
+import struct
 import subprocess
+import tempfile
 import wave
 from collections import OrderedDict
-from typing import Any, Optional, cast
+from typing import Any, Generator, Optional, Protocol, cast
 from urllib.parse import unquote, urlparse
 
-from piper import PiperVoice, SynthesisConfig  # type: ignore[import-untyped]
-
-from managed.events import shutdown_event, tts_queue
-from module.dictionary import apply as apply_dictionary
+import numpy as np
+import yaml
 
 log = logging.getLogger(__name__)
 
+
+def load_config(config_path: str | None = None) -> dict[str, Any]:
+    selected_path = config_path or os.environ.get('CONFIG_PATH')
+    if selected_path:
+        config_file = pathlib.Path(selected_path)
+    else:
+        config_file = pathlib.Path(__file__).parent.parent / 'config.yaml'
+    with open(config_file, encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+
+_MODULE_CONFIG = load_config()
+SAMPLE_RATE = _MODULE_CONFIG.get('playout', {}).get('sample_rate', 16000)
+CHANNELS = _MODULE_CONFIG.get('playout', {}).get('channels', 1)
+BYTES_PER_SAMPLE = 2
+
+_DICT_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'dictionary.json'
+_DICT_MB_RE = re.compile(r'(\d+)\s+MB\b')
+_loaded_dictionary: dict[str, dict[str, str]] | None = None
+_compiled_dictionary: dict[str, list[tuple[re.Pattern[str], str]]] = {}
+
+
+def _load_dictionary() -> dict[str, dict[str, str]]:
+    global _loaded_dictionary
+    if _loaded_dictionary is None:
+        with open(_DICT_PATH, encoding='utf-8') as f:
+            _loaded_dictionary = json.load(f)
+    assert _loaded_dictionary is not None
+    return _loaded_dictionary
+
+
+def _dictionary_entries(lang: str) -> list[tuple[str, str]]:
+    data = _load_dictionary()
+    lang_prefix = lang[:2] + '-*'
+    combined: dict[str, str] = {}
+    for key, entries in data.items():
+        if key == lang_prefix:
+            combined.update(entries)
+        elif key == 'en-*' and lang_prefix == 'en-*':
+            combined.update(entries)
+    if not combined:
+        combined.update(data.get('en-*', {}))
+    return list(combined.items())
+
+
+def _compiled_entries(lang: str) -> list[tuple[re.Pattern[str], str]]:
+    if lang not in _compiled_dictionary:
+        entries = _dictionary_entries(lang)
+        entries.sort(key=lambda item: len(item[0]), reverse=True)
+        _compiled_dictionary[lang] = [
+            (re.compile(r'(?<![A-Za-z0-9])' + re.escape(term) + r'(?![A-Za-z0-9])'), replacement)
+            for term, replacement in entries
+        ]
+    return _compiled_dictionary[lang]
+
+
+def apply_dictionary(text: str, lang: str = 'en-CA') -> str:
+    text = _DICT_MB_RE.sub(r'\1 millibars', text)
+    for pattern, replacement in _compiled_entries(lang):
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def apply(text: str, lang: str = 'en-CA') -> str:
+    return apply_dictionary(text, lang)
+
+
+def generate_package(
+    config: dict[str, Any],
+    feed_id: str,
+    package_type: str,
+    weather_data: Optional[dict[str, Any]] = None,
+) -> str:
+    from managed.packages import climate_summary_package, current_conditions_package, date_time_package, station_id
+
+    feed = next((f for f in config.get('feeds', []) if f['id'] == feed_id), None)
+    lang = feed.get('language', 'en-CA') if feed else 'en-CA'
+    tz = feed.get('timezone', 'UTC') if feed else 'UTC'
+
+    if package_type == 'date_time':
+        return date_time_package(tz, lang)
+    if package_type == 'station_id':
+        return station_id(config, feed_id, lang)
+    if package_type == 'current_conditions':
+        loc_name = None
+        if feed:
+            for block in feed.get('locations', []):
+                if not isinstance(block, dict):
+                    continue
+                for entry in block.get('observationLocations', []):
+                    if isinstance(entry, dict):
+                        loc_name = entry.get('name_override') or entry.get('name')
+                        break
+                if loc_name:
+                    break
+        return current_conditions_package(weather_data, loc_name, lang)
+    if package_type == 'climate_summary':
+        loc_name = None
+        if feed:
+            for block in feed.get('locations', []):
+                if not isinstance(block, dict):
+                    continue
+                for entry in block.get('climateLocations', []):
+                    if isinstance(entry, dict):
+                        loc_name = entry.get('name_override') or entry.get('name')
+                        break
+                if loc_name:
+                    break
+        return climate_summary_package(weather_data, loc_name, lang)
+    return ''
+
+available_providers = []
+
+try:
+    pyttsx3 = importlib.import_module('pyttsx3')
+except ImportError:
+    log.warning("pyttsx3 not available, pyttsx3 TTS provider will be disabled.")
+    pyttsx3 = None
+
+try:
+    _piper_module = importlib.import_module('piper')
+    PiperVoice = _piper_module.PiperVoice
+    SynthesisConfig = _piper_module.SynthesisConfig
+    available_providers.append('piper')
+except ImportError:
+    log.warning("Piper not available, Piper TTS provider will be disabled.")
+    PiperVoice = None
+    SynthesisConfig = None
+
+from managed.events import shutdown_event, tts_queue
+
+
 _FILE_URI_RE = re.compile(r'^file://', re.IGNORECASE)
-
 _VOICE_CACHE_MAX = 2
-_voice_cache: OrderedDict[str, PiperVoice] = OrderedDict()
+_voice_cache: OrderedDict[str, Any] = OrderedDict()
+
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
 
 
-def _resolve_file_uri(uri: str) -> pathlib.Path | None:
-    parsed = urlparse(uri.strip())
-    if parsed.scheme.lower() != 'file':
+def _resample_pcm(pcm_s16le: bytes, from_sr: int) -> bytes:
+    if from_sr == SAMPLE_RATE:
+        return pcm_s16le
+    samples = np.frombuffer(pcm_s16le, dtype=np.int16).astype(np.float32)
+    target_len = int(round(len(samples) * SAMPLE_RATE / from_sr))
+    resampled = np.interp(
+        np.linspace(0, len(samples) - 1, target_len),
+        np.arange(len(samples)),
+        samples,
+    ).astype(np.float32)
+    return np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
+
+
+def _wav_to_pcm_s16le(wav_bytes: bytes) -> tuple[bytes, int]:
+    buf = io.BytesIO(wav_bytes)
+    with wave.open(buf, 'rb') as w:
+        n_channels = w.getnchannels()
+        src_sr = w.getframerate()
+        raw = w.readframes(w.getnframes())
+    samples = np.frombuffer(raw, dtype=np.int16)
+    if n_channels == 2 and CHANNELS == 1:
+        samples = samples.reshape(-1, 2).mean(axis=1).astype(np.int16)
+    elif n_channels == 1 and CHANNELS == 2:
+        samples = np.column_stack([samples, samples]).ravel()
+    return samples.tobytes(), src_sr
+
+
+def _to_system_pcm(wav_bytes: bytes) -> bytes | None:
+    try:
+        raw, src_sr = _wav_to_pcm_s16le(wav_bytes)
+        return _resample_pcm(raw, src_sr)
+    except Exception as e:
+        log.error("WAV decode failed: %s", e)
         return None
-    file_path = pathlib.Path(unquote(parsed.path))
-    if not file_path.is_file():
-        log.error("file:// URI target does not exist: %s", file_path)
+
+
+def _decode_file_pcm(file_path: pathlib.Path) -> bytes | None:
+    try:
+        proc = subprocess.run(
+            ['ffmpeg', '-loglevel', 'error', '-i', str(file_path),
+             '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
+             'pipe:1'],
+            capture_output=True, check=True,
+        )
+        return proc.stdout if proc.stdout else None
+    except Exception as e:
+        log.error("Failed to decode %s: %s", file_path.name, e)
         return None
-    return file_path
 
 
-def _transcode_to_wav(src: pathlib.Path, dst: pathlib.Path) -> bool:
+def _transcode(src: pathlib.Path, dst: pathlib.Path) -> bool:
     try:
         subprocess.run(
-            ['ffmpeg', '-y', '-loglevel', 'error',
-             '-i', str(src),
-             '-ar', '22050', '-ac', '1', '-sample_fmt', 's16',
-             str(dst)],
+            ['ffmpeg', '-y', '-loglevel', 'error', '-i', str(src),
+             '-ar', str(SAMPLE_RATE),
+             '-ac', str(CHANNELS),
+             '-sample_fmt', 's16', str(dst)],
             check=True,
         )
         return True
     except Exception as e:
-        log.error("Failed to transcode %s: %s", src, e)
+        log.error("Transcode failed %s: %s", src.name, e)
         return False
 
-
-def _load_voice(model_path: str, config_path: Optional[str] = None) -> PiperVoice:
+def _load_piper_voice(model_path: str, config_path: Optional[str] = None) -> Any:
     if model_path in _voice_cache:
         _voice_cache.move_to_end(model_path)
         return _voice_cache[model_path]
-    loaded = PiperVoice.load(model_path, config_path=config_path)
+    if PiperVoice is None:
+        raise RuntimeError('Piper not available')
+    loaded = cast(Any, PiperVoice).load(model_path, config_path=config_path)
     _voice_cache[model_path] = loaded
-    _voice_cache.move_to_end(model_path)
-    while len(_voice_cache) > _VOICE_CACHE_MAX:
+    if len(_voice_cache) > _VOICE_CACHE_MAX:
         _voice_cache.popitem(last=False)
     return loaded
 
+
+def _resolve_piper_config(ctx: dict) -> dict | None:
+    tts_cfg = ctx['config'].get('tts', {})
+    lang_map = tts_cfg.get('lang', {}).get(ctx['lang'], {}).get('backend', {}).get('piper', {})
+    voice_type = ctx['voice'] if ctx['voice'] in ('male', 'female') else 'male'
+    v_cfg = lang_map.get(voice_type)
+    if not isinstance(v_cfg, dict):
+        v_cfg = lang_map.get('male') if isinstance(lang_map.get('male'), dict) else lang_map.get('female')
+    if not isinstance(v_cfg, dict) or not v_cfg.get('model'):
+        return None
+    return v_cfg
+
+
+def _piper_spec(ctx: dict, v_cfg: dict) -> Any:
+    global_cfg = ctx['config'].get('tts', {}).get('piper', {})
+    if SynthesisConfig is None:
+        raise RuntimeError('Piper not available')
+    return cast(Any, SynthesisConfig)(
+        speaker_id=int(v_cfg.get('speaker', global_cfg.get('speaker', 0))),
+        volume=1.5,
+        length_scale=0.95,
+        noise_scale=0.75,
+        noise_w_scale=0.75,
+        normalize_audio=True,
+    )
+
+
+def _piper_synthesize_wav_bytes(text: str, ctx: dict) -> bytes | None:
+    v_cfg = _resolve_piper_config(ctx)
+    if not v_cfg:
+        return None
+    try:
+        voice = _load_piper_voice(v_cfg['model'], v_cfg.get('config'))
+        spec = _piper_spec(ctx, v_cfg)
+        chunks = list(cast(Any, voice).synthesize(text, syn_config=spec))
+        if not chunks:
+            return None
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as wf:
+            first = chunks[0]
+            wf.setframerate(first.sample_rate)
+            wf.setsampwidth(first.sample_width)
+            wf.setnchannels(first.sample_channels)
+            for chunk in chunks:
+                wf.writeframes(chunk.audio_int16_bytes)
+        return buf.getvalue()
+    except Exception as e:
+        log.error("Piper synthesis failed: %s", e)
+        return None
+
+
+def _chunk_to_system_pcm(audio_chunk: Any) -> bytes:
+    raw = bytes(audio_chunk.audio_int16_bytes)
+    samples = np.frombuffer(raw, dtype=np.int16)
+    sample_channels = int(getattr(audio_chunk, 'sample_channels', 1) or 1)
+    sample_rate = int(getattr(audio_chunk, 'sample_rate', SAMPLE_RATE) or SAMPLE_RATE)
+    if sample_channels == 2 and CHANNELS == 1:
+        samples = samples.reshape(-1, 2).mean(axis=1).astype(np.int16)
+    elif sample_channels == 1 and CHANNELS == 2:
+        samples = np.column_stack([samples, samples]).ravel().astype(np.int16)
+    return _resample_pcm(samples.tobytes(), sample_rate)
+
+
+def _piper_stream_pcm(text: str, ctx: dict) -> Generator[bytes, None, None]:
+    """Yield s16le PCM chunks sentence-by-sentence. First chunk arrives within
+    ~one sentence of synthesis latency (~200 ms typical)."""
+    v_cfg = _resolve_piper_config(ctx)
+    if not v_cfg:
+        return
+    try:
+        voice = _load_piper_voice(v_cfg['model'], v_cfg.get('config'))
+        spec = _piper_spec(ctx, v_cfg)
+        for audio_chunk in cast(Any, voice).synthesize(text, syn_config=spec):
+            pcm = _chunk_to_system_pcm(audio_chunk)
+            if pcm:
+                yield pcm
+    except Exception as e:
+        log.error("Piper stream failed: %s", e)
+
+
+def _provide_piper_pcm(text: str, ctx: dict) -> bytes | None:
+    chunks = list(_piper_stream_pcm(text, ctx))
+    return b''.join(chunks) if chunks else None
+
+
+def _provide_pyttsx3_pcm(text: str, ctx: dict) -> bytes | None:
+    if pyttsx3 is None:
+        return None
+    cfg = ctx['config'].get('tts', {}).get('pyttsx3', {})
+    if not cfg.get('enabled'):
+        return None
+    try:
+        engine = pyttsx3.init()
+        if cfg.get('rate'):
+            engine.setProperty('rate', cfg['rate'])
+        if cfg.get('volume'):
+            engine.setProperty('volume', cfg['volume'])
+        fd, tmp_path = tempfile.mkstemp(suffix='.wav')
+        os.close(fd)
+        engine.save_to_file(text, tmp_path)
+        engine.runAndWait()
+        pcm = _decode_file_pcm(pathlib.Path(tmp_path))
+        pathlib.Path(tmp_path).unlink(missing_ok=True)
+        return pcm
+    except Exception as e:
+        log.error("Pyttsx3 PCM provider failed: %s", e)
+        return None
+
+
+PCM_PROVIDERS: dict[str, Any] = {
+    'piper': _provide_piper_pcm,
+    'pyttsx3': _provide_pyttsx3_pcm,
+}
+
+_PCM_STREAM_PROVIDERS: dict[str, Any] = {
+    'piper': _piper_stream_pcm,
+}
+
+
+def synthesize_pcm(
+    config: dict[str, Any],
+    text: str,
+    lang: str = 'en-CA',
+    voice: Optional[str] = None,
+) -> bytes | None:
+    return b''.join(synthesize_pcm_stream(config, text, lang, voice)) or None
+
+
+def synthesize_pcm_stream(
+    config: dict[str, Any],
+    text: str,
+    lang: str = 'en-CA',
+    voice: Optional[str] = None,
+) -> Generator[bytes, None, None]:
+    """Yield s16le PCM chunks as they are synthesized, one per sentence.
+    File URI lines are yielded whole after ffmpeg decode."""
+    ctx = {'config': config, 'lang': lang, 'voice': voice}
+    fallback_order = config.get('tts', {}).get('fallback_order', ['piper'])
+
+    for line in text.strip().split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        if _FILE_URI_RE.match(line):
+            file_path = pathlib.Path(unquote(urlparse(line).path))
+            pcm = _decode_file_pcm(file_path)
+            if pcm:
+                yield pcm
+        else:
+            clean = apply_dictionary(line, lang)
+            for provider_name in fallback_order:
+                stream_fn = _PCM_STREAM_PROVIDERS.get(provider_name)
+                if stream_fn:
+                    yielded = False
+                    for chunk in stream_fn(clean, ctx):
+                        yield chunk
+                        yielded = True
+                    if yielded:
+                        break
+                else:
+                    batch_fn = PCM_PROVIDERS.get(provider_name)
+                    if batch_fn:
+                        pcm = batch_fn(clean, ctx)
+                        if pcm:
+                            yield pcm
+                            break
+
+
+def _provide_piper(text: str, ctx: dict, out: pathlib.Path) -> bool:
+    wav_bytes = _piper_synthesize_wav_bytes(text, ctx)
+    if not wav_bytes:
+        return False
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(wav_bytes)
+    raw_path = out.with_suffix('.bin.wav')
+    out.rename(raw_path)
+    success = _transcode(raw_path, out)
+    raw_path.unlink(missing_ok=True)
+    return success
+
+
+def get_available_pyttsx3_voices() -> list[dict[str, Any]]:
+    if pyttsx3 is None:
+        return []
+    try:
+        engine = pyttsx3.init()
+        voices = engine.getProperty('voices')
+        return [{'id': v.id, 'name': v.name, 'lang': v.languages} for v in voices]
+    except Exception as e:
+        log.error("Failed to get pyttsx3 voices: %s", e)
+        return []
+
+def _provide_pyttsx3(text: str, ctx: dict, out: pathlib.Path) -> bool:
+    if pyttsx3 is None: return False
+    cfg = ctx['config'].get('tts', {}).get('pyttsx3', {})
+    if not cfg.get('enabled'): return False
+
+    try:
+        engine = pyttsx3.init()
+        if cfg.get('rate'): engine.setProperty('rate', cfg['rate'])
+        if cfg.get('volume'): engine.setProperty('volume', cfg['volume'])
+        
+        raw_tmp = out.with_suffix('.bin.wav')
+        engine.save_to_file(text, str(raw_tmp))
+        engine.runAndWait()
+        
+        success = _transcode(raw_tmp, out)
+        raw_tmp.unlink(missing_ok=True)
+        return success
+    except Exception as e:
+        log.error("Pyttsx3 provider failed: %s", e)
+        return False
+
+PROVIDERS = {
+    'piper': _provide_piper,
+    'pyttsx3': _provide_pyttsx3
+}
 
 def synthesize(
     config: dict[str, Any],
@@ -69,204 +461,90 @@ def synthesize(
     lang: str = 'en-CA',
     voice: Optional[str] = None,
 ) -> Optional[pathlib.Path]:
+
     out_dir = pathlib.Path("output") / feed_id / lang
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{package_id}.wav"
-    tmp_path = out_dir / f"{package_id}.tmp.wav"
+    final_path = out_dir / f"{package_id}.wav"
+    
+    segments = []
+    for line in text.strip().split('\n'):
+        line = line.strip()
+        if not line: continue
+        kind = 'file' if _FILE_URI_RE.match(line) else 'text'
+        segments.append((kind, line))
 
-    stripped = text.strip()
-    if _FILE_URI_RE.match(stripped) and '\n' not in stripped:
-        src = _resolve_file_uri(stripped)
-        if src is None:
-            return None
-        if not _transcode_to_wav(src, tmp_path):
-            return None
-        os.replace(str(tmp_path), str(out_path))
-        return out_path
+    if not segments: return None
 
-    segments = _split_segments(text)
-    has_file = any(kind == 'file' for kind, _ in segments)
-
-    if has_file:
-        return _synthesize_mixed(config, segments, feed_id, package_id, lang, voice, out_path, tmp_path)
-
-    return _synthesize_text(config, text, feed_id, package_id, lang, voice, out_path, tmp_path)
-
-
-def _split_segments(text: str) -> list[tuple[str, str]]:
-    segments: list[tuple[str, str]] = []
-    text_parts: list[str] = []
-
-    for line in text.split('\n'):
-        line_stripped = line.strip()
-        if _FILE_URI_RE.match(line_stripped):
-            if text_parts:
-                segments.append(('text', '\n'.join(text_parts)))
-                text_parts = []
-            segments.append(('file', line_stripped))
-        else:
-            text_parts.append(line)
-
-    if text_parts:
-        combined = '\n'.join(text_parts).strip()
-        if combined:
-            segments.append(('text', combined))
-
-    return segments
-
-
-def _synthesize_mixed(
-    config: dict[str, Any],
-    segments: list[tuple[str, str]],
-    feed_id: str,
-    package_id: str,
-    lang: str,
-    voice: Optional[str],
-    out_path: pathlib.Path,
-    tmp_path: pathlib.Path,
-) -> Optional[pathlib.Path]:
-    part_paths: list[pathlib.Path] = []
-    part_dir = out_path.parent / f".{package_id}_parts"
+    part_dir = out_dir / f".{package_id}_parts"
     part_dir.mkdir(parents=True, exist_ok=True)
+    processed_parts = []
+
+    ctx = {'config': config, 'lang': lang, 'voice': voice}
+    fallback_order = config.get('tts', {}).get('fallback_order', ['piper'])
 
     try:
         for i, (kind, content) in enumerate(segments):
-            part_path = part_dir / f"seg_{i:03d}.wav"
+            part_path = part_dir / f"{i}.wav"
+            
             if kind == 'file':
-                src = _resolve_file_uri(content)
-                if src is None:
-                    continue
-                if not _transcode_to_wav(src, part_path):
-                    continue
-                part_paths.append(part_path)
+                file_path = pathlib.Path(unquote(urlparse(content).path))
+                if _transcode(file_path, part_path):
+                    processed_parts.append(part_path)
             else:
-                result = _synthesize_text(
-                    config, content, feed_id,
-                    f"{package_id}_seg{i}", lang, voice,
-                    part_path, part_dir / f"seg_{i:03d}.tmp.wav",
-                )
-                if result:
-                    part_paths.append(result)
 
-        if not part_paths:
-            return None
+                clean_text = apply_dictionary(content, lang)
+                for provider_name in fallback_order:
+                    if provider_name in PROVIDERS and PROVIDERS[provider_name](clean_text, ctx, part_path):
+                        processed_parts.append(part_path)
+                        break
 
-        if len(part_paths) == 1:
-            shutil.copy2(str(part_paths[0]), str(tmp_path))
+        if not processed_parts: return None
+
+        if len(processed_parts) == 1:
+            _transcode(processed_parts[0], final_path)
         else:
-            concat_list = part_dir / "concat.txt"
-            concat_list.write_text(
-                '\n'.join(f"file '{p.resolve()}'" for p in part_paths),
-                encoding='utf-8',
-            )
-            try:
-                subprocess.run(
-                    ['ffmpeg', '-y', '-loglevel', 'error',
-                     '-f', 'concat', '-safe', '0',
-                     '-i', str(concat_list),
-                     '-ar', '22050', '-ac', '1', '-sample_fmt', 's16',
-                     str(tmp_path)],
-                    check=True,
-                )
-            except Exception as e:
-                log.error("Failed to concat segments for %s/%s: %s", feed_id, package_id, e)
+            inputs = []
+            filter_str = ""
+            for i, p in enumerate(processed_parts):
+                inputs.extend(['-i', str(p)])
+
+                filter_str += f"[{i}:a]aresample={SAMPLE_RATE},pan={'stereo|c0=c0|c1=c0' if CHANNELS==2 else 'mono|c0=c0'}[a{i}];"
+            
+            filter_str += "".join([f"[a{i}]" for i in range(len(processed_parts))])
+            filter_str += f"concat=n={len(processed_parts)}:v=0:a=1[outa]"
+            
+            cmd = ['ffmpeg', '-y', '-loglevel', 'error'] + inputs + [
+                '-filter_complex', filter_str,
+                '-map', '[outa]',
+                '-ac', str(CHANNELS),
+                '-ar', str(SAMPLE_RATE),
+                '-sample_fmt', 's16',
+                str(final_path)
+            ]
+            proc = subprocess.run(cmd, capture_output=True)
+
+            if proc.returncode != 0 or not final_path.exists():
+                log.error("FFmpeg concat failed: %s", proc.stderr.decode(errors="ignore"))
                 return None
 
-        os.replace(str(tmp_path), str(out_path))
-        return out_path
     finally:
         shutil.rmtree(part_dir, ignore_errors=True)
 
-
-def _synthesize_text(
-    config: dict[str, Any],
-    text: str,
-    feed_id: str,
-    package_id: str,
-    lang: str = 'en-CA',
-    voice: Optional[str] = None,
-    out_path: pathlib.Path | None = None,
-    tmp_path: pathlib.Path | None = None,
-) -> Optional[pathlib.Path]:
-    tts_cfg = config.get('tts', {})
-    global_piper: dict[str, Any] = tts_cfg.get('piper', {})
-
-    if not global_piper.get('enabled', True):
-        log.warning("TTS is disabled")
-        return None
-
-    lang_piper: dict[str, Any] = (
-        tts_cfg.get('lang', {})
-        .get(lang, {})
-        .get('backend', {})
-        .get('piper', {})
-    )
-
-    if voice in ('male', 'female'):
-        preferred = lang_piper.get(voice)
-        voice_cfg_raw: Any = preferred if isinstance(preferred, dict) else (
-            lang_piper.get('male') or lang_piper.get('female')
-        )
-    else:
-        voice_cfg_raw = lang_piper.get('male') or lang_piper.get('female')
-    if not isinstance(voice_cfg_raw, dict):
-        log.error("No voice configuration found for language %s", lang)
-        return None
-    voice_cfg = cast(dict[str, Any], voice_cfg_raw)
-
-    model_path: Optional[str] = voice_cfg.get('model')
-    config_path: Optional[str] = voice_cfg.get('config')
-    if not model_path:
-        log.error("No model path for language %s", lang)
-        return None
-
-    try:
-        voice = _load_voice(model_path, config_path)
-    except Exception as e:
-        log.error("Failed to load piper voice %s: %s", model_path, e)
-        return None
-
-    speaker_id_raw = voice_cfg.get('speaker', global_piper.get('speaker', 0))
-    speaker_id: Optional[int] = int(speaker_id_raw) if speaker_id_raw is not None else None
-
-    syn_config = SynthesisConfig(
-        speaker_id=speaker_id,
-        length_scale=global_piper.get('length_scale', 1.0),
-        noise_scale=global_piper.get('noise_scale', 0.667),
-        noise_w_scale=global_piper.get('noise_w', 0.8),
-    )
-
-    text = apply_dictionary(text, lang)
-
-    if out_path is None or tmp_path is None:
-        out_dir = pathlib.Path("output") / feed_id / lang
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_path or (out_dir / f"{package_id}.wav")
-        tmp_path = tmp_path or (out_dir / f"{package_id}.tmp.wav")
-
-    try:
-        with wave.open(str(tmp_path), 'wb') as wav_file:
-            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
-        os.replace(str(tmp_path), str(out_path))
-    except Exception as e:
-        log.error("Synthesis failed for %s/%s: %s", feed_id, package_id, e)
-        return None
-
-    return out_path
-
+    return final_path if final_path.exists() else None
 
 def tts_thread_worker(config: dict[str, Any]) -> None:
     while not shutdown_event.is_set():
         try:
             item = tts_queue.get(timeout=1)
+            if item is None: break
+            
+            feed_id, pkg_id, text, lang, *rest = item
+            voice = rest[0] if rest else None
+            
+            log.info('[%s/%s] Synthesizing: %s', feed_id, lang, pkg_id)
+            if synthesize(config, text, feed_id, pkg_id, lang, voice):
+                log.debug('Completed %s', pkg_id)
+                
+            tts_queue.task_done()
         except queue.Empty:
             continue
-        if item is None:
-            break
-        feed_id, pkg_id, text, lang, *rest = item
-        voice: Optional[str] = rest[0] if rest else None
-        log.info('[%s/%s] Synthesizing: %s', feed_id, lang, pkg_id)
-        out = synthesize(config, text, feed_id, pkg_id, lang, voice)
-        if out:
-            log.debug('[%s/%s] Wrote %s', feed_id, lang, out)
-        tts_queue.task_done()

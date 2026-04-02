@@ -1,15 +1,14 @@
-import hashlib
 import json
 import logging
 import os
 import pathlib
 from typing import Any
 
-from managed.events import data_ready, initial_synthesis_done, read_data_pool, shutdown_event, tts_queue, update_playout_sequence
-from module.tts import synthesize
+from managed.events import PlayableItem, data_ready, initial_synthesis_done, read_data_pool, shutdown_event, update_playout_sequence
 from managed.packages import (
     Package_Config,
     alerts_package,
+    climate_summary_package,
     current_conditions_package,
     date_time_package,
     eccc_discussion_package,
@@ -24,11 +23,56 @@ _REGISTRY_PATH = pathlib.Path(__file__).parent.parent / 'data' / 'alertsRegistry
 
 log = logging.getLogger(__name__)
 
-_last_text_hash: dict[str, str] = {}
 _bulletins_cache: list[Any] = []
 _bulletins_cached_mtime: float = -1.0
 _registry_cache: list[Any] = []
 _registry_cached_mtime: float = -1.0
+
+def _observation_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
+    locations: list[dict[str, Any]] = []
+    for block in feed.get('locations', []):
+        if not isinstance(block, dict):
+            continue
+        for entry in block.get('observationLocations', []):
+            if isinstance(entry, dict):
+                locations.append(entry)
+    return locations
+
+def _forecast_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
+    locations: list[dict[str, Any]] = []
+    for block in feed.get('locations', []):
+        if not isinstance(block, dict):
+            continue
+        for entry in block.get('forecastLocations', []):
+            if isinstance(entry, dict):
+                locations.append(entry)
+    return locations
+
+def _climate_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
+    locations: list[dict[str, Any]] = []
+    for block in feed.get('locations', []):
+        if not isinstance(block, dict):
+            continue
+        for entry in block.get('climateLocations', []):
+            if isinstance(entry, dict):
+                locations.append(entry)
+    return locations
+
+
+def _location_label(loc: dict[str, Any], fallback_id: str | None = None) -> str | None:
+    return loc.get('name_override') or loc.get('name') or fallback_id
+
+
+def _forecast_name(loc: dict[str, Any]) -> str | None:
+    return loc.get('name_override') or loc.get('name')
+
+
+def _current_conditions_name(loc: dict[str, Any]) -> str | None:
+    return loc.get('name_override') or loc.get('name')
+
+
+def _climate_name(loc: dict[str, Any]) -> str | None:
+    return loc.get('name_override') or loc.get('name')
 
 
 def _get_bulletins_mtime() -> float:
@@ -36,15 +80,6 @@ def _get_bulletins_mtime() -> float:
         return os.path.getmtime(_BULLETINS_PATH)
     except OSError:
         return 0.0
-
-
-def _needs_synthesis(pkg_id: str, feed_id: str, lang: str, text: str) -> bool:
-    key = f"{feed_id}:{lang}:{pkg_id}"
-    return _last_text_hash.get(key) != hashlib.md5(text.encode()).hexdigest()
-
-
-def _mark_synthesized(pkg_id: str, feed_id: str, lang: str, text: str) -> None:
-    _last_text_hash[f"{feed_id}:{lang}:{pkg_id}"] = hashlib.md5(text.encode()).hexdigest()
 
 
 def _load_bulletins() -> list[Any]:
@@ -100,16 +135,11 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
     else:
         languages = [feed.get('language', 'en-CA')]
 
-    locations = feed.get('locations', [])
-    primary_loc = next(
-        (loc for loc in locations if isinstance(loc, dict)),
-        None,
-    )
-    loc_name = primary_loc.get('name') if primary_loc else None
-    primary_loc_id = primary_loc.get('eccc_id') if primary_loc else None
-
-    all_locs = [loc for loc in locations if isinstance(loc, dict)]
-    forecast_locs = [loc for loc in all_locs if loc.get('generate_forecast', False)]
+    all_locs = _observation_locations(feed)
+    forecast_locs = _forecast_locations(feed)
+    climate_locs = _climate_locations(feed)
+    primary_loc = all_locs[0] if all_locs else (forecast_locs[0] if forecast_locs else None)
+    loc_name = primary_loc.get('name') or primary_loc.get('id') if primary_loc else None
 
     focn45_bulletin = read_data_pool("focn45")
     discussion_text: str | None = None
@@ -130,9 +160,7 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
             if pkg_id_entry:
                 parsed_order.append(pkg_id_entry)
     max_items = feed.get('playlist', {}).get('max_items', None)
-    sequence: list[pathlib.Path] = []
-    ready_seq: list[pathlib.Path] = []
-    out_root = pathlib.Path('output') / feed_id
+    sequence: list[PlayableItem] = []
 
     for lang in languages:
         if shutdown_event.is_set():
@@ -140,19 +168,27 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
 
         conditions_parts: list[str] = []
         for i, loc in enumerate(all_locs):
-            loc_id = loc.get('eccc_id')
+            loc_id = loc.get('id')
             data = read_data_pool(f"{feed_id}:{loc_id}") if loc_id else None
-            text = current_conditions_package(data, loc.get('name'), lang, secondary=(i > 0))
+            text = current_conditions_package(data, _current_conditions_name(loc), lang, secondary=(i > 0))
             if text:
                 conditions_parts.append(text)
 
         forecast_parts: list[str] = []
         for loc in forecast_locs:
-            loc_id = loc.get('eccc_id')
+            loc_id = loc.get('id')
             forecast_data = read_data_pool(f"{feed_id}:forecast:{loc_id}") if loc_id else None
-            part = forecast_package(forecast_data, loc.get('name'), lang)
+            part = forecast_package(forecast_data, _forecast_name(loc), lang)
             if part:
                 forecast_parts.append(part)
+
+        climate_parts: list[str] = []
+        for loc in climate_locs:
+            loc_id = loc.get('id')
+            climate_data = read_data_pool(f"{feed_id}:climate:{loc_id}") if loc_id else None
+            part = climate_summary_package(climate_data, _climate_name(loc), lang)
+            if part:
+                climate_parts.append(part)
 
         wwv_text: str | None = read_data_pool("wwv")
 
@@ -161,6 +197,7 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
             'station_id': station_id(config, feed_id, lang),
             'current_conditions': '  '.join(conditions_parts),
             'forecast': '  '.join(forecast_parts),
+            'climate_summary': '  '.join(climate_parts),
             'eccc_discussion': eccc_discussion_package(discussion_text, loc_name, lang),
             'geophysical_alert': geophysical_alert_package(wwv_text),
             'user_bulletin': user_bulletin_package(bulletins, lang, tz),
@@ -179,21 +216,13 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
             allowed_langs = Package_Config.per_package.get(pkg_id, {}).get('lang')
             if allowed_langs is not None and lang not in allowed_langs:
                 continue
-            out_wav = out_root / lang / f'{pkg_id}.wav'
-            sequence.append(out_wav)
-            if not _needs_synthesis(pkg_id, feed_id, lang, text):
-                if out_wav.exists():
-                    ready_seq.append(out_wav)
-                continue
             pkg_cfg = Package_Config.per_package.get(pkg_id, {})
             use_voice: str | None = pkg_cfg.get('use_voice')
-            if out_wav.exists():
-                ready_seq.append(out_wav)
-                tts_queue.put((feed_id, pkg_id, text, lang, use_voice))
-            else:
-                result = synthesize(config, text, feed_id, pkg_id, lang, use_voice)
-                if result:
-                    ready_seq.append(out_wav)
-                    update_playout_sequence(feed_id, ready_seq[:])
-            _mark_synthesized(pkg_id, feed_id, lang, text)
-    update_playout_sequence(feed_id, ready_seq)
+            sequence.append(PlayableItem(
+                pkg_id=pkg_id,
+                text=text,
+                lang=lang,
+                voice=use_voice,
+            ))
+
+    update_playout_sequence(feed_id, sequence)

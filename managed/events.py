@@ -1,9 +1,17 @@
-import pathlib
 import queue
 import threading
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+
+
+@dataclass(frozen=True, slots=True)
+class PlayableItem:
+    pkg_id: str
+    text: str
+    lang: str
+    voice: str | None = None
 
 shutdown_event: threading.Event = threading.Event()
 initial_synthesis_done: threading.Event = threading.Event()
@@ -15,10 +23,10 @@ data_ready: threading.Event = threading.Event()
 tts_queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
 
 _sequences_lock: threading.Lock = threading.Lock()
-playout_sequences: dict[str, list[pathlib.Path]] = {}
+playout_sequences: dict[str, list[PlayableItem]] = {}
 
 _alert_queues_lock: threading.Lock = threading.Lock()
-_alert_queues: dict[str, queue.Queue[tuple[int, pathlib.Path, str]]] = {}
+_alert_queues: dict[str, queue.Queue[tuple[int, bytes, str]]] = {}
 
 _runtime_lock: threading.Lock = threading.Lock()
 _runtime_state: dict[str, Any] = {
@@ -27,25 +35,25 @@ _runtime_state: dict[str, Any] = {
     'events': [],
 }
 
-def register_alert_queue(feed_id: str) -> queue.Queue[tuple[int, pathlib.Path, str]]:
+def register_alert_queue(feed_id: str) -> queue.Queue[tuple[int, bytes, str]]:
     with _alert_queues_lock:
-        q: queue.Queue[tuple[int, pathlib.Path, str]] = queue.Queue(maxsize=128)
+        q: queue.Queue[tuple[int, bytes, str]] = queue.Queue(maxsize=128)
         _alert_queues[feed_id] = q
         return q
 
-def push_alert(feed_id: str, priority: int, path: pathlib.Path, identifier: str = '') -> None:
+def push_alert(feed_id: str, priority: int, pcm: bytes, identifier: str = '') -> None:
     with _alert_queues_lock:
         q = _alert_queues.get(feed_id)
         if q is not None:
-            q.put((priority, path, identifier))
+            q.put((priority, pcm, identifier))
 
 
-def update_playout_sequence(feed_id: str, sequence: list[pathlib.Path]) -> None:
+def update_playout_sequence(feed_id: str, sequence: list[PlayableItem]) -> None:
     with _sequences_lock:
         playout_sequences[feed_id] = list(sequence)
 
 
-def get_playout_sequence(feed_id: str) -> list[pathlib.Path]:
+def get_playout_sequence(feed_id: str) -> list[PlayableItem]:
     with _sequences_lock:
         return list(playout_sequences.get(feed_id, []))
 
@@ -67,7 +75,7 @@ def snapshot_data_pool() -> dict[str, Any]:
         return dict(_data_pool)
 
 
-def snapshot_playout_sequences() -> dict[str, list[pathlib.Path]]:
+def snapshot_playout_sequences() -> dict[str, list[PlayableItem]]:
     with _sequences_lock:
         return {feed_id: list(sequence) for feed_id, sequence in playout_sequences.items()}
 

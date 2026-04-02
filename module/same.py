@@ -228,6 +228,7 @@ def generate_same(
     sample_rate: int = _SAME_SAMPLE_RATE,
     tone_type: Optional[str] = "WXR",
     audio_msg_fp32: Optional[pathlib.Path] = None,
+    audio_msg_array: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     _init_same_log()
     gap = _silence(_HEADER_SILENCE_S, sample_rate)
@@ -258,7 +259,10 @@ def generate_same(
                 log.warning("Unknown tone_type '%s', using silence", tone_type)
                 pre_voice.append(_silence(0.1, sample_rate))
 
-        if audio_msg_fp32 is not None:
+        if audio_msg_array is not None:
+            pre_voice.append(_silence(1.0, sample_rate))
+            voice_part = audio_msg_array.astype(np.float32)
+        elif audio_msg_fp32 is not None:
             log.info("Appending audio message from %s", audio_msg_fp32)
             pre_voice.append(_silence(1.0, sample_rate))
             audio, sr = sf.read(audio_msg_fp32)  # type: ignore[no-untyped-call]

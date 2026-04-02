@@ -4,7 +4,7 @@ import os
 import pathlib
 import re
 from typing import Any, ClassVar, Optional, cast
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def _d(src: dict[str, Any], key: str) -> dict[str, Any]:
@@ -257,6 +257,83 @@ _CC_PH: dict[str, dict[str, str]] = {
     },
 }
 
+_AE_PH: dict[str, dict[str, str]] = {
+    'en': {
+        'opener': "The {name} climate summary for {period}. As of {time}, {date}. Courtesy of {source}.",
+        'unavailable': "Climate information for {name} is unavailable at this time.",
+        'station': "this area",
+        'latest_record': "This reflects the latest finalized daily climate record, from {date}.",
+        'high': "Today's high temperature was {val} degrees Celsius.",
+        'low': "And the low was {val} degrees Celsius.",
+        'mean_temp': "The average temperature on this day was {val} degrees Celsius.",
+        'temp_extremes': "The record high for this date is {high} degrees, set in {high_year}, and the record low is {low} degrees, set in {low_year}.",
+        'cold_high': "The coldest high was {value}, set in {year}.",
+        'warm_low': "The warmest low was {value}, set in {year}.",
+        'avg_temp': "The average temperature on this day, was {val} degrees Celsius.",
+        'temp_high_than_avg': "Today's high was {diff} degrees higher than the average.",
+        'temp_low_than_avg': "Today's low was {diff} degrees lower than the average.",
+        'temp_equal_avg': "Today's high and low were equal to the average. It seems like the weather boy in fact did like to know.",
+        'normals': "The normals for this current period, the high is {high} and the normal low is {low}.",
+        'precip_yea': "About {val} millimetres of precipitation has fallen today.",
+        'precip_no': "No precipitation has fallen today.",
+        'snow_yea': "About {val} centimetres of snow has fallen today.",
+        'snow_no': "No snow has fallen today.",
+        'precip_extreme': "The most precipitation to fall on this date was {val} millimetres, set in {year}.",
+        'snow_extreme': "The most snowfall to fall on this date was {val} centimetres, set in {year}.",
+        'snow_if_summer': "No snow has fallen today. Which would be a little bit concerning, because it is summer.",
+        'snow_on_ground': "There were {val} centimetres of snow on the ground.",
+        'sunset_tonight': "The sun will set at {time} tonight.",
+        'sunrise_tomorrow': "The sun will rise at {time} tomorrow.",
+        
+    },
+    'fr': {
+        'opener': "Le résumé climatique de {name} pour {period}. En date du {date} à {time}. Courtoisie de {source}.",
+        'unavailable': "Les informations climatiques pour {name} ne sont pas disponibles pour le moment.",
+        'station': "cette zone",
+        'latest_record': "Ceci reflète le plus récent relevé climatique quotidien finalisé, en date du {date}.",
+        'high': "La température maximale d'aujourd'hui était de {val} degrés Celsius.",
+        'low': "Et la minimale était de {val} degrés Celsius.",
+        'temp_extremes': "Le record de chaleur pour cette date est de {high} degrés, établi en {high_year}, et le record de froid est de {low} degrés, établi en {low_year}.",
+        'cold_high': "La température maximale la plus basse a été de {value}, établie en {year}.",
+        'warm_low': "La température minimale la plus élevée a été de {value}, établie en {year}.",
+        'mean_temp': "La température moyenne de cette journée était de {val} degrés Celsius.",
+        'normals': "Les normales pour cette période actuelle, la maximale est de {high} et la minimale normale est de {low}.",
+        'precip_yea': "Environ {val} millimètres de précipitations sont tombés aujourd'hui.",
+        'precip_no': "Aucune précipitation n'est tombée aujourd'hui.",
+        'snow_yea': "Environ {val} centimètres de neige sont tombés aujourd'hui.",
+        'snow_no': "Aucune neige n'est tombée aujourd'hui.",
+        'precip_extreme': "La plus grande quantité de précipitations à tomber à cette date était de {val} millimètres, établie en {year}.",
+        'snow_extreme': "La plus grande quantité de neige à tomber à cette date était de {val} centimètres, établie en {year}.",
+        'snow_if_summer': "Aucune neige n'est tombée aujourd'hui. Ce qui serait un peu inquiétant, car c'est l'été.",
+        'snow_on_ground': "Il y avait {val} centimètres de neige au sol.",
+        'sunset_tonight': "Le soleil se couchera à {time} ce soir.",
+        'sunrise_tomorrow': "Le soleil se lèvera à {time} demain.",
+    },
+    'es': {
+        'opener': "El resumen climático de {name} para {period}. A fecha de {date} a las {time}. Cortesía de {source}.",
+        'unavailable': "La información climática para {name} no está disponible en este momento.",
+        'station': "esta zona",
+        'latest_record': "Esto refleja el registro climático diario finalizado más reciente, del {date}.",
+        'high': "La temperatura máxima de hoy fue de {val} grados Celsius.",
+        'low': "Y la mínima fue de {val} grados Celsius.",
+        'mean_temp': "La temperatura media de este día fue de {val} grados Celsius.",
+        'temp_extremes': "El récord de calor para esta fecha es de {high} grados, establecido en {high_year}, y el récord de frío es de {low} grados, establecido en {low_year}.",
+        'cold_high': "La máxima más baja fue de {value}, establecida en {year}.",
+        'warm_low': "La mínima más alta fue de {value}, establecida en {year}.",
+        'normals': "Las normales para este período actual, la máxima es de {high} y la mínima normal es de {low}.",
+        'precip_yea': "Alrededor de {val} milímetros de precipitación ha caído hoy.",
+        'precip_no': "No ha caído precipitación hoy.",
+        'snow_yea': "Alrededor de {val} centímetros de nieve ha caído hoy.",
+        'snow_no': "No ha caído nieve hoy.",
+        'precip_extreme': "La mayor cantidad de precipitación que ha caído en esta fecha fue de {val} milímetros, establecida en {year}.",
+        'snow_extreme': "La mayor cantidad de nieve que cayó en esta fecha fue de {val} centímetros, establecida en {year}.",
+        'snow_if_summer': "No ha caído nieve hoy. Lo cual sería un poco preocupante, porque es verano.",
+        'snow_on_ground': "Había {val} centímetros de nieve en el suelo.",
+        'sunset_tonight': "El sol se pondrá a las {time} esta noche.",
+        'sunrise_tomorrow': "El sol saldrá a las {time} mañana.",
+    },
+}
+
 _FX_PH: dict[str, dict[str, str]] = {
     'en': {
         'intro':       "Here is the forecast for {name}.",
@@ -372,6 +449,7 @@ class Package_Config:
         'date_time': 24.0,
         'current_conditions': 2700.0,
         'forecast': 7200.0,
+        'climate_summary': 86400.0,
         'eccc_discussion': 10800.0,
         'geophysical_alert': 10800.0,
     }
@@ -382,6 +460,9 @@ class Package_Config:
         },
         'forecast': {
             'use_voice': 'female', # male or female. if specified in the config for each language.
+        },
+        'climate_summary': {
+            'use_voice': 'female',
         },
         'geophysical_alert': {
             'lang': ['en-CA'],
@@ -624,10 +705,16 @@ def _resolve_alert_areas(
         return []
 
     feed_sames: list[str] = []
-    for loc in feed.get('locations', []):
-        same = loc.get('same')
-        if same:
-            feed_sames.append(str(same).strip())
+    for block in feed.get('locations', []):
+        if not isinstance(block, dict):
+            continue
+        for loc in block.get('forecastLocations', []):
+            if not isinstance(loc, dict):
+                continue
+            same = loc.get('same') or loc.get('forecast_region')
+            if same:
+                raw = str(same).strip()
+                feed_sames.append(raw.split('-', 1)[-1] if '-' in raw else raw)
 
     if not feed_sames:
         return []
@@ -768,16 +855,14 @@ def current_conditions_package(
         return ph['unavailable'].format(name=location_name or ph['station'])
 
     props: dict[str, Any] = _d(weather_data, 'properties') or weather_data
-    loc = _d(props, 'location')
-    city_raw: Any = _s(loc, 'city')
-    if isinstance(city_raw, dict):
-        city_d: dict[str, Any] = cast(dict[str, Any], city_raw)
-        city_name = str(city_d.get('en') or city_d.get('fr') or '')
-    elif city_raw:
-        city_name = str(city_raw)
-    else:
-        city_name = ''
-    name: str = location_name or city_name or ph['station']
+
+    source = weather_data.get('source') if isinstance(weather_data, dict) else None
+
+    station_name = None
+    if isinstance(weather_data, dict) and isinstance(weather_data.get('station'), dict):
+        station_dict = cast(dict[str, Any], weather_data['station'])
+        station_name = station_dict.get(lang_short) or station_dict.get('en')
+    name = location_name or station_name or ph['station']
 
     condition_raw: Any = _s(props, 'condition')
     if isinstance(condition_raw, dict):
@@ -796,7 +881,9 @@ def current_conditions_package(
         _source_name = _source_map.get(str(_src_key), str(_src_key).upper())
         try:
             _dt = datetime.datetime.fromisoformat(str(_obs_at).replace('Z', '+00:00'))
-            _time_str = _format_time_spoken(_dt)
+            local_tz = datetime.datetime.now().astimezone().tzinfo or ZoneInfo('UTC')
+            _dt_local = _dt.astimezone(local_tz)
+            _time_str = _format_time_spoken(_dt_local)
         except ValueError:
             _time_str = _reformat_times_in_text(str(_obs_at))
         opener_text = ph['opener'].format(source=_source_name, time=_time_str)
@@ -815,7 +902,7 @@ def current_conditions_package(
     temp_val = _scalar(_d(props, 'temp') or _s(props, 'temp'))
     if temp_val is not None:
         sentences.append(ph['temp'].format(val=temp_val))
-        sentences.append('.,....')
+        sentences.append('.')
     elif not secondary:
         sentences.append(ph['no_temp'])
 
@@ -829,14 +916,12 @@ def current_conditions_package(
 
     dp_val = _scalar(_d(props, 'dewpoint') or _s(props, 'dewpoint'))
     if dp_val is not None:
+        sentences.append('.')
         sentences.append(ph['dewpoint'].format(val=dp_val))
 
     hum_val = _scalar(_d(props, 'humidity') or _s(props, 'humidity'))
     if hum_val is not None:
         sentences.append(ph['humidity'].format(val=hum_val))
-        if hum_val == 67:
-            lol = pathlib.Path('audio', 'xiaomi-ringtone.mp3').resolve()
-            sentences.append('\n' + lol.as_uri() + '\n')
     elif not secondary:
         sentences.append(ph['no_humidity'])
 
@@ -886,9 +971,17 @@ def forecast_package(
     _lang = lang or 'en-CA'
     lang_short = _lang[:2]
     fx = _FX_PH.get(lang_short, _FX_PH['en'])
-    loc_name = location_name or fx['station']
     if forecast_data is None:
-        return fx['unavailable'].format(name=loc_name)
+        return fx['unavailable'].format(name=location_name or fx['station'])
+
+    name_block = forecast_data.get('name') or {}
+    forecast_name = None
+    if isinstance(name_block, dict):
+        forecast_name = name_block.get(lang_short) or name_block.get('en')
+    elif name_block:
+        forecast_name = str(name_block)
+
+    loc_name = location_name or forecast_name or fx['station']
 
     forecasts = forecast_data.get('forecast', [])
     if not forecasts:
@@ -920,6 +1013,230 @@ def forecast_package(
             sentences.append(f"{period_name}. {clean}.")
 
     return " ".join(sentences)
+
+
+def _format_month_day(month: int | None, day: int | None, lang_short: str) -> str:
+    if month is None or day is None or not (1 <= month <= 12) or not (1 <= day <= 31):
+        return ''
+    month_name = _DT_MONTHS.get(lang_short, _DT_MONTHS['en'])[month - 1]
+    if lang_short == 'fr':
+        return f'{day} {month_name}'
+    if lang_short == 'es':
+        return f'{day} de {month_name}'
+    ordinals = _DT_ORDINALS.get(lang_short, _DT_ORDINALS['en'])
+    ordinal = ordinals[day - 1] if day <= len(ordinals) else str(day)
+    return f'{month_name} {ordinal}'
+
+
+def _format_spoken_time_value(timestamp: Any, timezone_name: str | None = None) -> str:
+    if not timestamp:
+        return ''
+    try:
+        dt = datetime.datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+        if timezone_name:
+            dt = dt.astimezone(ZoneInfo(timezone_name))
+        else:
+            local_tz = datetime.datetime.now().astimezone().tzinfo or ZoneInfo('UTC')
+            dt = dt.astimezone(local_tz)
+        return _format_time_spoken(dt)
+    except (ValueError, ZoneInfoNotFoundError):
+        return _reformat_times_in_text(str(timestamp))
+
+
+def climate_summary_package(
+    climate_data: Optional[dict[str, Any]] = None,
+    location_name: Optional[str] = None,
+    lang: Optional[str] = 'en-CA',
+) -> str:
+    _lang = lang or 'en-CA'
+    lang_short = _lang[:2]
+    ph = _AE_PH.get(lang_short, _AE_PH['en'])
+
+    if climate_data is None:
+        return ph['unavailable'].format(name=location_name or ph['station'])
+
+    name_block = climate_data.get('name') or {}
+    station_name = None
+    if isinstance(name_block, dict):
+        station_name = name_block.get(lang_short) or name_block.get('en')
+    name = location_name or station_name or ph['station']
+
+    normals = climate_data.get('normals') or {}
+    records = climate_data.get('records') or {}
+    astronomy = climate_data.get('astronomy') or {}
+    observations = climate_data.get('observations') or {}
+    date_block = climate_data.get('date') or {}
+    month = date_block.get('month') if isinstance(date_block, dict) else None
+    day = date_block.get('day') if isinstance(date_block, dict) else None
+    spoken_date = _format_month_day(month, day, lang_short)
+    source_key = str(climate_data.get('source') or 'eccc')
+    source_name = _CC_SOURCE.get(lang_short, _CC_SOURCE['en']).get(source_key, source_key.upper())
+    last_updated = climate_data.get('last_updated')
+
+    spoken_time = ''
+    spoken_updated_date = spoken_date
+    if last_updated:
+        try:
+            updated_dt = datetime.datetime.fromisoformat(str(last_updated).replace('Z', '+00:00'))
+            local_tz = datetime.datetime.now().astimezone().tzinfo or ZoneInfo('UTC')
+            updated_local = updated_dt.astimezone(local_tz)
+            spoken_time = _format_time_spoken(updated_local)
+            spoken_updated_date = _format_date_spoken(updated_local, lang_short)
+        except ValueError:
+            spoken_time = _reformat_times_in_text(str(last_updated))
+
+    has_normals = isinstance(normals, dict) and bool(normals)
+    has_records = isinstance(records, dict) and bool(records)
+    has_observations = isinstance(observations, dict) and bool(observations)
+    if not has_normals and not has_records and not has_observations:
+        return ph['unavailable'].format(name=name)
+
+    timezone_name = astronomy.get('timezone') if isinstance(astronomy.get('timezone'), str) else None
+    try:
+        climate_zone = ZoneInfo(timezone_name) if timezone_name else (datetime.datetime.now().astimezone().tzinfo or ZoneInfo('UTC'))
+    except ZoneInfoNotFoundError:
+        climate_zone = datetime.datetime.now().astimezone().tzinfo or ZoneInfo('UTC')
+
+    latest_record_sentence = ''
+    observed_date_raw = observations.get('date') if isinstance(observations, dict) else None
+    if observed_date_raw:
+        try:
+            observed_date = datetime.datetime.fromisoformat(str(observed_date_raw)).date()
+            current_date = datetime.datetime.now(climate_zone).date()
+            if observed_date < current_date:
+                observed_dt = datetime.datetime.combine(observed_date, datetime.time.min, tzinfo=climate_zone)
+                latest_record_template = ph.get('latest_record')
+                if latest_record_template:
+                    latest_record_sentence = latest_record_template.format(
+                        date=_format_date_spoken(observed_dt, lang_short),
+                    )
+        except ValueError:
+            latest_record_sentence = ''
+
+    if spoken_date:
+        period = spoken_date
+    elif lang_short == 'fr':
+        period = "aujourd'hui"
+    elif lang_short == 'es':
+        period = 'hoy'
+    else:
+        period = 'today'
+
+    intro_template = ph['opener']
+    intro = intro_template.format(
+        name=name,
+        period=period,
+        time=spoken_time or period,
+        date=spoken_updated_date or period,
+        source=source_name,
+    )
+
+    sentences: list[str] = [intro]
+    if latest_record_sentence:
+        sentences.append(latest_record_sentence)
+
+    if isinstance(observations, dict):
+        observed_high = observations.get('high')
+        observed_low = observations.get('low')
+        observed_mean = observations.get('mean')
+        if observed_high is not None:
+            sentences.append(ph['high'].format(val=observed_high))
+        if observed_low is not None:
+            sentences.append(ph['low'].format(val=observed_low))
+        mean_template = ph.get('mean_temp') or ph.get('avg_temp')
+        if observed_mean is not None and mean_template:
+            sentences.append(mean_template.format(val=observed_mean))
+
+        precipitation = observations.get('precipitation')
+        if precipitation is not None:
+            if precipitation > 0:
+                sentences.append(ph['precip_yea'].format(val=precipitation))
+            else:
+                sentences.append(ph['precip_no'])
+
+        snowfall = observations.get('snowfall')
+        if snowfall is not None:
+            if snowfall > 0:
+                sentences.append(ph['snow_yea'].format(val=snowfall))
+            elif month in {6, 7, 8}:
+                sentences.append(ph['snow_if_summer'])
+            else:
+                sentences.append(ph['snow_no'])
+
+        snow_on_ground = observations.get('snow_on_ground')
+        snow_on_ground_template = ph.get('snow_on_ground')
+        if snow_on_ground is not None and snow_on_ground_template:
+            sentences.append(snow_on_ground_template.format(val=snow_on_ground))
+
+    if isinstance(normals, dict):
+        temps = normals.get('temperature') or {}
+        if isinstance(temps, dict):
+            normal_low = temps.get('low')
+            normal_high = temps.get('high')
+            if normal_low is not None and normal_high is not None:
+                sentences.append(ph['normals'].format(low=normal_low, high=normal_high))
+
+    if isinstance(records, dict):
+        high_max = records.get('high_max') or {}
+        low_min = records.get('low_min') or {}
+        if isinstance(high_max, dict) and isinstance(low_min, dict):
+            high_value = high_max.get('value')
+            high_year = high_max.get('year')
+            low_value = low_min.get('value')
+            low_year = low_min.get('year')
+            temp_extremes_template = ph.get('temp_extremes')
+            if (
+                temp_extremes_template
+                and high_value is not None
+                and high_year is not None
+                and low_value is not None
+                and low_year is not None
+            ):
+                sentences.append(temp_extremes_template.format(
+                    high=high_value,
+                    high_year=high_year,
+                    low=low_value,
+                    low_year=low_year,
+                ))
+
+        for key, phrase_key in (
+            ('low_max', 'cold_high'),
+            ('high_min', 'warm_low'),
+        ):
+            record = records.get(key) or {}
+            if not isinstance(record, dict):
+                continue
+            value = record.get('value')
+            year = record.get('year')
+            template = ph.get(phrase_key)
+            if value is None or year is None or not template:
+                continue
+            sentences.append(template.format(value=value, year=year))
+
+        precipitation = records.get('precipitation') or {}
+        if isinstance(precipitation, dict):
+            precip_value = precipitation.get('value')
+            precip_year = precipitation.get('year')
+            precip_template = ph.get('precip_extreme')
+            if precip_value is not None and precip_year is not None and precip_template:
+                sentences.append(precip_template.format(val=precip_value, year=precip_year))
+
+        snowfall = records.get('snowfall') or {}
+        if isinstance(snowfall, dict):
+            snow_value = snowfall.get('value')
+            snow_year = snowfall.get('year')
+            snow_template = ph.get('snow_extreme')
+            if snow_value is not None and snow_year is not None and snow_template:
+                sentences.append(snow_template.format(val=snow_value, year=snow_year))
+
+    if isinstance(astronomy, dict):
+        sunset_value = _format_spoken_time_value(astronomy.get('sunset'), timezone_name)
+        if sunset_value:
+            sunset_template = ph.get('sunset_tonight')
+            if sunset_template:
+                sentences.append(sunset_template.format(time=sunset_value))
+
+    return ' '.join(sentences)
 
 def eccc_discussion_package(
     discussion_text: Optional[str] = None,
@@ -993,7 +1310,7 @@ def eccc_discussion_package(
         current_para.append(stripped)
 
     if current_para:
-        paragraphs.append(_flush(current_para))
+        paragraphs.append(_flush_discussion(current_para))
 
     if not paragraphs:
         return ""

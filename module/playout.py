@@ -5,7 +5,6 @@ import datetime
 import logging
 import pathlib
 import queue
-import wave
 from typing import Any
 import json
 
@@ -17,9 +16,10 @@ from managed.events import (
     update_feed_runtime,
 )
 from module.output import AudioDeviceSink, FileSink, IcecastSink, PiFmAdvSink
-from module.queue import CHANNELS, SAMPLE_RATE, AudioBus, PlaybackInterrupted, sink_runner
+from module.queue import SAMPLE_RATE, AudioPipeline, OnSegmentStart
 from module.same import SAMEHeader, generate_same, resample, to_pcm16
 from module.alert import feed_same_codes
+from module.tts import synthesize_pcm_stream
 
 log = logging.getLogger(__name__)
 
@@ -31,118 +31,19 @@ _PKG_LABELS: dict[str, str] = {
     'forecast': 'Forecast',
     'eccc_discussion': 'Discussion',
     'geophysical_alert': 'Geophysical Alert',
+    'climate_summary': 'Climate Summary',
 }
 
-
-_REGISTRY_PATH = pathlib.Path('data') / 'alertsRegistry.json'
-
-def _write_registry_entry(feed_id: str, identifier: str, alert_path: pathlib.Path) -> None:
-    _REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        if _REGISTRY_PATH.exists():
-            with open(_REGISTRY_PATH, encoding='utf-8') as f:
-                registry: list[dict] = json.load(f)
-        else:
-            registry = []
-    except Exception:
-        registry = []
-
-    entry = {
-        'identifier': identifier,
-        'feed_id': feed_id,
-        'aired_at': datetime.datetime.now(datetime.UTC).isoformat(),
-        'path': str(alert_path),
-    }
-
-    if not any(r.get('identifier') == identifier and r.get('feed_id') == feed_id for r in registry):
-        registry.append(entry)
-        try:
-            with open(_REGISTRY_PATH, 'w', encoding='utf-8') as f:
-                json.dump(registry, f, indent=2)
-            log.debug('Registry updated: %s', identifier)
-        except Exception as e:
-            log.error('Failed to write alert registry: %s', e)
-
-def _ensure_silence(feed_id: str) -> pathlib.Path:
-    path = pathlib.Path('output') / feed_id / 'silence_1s.wav'
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        n = int(22050 * 1.0)
-        with wave.open(str(path), 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(22050)
-            wf.writeframes(bytes(n * 2))
-    return path
-
-async def _decode_wav(path: pathlib.Path) -> bytes:
-    proc = await asyncio.create_subprocess_exec(
-        'ffmpeg', '-loglevel', 'error',
-        '-i', str(path),
-        '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-        'pipe:1',
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    stdout, _ = await proc.communicate()
-    return stdout
-
-def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
-    same_cfg = config.get('same', {})
-    if not same_cfg.get('send_txp_on_startup', False):
-        return None
-
-    callsign = same_cfg.get('sender', 'HAZE0000')
-    locations = feed_same_codes(feed)
-    if not locations:
-        locations = ['000000']
-
-    data = SAMEHeader(
-        originator="WXR",
-        event="TXP",
-        locations=locations,
-        duration="0010",
-        callsign="XLF323",
-    )
-
-    message = generate_same(
-        header=data,
-        tone_type="EGG_TIMER",
-        sample_rate=config.get('same', {}).get('sample_rate_hz', 22050),
-    )
-
-    same_sr = config.get('same', {}).get('sample_rate_hz', 22050)
-    return to_pcm16(resample(message, same_sr, SAMPLE_RATE))
-
-async def pipe_writer(
-    bus: AudioBus,
-    shutdown: asyncio.Event,
-    alert_interrupt: asyncio.Event,
-    alert_queue: asyncio.PriorityQueue[tuple[int, pathlib.Path, str]] = asyncio.PriorityQueue(),
-    feed_id: str = '',
-    on_air_name: str = '',
-    metadata_cb: Any = None,
-    txp_pcm: bytes | None = None,
-) -> None:
-    silence_path = _ensure_silence(feed_id)
-    silence_pcm: bytes | None = None
-
-    if txp_pcm:
-        log.info('[%s] Sending TXP (Transmitter Primary On)', feed_id)
-        update_feed_runtime(feed_id, {
-            'txp_sent_at': datetime.datetime.now(datetime.UTC).isoformat(),
-        })
-        append_runtime_event('txp', 'Transmitter Primary On sent', feed_id)
-        await bus.write(txp_pcm)
-
-    async def _play(p: pathlib.Path, interrupt: asyncio.Event | None = None) -> None:
-        nonlocal silence_pcm
-        pkg_id = p.stem
-        label = _PKG_LABELS.get(pkg_id, pkg_id.replace('_', ' ').title())
+def _make_segment_callback(
+    label: str,
+    feed_id: str,
+    on_air_name: str,
+    metadata_cb: Any,
+) -> OnSegmentStart:
+    async def _on_start() -> None:
         log.info('[%s] Now playing: %s', feed_id, label)
         update_feed_runtime(feed_id, {
             'now_playing': label,
-            'now_playing_file': str(p),
             'last_played_at': datetime.datetime.now(datetime.UTC).isoformat(),
         })
         if metadata_cb is not None:
@@ -151,69 +52,124 @@ async def pipe_writer(
                 await metadata_cb(title)
             except Exception:
                 pass
-        pcm = await _decode_wav(p)
-        if pcm:
-            await bus.write(pcm, interrupt=interrupt)
-        if silence_pcm is None:
-            silence_pcm = await _decode_wav(silence_path)
-        if silence_pcm:
-            await bus.write(silence_pcm, interrupt=interrupt)
+    return _on_start
 
-    async def _drain_alerts() -> None:
-        while not alert_queue.empty():
+
+def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
+    same_cfg = config.get('same', {})
+    if not same_cfg.get('send_txp_on_startup', False):
+        return None
+
+    locations = feed_same_codes(feed) or ['000000']
+    data = SAMEHeader(
+        originator="WXR",
+        event="TXP",
+        locations=locations,
+        duration="0010",
+        callsign="XLF323",
+    )
+
+    same_sr = same_cfg.get('sample_rate_hz', 22050)
+    message = generate_same(header=data, tone_type="EGG_TIMER", sample_rate=same_sr)
+    return to_pcm16(resample(message, same_sr, SAMPLE_RATE))
+
+async def _produce_tts(
+    pipeline: AudioPipeline,
+    shutdown: asyncio.Event,
+    feed_id: str,
+    config: dict[str, Any],
+    on_air_name: str,
+    metadata_cb: Any,
+    txp_pcm: bytes | None,
+) -> None:
+    spool_dir = pathlib.Path('output') / feed_id / 'spool'
+    await asyncio.to_thread(lambda: spool_dir.mkdir(parents=True, exist_ok=True))
+    seg_counter = 0
+
+    if txp_pcm:
+        log.info('[%s] Sending TXP (Transmitter Primary On)', feed_id)
+        update_feed_runtime(feed_id, {
+            'txp_sent_at': datetime.datetime.now(datetime.UTC).isoformat(),
+        })
+        append_runtime_event('txp', 'Transmitter Primary On sent', feed_id)
+        seg_counter += 1
+        txp_path = spool_dir / f'seg_{seg_counter:06d}.bin'
+        await asyncio.to_thread(txp_path.write_bytes, txp_pcm)
+        await pipeline.enqueue_segment(txp_path)
+
+    while not shutdown.is_set():
+        if pipeline.alert_active:
+            await asyncio.sleep(0.1)
+            continue
+
+        seq = get_playout_sequence(feed_id)
+        if not seq:
+            await asyncio.sleep(0.5)
+            continue
+
+        for item in seq:
+            if shutdown.is_set():
+                return
+
+            while pipeline.alert_active and not shutdown.is_set():
+                await asyncio.sleep(0.1)
+
+            pkg_id = item.pkg_id
+            label = _PKG_LABELS.get(pkg_id, pkg_id.replace('_', ' ').title())
+
+            seg_counter += 1
+            seg_path = spool_dir / f'seg_{seg_counter:06d}.bin'
+
+            def _render(text=item.text, lang=item.lang, voice=item.voice, path=seg_path):
+                stream = synthesize_pcm_stream(config, text, lang, voice)
+                with open(path, 'wb') as f:
+                    for chunk in stream:
+                        f.write(chunk)
+
+            await asyncio.to_thread(_render)
+
+            if not seg_path.exists() or seg_path.stat().st_size == 0:
+                log.warning('[%s] Empty synthesis for %s', feed_id, pkg_id)
+                seg_path.unlink(missing_ok=True)
+                continue
+
+            on_start = _make_segment_callback(label, feed_id, on_air_name, metadata_cb)
+            await pipeline.enqueue_segment(seg_path, on_start)
+
+async def _alert_feeder(
+    pipeline: AudioPipeline,
+    alert_queue: asyncio.PriorityQueue[tuple[int, bytes, str]],
+    shutdown: asyncio.Event,
+    feed_id: str,
+    on_air_name: str,
+    metadata_cb: Any,
+) -> None:
+    while not shutdown.is_set():
+        try:
+            priority, pcm_data, identifier = alert_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            await asyncio.sleep(0.1)
+            continue
+
+        log.info('[%s] Playing alert: %s', feed_id, identifier or '(unnamed)')
+        update_feed_runtime(feed_id, {
+            'now_playing': 'Alert',
+            'last_played_at': datetime.datetime.now(datetime.UTC).isoformat(),
+        })
+        if metadata_cb is not None:
+            title = f"Alert - {on_air_name} ({feed_id})" if on_air_name else "Alert"
             try:
-                _, alert_path, identifier = alert_queue.get_nowait()
-                await _play(alert_path)
-                if identifier:
-                    _write_registry_entry(feed_id, identifier, alert_path)
-            except asyncio.QueueEmpty:
-                break
+                await metadata_cb(title)
+            except Exception:
+                pass
 
-    try:
-        while not shutdown.is_set():
-            await _drain_alerts()
-
-            seq = get_playout_sequence(feed_id)
-            if not seq:
-                await asyncio.sleep(0.5)
-                continue
-
-            interrupted = False
-            for path in seq:
-                if shutdown.is_set():
-                    break
-
-                await _drain_alerts()
-
-                deadline = asyncio.get_running_loop().time() + 60.0
-                while not path.exists():
-                    if shutdown.is_set() or asyncio.get_running_loop().time() > deadline:
-                        break
-                    await asyncio.sleep(0.5)
-
-                if not path.exists():
-                    log.warning('[%s] Skipping missing: %s', feed_id, path.name)
-                    continue
-
-                try:
-                    await _play(path, interrupt=alert_interrupt)
-                except PlaybackInterrupted:
-                    log.info('[%s] Playback interrupted by incoming alert', feed_id)
-                    bus.flush()
-                    alert_interrupt.clear()
-                    await _drain_alerts()
-                    interrupted = True
-                    break
-
-            if interrupted:
-                continue
-    finally:
-        await bus.close()
+        pipeline.enqueue_alert(pcm_data)
+        await pipeline.wait_alert_done()
 
 def _build_file_path(config: dict[str, Any], feed: dict[str, Any]) -> str:
     file_cfg = config.get('output', {}).get('file', {})
     directory = file_cfg.get('directory', './output')
-    pattern = file_cfg.get('filename_pattern', '{feed_id}-{timestamp}.raw')
+    pattern = file_cfg.get('filename_pattern', '{feed_id}-{timestamp}.bin')
     filename = pattern.format(
         feed_id=feed['id'],
         timestamp=datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
@@ -225,12 +181,10 @@ def _build_file_path(config: dict[str, Any], feed: dict[str, Any]) -> str:
 async def feed_runner(
     config: dict[str, Any],
     feed: dict[str, Any],
-    alert_queue: asyncio.PriorityQueue[tuple[int, pathlib.Path]],
+    alert_queue: asyncio.PriorityQueue[tuple[int, bytes, str]],
     shutdown: asyncio.Event,
-    alert_interrupt: asyncio.Event | None = None,
 ) -> None:
-    bus = AudioBus()
-    sink_tasks: list[asyncio.Task[None]] = []
+    pipeline = AudioPipeline()
     feed_id = feed['id']
     output_cfg = feed.get('output', {})
     operator = config.get('operator', {})
@@ -248,20 +202,14 @@ async def feed_runner(
             stream_cfg = {**output_cfg['stream'], 'feed_id': feed_id}
             sink = IcecastSink(stream_cfg)
             metadata_cbs.append(sink.set_metadata)
-            sink_tasks.append(asyncio.create_task(
-                sink_runner(sink, bus.subscribe(), shutdown),
-                name=f'{feed_id}:icecast',
-            ))
+            pipeline.attach_sink(sink, name=f'{feed_id}:icecast')
         except Exception:
             log.exception('Failed to start Icecast sink for %s', feed_id)
 
     if output_cfg.get('audio_device', {}).get('enabled'):
         try:
             sink = AudioDeviceSink(output_cfg['audio_device'].get('name'))
-            sink_tasks.append(asyncio.create_task(
-                sink_runner(sink, bus.subscribe(), shutdown),
-                name=f'{feed_id}:audio_device',
-            ))
+            pipeline.attach_sink(sink, name=f'{feed_id}:audio_device')
         except Exception:
             log.exception('Failed to start audio device sink for %s', feed_id)
 
@@ -269,20 +217,14 @@ async def feed_runner(
         try:
             path = _build_file_path(config, feed)
             sink = FileSink(path)
-            sink_tasks.append(asyncio.create_task(
-                sink_runner(sink, bus.subscribe(), shutdown),
-                name=f'{feed_id}:file',
-            ))
+            pipeline.attach_sink(sink, name=f'{feed_id}:file')
         except Exception:
             log.exception('Failed to start file sink for %s', feed_id)
 
     if output_cfg.get('PiFmAdv', {}).get('enabled'):
         try:
             sink = PiFmAdvSink(output_cfg['PiFmAdv'])
-            sink_tasks.append(asyncio.create_task(
-                sink_runner(sink, bus.subscribe(), shutdown),
-                name=f'{feed_id}:PiFmAdv',
-            ))
+            pipeline.attach_sink(sink, name=f'{feed_id}:PiFmAdv')
         except Exception:
             log.exception('Failed to start PiFmAdv sink for %s', feed_id)
 
@@ -294,30 +236,37 @@ async def feed_runner(
                 pass
 
     txp_pcm = _generate_txp(config, feed)
+    pipeline.start()
 
-    writer_task = asyncio.create_task(
-        pipe_writer(
-            bus, alert_queue, shutdown, alert_interrupt or asyncio.Event(),
-            feed_id=feed_id,
-            on_air_name=on_air_name,
-            metadata_cb=_update_metadata if metadata_cbs else None,
-            txp_pcm=txp_pcm,
+    tts_task = asyncio.create_task(
+        _produce_tts(
+            pipeline, shutdown, feed_id, config, on_air_name,
+            _update_metadata if metadata_cbs else None, txp_pcm,
         ),
-        name=f'{feed_id}:writer',
+        name=f'{feed_id}:tts_producer',
     )
 
-    await asyncio.gather(writer_task, *sink_tasks, return_exceptions=True)
+    alert_task = asyncio.create_task(
+        _alert_feeder(
+            pipeline, alert_queue, shutdown, feed_id, on_air_name,
+            _update_metadata if metadata_cbs else None,
+        ),
+        name=f'{feed_id}:alert_feeder',
+    )
 
+    try:
+        await asyncio.gather(tts_task, alert_task, return_exceptions=True)
+    finally:
+        await pipeline.stop()
 
 async def _watch_shutdown(shutdown: asyncio.Event) -> None:
     while not shutdown_event.is_set():
         await asyncio.sleep(0.5)
     shutdown.set()
 
-
 async def _drain_thread_alerts(
-    thread_q: queue.Queue[tuple[int, pathlib.Path, str]],
-    async_q: asyncio.PriorityQueue[tuple[int, pathlib.Path, str]],
+    thread_q: queue.Queue[tuple[int, bytes, str]],
+    async_q: asyncio.PriorityQueue[tuple[int, bytes, str]],
 ) -> bool:
     drained = False
     while True:
@@ -329,7 +278,6 @@ async def _drain_thread_alerts(
             break
     return drained
 
-
 async def _playout_main(
     config: dict[str, Any],
     feed: dict[str, Any],
@@ -337,25 +285,22 @@ async def _playout_main(
     feed_id = feed.get('id', '')
     shutdown = asyncio.Event()
     watchdog = asyncio.create_task(_watch_shutdown(shutdown))
-    alert_queue: asyncio.PriorityQueue[tuple[int, pathlib.Path]] = asyncio.PriorityQueue()
-    alert_interrupt = asyncio.Event()
+    alert_queue: asyncio.PriorityQueue[tuple[int, bytes, str]] = asyncio.PriorityQueue()
     thread_alert_q = register_alert_queue(feed_id)
 
     async def _poll_alerts() -> None:
         while not shutdown.is_set():
-            if await _drain_thread_alerts(thread_alert_q, alert_queue):
-                alert_interrupt.set()
-            await asyncio.sleep(1.0)
+            await _drain_thread_alerts(thread_alert_q, alert_queue)
+            await asyncio.sleep(0.5)
 
     poller = asyncio.create_task(_poll_alerts(), name=f'{feed_id}:alert_poll')
     try:
-        await feed_runner(config, feed, alert_queue, shutdown, alert_interrupt)
+        await feed_runner(config, feed, alert_queue, shutdown)
     except BrokenPipeError:
         log.warning('Playout pipe closed for %s', feed_id)
     finally:
         poller.cancel()
         watchdog.cancel()
-
 
 def playout_thread_worker(
     config: dict[str, Any],

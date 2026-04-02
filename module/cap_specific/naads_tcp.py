@@ -82,8 +82,21 @@ class CAPInfo:
     resources: tuple[CAPResource, ...]
     event_codes: tuple[tuple[str, str], ...]
     parameters: tuple[CAPParameter, ...]
+
     def param_dict(self) -> dict[str, str]:
         return {p.name.lower(): p.value for p in self.parameters}
+
+    @property
+    def parameter_map(self) -> dict[str, str]:
+        return self.param_dict()
+
+    @property
+    def area_geocodes(self) -> tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]:
+        return tuple((area.description, area.geocodes, area.clc_codes) for area in self.areas)
+
+    @property
+    def area_descriptions(self) -> tuple[str, ...]:
+        return tuple(area.description for area in self.areas if area.description)
 
 @dataclass(slots=True, frozen=True)
 class CAPAlert:
@@ -127,6 +140,65 @@ class CAPAlert:
         i = self.english or (self.infos[0] if self.infos else None)
         return i.headline if i else ""
 
+    @property
+    def event(self) -> str:
+        i = self.english or (self.infos[0] if self.infos else None)
+        return i.event if i else ""
+
+    @property
+    def severity(self) -> str:
+        i = self.english or (self.infos[0] if self.infos else None)
+        return i.severity if i else ""
+
+    @property
+    def urgency(self) -> str:
+        i = self.english or (self.infos[0] if self.infos else None)
+        return i.urgency if i else ""
+
+    @property
+    def certainty(self) -> str:
+        i = self.english or (self.infos[0] if self.infos else None)
+        return i.certainty if i else ""
+
+    @property
+    def same_event(self) -> str | None:
+        for info in self.infos:
+            for name, value in info.event_codes:
+                if name.strip().upper() == 'SAME' and value.strip():
+                    return value.strip().upper()
+        return None
+
+    @property
+    def broadcast_immediately(self) -> bool:
+        return any(
+            info.param_dict().get('layer:sorem:1.0:broadcast_immediately', '').lower() == 'yes'
+            for info in self.infos
+        )
+
+    @property
+    def all_geocodes(self) -> tuple[str, ...]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for info in self.infos:
+            for area in info.areas:
+                for code in area.geocodes:
+                    if code and code not in seen:
+                        seen.add(code)
+                        values.append(code)
+        return tuple(values)
+
+    @property
+    def clc_codes(self) -> tuple[str, ...]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for info in self.infos:
+            for area in info.areas:
+                for code in area.clc_codes:
+                    if code and code not in seen:
+                        seen.add(code)
+                        values.append(code)
+        return tuple(values)
+
 
 def _parse_resource(el: ET.Element) -> CAPResource:
     b64 = el.findtext(_t("derefUri"))
@@ -148,9 +220,8 @@ def _parse_area(el: ET.Element) -> CAPArea:
         val = g.findtext(_t("value"))
         if not val:
             continue
-        if name == "profile:CAP-CP:Location:0.3":
-            geocodes.append(val)
-        elif name == "layer:EC-MSC-SMC:1.0:CLC":
+        geocodes.append(val)
+        if name == "layer:EC-MSC-SMC:1.0:CLC":
             clc_codes.append(val)
     for p in el.findall(_t("polygon")):
         if p.text:

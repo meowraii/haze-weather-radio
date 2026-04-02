@@ -3,17 +3,18 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
-import os
 import pathlib
 import time
-import wave
 from datetime import datetime
 from typing import Any
 
+import numpy as np
+
 from managed.events import append_runtime_event, push_alert, shutdown_event
 from module.alert import feed_same_codes
-from module.same import SAMEHeader, generate_same, to_pcm16
-from module.tts import synthesize
+from module.queue import CHANNELS, SAMPLE_RATE as BUS_SR
+from module.same import SAMEHeader, generate_same, resample, to_pcm16
+from module.tts import synthesize_pcm
 
 log = logging.getLogger(__name__)
 
@@ -48,26 +49,11 @@ def _week_of_month(dt: datetime) -> int:
     return (dt.day - 1) // 7 + 1
 
 
-def _concat_wavs(paths: list[pathlib.Path]) -> bytes:
-    frames: list[bytes] = []
-    params: tuple[int, int, int] | None = None
-    for p in paths:
-        with wave.open(str(p), 'rb') as wf:
-            if params is None:
-                params = (wf.getnchannels(), wf.getsampwidth(), wf.getframerate())
-            frames.append(wf.readframes(wf.getnframes()))
-    combined = b''.join(frames)
-    if not params:
-        return b''
-    buf_path = pathlib.Path('/tmp') / f'haze_test_concat_{int(time.time())}.wav'
-    with wave.open(str(buf_path), 'wb') as wf:
-        wf.setnchannels(params[0])
-        wf.setsampwidth(params[1])
-        wf.setframerate(params[2])
-        wf.writeframes(combined)
-    data = buf_path.read_bytes()
-    buf_path.unlink(missing_ok=True)
-    return data
+def _pcm_to_voice_array(pcm: bytes, same_sr: int) -> np.ndarray:
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32767.0
+    if CHANNELS == 2:
+        samples = samples.reshape(-1, 2).mean(axis=1)
+    return resample(samples, BUS_SR, same_sr)
 
 
 def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: str = 'RWT') -> bool:
@@ -94,26 +80,19 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
         locations = feed_same_codes(feed) or ['000000']
         feed_langs: list[str] = list(feed.get('languages', {}).keys()) or ['en-CA']
 
-        voice_wavs: list[pathlib.Path] = []
+        voice_pcm_parts: list[bytes] = []
         for lang in feed_langs:
             text = _match_lang_key(msg_map, lang)
             if not text:
                 continue
-            pkg_id = f'sametest_{event_code}_{lang}'
-            wav_path = synthesize(config, text, feed_id, pkg_id, lang=lang)
-            if wav_path and wav_path.exists():
-                voice_wavs.append(wav_path)
+            pcm = synthesize_pcm(config, text, lang=lang)
+            if pcm:
+                voice_pcm_parts.append(pcm)
 
-        voice_path: pathlib.Path | None = None
-        if voice_wavs:
-            if len(voice_wavs) == 1:
-                voice_path = voice_wavs[0]
-            else:
-                combined_bytes = _concat_wavs(voice_wavs)
-                combined_path = pathlib.Path('output') / feed_id / f'sametest_{event_code}_combined.wav'
-                combined_path.parent.mkdir(parents=True, exist_ok=True)
-                combined_path.write_bytes(combined_bytes)
-                voice_path = combined_path
+        voice_array: np.ndarray | None = None
+        if voice_pcm_parts:
+            combined_pcm = b''.join(voice_pcm_parts)
+            voice_array = _pcm_to_voice_array(combined_pcm, same_sr)
 
         header = SAMEHeader(
             originator='EAS',
@@ -126,24 +105,13 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
         full_signal = generate_same(
             header=header,
             tone_type=tone_type,
-            audio_msg_fp32=voice_path,
+            audio_msg_array=voice_array,
             sample_rate=same_sr,
             attn_duration_s=8.0,
         )
 
-        out_dir = pathlib.Path('output') / feed_id / 'alerts'
-        out_dir.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        out_path = out_dir / f'{event_code.lower()}_{ts}.wav'
-        tmp_path = out_dir / f'{event_code.lower()}_{ts}.tmp.wav'
-        with wave.open(str(tmp_path), 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(same_sr)
-            wf.writeframes(to_pcm16(full_signal))
-        os.replace(str(tmp_path), str(out_path))
-
-        push_alert(feed_id, 0, out_path)
+        alert_pcm = to_pcm16(resample(full_signal, same_sr, BUS_SR))
+        push_alert(feed_id, 0, alert_pcm, f'test_{event_code}_{int(time.time())}')
         log.info('[%s] Queued %s test: %s', feed_id, event_code, header.encode())
         fired_any = True
 

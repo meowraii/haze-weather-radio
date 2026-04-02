@@ -1,12 +1,14 @@
-# queue.py
-# 
-
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from typing import Protocol
-from . import load_config
+import logging
+import pathlib
+import time
+from typing import Any, Callable, Coroutine, Protocol
+
+from .tts import load_config
+
+log = logging.getLogger(__name__)
 
 config = load_config()
 
@@ -15,8 +17,14 @@ SAMPLE_RATE = config.get('playout', {}).get('sample_rate', 16000)
 CHANNELS = config.get('playout', {}).get('channels', 1)
 BYTES_PER_SAMPLE = 2
 
-class PlaybackInterrupted(Exception):
-    pass
+CHUNK_BYTES = CHUNK_SAMPLES * CHANNELS * BYTES_PER_SAMPLE
+CHUNK_DURATION = CHUNK_BYTES / (SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE)
+SILENCE_CHUNK = bytes(CHUNK_BYTES)
+
+_SEGMENT_QUEUE_LIMIT = 8
+_GAP_CHUNKS = max(1, round(1.0 / CHUNK_DURATION))
+
+OnSegmentStart = Callable[[], Coroutine[Any, Any, None]]
 
 
 class OutputSink(Protocol):
@@ -24,51 +32,154 @@ class OutputSink(Protocol):
     async def close(self) -> None: ...
 
 
-@dataclass
-class AudioBus:
-    _sinks: list[asyncio.Queue[bytes | None]] = field(default_factory=list)
+class AudioPipeline:
+    __slots__ = (
+        '_segment_queue', '_alert_queue', '_alert_active', '_alert_done',
+        '_shutdown', '_sinks', '_playout_task',
+    )
 
-    def subscribe(self) -> asyncio.Queue[bytes | None]:
-        q: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=512)
-        self._sinks.append(q)
-        return q
+    def __init__(self) -> None:
+        self._segment_queue: asyncio.Queue[tuple[pathlib.Path, OnSegmentStart | None]] = asyncio.Queue(
+            maxsize=_SEGMENT_QUEUE_LIMIT,
+        )
+        self._alert_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._alert_active = asyncio.Event()
+        self._alert_done = asyncio.Event()
+        self._alert_done.set()
+        self._shutdown = asyncio.Event()
+        self._sinks: list[tuple[OutputSink, str]] = []
+        self._playout_task: asyncio.Task | None = None
 
-    async def write(self, pcm: bytes, interrupt: asyncio.Event | None = None) -> None:
-        for i in range(0, len(pcm), CHUNK_SAMPLES * BYTES_PER_SAMPLE):
-            if interrupt is not None and interrupt.is_set():
-                raise PlaybackInterrupted
-            chunk = pcm[i:i + CHUNK_SAMPLES * BYTES_PER_SAMPLE]
-            await asyncio.gather(*(q.put(chunk) for q in self._sinks))
+    def attach_sink(self, sink: OutputSink, name: str = '') -> None:
+        self._sinks.append((sink, name))
 
-    def flush(self) -> None:
-        for q in self._sinks:
-            while not q.empty():
-                try:
-                    q.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+    @property
+    def alert_active(self) -> bool:
+        return self._alert_active.is_set()
 
-    async def close(self) -> None:
-        for sink_q in self._sinks:
-            await sink_q.put(None)
+    @property
+    def segments_queued(self) -> int:
+        return self._segment_queue.qsize()
 
+    async def enqueue_segment(
+        self, path: pathlib.Path, on_start: OnSegmentStart | None = None,
+    ) -> None:
+        await self._segment_queue.put((path, on_start))
 
-async def sink_runner(
-    sink: OutputSink,
-    q: asyncio.Queue[bytes | None],
-    shutdown: asyncio.Event,
-) -> None:
-    try:
-        while not shutdown.is_set():
-            chunk = await q.get()
-            if chunk is None:
-                break
+    def enqueue_alert(self, pcm: bytes) -> None:
+        self._alert_done.clear()
+        self._alert_queue.put_nowait(pcm)
+
+    async def wait_alert_done(self) -> None:
+        await self._alert_done.wait()
+
+    def start(self) -> None:
+        self._playout_task = asyncio.get_running_loop().create_task(
+            self._playout_loop(), name='playout',
+        )
+
+    async def stop(self) -> None:
+        self._shutdown.set()
+        if self._playout_task:
+            self._playout_task.cancel()
+            try:
+                await self._playout_task
+            except asyncio.CancelledError:
+                pass
+        for sink, name in self._sinks:
+            try:
+                await sink.close()
+            except Exception as exc:
+                log.error('Sink close failed (%s): %s', name, exc)
+
+    async def _write_sinks(self, chunk: bytes) -> None:
+        if not self._sinks:
+            return
+        if len(self._sinks) == 1:
+            sink, name = self._sinks[0]
             try:
                 await sink.write(chunk)
-            except Exception:
-                break
-    finally:
+            except Exception as exc:
+                log.error('Sink %s write failed: %s', name, exc)
+            return
+        results = await asyncio.gather(
+            *(sink.write(chunk) for sink, _ in self._sinks),
+            return_exceptions=True,
+        )
+        for (_, name), result in zip(self._sinks, results):
+            if isinstance(result, Exception):
+                log.error('Sink %s write failed: %s', name, result)
+
+    async def _stream_pcm(self, data: bytes, interruptible: bool = True) -> bool:
+        chunk_ns = int(CHUNK_DURATION * 1_000_000_000)
+        next_ns = time.monotonic_ns()
+        offset = 0
+        while offset < len(data) and not self._shutdown.is_set():
+            if interruptible and not self._alert_queue.empty():
+                return False
+            end = offset + CHUNK_BYTES
+            chunk = data[offset:end]
+            if len(chunk) < CHUNK_BYTES:
+                chunk += bytes(CHUNK_BYTES - len(chunk))
+            next_ns += chunk_ns
+            await self._write_sinks(chunk)
+            offset = end
+            sleep_ns = next_ns - time.monotonic_ns()
+            if sleep_ns > 0:
+                await asyncio.sleep(sleep_ns / 1_000_000_000)
+            elif sleep_ns < -chunk_ns * 8:
+                next_ns = time.monotonic_ns()
+        return True
+
+    async def _playout_loop(self) -> None:
+        chunk_ns = int(CHUNK_DURATION * 1_000_000_000)
+        next_silence_ns = time.monotonic_ns()
         try:
-            await sink.close()
-        except Exception:
-            pass
+            while not self._shutdown.is_set():
+                try:
+                    alert_pcm = self._alert_queue.get_nowait()
+                    self._alert_active.set()
+                    await self._stream_pcm(alert_pcm, interruptible=False)
+                    self._alert_active.clear()
+                    self._alert_done.set()
+                    next_silence_ns = time.monotonic_ns()
+                    continue
+                except asyncio.QueueEmpty:
+                    pass
+
+                try:
+                    segment_path, on_start = self._segment_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    await self._write_sinks(SILENCE_CHUNK)
+                    next_silence_ns += chunk_ns
+                    sleep_ns = next_silence_ns - time.monotonic_ns()
+                    if sleep_ns > 0:
+                        await asyncio.sleep(sleep_ns / 1_000_000_000)
+                    elif sleep_ns < -chunk_ns * 8:
+                        next_silence_ns = time.monotonic_ns()
+                    continue
+
+                if on_start:
+                    try:
+                        await on_start()
+                    except Exception:
+                        pass
+
+                try:
+                    data = await asyncio.to_thread(segment_path.read_bytes)
+                except Exception as exc:
+                    log.error('Segment read failed %s: %s', segment_path.name, exc)
+                    continue
+                finally:
+                    try:
+                        segment_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+                completed = await self._stream_pcm(data)
+                if completed:
+                    gap = SILENCE_CHUNK * _GAP_CHUNKS
+                    await self._stream_pcm(gap)
+                next_silence_ns = time.monotonic_ns()
+        except asyncio.CancelledError:
+            return

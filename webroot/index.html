@@ -31,6 +31,10 @@
                     <i data-lucide="radio" width="15" height="15"></i>
                     Feeds
                 </a>
+                <a class="sidebar-link" href="#wx-demand" data-section="wx-demand">
+                    <i data-lucide="cloud-sun" width="15" height="15"></i>
+                    WX On-Demand
+                </a>
                 <a class="sidebar-link" href="#events" data-section="events">
                     <i data-lucide="clock" width="15" height="15"></i>
                     Events
@@ -100,18 +104,21 @@
 
         <div class="main-wrap">
             <header class="topbar">
-                <h1 id="heroTitle">Haze Weather Radio</h1>
-                <p id="heroSubtitle">Waiting for server response.</p>
+                <div class="topbar-inner">
+                    <div>
+                        <h1 id="heroTitle">Haze Weather Radio</h1>
+                        <p id="heroSubtitle">Waiting for server response.</p>
+                    </div>
+                    <div id="summaryCards" class="metric-strip"></div>
+                </div>
             </header>
 
             <main class="dashboard">
 
-                <div id="summaryCards" class="metric-grid"></div>
-
                 <section class="section-block" id="feeds">
                     <div class="section-hd">
-                        <span>Broadcast Runtime</span>
-                        <span class="section-hd-sub">Per-feed outputs, active playlist, queue depth, and latest alert activity.</span>
+                        <span>Broadcast Feeds</span>
+                        <span class="section-hd-sub">Active playlist, alert queue depth, and output status per feed.</span>
                         <div class="section-hd-actions">
                             <button id="rwtButton" type="button" class="btn-action" title="Send Required Weekly Test to all enabled feeds">
                                 <i data-lucide="clock" width="13" height="13"></i>
@@ -124,15 +131,72 @@
                     </div>
                 </section>
 
+                <section class="section-block" id="wx-demand">
+                    <div class="section-hd">
+                        <span>WX On-Demand</span>
+                        <span class="section-hd-sub">Generate and stream audio packages on the fly for any feed.</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="wx-form">
+                            <div class="wx-row">
+                                <label>Feed</label>
+                                <select id="wxFeedSelect" class="input-field"></select>
+                            </div>
+                            <div class="wx-row">
+                                <label>Language</label>
+                                <select id="wxLangSelect" class="input-field">
+                                    <option value="en-CA">en-CA</option>
+                                    <option value="fr-CA">fr-CA</option>
+                                    <option value="es-US">es-US</option>
+                                </select>
+                            </div>
+                            <div class="wx-row">
+                                <label>Voice</label>
+                                <select id="wxVoiceSelect" class="input-field">
+                                    <option value="">Default</option>
+                                    <option value="male">Male</option>
+                                    <option value="female">Female</option>
+                                </select>
+                            </div>
+                            <div class="wx-row">
+                                <label>Codec</label>
+                                <select id="wxCodecSelect" class="input-field">
+                                    <option value="raw">RAW (s16le PCM)</option>
+                                    <option value="wav" selected>WAV</option>
+                                    <option value="mp3">MP3</option>
+                                    <option value="ogg">OGG Vorbis</option>
+                                    <option value="flac">FLAC</option>
+                                </select>
+                            </div>
+                            <div class="wx-row wx-row-packages">
+                                <label>Packages</label>
+                                <div class="pkg-chips" id="pkgChips"></div>
+                            </div>
+                            <div class="wx-row wx-row-actions">
+                                <button type="button" id="wxGenerateBtn" class="btn-primary">
+                                    <i data-lucide="play" width="13" height="13"></i>
+                                    Generate &amp; Play
+                                </button>
+                                <button type="button" id="wxStopBtn" class="btn-ghost" disabled>
+                                    <i data-lucide="square" width="13" height="13"></i>
+                                    Stop
+                                </button>
+                                <span id="wxStatus" class="wx-status"></span>
+                            </div>
+                            <audio id="wxAudio" controls style="display:none;width:100%;margin-top:10px"></audio>
+                        </div>
+                    </div>
+                </section>
+
                 <section class="section-block" id="events">
                     <div class="section-hd"><span>Runtime Events</span></div>
-                    <div class="section-body">
+                    <div class="section-body pad-none">
                         <div class="event-list" id="eventsList"></div>
                     </div>
                 </section>
 
-                <div class="two-col">
-                    <section class="section-block" id="logs" style="margin-top:0">
+                <div class="two-col" id="logs">
+                    <section class="section-block" style="margin-top:0">
                         <div class="section-hd">
                             <span>Log Tail</span>
                             <select id="logSourceSelect" class="hd-select">
@@ -140,14 +204,14 @@
                                 <option value="same">SAME Audit</option>
                             </select>
                         </div>
-                        <div class="section-body">
+                        <div class="section-body pad-none">
                             <pre class="code-view" id="logsView">No logs loaded.</pre>
                         </div>
                     </section>
 
                     <section class="section-block" id="datapool" style="margin-top:0">
                         <div class="section-hd"><span>Shared Weather State</span></div>
-                        <div class="section-body">
+                        <div class="section-body pad-none">
                             <pre class="code-view" id="datapoolView">No data loaded.</pre>
                         </div>
                     </section>
@@ -155,7 +219,7 @@
 
                 <section class="section-block" id="config">
                     <div class="section-hd"><span>Runtime Configuration</span></div>
-                    <div class="section-body">
+                    <div class="section-body pad-none">
                         <pre class="code-view" id="configView">No configuration loaded.</pre>
                     </div>
                 </section>
