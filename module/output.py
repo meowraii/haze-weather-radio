@@ -18,7 +18,7 @@ try:
 except Exception:
     sd = None
 
-from module.queue import CHANNELS, SAMPLE_RATE
+from module.queue import CHANNELS, CHUNK_DURATION, SAMPLE_RATE
 
 log = logging.getLogger(__name__)
 
@@ -174,6 +174,8 @@ class FileSink:
 
 _PIFM_RECONNECT_DELAYS = (2.0, 5.0, 10.0, 30.0)
 _PIFM_QUEUE_LIMIT = 128
+_PIFM_QUEUE_HIGH_WATER = max(8, _PIFM_QUEUE_LIMIT // 4)
+_PIFM_WRITE_STALL_SECONDS = max(1.0, CHUNK_DURATION * 8)
 
 _RADIO_DYNAMICS = (
     'acompressor=threshold=-18dB:ratio=10:attack=20:release=200:makeup=16dB,'
@@ -261,6 +263,9 @@ class PiFmAdvSink:
         self._queue: _stdlib_queue.Queue[bytes | None] = _stdlib_queue.Queue(
             maxsize=_PIFM_QUEUE_LIMIT,
         )
+        self._resync_requested = threading.Event()
+        self._resync_reason = ''
+        self._state_lock = threading.Lock()
         self._writer_thread = threading.Thread(
             target=self._writer_loop,
             name=f'pifmadv:{freq_mhz}',
@@ -287,6 +292,7 @@ class PiFmAdvSink:
                 stdin=subprocess.PIPE,
                 stdout=self._fm.stdin,
                 stderr=subprocess.DEVNULL,
+                bufsize=0,
             )
             if self._fm.stdin is not None:
                 self._fm.stdin.close()
@@ -296,6 +302,7 @@ class PiFmAdvSink:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                bufsize=0,
             )
             self._fm = subprocess.Popen(
                 self._fm_cmd,
@@ -318,6 +325,24 @@ class PiFmAdvSink:
             self._ffmpeg is not None and self._ffmpeg.poll() is None
             and self._fm is not None and self._fm.poll() is None
         )
+
+    def _request_resync(self, reason: str) -> None:
+        if self._closed:
+            return
+        with self._state_lock:
+            if self._resync_requested.is_set():
+                return
+            self._resync_reason = reason
+            self._resync_requested.set()
+
+    def _consume_resync_reason(self) -> str | None:
+        if not self._resync_requested.is_set():
+            return None
+        with self._state_lock:
+            reason = self._resync_reason or 'sink fell behind real-time delivery'
+            self._resync_reason = ''
+            self._resync_requested.clear()
+            return reason
 
     def _drain_queue(self) -> None:
         drained = 0
@@ -367,6 +392,13 @@ class PiFmAdvSink:
 
     def _writer_loop(self) -> None:
         while not self._closed:
+            resync_reason = self._consume_resync_reason()
+            if resync_reason is not None:
+                log.warning('PiFmAdv: %s — resyncing pipeline', resync_reason)
+                self._kill_pipeline()
+                self._drain_queue()
+                self._reconnect_with_drain()
+                continue
             try:
                 chunk = self._queue.get(timeout=0.5)
             except _stdlib_queue.Empty:
@@ -386,8 +418,14 @@ class PiFmAdvSink:
                 continue
             try:
                 if self._ffmpeg and self._ffmpeg.stdin and not self._ffmpeg.stdin.closed:
+                    write_started = time.monotonic()
                     self._ffmpeg.stdin.write(chunk)
                     self._ffmpeg.stdin.flush()
+                    write_elapsed = time.monotonic() - write_started
+                    if write_elapsed > _PIFM_WRITE_STALL_SECONDS:
+                        self._request_resync(
+                            f'downstream write stalled for {write_elapsed:.2f}s'
+                        )
                 else:
                     raise BrokenPipeError('ffmpeg stdin unavailable')
             except (BrokenPipeError, OSError, ValueError) as exc:
@@ -400,10 +438,21 @@ class PiFmAdvSink:
     async def write(self, pcm: bytes) -> None:
         if self._closed or not pcm:
             return
+        queued = self._queue.qsize()
+        if queued >= _PIFM_QUEUE_HIGH_WATER:
+            self._request_resync(f'queue backlog reached {queued} chunks')
         try:
             self._queue.put_nowait(pcm)
         except _stdlib_queue.Full:
-            pass
+            self._request_resync('queue backlog reached capacity')
+            try:
+                self._queue.get_nowait()
+            except _stdlib_queue.Empty:
+                return
+            try:
+                self._queue.put_nowait(pcm)
+            except _stdlib_queue.Full:
+                return
 
     async def close(self) -> None:
         if self._closed:
