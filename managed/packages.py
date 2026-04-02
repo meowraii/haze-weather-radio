@@ -257,6 +257,34 @@ _CC_PH: dict[str, dict[str, str]] = {
     },
 }
 
+_FC_PH: dict[str, dict[str, str]] = {
+    'en': {
+        'eccc_opener': "Your official Environment Canada forecast for the {name} region issued at {time}.",
+        'eccc_unavailable': "The forecast for the {name} region is unavailable at this time.",
+        'nws_opener': "Now for your official National Weather Service forecast for {name}, issued at {time}.",
+        'twc_opener': "The forecast, courtesy of The Weather Channel, for {name} issued at {time}.",
+        'generic_unavailable': "The forecast for {name} is unavailable at this time.",
+        'generic_opener': "The forecast for {name} issued at {time}.",
+    },
+    'fr': {
+        'eccc_opener': "Votre prévision officielle d'Environnement Canada pour la région de {name} émise à {time}.",
+        'eccc_unavailable': "La prévision pour la région de {name} n'est pas disponible pour le moment.",
+        'nws_opener': "Voici votre prévision officielle du Service météorologique national pour {name}, émise à {time}.",
+        'twc_opener': "La prévision, courtoisie de The Weather Channel, pour {name} émise à {time}.",
+        'generic_unavailable': "La prévision pour {name} n'est pas disponible pour le moment.",
+        'generic_opener': "La prévision pour {name} émise à {time}.",
+    },
+    'es': {
+        'eccc_opener': "Su pronóstico oficial de Environment Canada para la región de {name} emitido a las {time}.",
+        'eccc_unavailable': "El pronóstico para la región de {name} no está disponible en este momento.",
+        'nws_opener': "Ahora para su pronóstico oficial del Servicio Meteorológico Nacional para {name}, emitido a las {time}.",
+        'twc_opener': "El pronóstico, cortesía de The Weather Channel, para {name} emitido a las {time}.",
+        'generic_unavailable': "El pronóstico para {name} no está disponible en este momento.",
+        'generic_opener': "El pronóstico para {name} emitido a las {time}.",
+    },
+}
+
+
 _AE_PH: dict[str, dict[str, str]] = {
     'en': {
         'opener': "The {name} climate summary for {period}. As of {time}, {date}. Courtesy of {source}.",
@@ -331,24 +359,6 @@ _AE_PH: dict[str, dict[str, str]] = {
         'snow_on_ground': "Había {val} centímetros de nieve en el suelo.",
         'sunset_tonight': "El sol se pondrá a las {time} esta noche.",
         'sunrise_tomorrow': "El sol saldrá a las {time} mañana.",
-    },
-}
-
-_FX_PH: dict[str, dict[str, str]] = {
-    'en': {
-        'intro':       "Here is the forecast for {name}.",
-        'unavailable': "Forecast information for {name} is unavailable at this time.",
-        'station':     "this station",
-    },
-    'fr': {
-        'intro':       "Voici les prévisions pour {name}.",
-        'unavailable': "Les informations de prévision pour {name} ne sont pas disponibles pour le moment.",
-        'station':     "cette station",
-    },
-    'es': {
-        'intro':       "Aquí está el pronóstico para {name}.",
-        'unavailable': "La información del pronóstico para {name} no está disponible en este momento.",
-        'station':     "esta estación",
     },
 }
 
@@ -970,9 +980,11 @@ def forecast_package(
 ) -> str:
     _lang = lang or 'en-CA'
     lang_short = _lang[:2]
-    fx = _FX_PH.get(lang_short, _FX_PH['en'])
+    fx = _FC_PH.get(lang_short, _FC_PH['en'])
     if forecast_data is None:
-        return fx['unavailable'].format(name=location_name or fx['station'])
+        return fx['generic_unavailable'].format(name=location_name or fx['station'])
+
+    source_key = str(forecast_data.get('source') or '').strip().lower()
 
     name_block = forecast_data.get('name') or {}
     forecast_name = None
@@ -985,9 +997,13 @@ def forecast_package(
 
     forecasts = forecast_data.get('forecast', [])
     if not forecasts:
-        return fx['unavailable'].format(name=loc_name)
+        unavailable_key = f'{source_key}_unavailable' if source_key else 'generic_unavailable'
+        return fx.get(unavailable_key, fx['generic_unavailable']).format(name=loc_name)
 
-    sentences: list[str] = [fx['intro'].format(name=loc_name)]
+    opener_key = f'{source_key}_opener' if source_key else 'generic_opener'
+    opener = fx.get(opener_key, fx['generic_opener'])
+    time_str = _format_time_spoken(datetime.datetime.now().astimezone())
+    sentences: list[str] = [opener.format(name=loc_name, time=time_str)]
 
     for period in forecasts[:6]:
         if not isinstance(period, dict):
