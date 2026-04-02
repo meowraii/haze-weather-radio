@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 import logging
 import pathlib
 import secrets
+import subprocess
 import threading
 import time
 import wave
@@ -14,12 +16,13 @@ from typing import Any, cast
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from managed.events import (
     append_runtime_event,
+    read_data_pool,
     snapshot_alert_queues,
     snapshot_data_pool,
     snapshot_playout_sequences,
@@ -54,7 +57,72 @@ class SAMAirRequest(BaseModel):
     air_on_all_feeds: bool = False
 
 
-_MANAGED_ALLOWLIST: frozenset[str] = frozenset({'userbulletins.json', 'dictionary.json', 'packages.py', 'sameTemplate.json'})
+_ALL_PACKAGES = ('date_time', 'station_id', 'current_conditions', 'forecast',
+                 'climate_summary', 'eccc_discussion', 'geophysical_alert', 'user_bulletin')
+
+
+_FORMAT_MEDIA_TYPES: dict[str, str] = {
+    'raw':      'audio/raw',
+    'wav':      'audio/wav',
+    'mp3':      'audio/mpeg',
+    'ogg':      'audio/ogg',
+    'flac':     'audio/flac',
+    'aac':      'audio/aac',
+    'opus':     'audio/ogg; codecs=opus',
+    'ulaw':     'audio/basic',
+    'alaw':     'audio/x-alaw',
+    'g722':     'audio/G722',
+    'webm':     'audio/webm',
+    'json':     'application/json',
+    'xml':      'application/xml',
+    'ssml':     'application/ssml+xml',
+    'html':     'text/html; charset=utf-8',
+    'markdown': 'text/markdown; charset=utf-8',
+    'latex':    'application/x-latex',
+}
+
+_FORMAT_FFMPEG_ARGS: dict[str, list[str]] = {
+    'mp3':  ['-c:a', 'libmp3lame', '-q:a', '2',           '-f', 'mp3'],
+    'ogg':  ['-c:a', 'libvorbis',  '-q:a', '6',           '-f', 'ogg'],
+    'flac': ['-c:a', 'flac',                               '-f', 'flac'],
+    'aac':  ['-c:a', 'aac',        '-b:a', '128k',        '-f', 'adts'],
+    'opus': ['-c:a', 'libopus',    '-b:a', '32k',         '-f', 'ogg'],
+    'ulaw': ['-c:a', 'pcm_mulaw',  '-ar',  '8000', '-ac', '1', '-f', 'mulaw'],
+    'alaw': ['-c:a', 'pcm_alaw',   '-ar',  '8000', '-ac', '1', '-f', 'alaw'],
+    'g722': ['-c:a', 'g722',                               '-f', 'g722'],
+    'webm': ['-c:a', 'libopus',    '-b:a', '32k',         '-f', 'webm'],
+}
+
+_TEXT_FORMATS: frozenset[str] = frozenset({'json', 'xml', 'ssml', 'html', 'markdown', 'latex'})
+
+
+
+class WXGenerateRequest(BaseModel):
+    locations: list[str] | str = []
+    packages:  list[str] | str = 'all'
+    source:    str | None      = None
+    lang:      str             = 'en-CA'
+    voice:     str | None      = None
+    format:    str             = 'raw'
+
+
+_MANAGED_ALLOWLIST: frozenset[str] = frozenset({'userbulletins.json', 'dictionary.json', 'packages.py', 'sameTemplate.json', 'sameTest.json', 'sameMapping.json'})
+
+_WX_SOURCES: frozenset[str] = frozenset({'eccc', 'nws', 'twc'})
+
+
+def _normalize_wx_source(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized or normalized in {'auto', 'any', 'all'}:
+        return None
+    aliases = {
+        'weather.com': 'twc',
+        'weatherdotcom': 'twc',
+        'weather_dot_com': 'twc',
+    }
+    return aliases.get(normalized, normalized)
 
 
 def _coerce_mapping(value: Any) -> dict[str, Any]:
@@ -140,6 +208,11 @@ class WebServer:
         base_path = str(rest_cfg.get('base_path') or '/api/v1')
         return '/' + base_path.strip('/')
 
+    def _wx_base(self) -> str:
+        wx_cfg = _coerce_mapping(self.config.get('wx_on_demand', {}))
+        base = str(wx_cfg.get('endpoint-base') or '/api/wx-on-demand/v1')
+        return '/' + base.strip('/')
+
     def _auth_enabled(self) -> bool:
         return bool(self._auth_cfg().get('enabled', True))
 
@@ -213,15 +286,21 @@ class WebServer:
         for feed in self.config.get('feeds', []):
             feed_id = feed.get('id', 'unknown')
             feed_data_keys = sorted(key for key in data_pool if str(key).startswith(f'{feed_id}:'))
-            sequence = [path.name for path in sequences.get(feed_id, [])]
+            sequence = [item.pkg_id for item in sequences.get(feed_id, [])]
             clc_codes = feed_same_codes(feed)
+            location_count = 0
+            for block in feed.get('locations', []):
+                if not isinstance(block, dict):
+                    continue
+                location_count += len([entry for entry in block.get('observationLocations', []) if isinstance(entry, dict)])
+                location_count += len([entry for entry in block.get('forecastLocations', []) if isinstance(entry, dict)])
             feeds.append({
                 'id': feed_id,
                 'name': feed.get('name', feed_id),
                 'enabled': bool(feed.get('enabled', True)),
                 'timezone': feed.get('timezone', 'UTC'),
                 'languages': list(feed.get('languages', {}).keys()) or [feed.get('language', 'en-CA')],
-                'location_count': len(feed.get('locations', [])),
+                'location_count': location_count,
                 'outputs': self._feed_output_modes(feed),
                 'playlist_items': sequence,
                 'playlist_count': len(sequence),
@@ -309,7 +388,8 @@ class WebServer:
             dependencies=[Depends(self._require_auth)],
         )
         self.app.add_api_route('/editor', self.editor_page, methods=['GET'])
-        self.app.add_api_route('/same', self.same_page, methods=['GET'])
+        self.app.add_api_route('/same',   self.same_page,   methods=['GET'])
+        self.app.add_api_route('/wx',     self.wx_root,     methods=['GET'])
         self.app.add_api_route(
             f'{api_base}/managed/{{filename}}',
             self.managed_read,
@@ -358,6 +438,10 @@ class WebServer:
             methods=['GET'],
             dependencies=[Depends(self._require_auth)],
         )
+        wx_base = self._wx_base()
+        self.app.add_api_route(wx_base,                   self.wx_root,     methods=['GET'])
+        self.app.add_api_route(f'{wx_base}/generate',     self.wx_generate, methods=['POST'])
+        self.app.add_api_route(f'{wx_base}/packages',     self.wx_packages, methods=['GET'])
 
     async def index(self) -> FileResponse:
         return FileResponse(self.webroot / 'index.html')
@@ -369,6 +453,7 @@ class WebServer:
         return {
             'ok': True,
             'auth_required': self._auth_enabled(),
+            'wx_base': self._wx_base(),
             'started_at': datetime.fromtimestamp(self.started_at, timezone.utc).isoformat(),
             'uptime_seconds': round(time.time() - self.started_at, 1),
         }
@@ -440,7 +525,8 @@ class WebServer:
     async def same_event_codes(self) -> dict[str, Any]:
         path = self.root_dir / 'managed' / 'sameMapping.json'
         with open(path, encoding='utf-8') as f:
-            return json.load(f)
+            same_mapping = json.load(f)
+            return same_mapping.get('eas', {})
 
     async def same_templates_get(self) -> dict[str, Any]:
         path = self.root_dir / 'managed' / 'sameTemplate.json'
@@ -531,6 +617,7 @@ class WebServer:
         tone: str | None = payload.tone_type.upper() if payload.tone_type.upper() != 'NONE' else None
 
         voice_path: pathlib.Path | None = None
+        voice_array = None
         if payload.audio_file_path.strip():
             upload_dir = self.root_dir / 'output' / '_uploads'
             candidate = pathlib.Path(payload.audio_file_path)
@@ -542,36 +629,325 @@ class WebServer:
                 raise HTTPException(status_code=400, detail='Audio file not found')
             voice_path = candidate
         elif payload.voice_message.strip():
-            from module.tts import synthesize
-            voice_path = synthesize(self.config, payload.voice_message.strip(), target_ids[0], 'manual_same')
+            from module.tts import synthesize_pcm
+            from module.queue import CHANNELS, SAMPLE_RATE as BUS_SR
+            from module.same import resample as _resample
+            import numpy as np
+            pcm = synthesize_pcm(self.config, payload.voice_message.strip())
+            if pcm:
+                samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32767.0
+                if CHANNELS == 2:
+                    samples = samples.reshape(-1, 2).mean(axis=1)
+                same_sr_v = int(self.config.get('same', {}).get('sample_rate_hz', 22050))
+                voice_array = _resample(samples, BUS_SR, same_sr_v)
 
         same_sr: int = int(self.config.get('same', {}).get('sample_rate_hz', 22050))
         full_signal = generate_same(
             header=header,
             tone_type=tone,
             audio_msg_fp32=voice_path,
+            audio_msg_array=voice_array,
             sample_rate=same_sr,
             attn_duration_s=8.0,
         )
-        out_dir = self.root_dir / 'output' / target_ids[0] / 'alerts'
-        out_dir.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        out_path = out_dir / f'manual_{ts}.wav'
-        tmp_path = out_dir / f'manual_{ts}.tmp.wav'
-        with wave.open(str(tmp_path), 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(same_sr)
-            wf.writeframes(to_pcm16(full_signal))
-        os.replace(str(tmp_path), str(out_path))
+
+        from module.queue import SAMPLE_RATE as _BUS_SR
+        from module.same import resample as _resample2
+        alert_pcm = to_pcm16(_resample2(full_signal, same_sr, _BUS_SR))
 
         from managed.events import push_alert
         for fid in target_ids:
-            push_alert(fid, 0, out_path)
+            push_alert(fid, 0, alert_pcm, f'manual_{int(time.time())}')
 
         encoded = header.encode()
         append_runtime_event('manual-same', f'Manual SAME aired: {encoded} → {", ".join(target_ids)}')
-        return {'ok': True, 'header': encoded, 'feed_id': target_ids[0], 'feeds_aired': target_ids, 'path': str(out_path)}
+        return {'ok': True, 'header': encoded, 'feed_id': target_ids[0], 'feeds_aired': target_ids}
+
+    async def wx_packages(self) -> dict[str, Any]:
+        return {'packages': list(_ALL_PACKAGES)}
+
+    async def wx_root(self) -> FileResponse:
+        return FileResponse(self.webroot / 'wx.html')
+
+    async def wx_generate(self, payload: WXGenerateRequest) -> StreamingResponse:
+        from module.tts import synthesize_pcm_stream
+        from managed.packages import (
+            alerts_package, climate_summary_package, current_conditions_package,
+            date_time_package, eccc_discussion_package, forecast_package,
+            geophysical_alert_package, station_id, user_bulletin_package,
+        )
+        import json as _json
+        import pathlib as _pl
+
+        fmt = (payload.format or 'raw').lower()
+        if fmt not in _FORMAT_MEDIA_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f'Invalid format {fmt!r}. Valid options: {", ".join(sorted(_FORMAT_MEDIA_TYPES))}',
+            )
+
+        requested_source = _normalize_wx_source(payload.source)
+        if requested_source is not None and requested_source not in _WX_SOURCES:
+            raise HTTPException(
+                status_code=400,
+                detail=f'Invalid source {payload.source!r}. Valid options: auto, eccc, nws, twc',
+            )
+
+        feeds_cfg = self.config.get('feeds', [])
+
+        obs_index:  dict[str, list[tuple[str, str, str, dict[str, Any]]]] = {}
+        fcst_index: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
+        clim_index: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
+        for _feed in feeds_cfg:
+            _fid = _feed.get('id', '')
+            _tz  = _feed.get('timezone', 'UTC')
+            for _block in _feed.get('locations', []):
+                if not isinstance(_block, dict):
+                    continue
+                for _e in _block.get('observationLocations', []):
+                    _lid = _e.get('id', '')
+                    _source = _normalize_wx_source(_e.get('source') or _feed.get('data_source') or 'eccc') or 'eccc'
+                    if _lid:
+                        obs_index.setdefault(_lid, []).append((_source, _fid, _tz, _e))
+                for _e in _block.get('forecastLocations', []):
+                    _lid = _e.get('id', '')
+                    _source = _normalize_wx_source(_e.get('source') or _feed.get('data_source') or 'eccc') or 'eccc'
+                    if _lid:
+                        fcst_index.setdefault(_lid, []).append((_source, _fid, _e))
+                for _e in _block.get('climateLocations', []):
+                    _lid = _e.get('id', '')
+                    _source = _normalize_wx_source(_e.get('source') or _feed.get('data_source') or 'eccc') or 'eccc'
+                    if _lid:
+                        clim_index.setdefault(_lid, []).append((_source, _fid, _e))
+
+        def _pick_match[T](matches: list[T], source_getter) -> T | None:
+            if not matches:
+                return None
+            if requested_source is None:
+                return matches[0]
+            for match in matches:
+                if source_getter(match) == requested_source:
+                    return match
+            return None
+
+        requested_locs = [
+            str(location_id).strip()
+            for location_id in (
+                [payload.locations] if isinstance(payload.locations, str)
+                else list(payload.locations)
+            )
+            if str(location_id).strip()
+        ]
+        resolved_obs = [
+            match for lid in requested_locs
+            if (match := _pick_match(obs_index.get(lid, []), lambda item: item[0])) is not None
+        ]
+        resolved_fcst = [
+            match for lid in requested_locs
+            if (match := _pick_match(fcst_index.get(lid, []), lambda item: item[0])) is not None
+        ]
+        resolved_clim = [
+            match for lid in requested_locs
+            if (match := _pick_match(clim_index.get(lid, []), lambda item: item[0])) is not None
+        ]
+
+        tz              = 'UTC'
+        primary_feed_id = feeds_cfg[0].get('id', '') if feeds_cfg else ''
+        primary_feed    = feeds_cfg[0]                if feeds_cfg else {}
+        if resolved_obs:
+            _, primary_feed_id, tz, _ = resolved_obs[0]
+        elif resolved_fcst:
+            _, primary_feed_id, _ = resolved_fcst[0]
+        elif resolved_clim:
+            _, primary_feed_id, _ = resolved_clim[0]
+        if primary_feed_id:
+            primary_feed = next((f for f in feeds_cfg if f.get('id') == primary_feed_id), primary_feed)
+            tz = primary_feed.get('timezone', tz)
+
+        lang = payload.lang or primary_feed.get('language', self.config.get('language', 'en-CA'))
+
+        requested_packages = (
+            [payload.packages] if isinstance(payload.packages, str)
+            else list(payload.packages)
+        )
+        requested: list[str] = (
+            list(_ALL_PACKAGES)
+            if len(requested_packages) == 1 and str(requested_packages[0]).strip().lower() == 'all'
+            else [str(package_id) for package_id in requested_packages if str(package_id) in _ALL_PACKAGES]
+        )
+        if not requested:
+            raise HTTPException(status_code=400, detail='No valid packages requested')
+
+        focn45 = read_data_pool('focn45')
+        discussion_text: str | None = (
+            getattr(focn45, 'text', None) or (focn45 if isinstance(focn45, str) else None)
+        )
+        wwv_text: str | None = read_data_pool('wwv')
+
+        try:
+            bulletins_raw = (_pl.Path('managed') / 'userbulletins.json').read_text(encoding='utf-8')
+            bulletins: list[Any] = _json.loads(bulletins_raw)
+        except Exception:
+            bulletins = []
+
+        try:
+            registry_raw = (_pl.Path('data') / 'alertsRegistry.json').read_text(encoding='utf-8')
+            registry: list[Any] = _json.loads(registry_raw)
+        except Exception:
+            registry = []
+
+        conditions_parts = [
+            current_conditions_package(
+                read_data_pool(f"{fid}:{entry.get('id')}") if entry.get('id') else None,
+                entry.get('name_override') or entry.get('name'),
+                lang,
+                secondary=(i > 0),
+            )
+            for i, (_, fid, _, entry) in enumerate(resolved_obs)
+        ]
+        forecast_parts = [
+            forecast_package(
+                read_data_pool(f"{fid}:forecast:{entry.get('id')}") if entry.get('id') else None,
+                entry.get('name_override') or entry.get('name'),
+                lang,
+            )
+            for _, fid, entry in resolved_fcst
+        ]
+        climate_parts = [
+            climate_summary_package(
+                read_data_pool(f"{fid}:climate:{entry.get('id')}") if entry.get('id') else None,
+                entry.get('name_override') or entry.get('name'),
+                lang,
+            )
+            for _, fid, entry in resolved_clim
+        ]
+
+        pkg_lookup: dict[str, str] = {
+            'date_time':          date_time_package(tz, lang),
+            'station_id':         station_id(self.config, primary_feed_id, lang),
+            'current_conditions': '  '.join(p for p in conditions_parts if p),
+            'forecast':           '  '.join(p for p in forecast_parts if p),
+            'climate_summary':    '  '.join(p for p in climate_parts if p),
+            'eccc_discussion':    eccc_discussion_package(discussion_text, None, lang) if discussion_text else '',
+            'geophysical_alert':  geophysical_alert_package(wwv_text) if wwv_text else '',
+            'user_bulletin':      user_bulletin_package(bulletins, lang, tz),
+            'alerts':             alerts_package(registry, lang, tz, primary_feed),
+        }
+
+        voice   = payload.voice
+        loc_str = ', '.join(requested_locs) if requested_locs else 'unspecified'
+        source_label = requested_source or 'auto'
+        append_runtime_event('wx-generate', f'On-demand WX: {requested} [{lang}] fmt={fmt} source={source_label} locs={loc_str}')
+
+        if fmt in _TEXT_FORMATS:
+            pkg_texts = {pkg_id: pkg_lookup.get(pkg_id, '') for pkg_id in requested}
+            if fmt == 'json':
+                body = _json.dumps({'packages': pkg_texts, 'locations': requested_locs, 'lang': lang}).encode()
+            elif fmt == 'xml':
+                parts = [f'  <package id="{p}">{t}</package>' for p, t in pkg_texts.items() if t]
+                body = ('<?xml version="1.0" encoding="UTF-8"?>\n<wx>\n' + '\n'.join(parts) + '\n</wx>').encode()
+            elif fmt == 'ssml':
+                paras = '\n  '.join(f'<p>{t}</p>' for t in pkg_texts.values() if t)
+                body = (
+                    f'<speak version="1.1" xmlns="http://www.w3.org/2001/10/synthesis"'
+                    f' xml:lang="{lang}">\n  {paras}\n</speak>'
+                ).encode()
+            elif fmt == 'html':
+                rows = '\n'.join(
+                    f'<section id="{p}"><h2>{p.replace("_", " ").title()}</h2><p>{t}</p></section>'
+                    for p, t in pkg_texts.items() if t
+                )
+                body = (
+                    f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
+                    f'<title>Weather Report</title></head><body>{rows}</body></html>'
+                ).encode()
+            elif fmt == 'markdown':
+                body = '\n\n'.join(
+                    f'## {p.replace("_", " ").title()}\n\n{t}' for p, t in pkg_texts.items() if t
+                ).encode()
+            else:
+                sections = '\n\n'.join(
+                    f'\\section{{{p.replace("_", " ").title()}}}\n{t}' for p, t in pkg_texts.items() if t
+                )
+                body = (
+                    '\\documentclass{article}\n\\usepackage[utf8]{inputenc}\n'
+                    '\\begin{document}\n\\title{Weather Report}\n\\maketitle\n'
+                    f'{sections}\n\\end{{document}}'
+                ).encode()
+            return StreamingResponse(
+                iter([body]),
+                media_type=_FORMAT_MEDIA_TYPES[fmt],
+                headers={
+                    'X-Packages':     ','.join(requested),
+                    'X-Format':       fmt,
+                    'X-Source':       source_label,
+                    'Content-Length': str(len(body)),
+                },
+            )
+
+        from module.queue import SAMPLE_RATE as _BUS_SR, CHANNELS as _BUS_CH
+
+        def _pcm_generator():
+            for pkg_id in requested:
+                text = pkg_lookup.get(pkg_id, '')
+                if not text:
+                    continue
+                yield from synthesize_pcm_stream(self.config, text, lang=lang, voice=voice)
+
+        common_headers = {
+            'X-Audio-Sample-Rate': str(_BUS_SR),
+            'X-Audio-Channels':    str(_BUS_CH),
+            'X-Packages':          ','.join(requested),
+            'X-Format':            fmt,
+            'X-Source':            source_label,
+        }
+
+        if fmt == 'raw':
+            return StreamingResponse(
+                _pcm_generator(),
+                media_type='audio/raw',
+                headers={'X-Audio-Encoding': 's16le', **common_headers},
+            )
+
+        pcm = b''.join(_pcm_generator())
+
+        if fmt == 'wav':
+            buf = io.BytesIO()
+            with wave.open(buf, 'wb') as wf:
+                wf.setnchannels(_BUS_CH)
+                wf.setsampwidth(2)
+                wf.setframerate(_BUS_SR)
+                wf.writeframes(pcm)
+            data = buf.getvalue()
+        else:
+            ffmpeg_extra = _FORMAT_FFMPEG_ARGS.get(fmt, [])
+            result = subprocess.run(
+                [
+                    'ffmpeg', '-y', '-loglevel', 'error',
+                    '-f', 's16le', '-ar', str(_BUS_SR), '-ac', str(_BUS_CH), '-i', 'pipe:0',
+                    *ffmpeg_extra, 'pipe:1',
+                ],
+                input=pcm,
+                capture_output=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f'Transcoding failed: {result.stderr.decode("utf-8", errors="replace")[:300]}',
+                )
+            data = result.stdout
+
+        common_headers['Content-Length'] = str(len(data))
+
+        async def _yield_once():
+            yield data
+
+        return StreamingResponse(
+            _yield_once(),
+            media_type=_FORMAT_MEDIA_TYPES[fmt],
+            headers=common_headers,
+        )
 
     def start(self) -> threading.Thread:
         panel_cfg = self._panel_cfg()

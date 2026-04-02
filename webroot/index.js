@@ -119,10 +119,10 @@ function renderSummary(summary) {
 	const totalQueue = (summary.feeds || []).reduce((n, f) => n + (f.alert_queue_depth || 0), 0);
 
 	const cards = [
-		['Feeds Online', `${enabled}/${total}`],
-		['Alert Queue', totalQueue],
-		['Data Pool Keys', summary.data_pool_key_count],
-		['Uptime', formatUptime(summary.uptime_seconds)],
+		['Feeds', `${enabled}/${total}`],
+		['Queue', totalQueue],
+		['Keys', summary.data_pool_key_count],
+		['Up', formatUptime(summary.uptime_seconds)],
 	];
 
 	summaryCards.innerHTML = cards.map(([label, value]) => `
@@ -156,7 +156,18 @@ function renderSidebarFeeds(feeds) {
 	}).join('');
 }
 
+function populateWxFeedSelect(feeds) {
+	const sel = document.getElementById('wxFeedSelect');
+	if (!sel) return;
+	const prev = sel.value;
+	sel.innerHTML = feeds.map((f) =>
+		`<option value="${f.id}">${f.name || f.id}</option>`
+	).join('');
+	if (prev && feeds.some((f) => f.id === prev)) sel.value = prev;
+}
+
 function renderFeeds(feeds) {
+	populateWxFeedSelect(feeds);
 	renderSidebarFeeds(feeds);
 
 	if (!feeds.length) {
@@ -239,6 +250,172 @@ async function refreshDashboard() {
 	setCodeBlock(logsView, (logs.lines || []).join('\n'));
 	setCodeBlock(datapoolView, datapool);
 	setCodeBlock(configView, config);
+}
+
+(async function initWxOnDemand() {
+	const pkgChips = document.getElementById('pkgChips');
+	const wxFeedSelect = document.getElementById('wxFeedSelect');
+	const wxLangSelect = document.getElementById('wxLangSelect');
+	const wxVoiceSelect = document.getElementById('wxVoiceSelect');
+	const wxGenerateBtn = document.getElementById('wxGenerateBtn');
+	const wxStopBtn = document.getElementById('wxStopBtn');
+	const wxStatus = document.getElementById('wxStatus');
+	const wxAudio = document.getElementById('wxAudio');
+	const wxCodecSelect = document.getElementById('wxCodecSelect');
+
+	if (!pkgChips || !wxGenerateBtn) return;
+
+	let activeObjectUrl = null;
+	let activeAbort = null;
+
+	const selectedPkgs = new Set(['date_time', 'current_conditions', 'forecast']);
+
+	try {
+		const { packages } = await fetch(`${API_BASE}/wx/packages`).then((r) => r.json());
+		pkgChips.innerHTML = packages.map((pkg) => {
+			const active = selectedPkgs.has(pkg) ? ' active' : '';
+			return `<span class="pkg-chip${active}" data-pkg="${pkg}">${pkg.replace(/_/g, ' ')}</span>`;
+		}).join('');
+	} catch {
+		pkgChips.innerHTML = '<span style="font-size:12px;color:var(--muted)">Could not load packages.</span>';
+	}
+
+	pkgChips.addEventListener('click', (e) => {
+		const chip = e.target.closest('.pkg-chip');
+		if (!chip) return;
+		const pkg = chip.dataset.pkg;
+		if (pkg === 'all') {
+			const allActive = !chip.classList.contains('active');
+			if (allActive) selectedPkgs.add('all');
+			else selectedPkgs.delete('all');
+		} else {
+			if (selectedPkgs.has(pkg)) selectedPkgs.delete(pkg);
+			else selectedPkgs.add(pkg);
+		}
+		pkgChips.querySelectorAll('.pkg-chip').forEach((c) => {
+			c.classList.toggle('active', selectedPkgs.has(c.dataset.pkg));
+		});
+	});
+
+	wxGenerateBtn.addEventListener('click', async () => {
+		const feedId = wxFeedSelect.value;
+		const lang = wxLangSelect.value;
+		const voice = wxVoiceSelect.value || null;
+		const codec = wxCodecSelect.value;
+		const pkgs = [...selectedPkgs];
+
+		if (!feedId) {
+			wxStatus.textContent = 'Select a feed first.';
+			wxStatus.className = 'wx-status err';
+			return;
+		}
+
+		if (activeAbort) activeAbort.abort();
+		if (activeObjectUrl) { URL.revokeObjectURL(activeObjectUrl); activeObjectUrl = null; }
+
+		activeAbort = new AbortController();
+		wxGenerateBtn.disabled = true;
+		wxStopBtn.disabled = false;
+		wxStatus.textContent = 'Generating…';
+		wxStatus.className = 'wx-status';
+		wxAudio.style.display = 'none';
+
+		try {
+			const headers = new Headers({ 'Content-Type': 'application/json' });
+			if (token) headers.set('Authorization', `Bearer ${token}`);
+
+			const resp = await fetch(`${API_BASE}/wx/generate`, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify({ feed_id: feedId, packages: pkgs, lang, voice, codec }),
+				signal: activeAbort.signal,
+			});
+
+			if (!resp.ok) throw new Error(`Server error ${resp.status}`);
+
+			if (codec !== 'raw') {
+				wxStatus.textContent = 'Transcoding…';
+				const blob = await resp.blob();
+				activeObjectUrl = URL.createObjectURL(blob);
+				wxAudio.src = activeObjectUrl;
+				wxAudio.style.display = 'block';
+				wxAudio.play();
+				wxStatus.textContent = `Ready · ${(blob.size / 1024).toFixed(1)} KB`;
+				wxStatus.className = 'wx-status ok';
+				return;
+			}
+
+			const sampleRate = parseInt(resp.headers.get('X-Audio-Sample-Rate') || '16000', 10);
+			const channels = parseInt(resp.headers.get('X-Audio-Channels') || '1', 10);
+
+			const chunks = [];
+			const reader = resp.body.getReader();
+			let received = 0;
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				chunks.push(value);
+				received += value.byteLength;
+				wxStatus.textContent = `Buffering… ${(received / 1024).toFixed(0)} KB`;
+			}
+
+			const pcm = new Uint8Array(received);
+			let offset = 0;
+			for (const chunk of chunks) { pcm.set(chunk, offset); offset += chunk.byteLength; }
+
+			const wav = pcmToWav(pcm, sampleRate, channels);
+			activeObjectUrl = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
+			wxAudio.src = activeObjectUrl;
+			wxAudio.style.display = 'block';
+			wxAudio.play();
+
+			wxStatus.textContent = `Ready · ${(received / 1024).toFixed(1)} KB`;
+			wxStatus.className = 'wx-status ok';
+		} catch (err) {
+			if (err.name !== 'AbortError') {
+				console.error(err);
+				wxStatus.textContent = err.message || 'Generation failed.';
+				wxStatus.className = 'wx-status err';
+			} else {
+				wxStatus.textContent = 'Stopped.';
+				wxStatus.className = 'wx-status';
+			}
+		} finally {
+			wxGenerateBtn.disabled = false;
+			wxStopBtn.disabled = true;
+			activeAbort = null;
+		}
+	});
+
+	wxStopBtn.addEventListener('click', () => {
+		if (activeAbort) activeAbort.abort();
+		wxAudio.pause();
+	});
+})();
+
+function pcmToWav(pcmBytes, sampleRate, numChannels) {
+	const byteRate = sampleRate * numChannels * 2;
+	const blockAlign = numChannels * 2;
+	const dataLen = pcmBytes.byteLength;
+	const buf = new ArrayBuffer(44 + dataLen);
+	const dv = new DataView(buf);
+	const writeStr = (offset, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(offset + i, s.charCodeAt(i)); };
+	writeStr(0, 'RIFF');
+	dv.setUint32(4, 36 + dataLen, true);
+	writeStr(8, 'WAVE');
+	writeStr(12, 'fmt ');
+	dv.setUint32(16, 16, true);
+	dv.setUint16(20, 1, true);
+	dv.setUint16(22, numChannels, true);
+	dv.setUint32(24, sampleRate, true);
+	dv.setUint32(28, byteRate, true);
+	dv.setUint16(32, blockAlign, true);
+	dv.setUint16(34, 16, true);
+	writeStr(36, 'data');
+	dv.setUint32(40, dataLen, true);
+	new Uint8Array(buf).set(pcmBytes, 44);
+	return buf;
 }
 
 async function login(password) {
@@ -338,7 +515,7 @@ boot().then(() => {
 		const links = document.querySelectorAll('.sidebar-link[data-section]');
 		if (!links.length) return;
 		const wrap = document.querySelector('.main-wrap');
-		const sectionIds = [...links].map((l) => l.dataset.section);
+		const sectionIds = [...links].map((l) => l.dataset.section).filter((id) => document.getElementById(id));
 		function updateActive() {
 			const scrollTop = wrap.scrollTop;
 			let active = sectionIds[0];

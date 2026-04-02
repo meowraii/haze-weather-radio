@@ -5,6 +5,8 @@ import logging.handlers
 import os
 import pathlib
 import threading
+import argparse
+import json
 from typing import Any
 
 os.environ.setdefault('OMP_NUM_THREADS', '2')
@@ -13,20 +15,43 @@ os.environ.setdefault('OPENBLAS_NUM_THREADS', '2')
 from managed.events import (
     append_runtime_event,
     initial_synthesis_done,
+    read_data_pool,
     shutdown_event,
     update_runtime_status,
 )
 from module.alert import alert_worker
-from module.data import data_thread_worker
+from module.data import data_thread_worker, fetch_once
 from module.playlist import playlist_thread_worker
 from module.playout import playout_thread_worker
 from module.same import generate_same, to_wav
 from module.scheduler import scheduler_thread_worker
-from module.text import load_config
-from module.tts import tts_thread_worker
+from module.tts import generate_package, get_available_pyttsx3_voices, load_config, synthesize, synthesize_pcm
 from module.webserve import start_web_server
+from managed.packages import (
+    alerts_package,
+    climate_summary_package,
+    current_conditions_package,
+    date_time_package,
+    eccc_discussion_package,
+    forecast_package,
+    geophysical_alert_package,
+    station_id,
+    user_bulletin_package,
+)
 
-config = load_config()
+_BULLETINS_PATH = pathlib.Path(__file__).parent / 'managed' / 'userbulletins.json'
+_REGISTRY_PATH = pathlib.Path(__file__).parent / 'data' / 'alertsRegistry.json'
+_DEFAULT_PACKAGE_TYPES = [
+    'date_time',
+    'station_id',
+    'current_conditions',
+    'forecast',
+    'climate_summary',
+    'eccc_discussion',
+    'geophysical_alert',
+    'user_bulletin',
+    'alerts',
+]
 
 def _check_static_audio(config: dict[str, Any]) -> None:
     static_root = pathlib.Path(config.get('static', 'audio'))
@@ -55,9 +80,10 @@ def _naads_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]]) ->
     asyncio.run(_run())
 
 
-def _setup_logging(config: dict[str, Any]) -> None:
+def _setup_logging(config: dict[str, Any], override_level: str | None = None) -> None:
     log_cfg = config.get('logging', {})
-    level = getattr(logging, log_cfg.get('level', 'INFO').upper(), logging.INFO)
+    configured_level = override_level or os.environ.get('LOG_LEVEL') or log_cfg.get('level', 'INFO')
+    level = getattr(logging, str(configured_level).upper(), logging.INFO)
     fmt = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
     handlers: list[logging.Handler] = []
 
@@ -82,8 +108,230 @@ def _thread(target: Any, *args: Any, name: str) -> threading.Thread:
     return threading.Thread(target=target, args=args, name=name, daemon=True)
 
 
-def main() -> None:
-    _setup_logging(config)
+def _enabled_feeds(config: dict[str, Any]) -> list[dict[str, Any]]:
+    return [f for f in config.get('feeds', []) if f.get('enabled', True)]
+
+
+def _feed_languages(feed: dict[str, Any]) -> list[str]:
+    languages_cfg = feed.get('languages')
+    if isinstance(languages_cfg, dict) and languages_cfg:
+        return list(languages_cfg.keys())
+    return [feed.get('language', 'en-CA')]
+
+
+def _observation_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
+    locations: list[dict[str, Any]] = []
+    for block in feed.get('locations', []):
+        if not isinstance(block, dict):
+            continue
+        for entry in block.get('observationLocations', []):
+            if isinstance(entry, dict):
+                locations.append(entry)
+    return locations
+
+
+def _forecast_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
+    locations: list[dict[str, Any]] = []
+    for block in feed.get('locations', []):
+        if not isinstance(block, dict):
+            continue
+        for entry in block.get('forecastLocations', []):
+            if isinstance(entry, dict):
+                locations.append(entry)
+    return locations
+
+
+def _climate_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
+    locations: list[dict[str, Any]] = []
+    for block in feed.get('locations', []):
+        if not isinstance(block, dict):
+            continue
+        for entry in block.get('climateLocations', []):
+            if isinstance(entry, dict):
+                locations.append(entry)
+    return locations
+
+
+def _location_label(loc: dict[str, Any]) -> str | None:
+    return loc.get('name_override') or loc.get('name') or loc.get('id')
+
+
+def _forecast_name(loc: dict[str, Any]) -> str | None:
+    return loc.get('name_override') or loc.get('name')
+
+
+def _current_conditions_name(loc: dict[str, Any]) -> str | None:
+    return loc.get('name_override') or loc.get('name')
+
+
+def _climate_name(loc: dict[str, Any]) -> str | None:
+    return loc.get('name_override') or loc.get('name')
+
+
+def _load_json_list(path: pathlib.Path) -> list[Any]:
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+_SPOOL_EXTS = frozenset({'.bin'})
+_CACHE_EXTS = frozenset({'.json', '.txt'})
+_ALL_FILES  = frozenset()
+
+def _clean_stale_data(feed: dict[str, Any]) -> int:
+    log = logging.getLogger('haze')
+    feed_id = feed.get('id', '')
+    output_root = pathlib.Path('output')
+    data_root = pathlib.Path('data')
+
+    targets: list[tuple[pathlib.Path, frozenset[str]]] = [
+        (output_root / feed_id / 'spool',  _SPOOL_EXTS),
+        (output_root / '_uploads',          _ALL_FILES),
+        (data_root / 'eccc',               _CACHE_EXTS),
+        (data_root / 'nws',                _CACHE_EXTS),
+        (data_root / 'weatherdotcom',       _CACHE_EXTS),
+    ]
+
+    purge_count = 0
+    for directory, exts in targets:
+        directory.mkdir(parents=True, exist_ok=True)
+        for item in directory.iterdir():
+            if not item.is_file():
+                continue
+            if exts and item.suffix not in exts:
+                continue
+            try:
+                item.unlink()
+                purge_count += 1
+            except OSError as exc:
+                log.warning('Could not remove stale file %s: %s', item, exc)
+
+    return purge_count
+
+
+def _build_feed_package_lookup(config: dict[str, Any], feed: dict[str, Any], lang: str) -> dict[str, str]:
+    feed_id = feed['id']
+    tz = feed.get('timezone', 'UTC')
+    observation_locs = _observation_locations(feed)
+    forecast_locs = _forecast_locations(feed)
+    climate_locs = _climate_locations(feed)
+    primary_loc = observation_locs[0] if observation_locs else (forecast_locs[0] if forecast_locs else None)
+    loc_name = _location_label(primary_loc) if primary_loc else None
+
+    conditions_parts: list[str] = []
+    for i, loc in enumerate(observation_locs):
+        loc_id = loc.get('id')
+        data = read_data_pool(f"{feed_id}:{loc_id}") if loc_id else None
+        text = current_conditions_package(data, _current_conditions_name(loc), lang, secondary=(i > 0))
+        if text:
+            conditions_parts.append(text)
+
+    forecast_parts: list[str] = []
+    for loc in forecast_locs:
+        loc_id = loc.get('id')
+        forecast_data = read_data_pool(f"{feed_id}:forecast:{loc_id}") if loc_id else None
+        part = forecast_package(forecast_data, _forecast_name(loc), lang)
+        if part:
+            forecast_parts.append(part)
+
+    climate_parts: list[str] = []
+    for loc in climate_locs:
+        loc_id = loc.get('id')
+        climate_data = read_data_pool(f"{feed_id}:climate:{loc_id}") if loc_id else None
+        part = climate_summary_package(climate_data, _climate_name(loc), lang)
+        if part:
+            climate_parts.append(part)
+
+    focn45_bulletin = read_data_pool('focn45')
+    discussion_text = None
+    if focn45_bulletin is not None:
+        discussion_text = getattr(focn45_bulletin, 'text', None) or (focn45_bulletin if isinstance(focn45_bulletin, str) else None)
+
+    registry = _load_json_list(_REGISTRY_PATH)
+    bulletins = _load_json_list(_BULLETINS_PATH)
+    wwv_text = read_data_pool('wwv')
+
+    return {
+        'date_time': date_time_package(tz, lang),
+        'station_id': station_id(config, feed_id, lang),
+        'current_conditions': '  '.join(conditions_parts),
+        'forecast': '  '.join(forecast_parts),
+        'climate_summary': '  '.join(climate_parts),
+        'eccc_discussion': eccc_discussion_package(discussion_text, loc_name, lang),
+        'geophysical_alert': geophysical_alert_package(wwv_text),
+        'user_bulletin': user_bulletin_package(bulletins, lang, tz),
+        'alerts': alerts_package(registry, lang, tz, feed),
+    }
+
+
+def _selected_package_ids(config: dict[str, Any], selector: str | None) -> list[str]:
+    if selector in (None, '*'):
+        return list(_DEFAULT_PACKAGE_TYPES)
+    normalized = selector.strip()
+    if not normalized:
+        return list(_DEFAULT_PACKAGE_TYPES)
+    if normalized in _DEFAULT_PACKAGE_TYPES:
+        return [normalized]
+    suffix_match = normalized.split('_', 1)[-1] if '_' in normalized else normalized
+    if suffix_match in _DEFAULT_PACKAGE_TYPES:
+        return [suffix_match]
+    return []
+
+
+def _run_gen_pkg_text(config: dict[str, Any], selector: str | None) -> int:
+    asyncio.run(fetch_once(config))
+    package_ids = _selected_package_ids(config, selector)
+    if not package_ids:
+        print(f'No matching package type for: {selector}')
+        return 1
+
+    feeds = _enabled_feeds(config)
+    for feed in feeds:
+        for lang in _feed_languages(feed):
+            pkg_lookup = _build_feed_package_lookup(config, feed, lang)
+            for pkg_type in package_ids:
+                text = pkg_lookup.get(pkg_type, '')
+                print(f"--- {feed['id']}/{lang}/{pkg_type} ---")
+                print(text)
+                print()
+    return 0
+
+
+def _run_gen_tts(config: dict[str, Any], selector: str | None) -> int:
+    feeds = _enabled_feeds(config)
+    if not feeds:
+        print('No enabled feeds found.')
+        return 1
+
+    if selector not in (None, '*') and selector.strip() and _selected_package_ids(config, selector) == []:
+        feed = feeds[0]
+        lang = _feed_languages(feed)[0]
+        path = synthesize(config, selector, feed['id'], 'cli_manual', lang)
+        if path is None:
+            print('Failed to synthesize CLI text.')
+            return 1
+        print(path)
+        return 0
+
+    asyncio.run(fetch_once(config))
+    package_ids = _selected_package_ids(config, selector)
+    for feed in feeds:
+        for lang in _feed_languages(feed):
+            pkg_lookup = _build_feed_package_lookup(config, feed, lang)
+            for pkg_type in package_ids:
+                text = pkg_lookup.get(pkg_type, '')
+                if not text:
+                    continue
+                path = synthesize(config, text, feed['id'], pkg_type, lang)
+                if path is not None:
+                    print(path)
+    return 0
+
+
+def main(config: dict[str, Any], log_level: str | None = None) -> None:
+    _setup_logging(config, log_level)
     log = logging.getLogger('haze')
     update_runtime_status({
         'started_at': datetime.datetime.now(datetime.UTC).isoformat(),
@@ -93,7 +341,11 @@ def main() -> None:
     log.info('Haze Weather Radio starting')
     _check_static_audio(config)
 
-    feeds = [f for f in config.get('feeds', []) if f.get('enabled', True)]
+    feeds = _enabled_feeds(config)
+
+    for feed in feeds:
+        purge_count = _clean_stale_data(feed)
+        log.info('Cleaned %d stale audio file(s) for feed: %s', purge_count, feed['id'])
 
     infra: list[threading.Thread] = [
         _thread(_naads_thread_worker, config, feeds, name='naads'),
@@ -111,9 +363,6 @@ def main() -> None:
     for t in data:
         t.start()
 
-    tts = _thread(tts_thread_worker, config, name='tts')
-    tts.start()
-
     playout: list[threading.Thread] = [
         _thread(playout_thread_worker, config, feed, name=f'playout:{feed["id"]}')
         for feed in feeds
@@ -128,7 +377,7 @@ def main() -> None:
     scheduler = _thread(scheduler_thread_worker, config, feeds, name='scheduler')
     scheduler.start()
 
-    all_threads = infra + data + [tts] + playout + [scheduler]
+    all_threads = infra + data + playout + [scheduler]
     try:
         for t in all_threads:
             t.join()
@@ -140,4 +389,27 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+
+    parser = argparse.ArgumentParser(description='Haze Weather Radio')
+    parser.add_argument('--config', '-c', type=str, default='config.yaml', help='Path to configuration file.')
+    parser.add_argument('--log-level', '-l', type=str, help='Override log level (e.g. DEBUG, INFO, WARNING).')
+    parser.add_argument('--gen-pkg-text', '-t', nargs='?', const='*', default=None, help='Generate text output for one package type, feed-prefixed package id, or all packages, then exit.')
+    parser.add_argument('--gen-tts', '-s', nargs='?', const='*', default=None, help='Generate TTS audio for one package type, feed-prefixed package id, all packages, or raw input text, then exit.')
+    parser.add_argument('--pytts-voices', action='store_true', help='List available pyttsx3 voices and exit.')
+    args = parser.parse_args()
+
+    if args.log_level:
+        os.environ['LOG_LEVEL'] = args.log_level.upper()
+    if args.config:
+        os.environ['CONFIG_PATH'] = args.config
+
+    config = load_config(args.config)
+
+    if args.gen_pkg_text is not None:
+        raise SystemExit(_run_gen_pkg_text(config, args.gen_pkg_text))
+    if args.gen_tts is not None:
+        raise SystemExit(_run_gen_tts(config, args.gen_tts))
+    if args.pytts_voices:
+        raise SystemExit(json.dumps(get_available_pyttsx3_voices(), indent=2))
+
+    main(config, args.log_level)

@@ -2,25 +2,55 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import datetime as _dt
 import json
 import logging
 import os
 import pathlib
+import re
 import time
 import wave
 from datetime import datetime
 from typing import Any, cast
 
+_REGISTRY_PATH = pathlib.Path('data') / 'alertsRegistry.json'
+
+
+def _write_registry_entry(feed_id: str, identifier: str) -> None:
+    if not identifier:
+        return
+    _REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        registry: list[dict] = json.loads(_REGISTRY_PATH.read_text(encoding='utf-8')) if _REGISTRY_PATH.exists() else []
+    except Exception:
+        registry = []
+    if any(r.get('identifier') == identifier and r.get('feed_id') == feed_id for r in registry):
+        return
+    registry.append({
+        'identifier': identifier,
+        'feed_id': feed_id,
+        'received_at': _dt.datetime.now(_dt.UTC).isoformat(),
+    })
+    try:
+        _REGISTRY_PATH.write_text(json.dumps(registry, indent=2), encoding='utf-8')
+        log.debug('Registry updated: %s', identifier)
+    except Exception as e:
+        log.error('Failed to write alert registry: %s', e)
+
+import numpy as np
+
 from managed.events import append_runtime_event, push_alert, update_feed_runtime
-from module.naads import CAPAlert, CAPInfo, naad_listener
+from module.cap_specific.naads_tcp import CAPAlert, CAPInfo, naad_listener
+from module.cap_specific.nwsatom_http import nws_atom_listener
 from module.queue import SAMPLE_RATE as BUS_SR
 from module.same import (
     SAMEHeader,
     convert_time_code,
     generate_same,
+    resample,
     to_pcm16,
 )
-from module.tts import synthesize
+from module.tts import synthesize, synthesize_pcm
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +58,7 @@ _SAME_MAPPING_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'sameMap
 
 _same_mapping_cache: dict[str, Any] | None = None
 _cap_to_same_cache: dict[str, str] | None = None
+_EVENT_NORMALIZE_RE = re.compile(r'[^a-z0-9]+')
 
 
 def _load_same_mapping() -> tuple[dict[str, Any], dict[str, str]]:
@@ -182,30 +213,73 @@ def feed_same_codes(feed: dict[str, Any]) -> list[str]:
     db = _load_forecast_db()
     codes: list[str] = []
     seen: set[str] = set()
-    for loc in feed.get("locations", []):
-        same = loc.get("same")
-        if not same:
+
+    def _raw_codes(loc: dict[str, Any]) -> list[str]:
+        explicit_same = str(loc.get('same') or '').strip()
+        if explicit_same:
+            return [part.strip() for part in explicit_same.split(',') if part.strip()]
+
+        raw = str(loc.get('forecast_region') or '').strip()
+        if not raw:
+            return []
+        if '-' in raw:
+            left, right = raw.split('-', 1)
+            if left.replace('*', '').isdigit() and right.replace('*', '').isdigit():
+                raw = right
+        return [part.strip() for part in raw.split(',') if part.strip()]
+
+    for block in feed.get("locations", []):
+        if not isinstance(block, dict):
             continue
-        raw = str(same).strip()
-        if raw.endswith("*"):
-            prefix = raw[:-1]
-            for code in sorted(db):
-                if code.startswith(prefix) and code not in seen:
-                    seen.add(code)
-                    codes.append(code)
-        else:
-            if raw not in seen:
-                seen.add(raw)
-                codes.append(raw)
+        for loc in block.get("forecastLocations", []):
+            if not isinstance(loc, dict):
+                continue
+            for target in _raw_codes(loc):
+                if target.endswith("*") and target[:-1].isdigit():
+                    prefix = target[:-1]
+                    for code in sorted(db):
+                        if code.startswith(prefix) and code not in seen:
+                            seen.add(code)
+                            codes.append(code)
+                    continue
+                if target and target not in seen:
+                    seen.add(target)
+                    codes.append(target)
     return codes
+
+
+def _event_key(value: str) -> str:
+    return _EVENT_NORMALIZE_RE.sub('', value.lower())
+
+
+def _matches_feed_alert_code(pattern: str, alert_codes: set[str]) -> bool:
+    if not pattern:
+        return False
+    if pattern.endswith('*'):
+        prefix = pattern[:-1]
+        return any(code.startswith(prefix) for code in alert_codes)
+    return pattern in alert_codes
 
 
 def _feed_provinces(feed: dict[str, Any]) -> set[str]:
     provinces: set[str] = set()
-    for loc in feed.get("locations", []):
-        ps = loc.get("province_state")
-        if ps:
-            provinces.add(str(ps).upper())
+    for block in feed.get("locations", []):
+        if not isinstance(block, dict):
+            continue
+        for loc in block.get("forecastLocations", []):
+            if not isinstance(loc, dict):
+                continue
+            ps = loc.get("province_state")
+            if ps:
+                provinces.add(str(ps).upper())
+                continue
+            forecast_region = str(loc.get("forecast_region") or "").strip()
+            if not forecast_region:
+                continue
+            base_code = forecast_region.split("-", 1)[0]
+            province = _clc_province(base_code)
+            if province:
+                provinces.add(province.upper())
     return provinces
 
 
@@ -225,6 +299,17 @@ def _header_locations(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
         matched = [code for code in alert_clc if code in feed_set]
         if matched:
             return matched[:31]
+
+    alert_codes = set(alert.all_geocodes)
+    matched_alert_codes = [code for code in feed_codes if _matches_feed_alert_code(code, alert_codes)]
+    if matched_alert_codes:
+        numeric_codes = [code for code in matched_alert_codes if code.isdigit()]
+        if numeric_codes:
+            return numeric_codes[:31]
+        alert_same_codes = [code for code in alert.all_geocodes if code.isdigit()]
+        if alert_same_codes:
+            return alert_same_codes[:31]
+        return ["000000"]
 
     alert_provs = _geocode_provinces(all_geocodes)
     feed_provs = _feed_provinces(feed)
@@ -301,22 +386,23 @@ def _alert_blocked(alert: CAPAlert, cap_filter: dict[str, Any]) -> tuple[bool, s
 
 
 def cap_event_to_same(alert: CAPAlert, event: str) -> str:
-    _, same_map = _load_same_mapping()
+    mapping, _ = _load_same_mapping()
 
     info = alert.infos[0] if alert.infos else None
     if not info:
         return "DMO"
 
-    event_codes = info.get("eventCode", [])
+    if alert.same_event:
+        return alert.same_event
 
-    for ec in event_codes:
-        if ec.get("valueName") == "SAME":
-            return ec.get("value", "DMO")
+    naads_map = cast(dict[str, str], mapping.get('naadsToEas', {}))
+    if event in naads_map:
+        return naads_map[event]
 
-    for ec in event_codes:
-        val = ec.get("value")
-        if val in same_map["naadsToEas"]:
-            return same_map["naadsToEas"][val]
+    event_key = _event_key(event)
+    for code, label in cast(dict[str, str], mapping.get('eas', {})).items():
+        if _event_key(label) == event_key:
+            return code
 
     return "DMO"
 
@@ -333,9 +419,9 @@ def _same_originator(alert: CAPAlert) -> str:
     if not info:
         return "WXR"
 
-    sender = info.get("senderName", "").lower()
+    sender = info.sender_name.lower()
 
-    if any(x in sender for x in ["environment canada", "eccc", "weather"]):
+    if any(x in sender for x in ["environment canada", "eccc", "weather", "national weather service"]):
         return "WXR"
 
     return "CIV"
@@ -346,8 +432,8 @@ def _duration_code(alert: CAPAlert) -> str:
     if not info or not info.expires:
         return "0100"
     try:
-        sent = datetime.fromisoformat(alert.sent)
-        expires = datetime.fromisoformat(info.expires)
+        sent = alert.sent or _dt.datetime.now(_dt.UTC)
+        expires = info.expires
         delta = expires - sent
         total_min = max(int(delta.total_seconds() / 60), 15)
         hours = min(total_min // 60, 99)
@@ -385,7 +471,7 @@ def build_alert_audio(
     config: dict[str, Any],
     feed: dict[str, Any],
     cap_filter: dict[str, Any] | None = None,
-) -> pathlib.Path | None:
+) -> bytes | None:
     feed_id = feed["id"]
     info = alert.infos[0] if alert.infos else None
     if not info:
@@ -403,62 +489,51 @@ def build_alert_audio(
         locations=clc_codes,
         duration=_duration_code(alert),
         callsign=callsign,
-        issue_time=convert_time_code(alert.sent),
+        issue_time=convert_time_code(alert.sent.isoformat()) if alert.sent else None,
     )
 
     tone_type = _attention_tone_type(alert, config)
-    voice_path = _generate_voice_wav(alert, config, feed, cap_filter)
+    voice_array = _generate_voice_array(alert, config, feed, cap_filter)
 
     same_sr = config.get('same', {}).get('sample_rate_hz', 22050)
     full_signal = generate_same(
         header=header,
         tone_type=tone_type,
-        audio_msg_fp32=voice_path,
+        audio_msg_array=voice_array,
         sample_rate=same_sr,
         attn_duration_s=8.0,
     )
 
-    out_dir = pathlib.Path("output") / feed_id / "alerts"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    safe_id = alert.identifier.replace("/", "_").replace("\\", "_")[:80]
-    out_path = out_dir / f"{safe_id}.wav"
-    tmp_path = out_dir / f"{safe_id}.tmp.wav"
-
-    with wave.open(str(tmp_path), "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(same_sr)
-        wf.writeframes(to_pcm16(full_signal))
-
-    os.replace(str(tmp_path), str(out_path))
-    log.info("[%s] Alert audio generated: %s (%.1fs)", feed_id, out_path.name, len(full_signal) / same_sr)
-    return out_path
+    log.info("[%s] Alert audio generated: %s (%.1fs)", feed_id, alert.identifier[:40], len(full_signal) / same_sr)
+    return to_pcm16(resample(full_signal, same_sr, BUS_SR))
 
 
-def _generate_voice_wav(
+def _generate_voice_array(
     alert: CAPAlert,
     config: dict[str, Any],
     feed: dict[str, Any],
     cap_filter: dict[str, Any] | None = None,
-) -> pathlib.Path | None:
+) -> np.ndarray | None:
     feed_id = feed["id"]
     langs = list(feed.get("languages", {}).keys())
     primary_lang = langs[0] if langs else "en-CA"
 
     if alert.broadcast_immediately:
-        bi_infos = [i for i in alert.infos if i.parameters.get("layer:sorem:1.0:broadcast_immediately", "").lower() == "yes" and i.language.startswith(primary_lang[:2])]
+        bi_infos = [i for i in alert.infos if i.parameter_map.get("layer:sorem:1.0:broadcast_immediately", "").lower() == "yes" and i.language.startswith(primary_lang[:2])]
         if not bi_infos:
-            bi_infos = [i for i in alert.infos if i.parameters.get("layer:sorem:1.0:broadcast_immediately", "").lower() == "yes"]
+            bi_infos = [i for i in alert.infos if i.parameter_map.get("layer:sorem:1.0:broadcast_immediately", "").lower() == "yes"]
         info = bi_infos[0] if bi_infos else alert.info_for_lang(primary_lang[:2])
     else:
         info = alert.info_for_lang(primary_lang[:2])
     if not info:
         return None
 
+    same_sr = config.get('same', {}).get('sample_rate_hz', 22050)
+
     embedded = _get_audio_resource(info)
     if embedded:
         try:
-            return _write_embedded_audio(embedded, feed_id, alert.identifier)
+            return _decode_embedded_audio(embedded, same_sr)
         except Exception:
             log.warning("[%s] Failed to decode embedded alert audio, falling back to TTS", feed_id)
 
@@ -469,45 +544,49 @@ def _generate_voice_wav(
         text_parts.append(info.description)
     if info.instruction:
         text_parts.append(info.instruction)
-    if info.areas:
+    if info.area_descriptions:
         use_feed_locs = bool((cap_filter or {}).get("use_feed_locations"))
         if use_feed_locs and info.area_geocodes:
             feed_set = set(feed_same_codes(feed))
             filtered = [
                 desc for desc, _gcs, area_clcs in info.area_geocodes
-                if any(clc in feed_set for clc in area_clcs)
+                if any(clc in feed_set for clc in area_clcs) or any(gc in feed_set for gc in _gcs)
             ]
-            areas_to_read = filtered if filtered else list(info.areas)
+            areas_to_read = filtered if filtered else list(info.area_descriptions)
         else:
-            areas_to_read = list(info.areas)
+            areas_to_read = list(info.area_descriptions)
         text_parts.append("Affected areas: " + ", ".join(areas_to_read) + ".")
 
     if not text_parts:
         return None
 
     text = " ".join(text_parts)
-    return synthesize(config, text, feed_id, f"alert_{alert.identifier[:40]}", lang=primary_lang)
+    pcm = synthesize_pcm(config, text, lang=primary_lang)
+    if not pcm:
+        return None
+
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32767.0
+    from module.queue import CHANNELS
+    if CHANNELS == 2:
+        samples = samples.reshape(-1, 2).mean(axis=1)
+    return resample(samples, BUS_SR, same_sr)
 
 
-def _write_embedded_audio(data: bytes, feed_id: str, identifier: str) -> pathlib.Path:
-    import subprocess
-    out_dir = pathlib.Path("output") / feed_id / "alerts"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    safe_id = identifier.replace("/", "_").replace("\\", "_")[:60]
-    out_path = out_dir / f"{safe_id}.voice.wav"
-    proc = subprocess.run(
+def _decode_embedded_audio(data: bytes, target_sr: int) -> np.ndarray:
+    import subprocess as _sp
+    proc = _sp.run(
         [
-            "ffmpeg", "-y", "-loglevel", "error",
+            "ffmpeg", "-loglevel", "error",
             "-i", "pipe:0",
-            "-ar", str(BUS_SR), "-ac", "1",
-            str(out_path),
+            "-f", "s16le", "-ar", str(target_sr), "-ac", "1",
+            "pipe:1",
         ],
         input=data,
         capture_output=True,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {proc.stderr[:200]}")
-    return out_path
+    return np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32767.0
 
 
 class AlertDedup:
@@ -523,7 +602,8 @@ class AlertDedup:
     def _build_key(self, alert: CAPAlert) -> str:
         parts: list[str] = []
         for field in self._key_fields:
-            parts.append(getattr(alert, field, ""))
+            value = getattr(alert, field, "")
+            parts.append(value.isoformat() if isinstance(value, _dt.datetime) else str(value))
         return ":".join(parts)
 
     def is_new(self, alert: CAPAlert) -> bool:
@@ -566,7 +646,10 @@ def matches_feed(
         if feed_provs and alert_provinces & feed_provs:
             return True, "feed province coverage"
         feed_codes = feed_same_codes(feed)
-        if feed_codes and any(_geocodes_cover_clc(all_geocodes, code) for code in feed_codes):
+        if feed_codes and (
+            any(_matches_feed_alert_code(code, alert_geocodes | set(alert.clc_codes)) for code in feed_codes)
+            or any(_geocodes_cover_clc(all_geocodes, code) for code in feed_codes if code.isdigit())
+        ):
             return True, "feed SAME coverage"
 
     filter_geocodes = _normalize_strings(cap_filter.get("geocodes"))
@@ -586,44 +669,43 @@ async def alert_worker(
     feeds: list[dict[str, Any]],
     shutdown: asyncio.Event,
 ) -> None:
-    dedup_cfg = config.get("cap", {}).get("cap_cp", {}).get("dedup", {})
-    dedup = AlertDedup(
-        window_s=dedup_cfg.get("window_seconds", 300),
-        key_fields=dedup_cfg.get("key_fields"),
-    )
-    cap_filter = config.get("cap", {}).get("cap_cp", {}).get("filter", {})
-
-    async def on_alert(alert: CAPAlert) -> None:
+    async def _dispatch_alert(
+        alert: CAPAlert,
+        feed_alert_key: str,
+        cap_filter: dict[str, Any],
+        dedup: AlertDedup,
+        source_name: str,
+    ) -> None:
         if not dedup.is_new(alert):
-            log.debug("Duplicate alert skipped: %s", alert.identifier)
+            log.debug("Duplicate %s alert skipped: %s", source_name, alert.identifier)
             return
 
         matched_any = False
         for feed in feeds:
             feed_id = feed["id"]
 
-            cap_cfg = feed.get("alerts", {}).get("cap_cp", {})
+            cap_cfg = feed.get("alerts", {}).get(feed_alert_key, {})
             if not cap_cfg.get("enabled", False):
                 continue
 
             matched, reason = matches_feed(alert, feed, cap_filter)
             if not matched:
-                log.info("[%s] Alert skipped: %s — %s (%s)", feed_id, alert.event, alert.headline, reason)
+                log.info("[%s] %s alert skipped: %s — %s (%s)", feed_id, source_name, alert.event, alert.headline, reason)
                 continue
 
             matched_any = True
-            log.info("[%s] Alert matched: %s — %s (%s)", feed_id, alert.event, alert.headline, reason)
+            log.info("[%s] %s alert matched: %s — %s (%s)", feed_id, source_name, alert.event, alert.headline, reason)
 
             wav_path = await asyncio.to_thread(build_alert_audio, alert, config, feed, cap_filter)
             if wav_path:
                 priority = _SEVERITY_PRIORITY.get(alert.severity, 3)
-                push_alert(feed_id, priority, wav_path)
+                push_alert(feed_id, priority, wav_path, alert.identifier)
+                _write_registry_entry(feed_id, alert.identifier)
                 update_feed_runtime(feed_id, {
                     'last_alert_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                     'last_alert_event': alert.event,
                     'last_alert_headline': alert.headline,
                     'last_alert_severity': alert.severity,
-                    'last_alert_audio': str(wav_path),
                 })
                 append_runtime_event(
                     'alert',
@@ -632,14 +714,14 @@ async def alert_worker(
                     {
                         'severity': alert.severity,
                         'priority': priority,
-                        'audio': str(wav_path),
                     },
                 )
-                log.info("[%s] Alert queued: %s (priority %d)", feed_id, wav_path.name, priority)
+                log.info("[%s] %s alert queued: %s (priority %d)", feed_id, source_name, alert.identifier[:40], priority)
 
         if not matched_any:
             log.info(
-                "No CAP-CP feeds accepted alert %s (%s, severity=%s, urgency=%s, certainty=%s, scope=%s)",
+                "No %s feeds accepted alert %s (%s, severity=%s, urgency=%s, certainty=%s, scope=%s)",
+                source_name,
                 alert.identifier,
                 alert.event,
                 alert.severity,
@@ -649,8 +731,43 @@ async def alert_worker(
             )
 
     cap_cp_cfg = config.get("cap", {}).get("cap_cp", {})
-    if not cap_cp_cfg.get("enabled", False):
+    nws_cfg = config.get("cap", {}).get("nws_cap", {})
+    tasks: list[asyncio.Task[None]] = []
+
+    if cap_cp_cfg.get("enabled", False):
+        dedup_cfg = cap_cp_cfg.get("dedup", {})
+        cap_cp_dedup = AlertDedup(
+            window_s=dedup_cfg.get("window_seconds", 300),
+            key_fields=dedup_cfg.get("key_fields"),
+        )
+        cap_filter = cap_cp_cfg.get("filter", {})
+
+        async def on_cap_cp_alert(alert: CAPAlert) -> None:
+            await _dispatch_alert(alert, 'cap_cp', cap_filter, cap_cp_dedup, 'CAP-CP')
+
+        tasks.append(asyncio.create_task(naad_listener(on_cap_cp_alert, shutdown), name='cap_cp_listener'))
+    else:
         log.info("CAP-CP alerting disabled")
+
+    if nws_cfg.get("enabled", False):
+        dedup_cfg = nws_cfg.get("dedup", {})
+        nws_dedup = AlertDedup(
+            window_s=dedup_cfg.get("window_seconds", 300),
+            key_fields=dedup_cfg.get("key_fields"),
+        )
+        nws_filter = nws_cfg.get("filter", {"use_feed_locations": True})
+
+        async def on_nws_alert(alert: CAPAlert, source_cfg: dict[str, Any]) -> None:
+            source_filter = dict(nws_filter)
+            if 'use_feed_locations' in source_cfg:
+                source_filter['use_feed_locations'] = bool(source_cfg.get('use_feed_locations'))
+            await _dispatch_alert(alert, 'nws', source_filter, nws_dedup, 'NWS CAP')
+
+        tasks.append(asyncio.create_task(nws_atom_listener(config, on_nws_alert, shutdown), name='nws_cap_listener'))
+    else:
+        log.info("NWS CAP alerting disabled")
+
+    if not tasks:
         return
 
-    await naad_listener(on_alert, shutdown)
+    await asyncio.gather(*tasks)
