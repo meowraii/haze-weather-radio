@@ -410,6 +410,7 @@ if __name__ == '__main__':
     if args.gen_tts is not None:
         raise SystemExit(_run_gen_tts(config, args.gen_tts))
     if args.pytts_voices:
-        raise SystemExit(json.dumps(get_available_pyttsx3_voices(), indent=2))
+        print(json.dumps(get_available_pyttsx3_voices(), indent=2))
+        raise SystemExit(0)
 
     main(config, args.log_level)

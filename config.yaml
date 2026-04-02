@@ -255,10 +255,22 @@ same:
     event_code: RMT
     same_expir: 0030 # 30 minutes in SAME.
   
-  default_attention_tone: WXR # WXR is the 8 second 1050hz tone, NPAS is the Canadian Alerting Attention Signal, which is an 8 second sequence of alternating, 500ms tones. (i hope that kid flipping dies), EAS is an 8 second dual-tone signal of 853 hz and 960 hz sine waves, and egg_timer is the old attention tone used in Ontario's Weatheradio Canada network until 2021 before the AVIPADS system was decommissioned in favor of INOTIFY.
+  default_attention_tone: EGG_TIMER # WXR is the 8 second 1050hz tone, NPAS is the Canadian Alerting Attention Signal, which is an 8 second sequence of alternating, 500ms tones. (i hope that kid flipping dies), EAS is an 8 second dual-tone signal of 853 hz and 960 hz sine waves, and egg_timer is the old attention tone used in Ontario's Weatheradio Canada network until 2021 before the AVIPADS system was decommissioned in favor of INOTIFY.
 
   attention_tone_override: # override the default attention tone for specific event codes. if an event code is not listed here, the default_attention_tone will be used.
     - TOR: WXR
+    - SVR: WXR
+    - EWW: WXR
+    - RMT: WXR
+    - BZW: WXR
+    - TSW: WXR
+    - WFW: WXR
+    - FLW: WXR
+    - FFW: WXR
+    - TRW: WXR
+    - SMW: WXR
+    - EAN: WXR
+    - HUW: WXR
   
   alert_ready_on_NAADS_BIP: true # use the NPAS attention tone for NAADS CAP-CP alerts if they are marked for BI (Broadcast Immediate) on Alert Ready.
 

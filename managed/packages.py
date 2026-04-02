@@ -121,7 +121,7 @@ def _spoken_minute(mm: str) -> str:
 
 
 def _spoken_ampm(ampm: str) -> str:
-    return 'a m' if ampm.upper() == 'AM' else 'p m'
+    return 'A.M.' if ampm.upper() == 'AM' else 'P.M.'
 
 
 def _spoken_zulu_hour(hh: int) -> str:
@@ -136,8 +136,12 @@ def _spoken_tz(abbr: str) -> str:
     return _TZ_NAMES.get(abbr.upper(), abbr)
 
 
+def _spoken_hour(dt: datetime.datetime) -> str:
+    return _num_to_words((dt.hour % 12) or 12)
+
+
 def _format_time_spoken(dt: datetime.datetime) -> str:
-    hour = _num_to_words(int(dt.strftime('%-I')))
+    hour = _spoken_hour(dt)
     minute = _spoken_minute(dt.strftime('%M'))
     ampm = _spoken_ampm(dt.strftime('%p'))
     tzname = _spoken_tz(dt.strftime('%Z'))

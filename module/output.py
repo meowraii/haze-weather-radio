@@ -13,7 +13,10 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except Exception:
+    sd = None
 
 from module.queue import CHANNELS, SAMPLE_RATE
 
@@ -139,7 +142,9 @@ class IcecastSink:
 
 class AudioDeviceSink:
     def __init__(self, device: str | int | None = None) -> None:
-        self._stream = sd.binOutputStream(
+        if sd is None:
+            raise RuntimeError('sounddevice is unavailable; install PortAudio and the sounddevice package to use the audio device sink')
+        self._stream = sd.RawOutputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype='int16',
@@ -172,11 +177,13 @@ _PIFM_QUEUE_LIMIT = 128
 
 _RADIO_DYNAMICS = (
     'acompressor=threshold=-18dB:ratio=10:attack=20:release=200:makeup=16dB,'
+    'equalizer=f=320:t=q:w=1.8:g=2,'
     'equalizer=f=800:t=q:w=1.2:g=2,'
-    'equalizer=f=1500:t=q:w=1.2:g=6,'
+    'equalizer=f=960:t=q:w=1.5:g=3,'
+    'equalizer=f=1200:t=q:w=0.8:g=1,'
     'highpass=f=200,'
-    'lowpass=f=3000,'
-    'alimiter=limit=0.99:level=0'
+    'lowpass=f=6000,'
+    'alimiter=limit=0.98:level=0'
 )
 
 
@@ -223,7 +230,7 @@ class PiFmAdvSink:
             '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
             '-i', 'pipe:0',
             '-ac', '1',
-            '-ar', '6000',
+            '-ar', '8000',
             '-af', _RADIO_DYNAMICS,
             '-flush_packets', '1',
             '-f', 'wav',

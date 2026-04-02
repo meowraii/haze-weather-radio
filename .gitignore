@@ -1,8 +1,6 @@
 .github/
 .vscode/
-data/eccc/*
-data/twc/*
-data/nws/*
+data/*
 data/alertsRegistry.json
 __pycache__/
 output/*
