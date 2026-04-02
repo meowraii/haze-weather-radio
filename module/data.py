@@ -953,6 +953,10 @@ def _nws_val(props: dict[str, Any], key: str) -> float | None:
     return float(v) if v is not None else None
 
 
+def _nws_round1(value: float | None) -> float | None:
+    return round(value, 1) if value is not None else None
+
+
 def _nws_unit(props: dict[str, Any], key: str) -> str:
     m = props.get(key)
     return m.get("unitCode", "") if isinstance(m, dict) else ""
@@ -963,15 +967,15 @@ def _nws_speed_kmh(props: dict[str, Any], key: str) -> float | None:
     if v is None:
         return None
     if "m_s-1" in _nws_unit(props, key):
-        return round(v * 3.6, 1)
-    return v
+        return _nws_round1(v * 3.6)
+    return _nws_round1(v)
 
 
 def _nws_pressure_kpa(props: dict[str, Any]) -> float | None:
     v = _nws_val(props, "seaLevelPressure")
     if v is None:
         v = _nws_val(props, "barometricPressure")
-    return round(v / 1000, 2) if v is not None else None
+    return _nws_round1(v / 1000) if v is not None else None
 
 
 def _nws_visibility_km(props: dict[str, Any]) -> float | None:
@@ -980,8 +984,8 @@ def _nws_visibility_km(props: dict[str, Any]) -> float | None:
         return None
     unit = _nws_unit(props, "visibility")
     if "km" not in unit and "m" in unit:
-        return round(v / 1000, 2)
-    return v
+        return _nws_round1(v / 1000)
+    return _nws_round1(v)
 
 
 async def _fetch_nws_raw(
@@ -1021,23 +1025,23 @@ def _build_nws_conditions_dict(props: dict[str, Any], location_name: str | None 
         "observed_at": props.get("timestamp"),
         "station": {"en": location_name or props.get("name") or props.get("stationIdentifier") or ""},
         "properties": {
-            "temp": _nws_val(props, "temperature"),
+            "temp": _nws_round1(_nws_val(props, "temperature")),
             "condition": {"en": props.get("textDescription") or ""},
             "wind": {
                 "speed": _nws_speed_kmh(props, "windSpeed"),
                 "direction": _degrees_to_cardinal(wind_dir_deg) if wind_dir_deg is not None else None,
                 "gust": _nws_speed_kmh(props, "windGust"),
             },
-            "humidity": _nws_val(props, "relativeHumidity"),
-            "dewpoint": _nws_val(props, "dewpoint"),
+            "humidity": _nws_round1(_nws_val(props, "relativeHumidity")),
+            "dewpoint": _nws_round1(_nws_val(props, "dewpoint")),
             "visibility": _nws_visibility_km(props),
             "pressure": {
                 "value": _nws_pressure_kpa(props),
                 "tendency": None,
             },
-            "windChill": _nws_val(props, "windChill"),
+            "windChill": _nws_round1(_nws_val(props, "windChill")),
             "humidex": None,
-            "heatIndex": _nws_val(props, "heatIndex"),
+            "heatIndex": _nws_round1(_nws_val(props, "heatIndex")),
         },
         "hourly": [],
     }

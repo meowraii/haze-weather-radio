@@ -1,6 +1,6 @@
 {
   "source": "twc",
-  "observed_at": "2026-04-02T10:20:55-0600",
+  "observed_at": "2026-04-02T10:32:48-0600",
   "station": {
     "en": "Rosetown East"
   },
@@ -14,8 +14,8 @@
       "direction": "E",
       "gust": 39
     },
-    "humidity": 96,
-    "dewpoint": -1,
+    "humidity": 95,
+    "dewpoint": -2,
     "visibility": 16.09,
     "pressure": {
       "value": 101.26,
