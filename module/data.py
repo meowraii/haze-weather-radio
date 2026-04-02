@@ -874,6 +874,10 @@ def _twc_location_name(point: TWCLocationPoint | None, fallback: str) -> str:
     return point.airportName or point.displayName or point.city or point.locale.locale2 or fallback
 
 
+def _pause_forecast_region_name(value: str) -> str:
+    return value.replace(' - ', '. ')
+
+
 def _forecast_location_name_block(
     loc: ForecastLocation,
     point: TWCLocationPoint | None = None,
@@ -881,8 +885,8 @@ def _forecast_location_name_block(
     if loc.name_en or loc.name_fr:
         fallback = loc.name_en or loc.name_fr or loc.id
         return {
-            "en": loc.name_en or fallback,
-            "fr": loc.name_fr or fallback,
+            "en": _pause_forecast_region_name(loc.name_en or fallback),
+            "fr": _pause_forecast_region_name(loc.name_fr or fallback),
         }
     resolved_name = _twc_location_name(point, loc.id)
     return {
@@ -1325,6 +1329,7 @@ async def _fetch_and_publish_forecast(
             log.warning("No forecastGroup in ECCC data for %s", loc.id)
             return
         normalized = {
+            "source": loc.source,
             "forecast": _normalize_eccc_forecast(forecast_group),
             "forecast_region": loc.forecast_region,
             "name": _forecast_location_name_block(loc),
@@ -1337,6 +1342,7 @@ async def _fetch_and_publish_forecast(
             log.warning("No NWS zone forecast for %s (zone %s)", loc.id, base_code)
             return
         normalized = _build_nws_forecast_dict(raw, loc, location_point_cache.get(loc.id))
+        normalized["source"] = loc.source
 
     else:
         log.warning("Unsupported source '%s' for forecast location %s", loc.source, loc.id)
