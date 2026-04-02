@@ -66,7 +66,7 @@ def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
         event="TXP",
         locations=locations,
         duration="0010",
-        callsign="XLF323",
+        callsign=same_cfg.get('callsign', 'TESTCALL'),
     )
 
     same_sr = same_cfg.get('sample_rate_hz', 22050)

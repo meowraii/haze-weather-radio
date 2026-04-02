@@ -1,6 +1,7 @@
 import io
 import importlib
 import json
+import locale
 import logging
 import os
 import pathlib
@@ -10,6 +11,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import time
 import wave
 from collections import OrderedDict
 from typing import Any, Generator, Optional, Protocol, cast
@@ -223,6 +225,21 @@ def _transcode(src: pathlib.Path, dst: pathlib.Path) -> bool:
         log.error("Transcode failed %s: %s", src.name, e)
         return False
 
+
+def _unlink_with_retries(path: pathlib.Path, attempts: int = 8, delay: float = 0.1) -> None:
+    for attempt in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                log.debug('Temp file cleanup failed for %s', path, exc_info=True)
+                return
+            time.sleep(delay)
+        except OSError:
+            log.debug('Temp file cleanup failed for %s', path, exc_info=True)
+            return
+
 def _load_piper_voice(model_path: str, config_path: Optional[str] = None) -> Any:
     if model_path in _voice_cache:
         _voice_cache.move_to_end(model_path)
@@ -326,6 +343,8 @@ def _provide_pyttsx3_pcm(text: str, ctx: dict) -> bytes | None:
     cfg = ctx['config'].get('tts', {}).get('pyttsx3', {})
     if not cfg.get('enabled'):
         return None
+    engine = None
+    tmp_file = None
     try:
         engine = pyttsx3.init()
         if cfg.get('rate'):
@@ -334,14 +353,22 @@ def _provide_pyttsx3_pcm(text: str, ctx: dict) -> bytes | None:
             engine.setProperty('volume', cfg['volume'])
         fd, tmp_path = tempfile.mkstemp(suffix='.wav')
         os.close(fd)
+        tmp_file = pathlib.Path(tmp_path)
         engine.save_to_file(text, tmp_path)
         engine.runAndWait()
-        pcm = _decode_file_pcm(pathlib.Path(tmp_path))
-        pathlib.Path(tmp_path).unlink(missing_ok=True)
+        pcm = _decode_file_pcm(tmp_file)
         return pcm
     except Exception as e:
         log.error("Pyttsx3 PCM provider failed: %s", e)
         return None
+    finally:
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+        if tmp_file is not None:
+            _unlink_with_retries(tmp_file)
 
 
 PCM_PROVIDERS: dict[str, Any] = {
@@ -416,15 +443,94 @@ def _provide_piper(text: str, ctx: dict, out: pathlib.Path) -> bool:
     return success
 
 
+def _normalize_voice_languages(raw_languages: Any) -> list[str]:
+    if raw_languages is None:
+        return []
+    if isinstance(raw_languages, (list, tuple, set)):
+        items = list(raw_languages)
+    else:
+        items = [raw_languages]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if isinstance(item, bytes):
+            text = item.decode('utf-8', errors='ignore')
+        else:
+            text = str(item)
+        text = text.strip().strip('\x05')
+        if not text:
+            continue
+        lowered = text.lower().replace('_', '-')
+        if lowered not in seen:
+            seen.add(lowered)
+            normalized.append(lowered)
+    return normalized
+
+
+def _windows_locale_list(language_attr: Any) -> list[str]:
+    raw = str(language_attr or '').strip()
+    if not raw:
+        return []
+
+    locales: list[str] = []
+    seen: set[str] = set()
+    for token in raw.split(';'):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            locale_id = int(token, 16)
+        except ValueError:
+            try:
+                locale_id = int(token)
+            except ValueError:
+                normalized = token.lower().replace('_', '-')
+            else:
+                normalized = locale.windows_locale.get(locale_id, token).replace('_', '-')
+        else:
+            normalized = locale.windows_locale.get(locale_id, token).replace('_', '-')
+        if normalized not in seen:
+            seen.add(normalized)
+            locales.append(normalized)
+    return locales
+
+
+def _get_windows_sapi5_voices() -> list[dict[str, Any]]:
+    try:
+        comtypes_client = importlib.import_module('comtypes.client')
+        speech = comtypes_client.CreateObject('SAPI.SPVoice')
+        return [
+            {
+                'id': str(token.Id),
+                'name': str(token.GetDescription()),
+                'lang': _windows_locale_list(token.GetAttribute('Language')),
+            }
+            for token in speech.GetVoices()
+        ]
+    except Exception as e:
+        log.error('Failed to enumerate Windows SAPI voices directly: %s', e)
+        return []
+
+
 def get_available_pyttsx3_voices() -> list[dict[str, Any]]:
     if pyttsx3 is None:
         return []
     try:
         engine = pyttsx3.init()
         voices = engine.getProperty('voices')
-        return [{'id': v.id, 'name': v.name, 'lang': v.languages} for v in voices]
+        return [
+            {
+                'id': str(v.id),
+                'name': str(v.name),
+                'lang': _normalize_voice_languages(getattr(v, 'languages', [])),
+            }
+            for v in voices
+        ]
     except Exception as e:
-        log.error("Failed to get pyttsx3 voices: %s", e)
+        log.error('Failed to get pyttsx3 voices: %s', e)
+        if os.name == 'nt':
+            return _get_windows_sapi5_voices()
         return []
 
 def _provide_pyttsx3(text: str, ctx: dict, out: pathlib.Path) -> bool:
@@ -432,21 +538,29 @@ def _provide_pyttsx3(text: str, ctx: dict, out: pathlib.Path) -> bool:
     cfg = ctx['config'].get('tts', {}).get('pyttsx3', {})
     if not cfg.get('enabled'): return False
 
+    engine = None
+    raw_tmp = out.with_suffix('.bin.wav')
     try:
         engine = pyttsx3.init()
         if cfg.get('rate'): engine.setProperty('rate', cfg['rate'])
         if cfg.get('volume'): engine.setProperty('volume', cfg['volume'])
-        
-        raw_tmp = out.with_suffix('.bin.wav')
+
+        _unlink_with_retries(raw_tmp)
         engine.save_to_file(text, str(raw_tmp))
         engine.runAndWait()
-        
+
         success = _transcode(raw_tmp, out)
-        raw_tmp.unlink(missing_ok=True)
         return success
     except Exception as e:
         log.error("Pyttsx3 provider failed: %s", e)
         return False
+    finally:
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+        _unlink_with_retries(raw_tmp)
 
 PROVIDERS = {
     'piper': _provide_piper,
