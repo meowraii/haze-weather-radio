@@ -162,7 +162,7 @@ feeds:
         username: source
         password: aluser
         ssl: false
-        format: opus
+        format: flac
         bitrate_kbps: 32
 
       audio_device:

@@ -559,12 +559,19 @@ class WebServer:
         input_path = upload_dir / f'{safe_stem}_in{original_suffix}'
         output_path = upload_dir / f'{safe_stem}.wav'
         content = await file.read()
+
+        audio_filters = (
+            'acompressor=threshold=-20dB:ratio=4:attack=5:release=50:makeup=10dB,'
+            'loudnorm=I=-9.0:LRA=7:TP=-2.0'
+        )
+
         if len(content) > 150 * 1024 * 1024:
             raise HTTPException(status_code=413, detail='File too large (max 150 MB)')
         input_path.write_bytes(content)
         result = subprocess.run(
             ['ffmpeg', '-y', '-loglevel', 'error',
              '-i', str(input_path),
+             '-af', audio_filters,
              '-ar', str(same_sr), '-ac', '1', '-c:a', 'pcm_s16le',
              str(output_path)],
             capture_output=True,

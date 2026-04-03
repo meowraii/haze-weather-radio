@@ -1,6 +1,6 @@
 import asyncio
 import datetime
-import logging
+import coloredlogs
 import logging.handlers
 import os
 import pathlib
@@ -85,23 +85,24 @@ def _setup_logging(config: dict[str, Any], override_level: str | None = None) ->
     configured_level = override_level or os.environ.get('LOG_LEVEL') or log_cfg.get('level', 'INFO')
     level = getattr(logging, str(configured_level).upper(), logging.INFO)
     fmt = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
-    handlers: list[logging.Handler] = []
+
+    logging.basicConfig(level=level, format=fmt, handlers=[])
 
     if log_cfg.get('console', {}).get('enabled', True):
-        handlers.append(logging.StreamHandler())
+        coloredlogs.install(level=level, fmt=fmt)
 
     file_cfg = log_cfg.get('file', {})
     if file_cfg.get('enabled', False):
         log_path = pathlib.Path(file_cfg['path'])
         log_path.parent.mkdir(parents=True, exist_ok=True)
         rotate = file_cfg.get('rotate', {})
-        handlers.append(logging.handlers.RotatingFileHandler(
+        handler = logging.handlers.RotatingFileHandler(
             log_path,
             maxBytes=rotate.get('max_bytes', 10_485_760),
             backupCount=rotate.get('backup_count', 5),
-        ))
-
-    logging.basicConfig(level=level, format=fmt, handlers=handlers)
+        )
+        handler.setFormatter(logging.Formatter(fmt))
+        logging.getLogger().addHandler(handler)
 
 
 def _thread(target: Any, *args: Any, name: str) -> threading.Thread:

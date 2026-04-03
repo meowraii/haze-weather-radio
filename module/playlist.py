@@ -4,7 +4,7 @@ import os
 import pathlib
 from typing import Any
 
-from managed.events import PlayableItem, data_ready, initial_synthesis_done, read_data_pool, shutdown_event, update_playout_sequence
+from managed.events import NowPlayingMetadata, PlayableItem, data_ready, initial_synthesis_done, read_data_pool, shutdown_event, update_playout_sequence
 from managed.packages import (
     Package_Config,
     alerts_package,
@@ -22,6 +22,18 @@ _BULLETINS_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'userbullet
 _REGISTRY_PATH = pathlib.Path(__file__).parent.parent / 'data' / 'alertsRegistry.json'
 
 log = logging.getLogger(__name__)
+
+_PACKAGE_METADATA_LABELS: dict[str, str] = {
+    'alerts': 'Alerts',
+    'date_time': 'Date and Time',
+    'station_id': 'Station Identification',
+    'user_bulletin': 'User Bulletin',
+    'current_conditions': 'Current Conditions',
+    'forecast': 'Forecast',
+    'eccc_discussion': 'Discussion',
+    'geophysical_alert': 'Geophysical Alert',
+    'climate_summary': 'Climate Summary',
+}
 
 _bulletins_cache: list[Any] = []
 _bulletins_cached_mtime: float = -1.0
@@ -73,6 +85,60 @@ def _current_conditions_name(loc: dict[str, Any]) -> str | None:
 
 def _climate_name(loc: dict[str, Any]) -> str | None:
     return loc.get('name_override') or loc.get('name')
+
+
+def _localized_name(value: Any, lang: str) -> str | None:
+    if isinstance(value, dict):
+        lang_short = lang[:2]
+        for key in (lang, lang_short, 'en-CA', 'en', 'fr-CA', 'fr'):
+            raw = value.get(key)
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if text:
+                return text
+        for raw in value.values():
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if text:
+                return text
+        return None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _conditions_station_name(data: dict[str, Any] | None, lang: str) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    return _localized_name(data.get('station'), lang)
+
+
+def _forecast_station_name(data: dict[str, Any] | None, lang: str) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    return _localized_name(data.get('name'), lang)
+
+
+def _climate_station_name(data: dict[str, Any] | None, lang: str) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    return _localized_name(data.get('station'), lang)
+
+
+def _metadata_title(
+    pkg_id: str,
+    area_name: str | None,
+    station_name: str | None,
+) -> str:
+    if pkg_id == 'current_conditions' and station_name:
+        return f'Conditions at {station_name}'
+    package_name = _PACKAGE_METADATA_LABELS.get(pkg_id, pkg_id.replace('_', ' ').title())
+    if area_name:
+        return f'{area_name} Area {package_name}'
+    return package_name
 
 
 def _get_bulletins_mtime() -> float:
@@ -161,16 +227,28 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
                 parsed_order.append(pkg_id_entry)
     max_items = feed.get('playlist', {}).get('max_items', None)
     sequence: list[PlayableItem] = []
+    track_number = 0
 
     for lang in languages:
         if shutdown_event.is_set():
             break
 
         conditions_parts: list[str] = []
+        current_station_name: str | None = None
+        area_name: str | None = None
         for i, loc in enumerate(all_locs):
             loc_id = loc.get('id')
             data = read_data_pool(f"{feed_id}:{loc_id}") if loc_id else None
             text = current_conditions_package(data, _current_conditions_name(loc), lang, secondary=(i > 0))
+            resolved_name = (
+                _current_conditions_name(loc)
+                or _conditions_station_name(data, lang)
+                or _location_label(loc, loc_id)
+            )
+            if i == 0:
+                current_station_name = resolved_name
+            if area_name is None:
+                area_name = resolved_name
             if text:
                 conditions_parts.append(text)
 
@@ -179,6 +257,12 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
             loc_id = loc.get('id')
             forecast_data = read_data_pool(f"{feed_id}:forecast:{loc_id}") if loc_id else None
             part = forecast_package(forecast_data, _forecast_name(loc), lang)
+            if area_name is None:
+                area_name = (
+                    _forecast_name(loc)
+                    or _forecast_station_name(forecast_data, lang)
+                    or _location_label(loc, loc_id)
+                )
             if part:
                 forecast_parts.append(part)
 
@@ -187,8 +271,19 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
             loc_id = loc.get('id')
             climate_data = read_data_pool(f"{feed_id}:climate:{loc_id}") if loc_id else None
             part = climate_summary_package(climate_data, _climate_name(loc), lang)
+            if area_name is None:
+                area_name = (
+                    _climate_name(loc)
+                    or _climate_station_name(climate_data, lang)
+                    or _location_label(loc, loc_id)
+                )
             if part:
                 climate_parts.append(part)
+
+        if area_name is None:
+            area_name = feed.get('name') or loc_name or feed_id
+        if current_station_name is None:
+            current_station_name = area_name
 
         wwv_text: str | None = read_data_pool("wwv")
 
@@ -218,11 +313,16 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
                 continue
             pkg_cfg = Package_Config.per_package.get(pkg_id, {})
             use_voice: str | None = pkg_cfg.get('use_voice')
+            track_number += 1
             sequence.append(PlayableItem(
                 pkg_id=pkg_id,
                 text=text,
                 lang=lang,
                 voice=use_voice,
+                metadata=NowPlayingMetadata(
+                    title=_metadata_title(pkg_id, area_name, current_station_name),
+                    track=str(track_number),
+                ),
             ))
 
     update_playout_sequence(feed_id, sequence)
