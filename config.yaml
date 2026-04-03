@@ -90,8 +90,8 @@ feeds:
     languages: # a list of languages that the feed can broadcast in. it is ordered by preference, with the first language being the first to broadcast, then switching to the next language in the list after a predefined interval or when there are no more items to broadcast in the current language. this allows for multilingual broadcasts without needing separate feeds for each language.
       en-CA:
         interval: 0 # number of consecutive times to broadcast in this language before switching to the next language in the list. if it is 0, 1, or undefined, it will broadcast all items in this language once before switching to the next language.
-      fr-CA:
-        interval: 0
+      #fr-CA:
+      #  interval: 0
 
     description: # for station identification.
       en-CA:
