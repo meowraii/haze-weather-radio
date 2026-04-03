@@ -222,6 +222,7 @@ _RADIO_DYNAMICS = (
     'highpass=f=120,'
     'lowpass=f=5200,'
     'acompressor=threshold=-10dB:ratio=4:attack=20:release=200:makeup=16dB,'
+    'loudnorm=I=-16:TP=-0.0:LRA=11,'
     'alimiter=limit=1.0:level=0'
 )
 
@@ -286,9 +287,9 @@ class PiFmAdvSink:
             ]
             receiver_script = (
                 f'{shlex.quote(remote_ffmpeg_bin)} -loglevel warning '
-                f'-rtbufsize 50M '
+                f'-rtbufsize 64M '
                 f'-i {shlex.quote(f"rtp://0.0.0.0:{udp_port}?buffer_size=4194304")} '
-                f'-vn -ac 1 -ar 11025 -f wav - | '
+                f'-vn -af aresample=async=1000:min_hard_comp=0.100 -ac 1 -ar 11025 -f wav - | '
                 + shlex.join(fm_args)
             )
             self._fm_cmd: list[str] = _ssh_base + [receiver_script]
