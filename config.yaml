@@ -14,7 +14,7 @@ logging:
     enabled: true
 
 playout:
-  sample_rate: 16000
+  sample_rate: 24000
   channels: 1
 
   playlist_order:
@@ -162,7 +162,7 @@ feeds:
         username: source
         password: aluser
         ssl: false
-        format: flac
+        format: opus
         bitrate_kbps: 32
 
       audio_device:
