@@ -35,8 +35,11 @@ _STREAM_DYNAMICS = (
     'alimiter=limit=0.98:level=0'
 )
 
+_OPUS_SAMPLE_RATES = frozenset({8000, 12000, 16000, 24000, 48000})
+
+
 class IcecastSink:
-    bus_queue_limit = 32
+    bus_queue_limit = 0
     bus_drop_oldest = True
 
     def __init__(self, config: dict[str, Any]) -> None:
@@ -64,6 +67,7 @@ class IcecastSink:
         fmt = config.get('format', 'opus')
         codec, content_type, container = _CODEC_MAP.get(fmt, ('libopus', 'audio/ogg', 'ogg'))
         bitrate = config.get('bitrate_kbps', 96)
+        out_rate = SAMPLE_RATE if SAMPLE_RATE in _OPUS_SAMPLE_RATES else 48000
 
         self._cmd: list[str] = [
             'ffmpeg', '-loglevel', 'error',
@@ -71,7 +75,7 @@ class IcecastSink:
             '-i', 'pipe:0',
             '-af', _STREAM_DYNAMICS,
             '-c:a', codec, '-b:a', f'{bitrate}k',
-            '-ar', str(SAMPLE_RATE),
+            '-ar', str(out_rate),
             '-ice_name', self._stream_name,
             '-ice_description', self._stream_description,
             '-ice_genre', self._stream_genre,
