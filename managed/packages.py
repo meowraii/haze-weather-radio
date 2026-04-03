@@ -191,6 +191,7 @@ _CC_PH: dict[str, dict[str, str]] = {
         'opener':            "The current weather conditions. Issued by {source} at {time}.",
         'unavailable':       "The report at {name} was not available.",
         'condition':         "The weather at {name} was {cond}.",
+        'repeating':         "Again, the weather at {name} was {cond}.",
         'secondary_no_cond': "At {name}.",
         'no_cond':           "At {name}. The sky conditions were not available.",
         'temp':              "The temperature was {val} degrees Celsius.",

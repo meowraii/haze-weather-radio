@@ -9,6 +9,7 @@ from typing import Any
 import json
 
 from managed.events import (
+    NowPlayingMetadata,
     append_runtime_event,
     get_playout_sequence,
     register_alert_queue,
@@ -37,7 +38,7 @@ _PKG_LABELS: dict[str, str] = {
 def _make_segment_callback(
     label: str,
     feed_id: str,
-    on_air_name: str,
+    metadata: NowPlayingMetadata | None,
     metadata_cb: Any,
 ) -> OnSegmentStart:
     async def _on_start() -> None:
@@ -46,13 +47,40 @@ def _make_segment_callback(
             'now_playing': label,
             'last_played_at': datetime.datetime.now(datetime.UTC).isoformat(),
         })
-        if metadata_cb is not None:
-            title = f"{label} - {on_air_name} ({feed_id})" if on_air_name else label
+        if metadata_cb is not None and metadata is not None:
             try:
-                await metadata_cb(title)
+                await metadata_cb(metadata)
             except Exception:
                 pass
     return _on_start
+
+
+def _preferred_metadata_language(config: dict[str, Any], feed: dict[str, Any]) -> str:
+    languages_cfg = feed.get('languages')
+    if isinstance(languages_cfg, dict) and languages_cfg:
+        return str(next(iter(languages_cfg)))
+    return str(feed.get('language') or config.get('language') or 'en-CA')
+
+
+def _feed_stream_description(feed: dict[str, Any], lang: str) -> str:
+    desc_block = feed.get('description')
+    if not isinstance(desc_block, dict):
+        return ''
+    lang_short = lang[:2]
+    choices = [
+        desc_block.get(lang),
+        desc_block.get(lang_short),
+        desc_block.get('en-CA'),
+        desc_block.get('en'),
+    ]
+    entry = next((item for item in choices if isinstance(item, dict)), None)
+    if entry is None:
+        entry = next((item for item in desc_block.values() if isinstance(item, dict)), None)
+    if entry is None:
+        return ''
+    text = str(entry.get('text') or '').strip()
+    suffix = str(entry.get('suffix') or '').strip()
+    return ' '.join(part for part in (text, suffix) if part).strip()
 
 
 def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
@@ -133,7 +161,7 @@ async def _produce_tts(
                 seg_path.unlink(missing_ok=True)
                 continue
 
-            on_start = _make_segment_callback(label, feed_id, on_air_name, metadata_cb)
+            on_start = _make_segment_callback(label, feed_id, item.metadata, metadata_cb)
             await pipeline.enqueue_segment(seg_path, on_start)
 
 async def _alert_feeder(
@@ -144,6 +172,7 @@ async def _alert_feeder(
     on_air_name: str,
     metadata_cb: Any,
 ) -> None:
+    alert_metadata = NowPlayingMetadata(title='Alert')
     while not shutdown.is_set():
         try:
             priority, pcm_data, identifier = alert_queue.get_nowait()
@@ -157,9 +186,8 @@ async def _alert_feeder(
             'last_played_at': datetime.datetime.now(datetime.UTC).isoformat(),
         })
         if metadata_cb is not None:
-            title = f"Alert - {on_air_name} ({feed_id})" if on_air_name else "Alert"
             try:
-                await metadata_cb(title)
+                await metadata_cb(alert_metadata)
             except Exception:
                 pass
 
@@ -189,6 +217,10 @@ async def feed_runner(
     output_cfg = feed.get('output', {})
     operator = config.get('operator', {})
     on_air_name: str = operator.get('on_air_name') or operator.get('name') or feed.get('name', feed_id)
+    operator_name: str = str(operator.get('operator_name') or operator.get('name') or '').strip()
+    stream_identity = f'{on_air_name} ({feed_id})' if on_air_name else feed_id
+    metadata_lang = _preferred_metadata_language(config, feed)
+    stream_description = _feed_stream_description(feed, metadata_lang)
     metadata_cbs: list[Any] = []
 
     update_feed_runtime(feed_id, {
@@ -199,7 +231,16 @@ async def feed_runner(
 
     if output_cfg.get('stream', {}).get('enabled'):
         try:
-            stream_cfg = {**output_cfg['stream'], 'feed_id': feed_id}
+            stream_cfg = {
+                **output_cfg['stream'],
+                'feed_id': feed_id,
+                'stream_name': stream_identity,
+                'stream_description': stream_description,
+                'stream_genre': 'Weather Radio',
+                'stream_album': stream_identity,
+                'stream_creator': operator_name,
+                'stream_artist': on_air_name,
+            }
             sink = IcecastSink(stream_cfg)
             metadata_cbs.append(sink.set_metadata)
             pipeline.attach_sink(sink, name=f'{feed_id}:icecast')
@@ -228,10 +269,10 @@ async def feed_runner(
         except Exception:
             log.exception('Failed to start PiFmAdv sink for %s', feed_id)
 
-    async def _update_metadata(title: str) -> None:
+    async def _update_metadata(metadata: NowPlayingMetadata) -> None:
         for cb in metadata_cbs:
             try:
-                await cb(title)
+                await cb(metadata)
             except Exception:
                 pass
 

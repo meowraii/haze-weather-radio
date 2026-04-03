@@ -7,11 +7,18 @@ from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
+class NowPlayingMetadata:
+    title: str
+    track: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PlayableItem:
     pkg_id: str
     text: str
     lang: str
     voice: str | None = None
+    metadata: NowPlayingMetadata | None = None
 
 shutdown_event: threading.Event = threading.Event()
 initial_synthesis_done: threading.Event = threading.Event()
@@ -102,7 +109,7 @@ def append_runtime_event(
     feed_id: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    event = {
+    event: dict[str, Any] = {
         'timestamp': datetime.now(timezone.utc).isoformat(),
         'kind': kind,
         'message': message,

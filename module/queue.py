@@ -32,6 +32,95 @@ class OutputSink(Protocol):
     async def close(self) -> None: ...
 
 
+class _BufferedSink:
+    __slots__ = (
+        '_sink', '_name', '_queue', '_task', '_closed',
+        '_drop_oldest', '_dropped_chunks',
+    )
+
+    def __init__(
+        self,
+        sink: OutputSink,
+        name: str,
+        queue_limit: int,
+        drop_oldest: bool,
+    ) -> None:
+        self._sink = sink
+        self._name = name
+        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=queue_limit)
+        self._task: asyncio.Task | None = None
+        self._closed = False
+        self._drop_oldest = drop_oldest
+        self._dropped_chunks = 0
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.get_running_loop().create_task(
+                self._run(), name=f'sink:{self._name}',
+            )
+
+    async def _run(self) -> None:
+        while True:
+            chunk = await self._queue.get()
+            if chunk is None:
+                return
+            try:
+                await self._sink.write(chunk)
+            except Exception as exc:
+                log.error('Sink %s write failed: %s', self._name, exc)
+
+    def _log_drop(self) -> None:
+        self._dropped_chunks += 1
+        if self._dropped_chunks in {1, 8, 32} or self._dropped_chunks % 128 == 0:
+            log.warning(
+                'Sink %s mailbox overflow - dropped %d chunk(s)',
+                self._name,
+                self._dropped_chunks,
+            )
+
+    async def write(self, pcm: bytes) -> None:
+        if self._closed or not pcm:
+            return
+        if self._task is None:
+            self.start()
+        try:
+            self._queue.put_nowait(pcm)
+            return
+        except asyncio.QueueFull:
+            pass
+        if not self._drop_oldest:
+            self._log_drop()
+            return
+        try:
+            self._queue.get_nowait()
+        except asyncio.QueueEmpty:
+            self._log_drop()
+            return
+        try:
+            self._queue.put_nowait(pcm)
+        except asyncio.QueueFull:
+            self._log_drop()
+            return
+        self._log_drop()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._task is not None:
+            while True:
+                try:
+                    self._queue.put_nowait(None)
+                    break
+                except asyncio.QueueFull:
+                    try:
+                        self._queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+            await self._task
+        await self._sink.close()
+
+
 class AudioPipeline:
     __slots__ = (
         '_segment_queue', '_alert_queue', '_alert_active', '_alert_done',
@@ -51,6 +140,14 @@ class AudioPipeline:
         self._playout_task: asyncio.Task | None = None
 
     def attach_sink(self, sink: OutputSink, name: str = '') -> None:
+        queue_limit = int(getattr(sink, 'bus_queue_limit', 0) or 0)
+        if queue_limit > 0:
+            sink = _BufferedSink(
+                sink,
+                name,
+                queue_limit,
+                bool(getattr(sink, 'bus_drop_oldest', True)),
+            )
         self._sinks.append((sink, name))
 
     @property
@@ -74,6 +171,10 @@ class AudioPipeline:
         await self._alert_done.wait()
 
     def start(self) -> None:
+        for sink, _ in self._sinks:
+            starter = getattr(sink, 'start', None)
+            if callable(starter):
+                starter()
         self._playout_task = asyncio.get_running_loop().create_task(
             self._playout_loop(), name='playout',
         )
