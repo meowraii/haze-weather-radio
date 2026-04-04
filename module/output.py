@@ -376,6 +376,16 @@ class PiFmAdvSink:
     async def write(self, pcm: bytes) -> None:
         if self._closed or self._ffmpeg is None or self._ffmpeg.stdin is None or not pcm:
             return
+        if self._fm is not None and self._fm.poll() is not None:
+            log.warning('PiFmAdv: receiver exited (code %s) — reconnecting in 5s', self._fm.poll())
+            await asyncio.sleep(5.0)
+            try:
+                await asyncio.to_thread(self._restart)
+                log.info('PiFmAdv: reconnected — %s', self._label)
+            except Exception as exc:
+                log.error('PiFmAdv: reconnect failed: %s — sink disabled', exc)
+                self._closed = True
+            return
         try:
             await asyncio.to_thread(self._ffmpeg.stdin.write, pcm)
         except BrokenPipeError:
