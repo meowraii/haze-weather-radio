@@ -22,7 +22,6 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-
 def load_config(config_path: str | None = None) -> dict[str, Any]:
     selected_path = config_path or os.environ.get('CONFIG_PATH')
     if selected_path:
@@ -100,6 +99,8 @@ def generate_package(
     feed = next((f for f in config.get('feeds', []) if f['id'] == feed_id), None)
     lang = feed.get('language', 'en-CA') if feed else 'en-CA'
     tz = feed.get('timezone', 'UTC') if feed else 'UTC'
+
+    log.info('Generating TTS package for feed %s, type %s, language %s', feed_id, package_type, lang)
 
     if package_type == 'date_time':
         return date_time_package(tz, lang)
@@ -220,6 +221,7 @@ def _transcode(src: pathlib.Path, dst: pathlib.Path) -> bool:
              '-sample_fmt', 's16', str(dst)],
             check=True,
         )
+        log.info("Transcoded %s to %s", src.name, dst.name)
         return True
     except Exception as e:
         log.error("Transcode failed %s: %s", src.name, e)

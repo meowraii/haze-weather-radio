@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 import datetime
 import logging
-import pathlib
 import queue
+import zoneinfo
 from typing import Any
 import json
 
@@ -21,8 +22,12 @@ from module.queue import SAMPLE_RATE, AudioPipeline, OnSegmentStart
 from module.same import SAMEHeader, generate_same, resample, to_pcm16
 from module.alert import feed_same_codes
 from module.tts import synthesize_pcm_stream
+from module.static_phrases import splice_date_time, splice_station_id
 
 log = logging.getLogger(__name__)
+
+_SEGMENT_LOOKAHEAD = 1
+_PCM_CACHE_LIMIT = 24
 
 _PKG_LABELS: dict[str, str] = {
     'date_time': 'Date and Time',
@@ -106,13 +111,26 @@ async def _produce_tts(
     shutdown: asyncio.Event,
     feed_id: str,
     config: dict[str, Any],
+    feed: dict[str, Any],
     on_air_name: str,
     metadata_cb: Any,
     txp_pcm: bytes | None,
 ) -> None:
-    spool_dir = pathlib.Path('output') / feed_id / 'spool'
-    await asyncio.to_thread(lambda: spool_dir.mkdir(parents=True, exist_ok=True))
-    seg_counter = 0
+    pcm_cache: OrderedDict[tuple[str, str, str | None, str], bytes] = OrderedDict()
+
+    def _cache_get(key: tuple[str, str, str | None, str]) -> bytes | None:
+        cached = pcm_cache.get(key)
+        if cached is None:
+            return None
+        pcm_cache.move_to_end(key)
+        return cached
+
+    def _cache_put(key: tuple[str, str, str | None, str], pcm: bytes) -> bytes:
+        pcm_cache[key] = pcm
+        pcm_cache.move_to_end(key)
+        while len(pcm_cache) > _PCM_CACHE_LIMIT:
+            pcm_cache.popitem(last=False)
+        return pcm
 
     if txp_pcm:
         log.info('[%s] Sending TXP (Transmitter Primary On)', feed_id)
@@ -120,10 +138,7 @@ async def _produce_tts(
             'txp_sent_at': datetime.datetime.now(datetime.UTC).isoformat(),
         })
         append_runtime_event('txp', 'Transmitter Primary On sent', feed_id)
-        seg_counter += 1
-        txp_path = spool_dir / f'seg_{seg_counter:06d}.bin'
-        await asyncio.to_thread(txp_path.write_bytes, txp_pcm)
-        await pipeline.enqueue_segment(txp_path)
+        await pipeline.enqueue_segment(txp_pcm)
 
     while not shutdown.is_set():
         if pipeline.alert_active:
@@ -142,27 +157,54 @@ async def _produce_tts(
             while pipeline.alert_active and not shutdown.is_set():
                 await asyncio.sleep(0.1)
 
+            while pipeline.segments_queued >= _SEGMENT_LOOKAHEAD and not shutdown.is_set():
+                if pipeline.alert_active:
+                    break
+                await asyncio.sleep(0.05)
+
+            if shutdown.is_set():
+                return
+
             pkg_id = item.pkg_id
             label = _PKG_LABELS.get(pkg_id, pkg_id.replace('_', ' ').title())
+            pcm_data: bytes | None = None
+            segment_source: bytes | Any | None = None
+            if pkg_id == 'date_time':
+                try:
+                    tz = zoneinfo.ZoneInfo(feed.get('timezone', 'UTC'))
 
-            seg_counter += 1
-            seg_path = spool_dir / f'seg_{seg_counter:06d}.bin'
+                    def _splice_date_time_live(lang: str = item.lang, timezone_obj: zoneinfo.ZoneInfo = tz) -> bytes | None:
+                        now_local = datetime.datetime.now(timezone_obj)
+                        abbr = now_local.tzname() or 'UTC'
+                        return splice_date_time(config, lang, abbr, now_local)
 
-            def _render(text=item.text, lang=item.lang, voice=item.voice, path=seg_path):
-                stream = synthesize_pcm_stream(config, text, lang, voice)
-                with open(path, 'wb') as f:
-                    for chunk in stream:
-                        f.write(chunk)
+                    segment_source = _splice_date_time_live
+                except Exception:
+                    log.debug('[%s] date_time splice failed, falling back to TTS', feed_id, exc_info=True)
+            elif pkg_id == 'station_id':
+                def _splice_station_id_live(lang: str = item.lang) -> bytes | None:
+                    return splice_station_id(feed_id, lang)
 
-            await asyncio.to_thread(_render)
+                segment_source = _splice_station_id_live
 
-            if not seg_path.exists() or seg_path.stat().st_size == 0:
+            if segment_source is None:
+                cache_key = (pkg_id, item.lang, item.voice, item.text)
+                pcm_data = _cache_get(cache_key)
+                if pcm_data is None:
+                    def _render_pcm(text=item.text, lang=item.lang, voice=item.voice) -> bytes:
+                        return b''.join(synthesize_pcm_stream(config, text, lang, voice))
+
+                    pcm_data = await asyncio.to_thread(_render_pcm)
+                    if pcm_data:
+                        pcm_data = _cache_put(cache_key, pcm_data)
+                segment_source = pcm_data
+
+            if not segment_source:
                 log.warning('[%s] Empty synthesis for %s', feed_id, pkg_id)
-                seg_path.unlink(missing_ok=True)
                 continue
 
             on_start = _make_segment_callback(label, feed_id, item.metadata, metadata_cb)
-            await pipeline.enqueue_segment(seg_path, on_start)
+            await pipeline.enqueue_segment(segment_source, on_start)
 
 async def _alert_feeder(
     pipeline: AudioPipeline,
@@ -281,7 +323,7 @@ async def feed_runner(
 
     tts_task = asyncio.create_task(
         _produce_tts(
-            pipeline, shutdown, feed_id, config, on_air_name,
+            pipeline, shutdown, feed_id, config, feed, on_air_name,
             _update_metadata if metadata_cbs else None, txp_pcm,
         ),
         name=f'{feed_id}:tts_producer',

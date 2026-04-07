@@ -5,10 +5,11 @@ import json
 import logging
 import pathlib
 import time
-from datetime import datetime
 from typing import Any
 
 import numpy as np
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from managed.events import append_runtime_event, push_alert, shutdown_event
 from module.alert import feed_same_codes
@@ -18,9 +19,39 @@ from module.tts import synthesize_pcm
 
 log = logging.getLogger(__name__)
 
-_WEEKDAY_MAP: dict[str, int] = {
-    'mon': 0, 'tue': 1, 'wed': 2, 'thu': 3, 'fri': 4, 'sat': 5, 'sun': 6,
-}
+_SPOOL_EXTS = frozenset({'.bin'})
+_CACHE_EXTS = frozenset({'.json', '.txt'})
+_ALL_FILES: frozenset[str] = frozenset()
+
+
+def clean_stale_data(feed: dict[str, Any]) -> int:
+    feed_id = feed.get('id', '')
+    output_root = pathlib.Path('output')
+    data_root = pathlib.Path('data')
+
+    targets: list[tuple[pathlib.Path, frozenset[str]]] = [
+        (output_root / feed_id / 'spool',  _SPOOL_EXTS),
+        (output_root / '_uploads',          _ALL_FILES),
+        (data_root / 'eccc',               _CACHE_EXTS),
+        (data_root / 'nws',                _CACHE_EXTS),
+        (data_root / 'weatherdotcom',       _CACHE_EXTS),
+    ]
+
+    purge_count = 0
+    for directory, exts in targets:
+        directory.mkdir(parents=True, exist_ok=True)
+        for item in directory.iterdir():
+            if not item.is_file():
+                continue
+            if exts and item.suffix not in exts:
+                continue
+            try:
+                item.unlink()
+                purge_count += 1
+            except OSError as exc:
+                log.warning('Could not remove stale file %s: %s', item, exc)
+
+    return purge_count
 
 
 def _load_test_templates() -> dict[str, Any]:
@@ -43,10 +74,6 @@ def _match_lang_key(msg: dict[str, Any], lang: str) -> str | None:
         if fnmatch.fnmatch(lang, pattern):
             return str(text)
     return None
-
-
-def _week_of_month(dt: datetime) -> int:
-    return (dt.day - 1) // 7 + 1
 
 
 def _pcm_to_voice_array(pcm: bytes, same_sr: int) -> np.ndarray:
@@ -121,33 +148,37 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
     return fired_any
 
 
-def _should_fire_weekly(cfg: dict[str, Any], now: datetime) -> bool:
-    weeks_raw = cfg.get('weeks', [])
-    weeks: list[int] = [int(w) for w in weeks_raw] if isinstance(weeks_raw, list) else [int(weeks_raw)]
-    weekday_str = str(cfg.get('weekday', 'wed')).lower()
-    weekday = _WEEKDAY_MAP.get(weekday_str, 2)
-    hour = int(cfg.get('hour', 12))
-    minute = int(cfg.get('minute', 0))
-    return (
-        _week_of_month(now) in weeks
-        and now.weekday() == weekday
-        and now.hour == hour
-        and now.minute == minute
+def _week_to_day_range(week: int) -> str:
+    start = (week - 1) * 7 + 1
+    return f'{start}-{start + 6}'
+
+
+def _weekly_trigger(cfg: dict[str, Any]) -> CronTrigger:
+    weeks_raw = cfg.get('weeks', [1])
+    weeks = weeks_raw if isinstance(weeks_raw, list) else [weeks_raw]
+    day_ranges = ','.join(_week_to_day_range(int(w)) for w in weeks)
+    return CronTrigger(
+        day=day_ranges,
+        day_of_week=str(cfg.get('weekday', 'wed')).lower(),
+        hour=int(cfg.get('hour', 12)),
+        minute=int(cfg.get('minute', 0)),
     )
 
 
-def _should_fire_monthly(cfg: dict[str, Any], now: datetime) -> bool:
-    week = int(cfg.get('week', 1))
-    weekday_str = str(cfg.get('weekday', 'wed')).lower()
-    weekday = _WEEKDAY_MAP.get(weekday_str, 2)
-    hour = int(cfg.get('hour', 12))
-    minute = int(cfg.get('minute', 0))
-    return (
-        _week_of_month(now) == week
-        and now.weekday() == weekday
-        and now.hour == hour
-        and now.minute == minute
+def _monthly_trigger(cfg: dict[str, Any]) -> CronTrigger:
+    return CronTrigger(
+        day=_week_to_day_range(int(cfg.get('week', 1))),
+        day_of_week=str(cfg.get('weekday', 'wed')).lower(),
+        hour=int(cfg.get('hour', 12)),
+        minute=int(cfg.get('minute', 0)),
     )
+
+
+def _run_cleanup(feed: dict[str, Any]) -> None:
+    feed_id = feed.get('id', '')
+    count = clean_stale_data(feed)
+    log.info('Nightly cleanup removed %d file(s) for feed: %s', count, feed_id)
+    append_runtime_event('cleanup', f'Nightly cleanup: {count} file(s) removed for {feed_id}')
 
 
 def scheduler_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]]) -> None:
@@ -155,32 +186,44 @@ def scheduler_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]])
     rwt_cfg = same_cfg.get('weeklytest', {})
     rmt_cfg = same_cfg.get('monthlytest', {})
 
-    rwt_enabled = bool(rwt_cfg.get('enabled', False))
-    rmt_enabled = bool(rmt_cfg.get('enabled', False))
+    scheduler = BackgroundScheduler()
 
-    if not rwt_enabled and not rmt_enabled:
-        return
+    if bool(rwt_cfg.get('enabled', False)):
+        event_code = str(rwt_cfg.get('event_code', 'RWT'))
+        scheduler.add_job(
+            fire_test,
+            trigger=_weekly_trigger(rwt_cfg),
+            args=[config, feeds, event_code],
+            id='rwt',
+            name=f'SAME {event_code} weekly test',
+            misfire_grace_time=60,
+        )
+        log.info('Scheduled %s weekly test', event_code)
 
-    last_fired: dict[str, str] = {}
+    if bool(rmt_cfg.get('enabled', False)):
+        event_code = str(rmt_cfg.get('event_code', 'RMT'))
+        scheduler.add_job(
+            fire_test,
+            trigger=_monthly_trigger(rmt_cfg),
+            args=[config, feeds, event_code],
+            id='rmt',
+            name=f'SAME {event_code} monthly test',
+            misfire_grace_time=60,
+        )
+        log.info('Scheduled %s monthly test', event_code)
 
-    while not shutdown_event.is_set():
-        now = datetime.now()
-        minute_key = now.strftime('%Y%m%d%H%M')
+    for feed in feeds:
+        feed_id = feed.get('id', 'default')
+        scheduler.add_job(
+            _run_cleanup,
+            trigger=CronTrigger(hour=3, minute=0),
+            args=[feed],
+            id=f'cleanup:{feed_id}',
+            name=f'Nightly cleanup [{feed_id}]',
+            misfire_grace_time=3600,
+        )
+        log.info('Scheduled nightly cleanup for feed: %s', feed_id)
 
-        if rwt_enabled and _should_fire_weekly(rwt_cfg, now):
-            event_code = str(rwt_cfg.get('event_code', 'RWT'))
-            fire_key = f'{event_code}:{minute_key}'
-            if last_fired.get(event_code) != fire_key:
-                last_fired[event_code] = fire_key
-                log.info('Scheduler firing scheduled %s', event_code)
-                fire_test(config, feeds, event_code)
-
-        if rmt_enabled and _should_fire_monthly(rmt_cfg, now):
-            event_code = str(rmt_cfg.get('event_code', 'RMT'))
-            fire_key = f'{event_code}:{minute_key}'
-            if last_fired.get(event_code) != fire_key:
-                last_fired[event_code] = fire_key
-                log.info('Scheduler firing scheduled %s', event_code)
-                fire_test(config, feeds, event_code)
-
-        shutdown_event.wait(timeout=20.0)
+    scheduler.start()
+    shutdown_event.wait()
+    scheduler.shutdown(wait=False)

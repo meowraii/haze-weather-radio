@@ -1,29 +1,29 @@
 {
   "source": "twc",
-  "observed_at": "2026-04-03T07:30:54-0600",
+  "observed_at": "2026-04-07T11:32:28-0600",
   "station": {
     "en": "Rosetown East"
   },
   "properties": {
-    "temp": -1,
+    "temp": 6,
     "condition": {
-      "en": "Cloudy"
+      "en": "Showers in the Vicinity"
     },
     "wind": {
-      "speed": 11,
-      "direction": "E",
-      "gust": null
+      "speed": 18,
+      "direction": "SE",
+      "gust": 26
     },
-    "humidity": 100,
+    "humidity": 65,
     "dewpoint": -1,
-    "visibility": 4.83,
+    "visibility": 16.09,
     "pressure": {
-      "value": 102.44,
-      "tendency": "Rising"
+      "value": 99.99,
+      "tendency": "Falling"
     },
-    "windChill": -4,
+    "windChill": 2,
     "humidex": null,
-    "heatIndex": -1
+    "heatIndex": 6
   },
   "hourly": []
 }

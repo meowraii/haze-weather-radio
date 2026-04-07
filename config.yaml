@@ -20,19 +20,18 @@ playout:
   playlist_order:
     - alerts:
       ttl: 120
-    - station_id
-    - date_time:
-      ttl: 10
+    - station_id # packages that use static_phrases do not need a time to live.
+    - date_time
     - current_conditions:
       ttl: 2700
     - forecast:
       ttl: 7200
-    - date_time:
-      ttl: 10
+    - date_time
     - climate_summary:
       ttl: 28800
     - eccc_discussion:
       ttl: 10800
+    - date_time
     - geophysical_alert:
       ttl: 10800
     - user_bulletin:
@@ -175,8 +174,8 @@ feeds:
         frequency_mhz: 162.450 # frequency to broadcast on in hertz.
         tx_power: 0 # transmission power level from 0 to 7. 0 is the lowest power and 7 is the highest. the actual range will depend on your hardware and antenna setup.
         alternative_frequencies: [] # PiAdvFm accepts this parameter but i dont know how to use it. so ill just pass whatever you put here to the binary.
-        bandwidth_hz: 10000 # bandwidth of the actual transmitted signal
-        deviation_hz: 5000 # frequency deviation for fm modulation. weather radio is typically 5000 hz.
+        bandwidth_hz: 12500 # bandwidth of the actual transmitted signal
+        deviation_hz: 7500 # frequency deviation for fm modulation.
         ssh: # i have this wonderful idea where i can have the audio generated on a more powerful machine and then use ssh to run the PiFmAdv binary on the raspberry pi
         #      and stream raw pcm to it 
           enabled: true # if false, the PiFmAdv binary will be run locally on the same machine as this app. if true, the binary will be run on a remote machine over ssh.
@@ -187,7 +186,6 @@ feeds:
           username: rai
           password:
           public_key_path: ~/.ssh/almora
-
 
 cap:
   cap_cp:

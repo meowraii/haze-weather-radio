@@ -24,7 +24,8 @@ from module.data import data_thread_worker, fetch_once
 from module.playlist import playlist_thread_worker
 from module.playout import playout_thread_worker
 from module.same import generate_same, to_wav
-from module.scheduler import scheduler_thread_worker
+from module.scheduler import clean_stale_data, scheduler_thread_worker
+from module.static_phrases import init_static_phrases
 from module.tts import generate_package, get_available_pyttsx3_voices, load_config, synthesize, synthesize_pcm
 from module.webserve import start_web_server
 from managed.packages import (
@@ -177,40 +178,6 @@ def _load_json_list(path: pathlib.Path) -> list[Any]:
         return []
     return data if isinstance(data, list) else []
 
-_SPOOL_EXTS = frozenset({'.bin'})
-_CACHE_EXTS = frozenset({'.json', '.txt'})
-_ALL_FILES  = frozenset()
-
-def _clean_stale_data(feed: dict[str, Any]) -> int:
-    log = logging.getLogger('haze')
-    feed_id = feed.get('id', '')
-    output_root = pathlib.Path('output')
-    data_root = pathlib.Path('data')
-
-    targets: list[tuple[pathlib.Path, frozenset[str]]] = [
-        (output_root / feed_id / 'spool',  _SPOOL_EXTS),
-        (output_root / '_uploads',          _ALL_FILES),
-        (data_root / 'eccc',               _CACHE_EXTS),
-        (data_root / 'nws',                _CACHE_EXTS),
-        (data_root / 'weatherdotcom',       _CACHE_EXTS),
-    ]
-
-    purge_count = 0
-    for directory, exts in targets:
-        directory.mkdir(parents=True, exist_ok=True)
-        for item in directory.iterdir():
-            if not item.is_file():
-                continue
-            if exts and item.suffix not in exts:
-                continue
-            try:
-                item.unlink()
-                purge_count += 1
-            except OSError as exc:
-                log.warning('Could not remove stale file %s: %s', item, exc)
-
-    return purge_count
-
 
 def _build_feed_package_lookup(config: dict[str, Any], feed: dict[str, Any], lang: str) -> dict[str, str]:
     feed_id = feed['id']
@@ -345,8 +312,11 @@ def main(config: dict[str, Any], log_level: str | None = None) -> None:
     feeds = _enabled_feeds(config)
 
     for feed in feeds:
-        purge_count = _clean_stale_data(feed)
+        purge_count = clean_stale_data(feed)
         log.info('Cleaned %d stale audio file(s) for feed: %s', purge_count, feed['id'])
+
+    log.info('Initializing static phrase cache...')
+    init_static_phrases(config, feeds)
 
     infra: list[threading.Thread] = [
         _thread(_naads_thread_worker, config, feeds, name='naads'),
