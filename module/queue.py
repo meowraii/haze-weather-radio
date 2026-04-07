@@ -25,6 +25,8 @@ _SEGMENT_QUEUE_LIMIT = 8
 _GAP_CHUNKS = max(1, round(1.0 / CHUNK_DURATION))
 
 OnSegmentStart = Callable[[], Coroutine[Any, Any, None]]
+SegmentLoader = Callable[[], bytes | None]
+SegmentSource = pathlib.Path | bytes | SegmentLoader
 
 
 class OutputSink(Protocol):
@@ -35,7 +37,8 @@ class OutputSink(Protocol):
 class _BufferedSink:
     __slots__ = (
         '_sink', '_name', '_queue', '_task', '_closed',
-        '_drop_oldest', '_dropped_chunks',
+        '_drop_oldest', '_dropped_chunks', '_clocked',
+        '_prefill_chunks', '_fill_silence',
     )
 
     def __init__(
@@ -44,6 +47,9 @@ class _BufferedSink:
         name: str,
         queue_limit: int,
         drop_oldest: bool,
+        clocked: bool,
+        prefill_chunks: int,
+        fill_silence: bool,
     ) -> None:
         self._sink = sink
         self._name = name
@@ -52,6 +58,9 @@ class _BufferedSink:
         self._closed = False
         self._drop_oldest = drop_oldest
         self._dropped_chunks = 0
+        self._clocked = clocked
+        self._prefill_chunks = max(0, min(queue_limit, prefill_chunks))
+        self._fill_silence = fill_silence
 
     def start(self) -> None:
         if self._task is None:
@@ -60,6 +69,10 @@ class _BufferedSink:
             )
 
     async def _run(self) -> None:
+        if self._clocked:
+            await self._run_clocked()
+            return
+
         while True:
             chunk = await self._queue.get()
             if chunk is None:
@@ -68,6 +81,44 @@ class _BufferedSink:
                 await self._sink.write(chunk)
             except Exception as exc:
                 log.error('Sink %s write failed: %s', self._name, exc)
+
+    async def _run_clocked(self) -> None:
+        chunk_ns = int(CHUNK_DURATION * 1_000_000_000)
+        next_ns = time.monotonic_ns()
+        prefilled = self._prefill_chunks == 0
+
+        while True:
+            if not prefilled:
+                if self._closed and self._queue.empty():
+                    return
+                if self._queue.qsize() < self._prefill_chunks:
+                    await asyncio.sleep(CHUNK_DURATION / 2)
+                    continue
+                prefilled = True
+                next_ns = time.monotonic_ns()
+
+            try:
+                chunk = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                if not self._fill_silence:
+                    await asyncio.sleep(CHUNK_DURATION / 2)
+                    continue
+                chunk = SILENCE_CHUNK
+
+            if chunk is None:
+                return
+
+            try:
+                await self._sink.write(chunk)
+            except Exception as exc:
+                log.error('Sink %s write failed: %s', self._name, exc)
+
+            next_ns += chunk_ns
+            sleep_ns = next_ns - time.monotonic_ns()
+            if sleep_ns > 0:
+                await asyncio.sleep(sleep_ns / 1_000_000_000)
+            elif sleep_ns < -chunk_ns * 8:
+                next_ns = time.monotonic_ns()
 
     def _log_drop(self) -> None:
         self._dropped_chunks += 1
@@ -128,7 +179,7 @@ class AudioPipeline:
     )
 
     def __init__(self) -> None:
-        self._segment_queue: asyncio.Queue[tuple[pathlib.Path, OnSegmentStart | None]] = asyncio.Queue(
+        self._segment_queue: asyncio.Queue[tuple[SegmentSource, OnSegmentStart | None]] = asyncio.Queue(
             maxsize=_SEGMENT_QUEUE_LIMIT,
         )
         self._alert_queue: asyncio.Queue[bytes] = asyncio.Queue()
@@ -147,6 +198,9 @@ class AudioPipeline:
                 name,
                 queue_limit,
                 bool(getattr(sink, 'bus_drop_oldest', True)),
+                bool(getattr(sink, 'bus_clocked', False)),
+                int(getattr(sink, 'bus_prefill_chunks', 0) or 0),
+                bool(getattr(sink, 'bus_fill_silence', False)),
             )
         self._sinks.append((sink, name))
 
@@ -159,9 +213,9 @@ class AudioPipeline:
         return self._segment_queue.qsize()
 
     async def enqueue_segment(
-        self, path: pathlib.Path, on_start: OnSegmentStart | None = None,
+        self, source: SegmentSource, on_start: OnSegmentStart | None = None,
     ) -> None:
-        await self._segment_queue.put((path, on_start))
+        await self._segment_queue.put((source, on_start))
 
     def enqueue_alert(self, pcm: bytes) -> None:
         self._alert_done.clear()
@@ -249,7 +303,7 @@ class AudioPipeline:
                     pass
 
                 try:
-                    segment_path, on_start = self._segment_queue.get_nowait()
+                    segment_source, on_start = self._segment_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     await self._write_sinks(SILENCE_CHUNK)
                     next_silence_ns += chunk_ns
@@ -266,16 +320,30 @@ class AudioPipeline:
                     except Exception:
                         pass
 
-                try:
-                    data = await asyncio.to_thread(segment_path.read_bytes)
-                except Exception as exc:
-                    log.error('Segment read failed %s: %s', segment_path.name, exc)
-                    continue
-                finally:
+                if isinstance(segment_source, bytes):
+                    data = segment_source
+                elif callable(segment_source):
                     try:
-                        segment_path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                        data = segment_source()
+                    except Exception as exc:
+                        log.error('Segment render failed: %s', exc)
+                        continue
+                    if not data:
+                        continue
+                elif isinstance(segment_source, pathlib.Path):
+                    try:
+                        data = await asyncio.to_thread(segment_source.read_bytes)
+                    except Exception as exc:
+                        log.error('Segment read failed %s: %s', segment_source.name, exc)
+                        continue
+                    finally:
+                        try:
+                            segment_source.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                else:
+                    log.error('Unsupported segment source type: %s', type(segment_source).__name__)
+                    continue
 
                 completed = await self._stream_pcm(data)
                 if completed:

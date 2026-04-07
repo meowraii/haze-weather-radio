@@ -86,12 +86,6 @@ _SEVERITY_PRIORITY: dict[str, int] = {
 
 _MANAGED = pathlib.Path(__file__).parent.parent / "managed"
 
-_PT_TO_PROVINCE: dict[str, str] = {
-    '10': 'NL', '11': 'PE', '12': 'NS', '13': 'NB',
-    '24': 'QC', '35': 'ON', '46': 'MB', '47': 'SK',
-    '48': 'AB', '59': 'BC', '60': 'YT', '61': 'NT', '62': 'NU',
-}
-
 _geocode_db: dict[str, tuple[str, str]] | None = None
 _forecast_db: dict[str, str] | None = None
 
@@ -138,36 +132,9 @@ def _load_forecast_db() -> dict[str, str]:
     return db
 
 
-def _geocode_province(geocode: str) -> str | None:
-    if not geocode or geocode[0] == '0':
-        return None
-    for pt_code, abbr in _PT_TO_PROVINCE.items():
-        if geocode.startswith(pt_code):
-            return abbr
-    return None
-
-
-def _clc_province(clc_code: str) -> str | None:
-    db = _load_forecast_db()
-    return db.get(clc_code)
-
-
-def _geocode_provinces(geocodes: tuple[str, ...] | list[str]) -> set[str]:
-    provinces: set[str] = set()
-    for gc in geocodes:
-        prov = _geocode_province(gc)
-        if prov:
-            provinces.add(prov)
-    return provinces
-
-
 def _geocodes_cover_clc(geocodes: tuple[str, ...] | list[str], clc_code: str) -> bool:
-    clc_prov = _clc_province(clc_code)
-    if not clc_prov:
-        return False
     for gc in geocodes:
-        prov = _geocode_province(gc)
-        if prov and prov == clc_prov:
+        if gc == clc_code:
             return True
         if gc.startswith('0'):
             wbd_clc = gc + '0' if len(gc) == 5 else None
@@ -261,26 +228,41 @@ def _matches_feed_alert_code(pattern: str, alert_codes: set[str]) -> bool:
     return pattern in alert_codes
 
 
-def _feed_provinces(feed: dict[str, Any]) -> set[str]:
-    provinces: set[str] = set()
-    for block in feed.get("locations", []):
-        if not isinstance(block, dict):
-            continue
-        for loc in block.get("forecastLocations", []):
-            if not isinstance(loc, dict):
-                continue
-            ps = loc.get("province_state")
-            if ps:
-                provinces.add(str(ps).upper())
-                continue
-            forecast_region = str(loc.get("forecast_region") or "").strip()
-            if not forecast_region:
-                continue
-            base_code = forecast_region.split("-", 1)[0]
-            province = _clc_province(base_code)
-            if province:
-                provinces.add(province.upper())
-    return provinces
+def _matching_feed_codes(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
+    feed_codes = feed_same_codes(feed)
+    if not feed_codes:
+        return []
+
+    alert_codes = set(alert.all_geocodes) | set(alert.clc_codes)
+    direct_matches = [code for code in feed_codes if _matches_feed_alert_code(code, alert_codes)]
+    if direct_matches:
+        return direct_matches[:31]
+
+    waterbody_matches = [
+        code for code in feed_codes
+        if code.isdigit() and _geocodes_cover_clc(alert.all_geocodes, code)
+    ]
+    return waterbody_matches[:31]
+
+
+def _format_log_codes(values: Any, limit: int = 12) -> str:
+    codes = list(dict.fromkeys(_normalize_strings(values)))
+    if not codes:
+        return '-'
+    if len(codes) <= limit:
+        return ','.join(codes)
+    shown = ','.join(codes[:limit])
+    return f"{shown},+{len(codes) - limit} more"
+
+
+def _match_log_context(alert: CAPAlert, feed: dict[str, Any], cap_filter: dict[str, Any]) -> str:
+    return (
+        f"use_feed_locations={bool(cap_filter.get('use_feed_locations', True))} "
+        f"alert_geocodes={_format_log_codes(alert.all_geocodes)} "
+        f"alert_clc={_format_log_codes(alert.clc_codes)} "
+        f"feed_codes={_format_log_codes(feed_same_codes(feed))} "
+        f"filter_geocodes={_format_log_codes(cap_filter.get('geocodes'))}"
+    )
 
 
 def _header_locations(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
@@ -293,34 +275,9 @@ def _header_locations(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
     if _is_national_geocode(all_geocodes):
         return feed_codes[:31]
 
-    alert_clc = alert.clc_codes
-    if alert_clc:
-        feed_set = set(feed_codes)
-        matched = [code for code in alert_clc if code in feed_set]
-        if matched:
-            return matched[:31]
-
-    alert_codes = set(alert.all_geocodes)
-    matched_alert_codes = [code for code in feed_codes if _matches_feed_alert_code(code, alert_codes)]
-    if matched_alert_codes:
-        numeric_codes = [code for code in matched_alert_codes if code.isdigit()]
-        if numeric_codes:
-            return numeric_codes[:31]
-        alert_same_codes = [code for code in alert.all_geocodes if code.isdigit()]
-        if alert_same_codes:
-            return alert_same_codes[:31]
-        return ["000000"]
-
-    alert_provs = _geocode_provinces(all_geocodes)
-    feed_provs = _feed_provinces(feed)
-
-    if alert_provs & feed_provs:
-        matched = [
-            code for code in feed_codes
-            if _geocodes_cover_clc(all_geocodes, code)
-               or _clc_province(code) in alert_provs
-        ]
-        return matched[:31] if matched else feed_codes[:31]
+    matched_codes = _matching_feed_codes(alert, feed)
+    if matched_codes:
+        return matched_codes
 
     return feed_codes[:31]
 
@@ -353,19 +310,12 @@ def _normalize_blocklist(raw_blocklist: Any) -> dict[str, set[str]]:
     return normalized
 
 
-def _matches_geocode_pattern(pattern: str, raw_geocodes: set[str], alert_provinces: set[str]) -> bool:
+def _matches_geocode_pattern(pattern: str, raw_geocodes: set[str]) -> bool:
     if pattern.endswith("*"):
         prefix = pattern[:-1]
         return any(code.startswith(prefix) for code in raw_geocodes)
 
-    if pattern in raw_geocodes:
-        return True
-
-    pattern_prov = _geocode_province(pattern)
-    if pattern_prov and pattern_prov in alert_provinces:
-        return True
-
-    return False
+    return pattern in raw_geocodes
 
 
 def _alert_blocked(alert: CAPAlert, cap_filter: dict[str, Any]) -> tuple[bool, str | None]:
@@ -636,25 +586,18 @@ def matches_feed(
     use_feed_locs = cap_filter.get("use_feed_locations", True)
     all_geocodes = alert.all_geocodes
     alert_geocodes = set(all_geocodes)
-    alert_provinces = _geocode_provinces(all_geocodes)
 
     if _is_national_geocode(all_geocodes):
         return True, "national coverage"
 
     if use_feed_locs:
-        feed_provs = _feed_provinces(feed)
-        if feed_provs and alert_provinces & feed_provs:
-            return True, "feed province coverage"
-        feed_codes = feed_same_codes(feed)
-        if feed_codes and (
-            any(_matches_feed_alert_code(code, alert_geocodes | set(alert.clc_codes)) for code in feed_codes)
-            or any(_geocodes_cover_clc(all_geocodes, code) for code in feed_codes if code.isdigit())
-        ):
-            return True, "feed SAME coverage"
+        matched_feed_codes = _matching_feed_codes(alert, feed)
+        if matched_feed_codes:
+            return True, "feed code coverage"
 
     filter_geocodes = _normalize_strings(cap_filter.get("geocodes"))
     if filter_geocodes:
-        if any(_matches_geocode_pattern(pattern, alert_geocodes, alert_provinces) for pattern in filter_geocodes):
+        if any(_matches_geocode_pattern(pattern, alert_geocodes) for pattern in filter_geocodes):
             return True, "configured geocode filter"
         return False, "no geocode filter match"
 
@@ -690,7 +633,15 @@ async def alert_worker(
 
             matched, reason = matches_feed(alert, feed, cap_filter)
             if not matched:
-                log.info("[%s] %s alert skipped: %s — %s (%s)", feed_id, source_name, alert.event, alert.headline, reason)
+                log.info(
+                    "[%s] %s alert skipped: %s — %s (%s; %s)",
+                    feed_id,
+                    source_name,
+                    alert.event,
+                    alert.headline,
+                    reason,
+                    _match_log_context(alert, feed, cap_filter),
+                )
                 continue
 
             matched_any = True
@@ -720,7 +671,7 @@ async def alert_worker(
 
         if not matched_any:
             log.info(
-                "No %s feeds accepted alert %s (%s, severity=%s, urgency=%s, certainty=%s, scope=%s)",
+                "No %s feeds accepted alert %s (%s, severity=%s, urgency=%s, certainty=%s, scope=%s, alert_geocodes=%s, alert_clc=%s)",
                 source_name,
                 alert.identifier,
                 alert.event,
@@ -728,6 +679,8 @@ async def alert_worker(
                 alert.urgency,
                 alert.certainty,
                 alert.scope,
+                _format_log_codes(alert.all_geocodes),
+                _format_log_codes(alert.clc_codes),
             )
 
     cap_cp_cfg = config.get("cap", {}).get("cap_cp", {})

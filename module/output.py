@@ -32,15 +32,12 @@ _CODEC_MAP: dict[str, tuple[str, str, str]] = {
 
 _STREAM_DYNAMICS = (
     'volume=1.2,'
-    'alimiter=limit=0.98:level=0'
+    'alimiter=limit=0.98:level=0,'
 )
 
-_OPUS_SAMPLE_RATES = frozenset({8000, 12000, 16000, 24000, 48000})
-
-
 class IcecastSink:
-    bus_queue_limit = 0
-    bus_drop_oldest = True
+    bus_queue_limit = 64
+    bus_drop_oldest = False
 
     def __init__(self, config: dict[str, Any]) -> None:
         password = config.get('password', '') or ''
@@ -66,8 +63,7 @@ class IcecastSink:
 
         fmt = config.get('format', 'opus')
         codec, content_type, container = _CODEC_MAP.get(fmt, ('libopus', 'audio/ogg', 'ogg'))
-        bitrate = config.get('bitrate_kbps', 96)
-        out_rate = SAMPLE_RATE if SAMPLE_RATE in _OPUS_SAMPLE_RATES else 48000
+        bitrate = config.get('bitrate_kbps', 32)
 
         self._cmd: list[str] = [
             'ffmpeg', '-loglevel', 'error',
@@ -75,7 +71,7 @@ class IcecastSink:
             '-i', 'pipe:0',
             '-af', _STREAM_DYNAMICS,
             '-c:a', codec, '-b:a', f'{bitrate}k',
-            '-ar', str(out_rate),
+            '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
             '-ice_name', self._stream_name,
             '-ice_description', self._stream_description,
             '-ice_genre', self._stream_genre,
@@ -213,23 +209,27 @@ class FileSink:
 
 
 _RADIO_DYNAMICS = (
-    'acompressor=threshold=-16dB:ratio=10:attack=20:release=200:makeup=20dB,'
-    'equalizer=f=320:t=q:w=1.8:g=3,'
-    'equalizer=f=800:t=q:w=1.4:g=8,'
-    'equalizer=f=960:t=q:w=1.5:g=6.8,'
-    'equalizer=f=1000:t=q:w=0.8:g=6.8,'
-    'equalizer=f=1200:t=q:w=0.8:g=2,'
+    'equalizer=f=320:t=q:w=1.8:g=1,'
+    'equalizer=f=650:t=q:w=1.4:g=4,'
+    'equalizer=f=960:t=q:w=1.5:g=6,'
+    'equalizer=f=1000:t=q:w=0.8:g=4,'
+    'equalizer=f=1800:t=q:w=1.2:g=-1,'
+    'acompressor=threshold=-9dB:ratio=6:attack=5:release=70:makeup=16dB,'
+    'volume=1.2,'
+    'loudnorm=I=-13:TP=0.0:LRA=8,'
     'highpass=f=120,'
-    'lowpass=f=5200,'
-    'acompressor=threshold=-10dB:ratio=4:attack=20:release=200:makeup=16dB,'
-    'loudnorm=I=-16:TP=-0.0:LRA=11,'
-    'alimiter=limit=1.0:level=0'
+    'lowpass=f=3000,'
 )
+
+_PIFMADV_PREFILL_CHUNKS = 6
 
 
 class PiFmAdvSink:
     bus_queue_limit = 32
-    bus_drop_oldest = True
+    bus_drop_oldest = False
+    bus_clocked = True
+    bus_prefill_chunks = _PIFMADV_PREFILL_CHUNKS
+    bus_fill_silence = True
 
     def __init__(self, config: dict[str, Any]) -> None:
         freq_mhz: str = str(config['frequency_mhz'])
@@ -239,9 +239,7 @@ class PiFmAdvSink:
         pi_fm_adv_bin: str = f"{bin_root}/pi_fm_adv"
         alt_freqs: list = config.get('alternative_frequencies', [])
         use_sudo: bool = config.get('use_sudo', True)
-        lpf: int = min(bw // 2 - 100, 7500)
         tx_power: int = config.get('tx_power', 4)
-
         ssh_cfg: dict = config.get('ssh', {})
         self._use_ssh: bool = ssh_cfg.get('enabled', False)
         ssh_bin: str = ssh_cfg.get('ssh_bin', 'ssh')
@@ -259,7 +257,6 @@ class PiFmAdvSink:
             '--audio', '-',
             '--freq', freq_mhz,
             '--dev', str(dev),
-            '--cutoff', str(lpf),
             '--power', str(tx_power),
             '--preemph', '75us',
             '--rds', '0',
@@ -288,8 +285,8 @@ class PiFmAdvSink:
             receiver_script = (
                 f'{shlex.quote(remote_ffmpeg_bin)} -loglevel warning '
                 f'-rtbufsize 64M '
-                f'-i {shlex.quote(f"rtp://0.0.0.0:{udp_port}?buffer_size=4194304")} '
-                f'-vn -af aresample=async=1000:min_hard_comp=0.100 -ac 1 -ar 11025 -f wav - | '
+                f'-i {shlex.quote(f"rtp://0.0.0.0:{udp_port}?buffer_size=4194304&fifo_size=4194304&pkt_size=1316")} '
+                f'-vn -af aresample=async=1000:min_hard_comp=0.100 -ac 1 -ar 8000 -f wav - | '
                 + shlex.join(fm_args)
             )
             self._fm_cmd: list[str] = _ssh_base + [receiver_script]
@@ -298,7 +295,7 @@ class PiFmAdvSink:
                 '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
                 '-i', 'pipe:0',
                 '-af', _RADIO_DYNAMICS,
-                '-c:a', 'libopus', '-b:a', '8k', '-application', 'voip',
+                '-c:a', 'libopus', '-b:a', f'32k', '-application', 'audio',
                 '-f', 'rtp_mpegts',
                 f'rtp://{ssh_host}:{udp_port}?pkt_size=1316',
             ]
@@ -316,7 +313,7 @@ class PiFmAdvSink:
         self._ffmpeg: subprocess.Popen | None = None
         self._fm: subprocess.Popen | None = None
         self._closed = False
-        self._label = f"{freq_mhz} MHz dev=±{dev} Hz lpf={lpf} Hz sr={SAMPLE_RATE}"
+        self._label = f"{freq_mhz} MHz dev=±{dev} Hz bw={bw} Hz"
         self._start()
         log.info('PiFmAdv sink started: %s ssh=%s', self._label, ssh_host if self._use_ssh else 'disabled')
 
@@ -375,16 +372,6 @@ class PiFmAdvSink:
 
     async def write(self, pcm: bytes) -> None:
         if self._closed or self._ffmpeg is None or self._ffmpeg.stdin is None or not pcm:
-            return
-        if self._fm is not None and self._fm.poll() is not None:
-            log.warning('PiFmAdv: receiver exited (code %s) — reconnecting in 5s', self._fm.poll())
-            await asyncio.sleep(5.0)
-            try:
-                await asyncio.to_thread(self._restart)
-                log.info('PiFmAdv: reconnected — %s', self._label)
-            except Exception as exc:
-                log.error('PiFmAdv: reconnect failed: %s — sink disabled', exc)
-                self._closed = True
             return
         try:
             await asyncio.to_thread(self._ffmpeg.stdin.write, pcm)

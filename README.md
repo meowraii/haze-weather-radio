@@ -18,11 +18,11 @@ I, the developer of Haze Weather Radio, disclaim any responsibility for misuse o
 - In-app support for English, French, and Spanish, with the ability to add more languages via configuration.
 - Support for multiple output methods including Icecast streaming, local audio playback, and on-air broadcasting via PiFmAdv.
 - Integration with official CAP feeds such as NAADS (Alert Ready/NPAS) for real-time weather alerts.
+- The Weather On-Demand interface allows applications to generate custom audio packages for specific locations and conditions on demand. (e.g. An IVR system that provides weather updates for a caller's location, or a smart home device that announces weather forecasts in the morning.)
 
 # Planned Features
 - Make the web interface not look vibecoded by Claude.
-- Support for additional data sources such as NOAA, TWC, and more.
-- Support for additional TTS engines such as PyTTSx3, eSpeak NG, Maki, and more.
-- Package generation on demand via POST request with specified parameters such as location code, feed ID, and package type.
+- **Support for additional data sources such as NOAA, TWC, and more. (mostly finalized)**
+- **Support for additional TTS engines such as PyTTSx3, eSpeak NG, Maki, and more. (pyttsx3 is now implemented, which i guess will be what the grand majority of users might want to use)**
 - Be better than Weatheradio Canada.
-- Support for additional CAP feeds such as those from the US NWS (NWS-CAP ATOM, IPAWSOPEN, etc.), and international sources.
+- **Support for additional CAP feeds such as those from the US NWS (NWS-CAP ATOM, IPAWSOPEN, etc.), and international sources. (NWS-CAP has been implemented, but not thoroughly tested yet. Because I am Canadian.)**
