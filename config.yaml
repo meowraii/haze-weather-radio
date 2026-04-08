@@ -291,6 +291,8 @@ network:
 
 tts:
   default_backend: piper
+  piper:
+    acceleration: auto # auto, cpu, or cuda. auto prefers CUDA when the active onnxruntime build exposes CUDAExecutionProvider.
 
   lang:
     en-CA:

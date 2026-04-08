@@ -110,64 +110,17 @@ def _thread(target: Any, *args: Any, name: str) -> threading.Thread:
     return threading.Thread(target=target, args=args, name=name, daemon=True)
 
 
-def _enabled_feeds(config: dict[str, Any]) -> list[dict[str, Any]]:
-    return [f for f in config.get('feeds', []) if f.get('enabled', True)]
-
-
-def _feed_languages(feed: dict[str, Any]) -> list[str]:
-    languages_cfg = feed.get('languages')
-    if isinstance(languages_cfg, dict) and languages_cfg:
-        return list(languages_cfg.keys())
-    return [feed.get('language', 'en-CA')]
-
-
-def _observation_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
-    locations: list[dict[str, Any]] = []
-    for block in feed.get('locations', []):
-        if not isinstance(block, dict):
-            continue
-        for entry in block.get('observationLocations', []):
-            if isinstance(entry, dict):
-                locations.append(entry)
-    return locations
-
-
-def _forecast_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
-    locations: list[dict[str, Any]] = []
-    for block in feed.get('locations', []):
-        if not isinstance(block, dict):
-            continue
-        for entry in block.get('forecastLocations', []):
-            if isinstance(entry, dict):
-                locations.append(entry)
-    return locations
-
-
-def _climate_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
-    locations: list[dict[str, Any]] = []
-    for block in feed.get('locations', []):
-        if not isinstance(block, dict):
-            continue
-        for entry in block.get('climateLocations', []):
-            if isinstance(entry, dict):
-                locations.append(entry)
-    return locations
-
-
-def _location_label(loc: dict[str, Any]) -> str | None:
-    return loc.get('name_override') or loc.get('name') or loc.get('id')
-
-
-def _forecast_name(loc: dict[str, Any]) -> str | None:
-    return loc.get('name_override') or loc.get('name')
-
-
-def _current_conditions_name(loc: dict[str, Any]) -> str | None:
-    return loc.get('name_override') or loc.get('name')
-
-
-def _climate_name(loc: dict[str, Any]) -> str | None:
-    return loc.get('name_override') or loc.get('name')
+from module.feed_util import (
+    climate_locations as _climate_locations,
+    climate_name as _climate_name,
+    current_conditions_name as _current_conditions_name,
+    enabled_feeds as _enabled_feeds,
+    feed_languages as _feed_languages,
+    forecast_locations as _forecast_locations,
+    forecast_name as _forecast_name,
+    location_label as _location_label,
+    observation_locations as _observation_locations,
+)
 
 
 def _load_json_list(path: pathlib.Path) -> list[Any]:

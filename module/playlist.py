@@ -17,6 +17,15 @@ from managed.packages import (
     station_id,
     user_bulletin_package,
 )
+from module.feed_util import (
+    climate_locations as _climate_locations,
+    climate_name as _climate_name,
+    current_conditions_name as _current_conditions_name,
+    forecast_locations as _forecast_locations,
+    forecast_name as _forecast_name,
+    location_label as _location_label,
+    observation_locations as _observation_locations,
+)
 
 _BULLETINS_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'userbulletins.json'
 _REGISTRY_PATH = pathlib.Path(__file__).parent.parent / 'data' / 'alertsRegistry.json'
@@ -39,52 +48,6 @@ _bulletins_cache: list[Any] = []
 _bulletins_cached_mtime: float = -1.0
 _registry_cache: list[Any] = []
 _registry_cached_mtime: float = -1.0
-
-def _observation_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
-    locations: list[dict[str, Any]] = []
-    for block in feed.get('locations', []):
-        if not isinstance(block, dict):
-            continue
-        for entry in block.get('observationLocations', []):
-            if isinstance(entry, dict):
-                locations.append(entry)
-    return locations
-
-def _forecast_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
-    locations: list[dict[str, Any]] = []
-    for block in feed.get('locations', []):
-        if not isinstance(block, dict):
-            continue
-        for entry in block.get('forecastLocations', []):
-            if isinstance(entry, dict):
-                locations.append(entry)
-    return locations
-
-def _climate_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
-    locations: list[dict[str, Any]] = []
-    for block in feed.get('locations', []):
-        if not isinstance(block, dict):
-            continue
-        for entry in block.get('climateLocations', []):
-            if isinstance(entry, dict):
-                locations.append(entry)
-    return locations
-
-
-def _location_label(loc: dict[str, Any], fallback_id: str | None = None) -> str | None:
-    return loc.get('name_override') or loc.get('name') or fallback_id
-
-
-def _forecast_name(loc: dict[str, Any]) -> str | None:
-    return loc.get('name_override') or loc.get('name')
-
-
-def _current_conditions_name(loc: dict[str, Any]) -> str | None:
-    return loc.get('name_override') or loc.get('name')
-
-
-def _climate_name(loc: dict[str, Any]) -> str | None:
-    return loc.get('name_override') or loc.get('name')
 
 
 def _localized_name(value: Any, lang: str) -> str | None:
