@@ -152,12 +152,18 @@ except ImportError:
     PiperVoice = None
     SynthesisConfig = None
 
+try:
+    import onnxruntime as ort
+except ImportError:
+    ort = None
+
 from managed.events import shutdown_event, tts_queue
 
 
 _FILE_URI_RE = re.compile(r'^file://', re.IGNORECASE)
 _VOICE_CACHE_MAX = 2
 _voice_cache: OrderedDict[str, Any] = OrderedDict()
+_logged_piper_runtime: set[tuple[str, str]] = set()
 
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
 
@@ -242,14 +248,62 @@ def _unlink_with_retries(path: pathlib.Path, attempts: int = 8, delay: float = 0
             log.debug('Temp file cleanup failed for %s', path, exc_info=True)
             return
 
-def _load_piper_voice(model_path: str, config_path: Optional[str] = None) -> Any:
-    if model_path in _voice_cache:
-        _voice_cache.move_to_end(model_path)
-        return _voice_cache[model_path]
+def _normalize_piper_acceleration(value: Any) -> str:
+    normalized = str(value or 'auto').strip().lower()
+    aliases = {
+        '': 'auto',
+        'gpu': 'cuda',
+        'none': 'cpu',
+        'off': 'cpu',
+        'false': 'cpu',
+        'true': 'auto',
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _resolve_piper_runtime(config: dict[str, Any]) -> tuple[bool, str]:
+    requested = _normalize_piper_acceleration(config.get('tts', {}).get('piper', {}).get('acceleration'))
+    available = list(ort.get_available_providers()) if ort is not None else []
+
+    use_cuda = requested in ('auto', 'cuda') and 'CUDAExecutionProvider' in available
+    provider = 'CUDAExecutionProvider' if use_cuda else 'CPUExecutionProvider'
+
+    if requested == 'cuda' and not use_cuda:
+        key = ('cuda-unavailable', ','.join(available) or 'none')
+        if key not in _logged_piper_runtime:
+            _logged_piper_runtime.add(key)
+            log.warning(
+                'Piper CUDA acceleration requested but unavailable; using CPUExecutionProvider (available providers: %s)',
+                ', '.join(available) or 'none',
+            )
+
+    log_key = (requested, provider)
+    if log_key not in _logged_piper_runtime:
+        _logged_piper_runtime.add(log_key)
+        log.info(
+            'Piper runtime selected: requested=%s provider=%s available=%s',
+            requested,
+            provider,
+            ', '.join(available) or 'none',
+        )
+
+    return use_cuda, provider
+
+
+def _load_piper_voice(
+    model_path: str,
+    config: dict[str, Any],
+    config_path: Optional[str] = None,
+) -> Any:
+    use_cuda, provider = _resolve_piper_runtime(config)
+    cache_key = f'{provider}:{model_path}'
+    if cache_key in _voice_cache:
+        _voice_cache.move_to_end(cache_key)
+        return _voice_cache[cache_key]
     if PiperVoice is None:
         raise RuntimeError('Piper not available')
-    loaded = cast(Any, PiperVoice).load(model_path, config_path=config_path)
-    _voice_cache[model_path] = loaded
+    loaded = cast(Any, PiperVoice).load(model_path, config_path=config_path, use_cuda=use_cuda)
+    _voice_cache[cache_key] = loaded
     if len(_voice_cache) > _VOICE_CACHE_MAX:
         _voice_cache.popitem(last=False)
     return loaded
@@ -286,7 +340,7 @@ def _piper_synthesize_wav_bytes(text: str, ctx: dict) -> bytes | None:
     if not v_cfg:
         return None
     try:
-        voice = _load_piper_voice(v_cfg['model'], v_cfg.get('config'))
+        voice = _load_piper_voice(v_cfg['model'], ctx['config'], v_cfg.get('config'))
         spec = _piper_spec(ctx, v_cfg)
         chunks = list(cast(Any, voice).synthesize(text, syn_config=spec))
         if not chunks:
@@ -324,7 +378,7 @@ def _piper_stream_pcm(text: str, ctx: dict) -> Generator[bytes, None, None]:
     if not v_cfg:
         return
     try:
-        voice = _load_piper_voice(v_cfg['model'], v_cfg.get('config'))
+        voice = _load_piper_voice(v_cfg['model'], ctx['config'], v_cfg.get('config'))
         spec = _piper_spec(ctx, v_cfg)
         for audio_chunk in cast(Any, voice).synthesize(text, syn_config=spec):
             pcm = _chunk_to_system_pcm(audio_chunk)

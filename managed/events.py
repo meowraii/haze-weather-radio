@@ -30,7 +30,8 @@ data_ready: threading.Event = threading.Event()
 tts_queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
 
 _sequences_lock: threading.Lock = threading.Lock()
-playout_sequences: dict[str, list[PlayableItem]] = {}
+_playout_sequences: dict[str, tuple[PlayableItem, ...]] = {}
+_sequence_versions: dict[str, int] = {}
 
 _alert_queues_lock: threading.Lock = threading.Lock()
 _alert_queues: dict[str, queue.Queue[tuple[int, bytes, str]]] = {}
@@ -51,18 +52,31 @@ def register_alert_queue(feed_id: str) -> queue.Queue[tuple[int, bytes, str]]:
 def push_alert(feed_id: str, priority: int, pcm: bytes, identifier: str = '') -> None:
     with _alert_queues_lock:
         q = _alert_queues.get(feed_id)
-        if q is not None:
-            q.put((priority, pcm, identifier))
+    if q is not None:
+        q.put((priority, pcm, identifier))
+
+
+def push_alert_all(priority: int, pcm: bytes, identifier: str = '') -> None:
+    with _alert_queues_lock:
+        queues = list(_alert_queues.values())
+    for q in queues:
+        q.put((priority, pcm, identifier))
 
 
 def update_playout_sequence(feed_id: str, sequence: list[PlayableItem]) -> None:
     with _sequences_lock:
-        playout_sequences[feed_id] = list(sequence)
+        _playout_sequences[feed_id] = tuple(sequence)
+        _sequence_versions[feed_id] = _sequence_versions.get(feed_id, 0) + 1
 
 
 def get_playout_sequence(feed_id: str) -> list[PlayableItem]:
     with _sequences_lock:
-        return list(playout_sequences.get(feed_id, []))
+        return list(_playout_sequences.get(feed_id, ()))
+
+
+def get_sequence_version(feed_id: str) -> int:
+    with _sequences_lock:
+        return _sequence_versions.get(feed_id, 0)
 
 
 def update_data_pool(key: str, value: Any, notify: bool = True) -> None:
@@ -84,7 +98,7 @@ def snapshot_data_pool() -> dict[str, Any]:
 
 def snapshot_playout_sequences() -> dict[str, list[PlayableItem]]:
     with _sequences_lock:
-        return {feed_id: list(sequence) for feed_id, sequence in playout_sequences.items()}
+        return {feed_id: list(sequence) for feed_id, sequence in _playout_sequences.items()}
 
 
 def snapshot_alert_queues() -> dict[str, int]:

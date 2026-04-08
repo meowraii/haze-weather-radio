@@ -88,6 +88,9 @@ class IcecastSink:
 
         self._proc = subprocess.Popen(self._cmd, stdin=subprocess.PIPE)
         self._closed = False
+        self._reconnect_delay = 2.0
+        self._max_reconnect_delay = 60.0
+        self._consecutive_failures = 0
 
     def _restart_proc(self) -> None:
         try:
@@ -107,15 +110,25 @@ class IcecastSink:
             return
         try:
             await asyncio.to_thread(self._proc.stdin.write, pcm)
+            self._consecutive_failures = 0
+            self._reconnect_delay = 2.0
         except BrokenPipeError:
-            log.warning('Icecast: pipe broken, reconnecting in 5s')
-            await asyncio.sleep(5.0)
+            self._consecutive_failures += 1
+            delay = min(self._reconnect_delay, self._max_reconnect_delay)
+            log.warning('Icecast: pipe broken (attempt %d), reconnecting in %.1fs',
+                       self._consecutive_failures, delay)
+            await asyncio.sleep(delay)
+            self._reconnect_delay = min(self._reconnect_delay * 1.5, self._max_reconnect_delay)
             try:
                 await asyncio.to_thread(self._restart_proc)
                 log.info('Icecast reconnected to %s', self._mount)
             except Exception as e:
-                log.error('Icecast reconnect failed: %s — stream disabled', e)
-                self._closed = True
+                if self._consecutive_failures >= 10:
+                    log.error('Icecast reconnect failed after %d attempts: %s — stream disabled',
+                             self._consecutive_failures, e)
+                    self._closed = True
+                else:
+                    log.warning('Icecast reconnect failed: %s — will retry', e)
         except Exception as e:
             log.error('Icecast write error: %s', e)
             self._closed = True
@@ -157,14 +170,14 @@ class IcecastSink:
         req = urllib.request.Request(
             url, headers={'Authorization': f'Basic {credentials}'}
         )
-        for attempt in range(5):
+        for attempt in range(3):
             try:
                 await asyncio.to_thread(urllib.request.urlopen, req, timeout=3)
                 log.info('Icecast metadata updated: %s', title)
                 return
             except urllib.error.HTTPError as e:
-                if e.code == 404 and attempt < 4:
-                    await asyncio.sleep(1.5)
+                if e.code == 404 and attempt < 2:
+                    await asyncio.sleep(0.5 * (attempt + 1))
                     continue
                 log.warning('Icecast metadata update failed (%s): %s', url, e)
                 return
@@ -230,6 +243,7 @@ class PiFmAdvSink:
     bus_clocked = True
     bus_prefill_chunks = _PIFMADV_PREFILL_CHUNKS
     bus_fill_silence = True
+    bus_guard_enabled = True
 
     def __init__(self, config: dict[str, Any]) -> None:
         freq_mhz: str = str(config['frequency_mhz'])
@@ -375,21 +389,25 @@ class PiFmAdvSink:
             return
         try:
             await asyncio.to_thread(self._ffmpeg.stdin.write, pcm)
-        except BrokenPipeError:
-            log.warning('PiFmAdv: pipe broken — reconnecting in 5s')
-            await asyncio.sleep(5.0)
-            try:
-                await asyncio.to_thread(self._restart)
-                log.info('PiFmAdv: reconnected — %s', self._label)
-            except Exception as exc:
-                log.error('PiFmAdv: reconnect failed: %s — sink disabled', exc)
-                self._closed = True
+        except BrokenPipeError as exc:
+            self._closed = True
+            raise RuntimeError('PiFmAdv pipe broken') from exc
         except Exception as exc:
             log.error('PiFmAdv: write error: %s', exc)
             self._closed = True
+            raise RuntimeError(f'PiFmAdv write error: {exc}') from exc
+
+    async def reset(self) -> None:
+        self._closed = False
+        try:
+            await asyncio.to_thread(self._restart)
+            log.info('PiFmAdv: audio bus reset — %s', self._label)
+        except Exception as exc:
+            self._closed = True
+            raise RuntimeError(f'PiFmAdv reset failed: {exc}') from exc
 
     async def close(self) -> None:
-        if self._closed:
+        if self._ffmpeg is None and self._fm is None:
             return
         self._closed = True
         await asyncio.to_thread(self._kill)

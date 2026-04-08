@@ -5,9 +5,9 @@ from collections import OrderedDict
 import datetime
 import logging
 import queue
+import threading
 import zoneinfo
 from typing import Any
-import json
 
 from managed.events import (
     NowPlayingMetadata,
@@ -26,8 +26,8 @@ from module.static_phrases import splice_date_time, splice_station_id
 
 log = logging.getLogger(__name__)
 
-_SEGMENT_LOOKAHEAD = 1
-_PCM_CACHE_LIMIT = 24
+_SEGMENT_LOOKAHEAD = 3
+_PCM_CACHE_LIMIT = 48
 
 _PKG_LABELS: dict[str, str] = {
     'date_time': 'Date and Time',
@@ -140,27 +140,36 @@ async def _produce_tts(
         append_runtime_event('txp', 'Transmitter Primary On sent', feed_id)
         await pipeline.enqueue_segment(txp_pcm)
 
+    segment_consumed = pipeline.segment_consumed_event
+
     while not shutdown.is_set():
         if pipeline.alert_active:
-            await asyncio.sleep(0.1)
+            await pipeline.wait_alert_done()
             continue
 
         seq = get_playout_sequence(feed_id)
         if not seq:
-            await asyncio.sleep(0.5)
+            try:
+                await asyncio.wait_for(shutdown.wait(), timeout=0.5)
+            except asyncio.TimeoutError:
+                pass
             continue
 
         for item in seq:
             if shutdown.is_set():
                 return
 
-            while pipeline.alert_active and not shutdown.is_set():
-                await asyncio.sleep(0.1)
+            if pipeline.alert_active:
+                await pipeline.wait_alert_done()
 
             while pipeline.segments_queued >= _SEGMENT_LOOKAHEAD and not shutdown.is_set():
                 if pipeline.alert_active:
                     break
-                await asyncio.sleep(0.05)
+                segment_consumed.clear()
+                try:
+                    await asyncio.wait_for(segment_consumed.wait(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    pass
 
             if shutdown.is_set():
                 return
@@ -217,9 +226,10 @@ async def _alert_feeder(
     alert_metadata = NowPlayingMetadata(title='Alert')
     while not shutdown.is_set():
         try:
-            priority, pcm_data, identifier = alert_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            await asyncio.sleep(0.1)
+            priority, pcm_data, identifier = await asyncio.wait_for(
+                alert_queue.get(), timeout=0.5,
+            )
+        except asyncio.TimeoutError:
             continue
 
         log.info('[%s] Playing alert: %s', feed_id, identifier or '(unnamed)')
@@ -347,20 +357,6 @@ async def _watch_shutdown(shutdown: asyncio.Event) -> None:
         await asyncio.sleep(0.5)
     shutdown.set()
 
-async def _drain_thread_alerts(
-    thread_q: queue.Queue[tuple[int, bytes, str]],
-    async_q: asyncio.PriorityQueue[tuple[int, bytes, str]],
-) -> bool:
-    drained = False
-    while True:
-        try:
-            item = thread_q.get_nowait()
-            await async_q.put(item)
-            drained = True
-        except queue.Empty:
-            break
-    return drained
-
 async def _playout_main(
     config: dict[str, Any],
     feed: dict[str, Any],
@@ -370,19 +366,27 @@ async def _playout_main(
     watchdog = asyncio.create_task(_watch_shutdown(shutdown))
     alert_queue: asyncio.PriorityQueue[tuple[int, bytes, str]] = asyncio.PriorityQueue()
     thread_alert_q = register_alert_queue(feed_id)
+    loop = asyncio.get_running_loop()
 
-    async def _poll_alerts() -> None:
-        while not shutdown.is_set():
-            await _drain_thread_alerts(thread_alert_q, alert_queue)
-            await asyncio.sleep(0.5)
+    _bridge_stop = asyncio.Event()
 
-    poller = asyncio.create_task(_poll_alerts(), name=f'{feed_id}:alert_poll')
+    def _bridge_thread() -> None:
+        while not shutdown_event.is_set() and not _bridge_stop.is_set():
+            try:
+                item = thread_alert_q.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            loop.call_soon_threadsafe(alert_queue.put_nowait, item)
+
+    bridge = threading.Thread(target=_bridge_thread, name=f'{feed_id}:alert_bridge', daemon=True)
+    bridge.start()
+
     try:
         await feed_runner(config, feed, alert_queue, shutdown)
     except BrokenPipeError:
         log.warning('Playout pipe closed for %s', feed_id)
     finally:
-        poller.cancel()
+        _bridge_stop.set()
         watchdog.cancel()
 
 def playout_thread_worker(
