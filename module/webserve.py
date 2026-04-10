@@ -552,7 +552,7 @@ class WebServer:
     async def upload_audio(self, file: UploadFile = File(...)) -> dict[str, Any]:
         import subprocess
         same_sr: int = int(self.config.get('same', {}).get('sample_rate_hz', 22050))
-        upload_dir = self.root_dir / 'output' / '_uploads'
+        upload_dir = self.root_dir / 'audio' / '_uploads'
         upload_dir.mkdir(parents=True, exist_ok=True)
         safe_stem = secrets.token_hex(10)
         original_suffix = pathlib.Path(file.filename or 'audio.bin').suffix or '.bin'
@@ -626,7 +626,7 @@ class WebServer:
         voice_path: pathlib.Path | None = None
         voice_array = None
         if payload.audio_file_path.strip():
-            upload_dir = self.root_dir / 'output' / '_uploads'
+            upload_dir = self.root_dir / 'audio' / '_uploads'
             candidate = pathlib.Path(payload.audio_file_path)
             try:
                 candidate.relative_to(upload_dir)

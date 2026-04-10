@@ -15,7 +15,7 @@ from module.tts import synthesize_pcm
 log = logging.getLogger(__name__)
 
 _CACHE_PATH = pathlib.Path('managed') / 'staticPhrases.json'
-_STATIC_ROOT = pathlib.Path('output') / 'static'
+_STATIC_ROOT = pathlib.Path('audio') / 'static'
 
 _HOURS_EN: dict[int, str] = {
     1: 'one', 2: 'two', 3: 'three', 4: 'four', 5: 'five',
@@ -98,8 +98,8 @@ def _build_en_ca_catalog() -> dict[str, str]:
         'greeting.evening':   'Good evening.',
         'greeting.night':     'Good night.',
         'time.current_is':    'The current time is',
-        'time.am':            'A M',
-        'time.pm':            'P M',
+        'time.am':            'A.M.',
+        'time.pm':            'P.M.',
     }
     for h, word in _HOURS_EN.items():
         phrases[f'time.hour.{h}'] = word

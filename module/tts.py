@@ -632,7 +632,7 @@ def synthesize(
     voice: Optional[str] = None,
 ) -> Optional[pathlib.Path]:
 
-    out_dir = pathlib.Path("output") / feed_id / lang
+    out_dir = pathlib.Path("audio") / feed_id / lang
     out_dir.mkdir(parents=True, exist_ok=True)
     final_path = out_dir / f"{package_id}.wav"
     

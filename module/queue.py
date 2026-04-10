@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
-import subprocess
 import time
 from typing import Any, Callable, Coroutine, Protocol
 
@@ -25,17 +24,10 @@ SILENCE_CHUNK = bytes(CHUNK_BYTES)
 _SEGMENT_QUEUE_LIMIT = 12
 _GAP_CHUNKS = max(1, round(1.0 / CHUNK_DURATION))
 _GAP_SILENCE: bytes = b''
-_AUDIO_DIR = pathlib.Path(__file__).parent.parent / 'audio'
-_BUS_ALARM_PATH = _AUDIO_DIR / 'alarm.wav'
-_BUS_SILENCE_PATH = _AUDIO_DIR / 'silence.wav'
-_BUS_SILENCE_SECONDS = 1.0
-_BUS_SILENCE_LOOPS = 2
-_ASSET_PCM_CACHE: dict[pathlib.Path, bytes] = {}
 
 OnSegmentStart = Callable[[], Coroutine[Any, Any, None]]
 SegmentLoader = Callable[[], bytes | None]
 SegmentSource = pathlib.Path | bytes | SegmentLoader
-BusDiscrepancyNotifier = Callable[[str], None]
 
 
 def _init_gap_silence() -> None:
@@ -44,45 +36,6 @@ def _init_gap_silence() -> None:
 
 
 _init_gap_silence()
-
-
-def _decode_asset_pcm(path: pathlib.Path) -> bytes | None:
-    cached = _ASSET_PCM_CACHE.get(path)
-    if cached is not None:
-        return cached
-    if not path.exists():
-        return None
-    try:
-        proc = subprocess.run(
-            [
-                'ffmpeg', '-loglevel', 'error', '-i', str(path),
-                '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-                'pipe:1',
-            ],
-            capture_output=True,
-            check=True,
-        )
-    except Exception as exc:
-        log.error('Failed to decode audio asset %s: %s', path.name, exc)
-        return None
-    if not proc.stdout:
-        return None
-    _ASSET_PCM_CACHE[path] = proc.stdout
-    return proc.stdout
-
-
-def _fallback_silence_pcm(seconds: float = _BUS_SILENCE_SECONDS) -> bytes:
-    chunk_count = max(1, round(seconds / CHUNK_DURATION))
-    return SILENCE_CHUNK * chunk_count
-
-
-def _bus_failover_sequence_pcm() -> bytes | None:
-    alarm_pcm = _decode_asset_pcm(_BUS_ALARM_PATH)
-    if not alarm_pcm:
-        log.error('Audio bus failover requested but %s is unavailable', _BUS_ALARM_PATH)
-        return None
-    silence_pcm = _decode_asset_pcm(_BUS_SILENCE_PATH) or _fallback_silence_pcm()
-    return alarm_pcm + (silence_pcm * _BUS_SILENCE_LOOPS)
 
 
 class OutputSink(Protocol):
@@ -94,8 +47,7 @@ class _BufferedSink:
     __slots__ = (
         '_sink', '_name', '_queue', '_task', '_closed',
         '_drop_oldest', '_dropped_chunks', '_clocked',
-        '_prefill_chunks', '_fill_silence', '_discrepancy_notifier',
-        '_underflow_active',
+        '_prefill_chunks', '_fill_silence',
     )
 
     def __init__(
@@ -107,7 +59,6 @@ class _BufferedSink:
         clocked: bool,
         prefill_chunks: int,
         fill_silence: bool,
-        discrepancy_notifier: BusDiscrepancyNotifier | None,
     ) -> None:
         self._sink = sink
         self._name = name
@@ -119,12 +70,6 @@ class _BufferedSink:
         self._clocked = clocked
         self._prefill_chunks = max(0, min(queue_limit, prefill_chunks))
         self._fill_silence = fill_silence
-        self._discrepancy_notifier = discrepancy_notifier
-        self._underflow_active = False
-
-    def _report_discrepancy(self, reason: str) -> None:
-        if self._discrepancy_notifier is not None:
-            self._discrepancy_notifier(reason)
 
     def start(self) -> None:
         if self._task is None:
@@ -144,7 +89,6 @@ class _BufferedSink:
             try:
                 await self._sink.write(chunk)
             except Exception as exc:
-                self._report_discrepancy(f'sink write failure: {exc}')
                 log.error('Sink %s write failed: %s', self._name, exc)
 
     async def _run_clocked(self) -> None:
@@ -168,12 +112,7 @@ class _BufferedSink:
                 if not self._fill_silence:
                     await asyncio.sleep(CHUNK_DURATION / 2)
                     continue
-                if not self._underflow_active:
-                    self._underflow_active = True
-                    self._report_discrepancy('mailbox underflow')
                 chunk = SILENCE_CHUNK
-            else:
-                self._underflow_active = False
 
             if chunk is None:
                 return
@@ -181,7 +120,6 @@ class _BufferedSink:
             try:
                 await self._sink.write(chunk)
             except Exception as exc:
-                self._report_discrepancy(f'sink write failure: {exc}')
                 log.error('Sink %s write failed: %s', self._name, exc)
 
             next_ns += chunk_ns
@@ -193,31 +131,12 @@ class _BufferedSink:
 
     def _log_drop(self) -> None:
         self._dropped_chunks += 1
-        self._report_discrepancy('mailbox overflow')
         if self._dropped_chunks in {1, 8, 32} or self._dropped_chunks % 128 == 0:
             log.warning(
                 'Sink %s mailbox overflow - dropped %d chunk(s)',
                 self._name,
                 self._dropped_chunks,
             )
-
-    async def reset(self) -> None:
-        self._dropped_chunks = 0
-        self._underflow_active = False
-        while True:
-            try:
-                queued = self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            if queued is None:
-                try:
-                    self._queue.put_nowait(None)
-                except asyncio.QueueFull:
-                    pass
-                break
-        resetter = getattr(self._sink, 'reset', None)
-        if callable(resetter):
-            await resetter()
 
     async def write(self, pcm: bytes) -> None:
         if self._closed or not pcm:
@@ -266,7 +185,6 @@ class AudioPipeline:
     __slots__ = (
         '_segment_queue', '_alert_queue', '_alert_active', '_alert_done',
         '_segment_consumed', '_shutdown', '_sinks', '_playout_task',
-        '_bus_discrepancy_queue', '_bus_discrepancy_pending',
     )
 
     def __init__(self) -> None:
@@ -281,21 +199,9 @@ class AudioPipeline:
         self._shutdown = asyncio.Event()
         self._sinks: list[tuple[OutputSink, str]] = []
         self._playout_task: asyncio.Task | None = None
-        self._bus_discrepancy_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
-        self._bus_discrepancy_pending = asyncio.Event()
-
-    def _report_bus_discrepancy(self, sink_name: str, reason: str) -> None:
-        if self._shutdown.is_set() or self._bus_discrepancy_pending.is_set():
-            return
-        self._bus_discrepancy_pending.set()
-        self._bus_discrepancy_queue.put_nowait((sink_name, reason))
-        log.error('Audio bus discrepancy detected on %s: %s', sink_name, reason)
 
     def attach_sink(self, sink: OutputSink, name: str = '') -> None:
         queue_limit = int(getattr(sink, 'bus_queue_limit', 0) or 0)
-        discrepancy_notifier: BusDiscrepancyNotifier | None = None
-        if bool(getattr(sink, 'bus_guard_enabled', False)):
-            discrepancy_notifier = lambda reason, sink_name=(name or sink.__class__.__name__): self._report_bus_discrepancy(sink_name, reason)
         if queue_limit > 0:
             sink = _BufferedSink(
                 sink,
@@ -305,7 +211,6 @@ class AudioPipeline:
                 bool(getattr(sink, 'bus_clocked', False)),
                 int(getattr(sink, 'bus_prefill_chunks', 0) or 0),
                 bool(getattr(sink, 'bus_fill_silence', False)),
-                discrepancy_notifier,
             )
         self._sinks.append((sink, name))
 
@@ -379,7 +284,7 @@ class AudioPipeline:
         next_ns = time.monotonic_ns()
         offset = 0
         while offset < len(data) and not self._shutdown.is_set():
-            if interruptible and (not self._alert_queue.empty() or self._bus_discrepancy_pending.is_set()):
+            if interruptible and not self._alert_queue.empty():
                 return False
             end = offset + CHUNK_BYTES
             chunk = data[offset:end]
@@ -395,63 +300,11 @@ class AudioPipeline:
                 next_ns = time.monotonic_ns()
         return True
 
-    async def _clear_segment_queue(self) -> None:
-        while True:
-            try:
-                segment_source, _ = self._segment_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-            if isinstance(segment_source, pathlib.Path):
-                try:
-                    segment_source.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-    async def _reset_audio_bus(self) -> None:
-        for sink, _ in self._sinks:
-            resetter = getattr(sink, 'reset', None)
-            if callable(resetter):
-                try:
-                    await resetter()
-                except Exception as exc:
-                    log.error('Audio bus reset failed: %s', exc)
-
-    async def _handle_bus_discrepancy(self) -> None:
-        reasons: list[str] = []
-        while True:
-            try:
-                sink_name, reason = self._bus_discrepancy_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            reasons.append(f'{sink_name}: {reason}')
-
-        self._bus_discrepancy_pending.clear()
-        if reasons:
-            log.error('Audio bus failover sequence engaged: %s', '; '.join(reasons))
-        else:
-            log.error('Audio bus failover sequence engaged')
-
-        self._alert_active.set()
-        try:
-            failover_pcm = _bus_failover_sequence_pcm()
-            if failover_pcm:
-                await self._stream_pcm(failover_pcm, interruptible=False)
-            await self._clear_segment_queue()
-            await self._reset_audio_bus()
-        finally:
-            self._alert_active.clear()
-            self._alert_done.set()
-
     async def _playout_loop(self) -> None:
         chunk_ns = int(CHUNK_DURATION * 1_000_000_000)
         next_silence_ns = time.monotonic_ns()
         try:
             while not self._shutdown.is_set():
-                if self._bus_discrepancy_pending.is_set():
-                    await self._handle_bus_discrepancy()
-                    next_silence_ns = time.monotonic_ns()
-                    continue
-
                 try:
                     alert_pcm = self._alert_queue.get_nowait()
                     self._alert_active.set()

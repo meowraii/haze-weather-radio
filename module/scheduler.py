@@ -19,19 +19,16 @@ from module.tts import synthesize_pcm
 
 log = logging.getLogger(__name__)
 
-_SPOOL_EXTS = frozenset({'.bin'})
 _CACHE_EXTS = frozenset({'.json', '.txt'})
 _ALL_FILES: frozenset[str] = frozenset()
 
-
 def clean_stale_data(feed: dict[str, Any]) -> int:
     feed_id = feed.get('id', '')
-    output_root = pathlib.Path('output')
+    audio_root = pathlib.Path('audio')
     data_root = pathlib.Path('data')
 
     targets: list[tuple[pathlib.Path, frozenset[str]]] = [
-        (output_root / feed_id / 'spool',  _SPOOL_EXTS),
-        (output_root / '_uploads',          _ALL_FILES),
+        (audio_root / '_uploads',          _ALL_FILES),
         (data_root / 'eccc',               _CACHE_EXTS),
         (data_root / 'nws',                _CACHE_EXTS),
         (data_root / 'weatherdotcom',       _CACHE_EXTS),

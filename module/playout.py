@@ -248,7 +248,7 @@ async def _alert_feeder(
 
 def _build_file_path(config: dict[str, Any], feed: dict[str, Any]) -> str:
     file_cfg = config.get('output', {}).get('file', {})
-    directory = file_cfg.get('directory', './output')
+    directory = file_cfg.get('directory', './audio')
     pattern = file_cfg.get('filename_pattern', '{feed_id}-{timestamp}.bin')
     filename = pattern.format(
         feed_id=feed['id'],
