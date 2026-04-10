@@ -243,7 +243,6 @@ class PiFmAdvSink:
     bus_clocked = True
     bus_prefill_chunks = _PIFMADV_PREFILL_CHUNKS
     bus_fill_silence = True
-    bus_guard_enabled = True
 
     def __init__(self, config: dict[str, Any]) -> None:
         freq_mhz: str = str(config['frequency_mhz'])
@@ -396,15 +395,6 @@ class PiFmAdvSink:
             log.error('PiFmAdv: write error: %s', exc)
             self._closed = True
             raise RuntimeError(f'PiFmAdv write error: {exc}') from exc
-
-    async def reset(self) -> None:
-        self._closed = False
-        try:
-            await asyncio.to_thread(self._restart)
-            log.info('PiFmAdv: audio bus reset — %s', self._label)
-        except Exception as exc:
-            self._closed = True
-            raise RuntimeError(f'PiFmAdv reset failed: {exc}') from exc
 
     async def close(self) -> None:
         if self._ffmpeg is None and self._fm is None:

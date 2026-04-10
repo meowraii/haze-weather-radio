@@ -121,7 +121,7 @@ def _spoken_minute(mm: str) -> str:
 
 
 def _spoken_ampm(ampm: str) -> str:
-    return 'A M' if ampm.upper() == 'AM' else 'P M'
+    return 'A.M.' if ampm.upper() == 'AM' else 'P.M.'
 
 
 def _spoken_zulu_hour(hh: int) -> str:

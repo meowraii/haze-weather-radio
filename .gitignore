@@ -3,6 +3,7 @@
 data/*
 data/alertsRegistry.json
 __pycache__/
-output/*
+audio/_uploads
+audio/static
 piper-tts/*
 logs/*
