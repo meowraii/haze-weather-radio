@@ -1,5 +1,7 @@
 import io
 import importlib
+import importlib.util
+import ctypes
 import json
 import locale
 import logging
@@ -157,6 +159,51 @@ try:
 except ImportError:
     ort = None
 
+_rocm_libs_preloaded = False
+
+def _preload_rocm_libs() -> bool:
+    global _rocm_libs_preloaded
+    if _rocm_libs_preloaded:
+        return True
+    try:
+        import torch
+        torch_lib_dir = pathlib.Path(torch.__file__).parent / 'lib'
+    except ImportError:
+        log.debug('torch not available; skipping ROCm lib preload')
+        return False
+    _ROCM_PRELOAD = [
+        'libhipblas.so', 'libhipblaslt.so', 'libhipsolver.so',
+        'librocblas.so', 'libMIOpen.so', 'librccl.so',
+    ]
+    loaded_any = False
+    for name in _ROCM_PRELOAD:
+        candidate = torch_lib_dir / name
+        if not candidate.exists():
+            continue
+        try:
+            ctypes.CDLL(str(candidate), mode=ctypes.RTLD_GLOBAL)
+            loaded_any = True
+        except OSError as exc:
+            log.debug('ROCm preload skipped %s: %s', name, exc)
+    if ort is not None:
+        capi_dir = pathlib.Path(ort.__file__).parent / 'capi'
+        rocm_provider = capi_dir / 'libonnxruntime_providers_rocm.so'
+        if rocm_provider.exists():
+            try:
+                ctypes.CDLL(str(rocm_provider), mode=ctypes.RTLD_GLOBAL)
+                loaded_any = True
+                log.debug('Preloaded libonnxruntime_providers_rocm.so')
+            except OSError as exc:
+                log.warning(
+                    'Could not preload ROCm onnxruntime provider: %s — '
+                    'ensure onnxruntime-rocm matches your ROCm/hipBLAS version. '
+                    'onnxruntime-rocm on PyPI is built for ROCm 5.x (hipBLAS.so.2); '
+                    'ROCm 6+ requires a build from AMD\'s repo or compiled from source.',
+                    exc,
+                )
+    _rocm_libs_preloaded = True
+    return loaded_any
+
 from managed.events import shutdown_event, tts_queue
 
 
@@ -252,7 +299,8 @@ def _normalize_piper_acceleration(value: Any) -> str:
     normalized = str(value or 'auto').strip().lower()
     aliases = {
         '': 'auto',
-        'gpu': 'cuda',
+        'gpu': 'rocm',
+        'amd': 'rocm',
         'none': 'cpu',
         'off': 'cpu',
         'false': 'cpu',
@@ -265,10 +313,30 @@ def _resolve_piper_runtime(config: dict[str, Any]) -> tuple[bool, str]:
     requested = _normalize_piper_acceleration(config.get('tts', {}).get('piper', {}).get('acceleration'))
     available = list(ort.get_available_providers()) if ort is not None else []
 
-    use_cuda = requested in ('auto', 'cuda') and 'CUDAExecutionProvider' in available
-    provider = 'CUDAExecutionProvider' if use_cuda else 'CPUExecutionProvider'
+    has_cuda = 'CUDAExecutionProvider' in available
+    has_rocm = 'ROCMExecutionProvider' in available
 
-    if requested == 'cuda' and not use_cuda:
+    if requested == 'cuda':
+        use_cuda = has_cuda
+        provider = 'CUDAExecutionProvider' if has_cuda else 'CPUExecutionProvider'
+    elif requested == 'rocm':
+        use_cuda = False
+        provider = 'ROCMExecutionProvider'
+    elif requested == 'auto':
+        if has_cuda:
+            use_cuda = True
+            provider = 'CUDAExecutionProvider'
+        elif has_rocm:
+            use_cuda = False
+            provider = 'ROCMExecutionProvider'
+        else:
+            use_cuda = False
+            provider = 'CPUExecutionProvider'
+    else:
+        use_cuda = False
+        provider = 'CPUExecutionProvider'
+
+    if requested == 'cuda' and not has_cuda:
         key = ('cuda-unavailable', ','.join(available) or 'none')
         if key not in _logged_piper_runtime:
             _logged_piper_runtime.add(key)
@@ -303,6 +371,25 @@ def _load_piper_voice(
     if PiperVoice is None:
         raise RuntimeError('Piper not available')
     loaded = cast(Any, PiperVoice).load(model_path, config_path=config_path, use_cuda=use_cuda)
+    if provider == 'ROCMExecutionProvider' and ort is not None:
+        _preload_rocm_libs()
+        try:
+            loaded.session = ort.InferenceSession(
+                model_path,
+                sess_options=ort.SessionOptions(),
+                providers=['ROCMExecutionProvider', 'CPUExecutionProvider'],
+            )
+            actual = loaded.session.get_providers()
+            if 'ROCMExecutionProvider' in actual:
+                log.info('Piper ROCm session active (providers: %s)', ', '.join(actual))
+            else:
+                log.warning(
+                    'ROCMExecutionProvider not active after session creation (got: %s); '
+                    'check that onnxruntime-rocm is installed and torch ROCm libs are accessible',
+                    ', '.join(actual),
+                )
+        except Exception as exc:
+            log.warning('Piper ROCm session failed (%s); falling back to CPU', exc)
     _voice_cache[cache_key] = loaded
     if len(_voice_cache) > _VOICE_CACHE_MAX:
         _voice_cache.popitem(last=False)

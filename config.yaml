@@ -172,7 +172,7 @@ feeds:
         bin_root: /home/rai/PiFmAdv/src # root directory of the PiFmAdv binary on your local machine or the remote machine if using ssh.
         enabled: true # enable this output?
         frequency_mhz: 162.450 # frequency to broadcast on in hertz.
-        tx_power: 0 # transmission power level from 0 to 7. 0 is the lowest power and 7 is the highest. the actual range will depend on your hardware and antenna setup.
+        tx_power: 7 # transmission power level from 0 to 7. 0 is the lowest power and 7 is the highest. the actual range will depend on your hardware and antenna setup.
         alternative_frequencies: [] # PiAdvFm accepts this parameter but i dont know how to use it. so ill just pass whatever you put here to the binary.
         bandwidth_hz: 12500 # bandwidth of the actual transmitted signal
         deviation_hz: 5000 # frequency deviation for fm modulation.
@@ -292,7 +292,7 @@ network:
 tts:
   default_backend: piper
   piper:
-    acceleration: auto # auto, cpu, or cuda. auto prefers CUDA when the active onnxruntime build exposes CUDAExecutionProvider.
+    acceleration: rocm # auto, cpu, cuda, or rocm. auto prefers CUDA when the active onnxruntime build exposes CUDAExecutionProvider.
 
   lang:
     en-CA:

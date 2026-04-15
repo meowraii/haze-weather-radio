@@ -4,6 +4,7 @@ import asyncio
 import base64
 import logging
 import os
+import select
 import shlex
 import subprocess
 import time
@@ -222,19 +223,24 @@ class FileSink:
 
 
 _RADIO_DYNAMICS = (
-    'equalizer=f=320:t=q:w=1.8:g=1,'
-    'equalizer=f=650:t=q:w=1.4:g=4,'
-    'equalizer=f=960:t=q:w=1.5:g=6,'
-    'equalizer=f=1000:t=q:w=0.8:g=4,'
-    'equalizer=f=1800:t=q:w=1.2:g=-1,'
-    'acompressor=threshold=-9dB:ratio=6:attack=5:release=70:makeup=16dB,'
-    'volume=1.2,'
+    'highpass=f=200,'
+    'lowpass=f=3000,'
+    'equalizer=f=320:t=q:w=1.8:g=-3,'
+    'equalizer=f=650:t=q:w=1.4:g=2,'
+    'equalizer=f=800:t=q:w=1.8:g=6,'
+    'equalizer=f=960:t=q:w=1.8:g=8,'
+    'highpass=f=200,'
+    'lowpass=f=2400,'
+    'equalizer=f=1000:t=q:w=1:g=4,'
+    'equalizer=f=1800:t=q:w=1.2:g=4,'
     'loudnorm=I=-13:TP=0.0:LRA=8,'
-    'highpass=f=120,'
+    'highpass=f=200,'
+    'acompressor=threshold=-16dB:ratio=10:attack=5:release=70:makeup=12dB,'
     'lowpass=f=3000,'
 )
 
 _PIFMADV_PREFILL_CHUNKS = 6
+_WRITE_STALL_TIMEOUT = 0.5
 
 
 class PiFmAdvSink:
@@ -386,10 +392,24 @@ class PiFmAdvSink:
     async def write(self, pcm: bytes) -> None:
         if self._closed or self._ffmpeg is None or self._ffmpeg.stdin is None or not pcm:
             return
+        ffmpeg = self._ffmpeg
+        stdin = ffmpeg.stdin
+        if stdin is None:
+            return
         try:
-            await asyncio.to_thread(self._ffmpeg.stdin.write, pcm)
+            fd = stdin.fileno()
+        except Exception:
+            return
+        _, writable, _ = await asyncio.to_thread(select.select, [], [fd], [], _WRITE_STALL_TIMEOUT)
+        if not writable:
+            log.warning('PiFmAdv: write stall on %s, restarting', self._label)
+            await asyncio.to_thread(self._restart)
+            raise RuntimeError('PiFmAdv: write stall; restarted')
+        try:
+            await asyncio.to_thread(stdin.write, pcm)
         except BrokenPipeError as exc:
-            self._closed = True
+            log.warning('PiFmAdv: broken pipe on %s, restarting', self._label)
+            await asyncio.to_thread(self._restart)
             raise RuntimeError('PiFmAdv pipe broken') from exc
         except Exception as exc:
             log.error('PiFmAdv: write error: %s', exc)
