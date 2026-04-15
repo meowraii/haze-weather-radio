@@ -5,18 +5,17 @@ import csv
 import datetime as _dt
 import json
 import logging
-import os
 import pathlib
 import re
 import time
-import wave
 from datetime import datetime
 from typing import Any, cast
 
 _REGISTRY_PATH = pathlib.Path('data') / 'alertsRegistry.json'
 
 
-def _write_registry_entry(feed_id: str, identifier: str) -> None:
+def _write_registry_entry(feed_id: str, alert: Any) -> None:
+    identifier = alert.identifier if hasattr(alert, 'identifier') else str(alert)
     if not identifier:
         return
     _REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -26,31 +25,48 @@ def _write_registry_entry(feed_id: str, identifier: str) -> None:
         registry = []
     if any(r.get('identifier') == identifier and r.get('feed_id') == feed_id for r in registry):
         return
-    registry.append({
+
+    info = None
+    if hasattr(alert, 'infos') and alert.infos:
+        info = alert.infos[0]
+
+    entry: dict[str, Any] = {
         'identifier': identifier,
         'feed_id': feed_id,
         'received_at': _dt.datetime.now(_dt.UTC).isoformat(),
-    })
+        'metadata': {
+            'senderName': info.sender_name if info else '',
+            'headline': info.headline if info else '',
+            'event': info.event if info else '',
+            'effective': info.effective.isoformat() if info and info.effective else None,
+            'onset': info.onset.isoformat() if info and info.onset else None,
+            'expires': info.expires.isoformat() if info and info.expires else None,
+        },
+        'source': {
+            'msgType': alert.msg_type if hasattr(alert, 'msg_type') else 'Alert',
+        },
+        'parameters': [
+            {'valueName': p.name, 'value': p.value}
+            for p in (info.parameters if info else ())
+        ],
+        'text': {
+            'description': info.description if info else '',
+            'instruction': info.instruction if info else '',
+        },
+    }
+
+    registry.append(entry)
     try:
         _REGISTRY_PATH.write_text(json.dumps(registry, indent=2), encoding='utf-8')
         log.debug('Registry updated: %s', identifier)
     except Exception as e:
         log.error('Failed to write alert registry: %s', e)
 
-import numpy as np
 
-from managed.events import append_runtime_event, push_alert, update_feed_runtime
-from module.cap_specific.naads_tcp import CAPAlert, CAPInfo, naad_listener
+from managed.events import append_runtime_event, update_feed_runtime
+from module.cap_specific.naads_tcp import CAPAlert, naad_listener
+from module.cap_specific.naadsatom_http import naad_archive_fetch
 from module.cap_specific.nwsatom_http import nws_atom_listener
-from module.queue import SAMPLE_RATE as BUS_SR
-from module.same import (
-    SAMEHeader,
-    convert_time_code,
-    generate_same,
-    resample,
-    to_pcm16,
-)
-from module.tts import synthesize, synthesize_pcm
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +99,8 @@ _SEVERITY_PRIORITY: dict[str, int] = {
     "Minor": 3,
     "Unknown": 4,
 }
+
+_INFORMATIONAL_PRIORITY = 9
 
 _MANAGED = pathlib.Path(__file__).parent.parent / "managed"
 
@@ -393,152 +411,6 @@ def _duration_code(alert: CAPAlert) -> str:
         return "0100"
 
 
-def _get_audio_resource(info: CAPInfo) -> bytes | None:
-    for res in info.resources:
-        if res.mime_type.startswith("audio/") and res.data:
-            return res.data
-    return None
-
-
-def _attention_tone_type(alert: CAPAlert, config: dict[str, Any]) -> str:
-    same_cfg = config.get("same", {})
-
-    if same_cfg.get("alert_ready_on_NAADS_BIP", False) and alert.broadcast_immediately:
-        return "NPAS"
-
-    same_event = _resolve_same_event(alert)
-    overrides = cast(list[dict[str, Any]], same_cfg.get("attention_tone_override") or [])
-    for entry in overrides:
-        for code, tone in entry.items():
-            if code == same_event:
-                return str(tone).upper()
-
-    return same_cfg.get("default_attention_tone", "WXR").upper()
-
-
-def build_alert_audio(
-    alert: CAPAlert,
-    config: dict[str, Any],
-    feed: dict[str, Any],
-    cap_filter: dict[str, Any] | None = None,
-) -> bytes | None:
-    feed_id = feed["id"]
-    info = alert.infos[0] if alert.infos else None
-    if not info:
-        return None
-
-    same_event = _resolve_same_event(alert)
-    clc_codes = _header_locations(alert, feed)
-
-    same_cfg = config.get("same", {})
-    callsign = same_cfg.get("sender", "HAZE0000")
-
-    header = SAMEHeader(
-        originator=_same_originator(alert),
-        event=same_event,
-        locations=clc_codes,
-        duration=_duration_code(alert),
-        callsign=callsign,
-        issue_time=convert_time_code(alert.sent.isoformat()) if alert.sent else None,
-    )
-
-    tone_type = _attention_tone_type(alert, config)
-    voice_array = _generate_voice_array(alert, config, feed, cap_filter)
-
-    same_sr = config.get('same', {}).get('sample_rate_hz', 22050)
-    full_signal = generate_same(
-        header=header,
-        tone_type=tone_type,
-        audio_msg_array=voice_array,
-        sample_rate=same_sr,
-        attn_duration_s=8.0,
-    )
-
-    log.info("[%s] Alert audio generated: %s (%.1fs)", feed_id, alert.identifier[:40], len(full_signal) / same_sr)
-    return to_pcm16(resample(full_signal, same_sr, BUS_SR))
-
-
-def _generate_voice_array(
-    alert: CAPAlert,
-    config: dict[str, Any],
-    feed: dict[str, Any],
-    cap_filter: dict[str, Any] | None = None,
-) -> np.ndarray | None:
-    feed_id = feed["id"]
-    langs = list(feed.get("languages", {}).keys())
-    primary_lang = langs[0] if langs else "en-CA"
-
-    if alert.broadcast_immediately:
-        bi_infos = [i for i in alert.infos if i.parameter_map.get("layer:sorem:1.0:broadcast_immediately", "").lower() == "yes" and i.language.startswith(primary_lang[:2])]
-        if not bi_infos:
-            bi_infos = [i for i in alert.infos if i.parameter_map.get("layer:sorem:1.0:broadcast_immediately", "").lower() == "yes"]
-        info = bi_infos[0] if bi_infos else alert.info_for_lang(primary_lang[:2])
-    else:
-        info = alert.info_for_lang(primary_lang[:2])
-    if not info:
-        return None
-
-    same_sr = config.get('same', {}).get('sample_rate_hz', 22050)
-
-    embedded = _get_audio_resource(info)
-    if embedded:
-        try:
-            return _decode_embedded_audio(embedded, same_sr)
-        except Exception:
-            log.warning("[%s] Failed to decode embedded alert audio, falling back to TTS", feed_id)
-
-    text_parts: list[str] = []
-    if info.headline:
-        text_parts.append(info.headline)
-    if info.description:
-        text_parts.append(info.description)
-    if info.instruction:
-        text_parts.append(info.instruction)
-    if info.area_descriptions:
-        use_feed_locs = bool((cap_filter or {}).get("use_feed_locations"))
-        if use_feed_locs and info.area_geocodes:
-            feed_set = set(feed_same_codes(feed))
-            filtered = [
-                desc for desc, _gcs, area_clcs in info.area_geocodes
-                if any(clc in feed_set for clc in area_clcs) or any(gc in feed_set for gc in _gcs)
-            ]
-            areas_to_read = filtered if filtered else list(info.area_descriptions)
-        else:
-            areas_to_read = list(info.area_descriptions)
-        text_parts.append("Affected areas: " + ", ".join(areas_to_read) + ".")
-
-    if not text_parts:
-        return None
-
-    text = " ".join(text_parts)
-    pcm = synthesize_pcm(config, text, lang=primary_lang)
-    if not pcm:
-        return None
-
-    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32767.0
-    from module.queue import CHANNELS
-    if CHANNELS == 2:
-        samples = samples.reshape(-1, 2).mean(axis=1)
-    return resample(samples, BUS_SR, same_sr)
-
-
-def _decode_embedded_audio(data: bytes, target_sr: int) -> np.ndarray:
-    import subprocess as _sp
-    proc = _sp.run(
-        [
-            "ffmpeg", "-loglevel", "error",
-            "-i", "pipe:0",
-            "-f", "s16le", "-ar", str(target_sr), "-ac", "1",
-            "pipe:1",
-        ],
-        input=data,
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {proc.stderr[:200]}")
-    return np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32767.0
-
-
 class AlertDedup:
     def __init__(
         self,
@@ -566,7 +438,7 @@ class AlertDedup:
         return True
 
 
-def matches_feed(
+def _covers_feed_area(
     alert: CAPAlert,
     feed: dict[str, Any],
     cap_filter: dict[str, Any] | None = None,
@@ -578,10 +450,6 @@ def matches_feed(
 
     if cap_filter is None:
         cap_filter = {}
-
-    blocked, reason = _alert_blocked(alert, cap_filter)
-    if blocked:
-        return False, reason or "blocked"
 
     use_feed_locs = cap_filter.get("use_feed_locations", True)
     all_geocodes = alert.all_geocodes
@@ -607,12 +475,31 @@ def matches_feed(
     return False, "outside feed coverage"
 
 
+def _alert_expired(alert: CAPAlert) -> bool:
+    expiries = [i.expires for i in alert.infos if i.expires is not None]
+    return bool(expiries) and all(e <= _dt.datetime.now(_dt.UTC) for e in expiries)
+
+
+def matches_feed(
+    alert: CAPAlert,
+    feed: dict[str, Any],
+    cap_filter: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
+    covers, reason = _covers_feed_area(alert, feed, cap_filter)
+    if not covers:
+        return False, reason
+    blocked, block_reason = _alert_blocked(alert, cap_filter or {})
+    if blocked:
+        return False, block_reason or "blocked"
+    return True, reason
+
+
 async def alert_worker(
     config: dict[str, Any],
     feeds: list[dict[str, Any]],
     shutdown: asyncio.Event,
 ) -> None:
-    async def _dispatch_alert(
+    def _dispatch_alert(
         alert: CAPAlert,
         feed_alert_key: str,
         cap_filter: dict[str, Any],
@@ -623,53 +510,48 @@ async def alert_worker(
             log.debug("Duplicate %s alert skipped: %s", source_name, alert.identifier)
             return
 
-        matched_any = False
+        if _alert_expired(alert):
+            log.debug("Expired %s alert skipped: %s", source_name, alert.identifier)
+            return
+
+        area_matched_any = False
         for feed in feeds:
             feed_id = feed["id"]
 
             cap_cfg = feed.get("alerts", {}).get(feed_alert_key, {})
-            if not cap_cfg.get("enabled", False):
+            if not cap_cfg.get("enabled", True):
                 continue
 
-            matched, reason = matches_feed(alert, feed, cap_filter)
-            if not matched:
+            covers, cover_reason = _covers_feed_area(alert, feed, cap_filter)
+            if not covers:
                 log.info(
-                    "[%s] %s alert skipped: %s — %s (%s; %s)",
+                    "[%s] %s alert outside area: %s — %s (%s; %s)",
                     feed_id,
                     source_name,
                     alert.event,
                     alert.headline,
-                    reason,
+                    cover_reason,
                     _match_log_context(alert, feed, cap_filter),
                 )
                 continue
 
-            matched_any = True
-            log.info("[%s] %s alert matched: %s — %s (%s)", feed_id, source_name, alert.event, alert.headline, reason)
+            area_matched_any = True
+            _write_registry_entry(feed_id, alert)
+            update_feed_runtime(feed_id, {
+                'last_alert_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                'last_alert_event': alert.event,
+                'last_alert_headline': alert.headline,
+                'last_alert_severity': alert.severity,
+            })
+            append_runtime_event(
+                'alert',
+                f'{alert.event}: {alert.headline}',
+                feed_id,
+                {'severity': alert.severity},
+            )
+            log.info("[%s] %s alert registered: %s — %s (%s)", feed_id, source_name, alert.event, alert.headline, cover_reason)
 
-            wav_path = await asyncio.to_thread(build_alert_audio, alert, config, feed, cap_filter)
-            if wav_path:
-                priority = _SEVERITY_PRIORITY.get(alert.severity, 3)
-                push_alert(feed_id, priority, wav_path, alert.identifier)
-                _write_registry_entry(feed_id, alert.identifier)
-                update_feed_runtime(feed_id, {
-                    'last_alert_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                    'last_alert_event': alert.event,
-                    'last_alert_headline': alert.headline,
-                    'last_alert_severity': alert.severity,
-                })
-                append_runtime_event(
-                    'alert',
-                    f'{alert.event}: {alert.headline}',
-                    feed_id,
-                    {
-                        'severity': alert.severity,
-                        'priority': priority,
-                    },
-                )
-                log.info("[%s] %s alert queued: %s (priority %d)", feed_id, source_name, alert.identifier[:40], priority)
-
-        if not matched_any:
+        if not area_matched_any:
             log.info(
                 "No %s feeds accepted alert %s (%s, severity=%s, urgency=%s, certainty=%s, scope=%s, alert_geocodes=%s, alert_clc=%s)",
                 source_name,
@@ -696,7 +578,15 @@ async def alert_worker(
         cap_filter = cap_cp_cfg.get("filter", {})
 
         async def on_cap_cp_alert(alert: CAPAlert) -> None:
-            await _dispatch_alert(alert, 'cap_cp', cap_filter, cap_cp_dedup, 'CAP-CP')
+            _dispatch_alert(alert, 'cap_cp', cap_filter, cap_cp_dedup, 'CAP-CP')
+
+        naads_sources = cap_cp_cfg.get("sources", [])
+        if naads_sources:
+            try:
+                count = await naad_archive_fetch(naads_sources, on_cap_cp_alert)
+                log.info("NAADS startup archive: %d active alert(s) fetched", count)
+            except Exception as exc:
+                log.warning("NAADS startup archive fetch failed: %s", exc)
 
         tasks.append(asyncio.create_task(naad_listener(on_cap_cp_alert, shutdown), name='cap_cp_listener'))
     else:
@@ -714,7 +604,7 @@ async def alert_worker(
             source_filter = dict(nws_filter)
             if 'use_feed_locations' in source_cfg:
                 source_filter['use_feed_locations'] = bool(source_cfg.get('use_feed_locations'))
-            await _dispatch_alert(alert, 'nws', source_filter, nws_dedup, 'NWS CAP')
+            _dispatch_alert(alert, 'nws', source_filter, nws_dedup, 'NWS CAP')
 
         tasks.append(asyncio.create_task(nws_atom_listener(config, on_nws_alert, shutdown), name='nws_cap_listener'))
     else:

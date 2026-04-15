@@ -223,20 +223,17 @@ class FileSink:
 
 
 _RADIO_DYNAMICS = (
-    'highpass=f=200,'
-    'lowpass=f=3000,'
     'equalizer=f=320:t=q:w=1.8:g=-3,'
-    'equalizer=f=650:t=q:w=1.4:g=2,'
-    'equalizer=f=800:t=q:w=1.8:g=6,'
-    'equalizer=f=960:t=q:w=1.8:g=8,'
-    'highpass=f=200,'
-    'lowpass=f=2400,'
-    'equalizer=f=1000:t=q:w=1:g=4,'
+    'equalizer=f=650:t=q:w=1.4:g=3,'
+    'equalizer=f=800:t=q:w=1.8:g=8,'
+    'equalizer=f=960:t=q:w=1.8:g=10,'
+    'equalizer=f=1000:t=q:w=1:g=8,'
     'equalizer=f=1800:t=q:w=1.2:g=4,'
     'loudnorm=I=-13:TP=0.0:LRA=8,'
     'highpass=f=200,'
-    'acompressor=threshold=-16dB:ratio=10:attack=5:release=70:makeup=12dB,'
     'lowpass=f=3000,'
+    'acompressor=threshold=-16dB:ratio=10:attack=5:release=70:makeup=10dB,'
+    'lowpass=f=2400,'
 )
 
 _PIFMADV_PREFILL_CHUNKS = 6
