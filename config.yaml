@@ -292,7 +292,7 @@ network:
 tts:
   default_backend: piper
   piper:
-    acceleration: rocm # auto, cpu, cuda, or rocm. auto prefers CUDA when the active onnxruntime build exposes CUDAExecutionProvider.
+    acceleration: auto # auto, cpu, cuda, or rocm. auto prefers CUDA when the active onnxruntime build exposes CUDAExecutionProvider.
 
   lang:
     en-CA:
@@ -301,7 +301,7 @@ tts:
           male:
             model: ./piper-tts/en_US-hfc_male-medium.onnx
             speaker: 0 # 0 for default speaker, or the index of the speaker in the model if it contains multiple speakers.
-            config: ./piper-tts/en_US-hfc_male-medium.onnx.json
+            config: ./piper-tts/en_US-ryan-high.onnx.json
           female:
             model: ./piper-tts/en_US-lessac-high.onnx
             speaker: 0
