@@ -653,7 +653,7 @@ class WebServer:
         full_signal = generate_same(
             header=header,
             tone_type=tone,
-            audio_msg_fp32=voice_path,
+            audio_msg_path=voice_path,
             audio_msg_array=voice_array,
             sample_rate=same_sr,
             attn_duration_s=8.0,

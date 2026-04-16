@@ -35,6 +35,7 @@ from typing import Callable, Final, Literal, Optional
 
 import numpy as np
 import soundfile as sf
+from scipy import signal as sp_signal
 
 _SAMPLE_RATE: Final[int] = 16_000
 
@@ -45,19 +46,23 @@ _BIT_DURATION: Final[float] = 6 / 3125
 _PREAMBLE_BYTE: Final[int] = 0xAB
 _PREAMBLE_LEN: Final[int] = 16
 
-_PILOT_PREFIX_S: Final[float] = 0.010
+_PILOT_PREFIX_S: Final[float] = 0.015
 _PILOT_SUFFIX_S: Final[float] = 0.030
-_PILOT_FREQ_HZ: Final[float] = 2100.0
+_PILOT_PREFIX_FREQ_HZ: Final[float] = 1575.0
+_PILOT_SUFFIX_FREQ_HZ: Final[float] = 2088.0
 _BURST_LEAD_S: Final[float] = 0.100
+
+_AFSK_HIGHPASS_HZ: Final[float] = 1000.0
+_AFSK_LOWPASS_HZ: Final[float] = 2400.0
+_SEQUENCE_AMPLITUDE: Final[float] = 0.20
 
 _INTER_BURST_S: Final[float] = 1.0
 _PRE_ATTN_S: Final[float] = 1.0
 _PRE_VOICE_S: Final[float] = 1.0
 _EOM_LEAD_S: Final[float] = 1.0
-_EOM_TAIL_S: Final[float] = 1.0
+_EOM_TAIL_S: Final[float] = 0.1
 
 _ATTN_DEFAULT_S: Final[float] = 8.0
-_SEQUENCE_AMPLITUDE: Final[float] = 0.65
 
 ToneType = Literal["WXR", "EAS", "NPAS", "EGG_TIMER"]
 
@@ -130,10 +135,28 @@ def _silence(duration_s: float, sample_rate: int) -> np.ndarray:
     return np.zeros(int(sample_rate * duration_s), dtype=np.float32)
 
 
-def _pilot(duration_s: float, sample_rate: int) -> np.ndarray:
+def _pilot(duration_s: float, sample_rate: int, freq: float) -> np.ndarray:
     n = int(round(sample_rate * duration_s))
     t = np.linspace(0, duration_s, n, endpoint=False)
-    return np.sin(2 * np.pi * _PILOT_FREQ_HZ * t).astype(np.float32)
+    return np.sin(2 * np.pi * freq * t).astype(np.float32)
+
+
+def _apply_fade_in(signal: np.ndarray, fade_duration_s: float, sample_rate: int) -> np.ndarray:
+    fade_samples = int(sample_rate * fade_duration_s)
+    fade_samples = min(fade_samples, len(signal))
+    envelope = np.linspace(0, 1, fade_samples, dtype=np.float32)
+    signal = signal.copy()
+    signal[:fade_samples] *= envelope
+    return signal
+
+
+def _apply_fade_out(signal: np.ndarray, fade_duration_s: float, sample_rate: int) -> np.ndarray:
+    fade_samples = int(sample_rate * fade_duration_s)
+    fade_samples = min(fade_samples, len(signal))
+    envelope = np.linspace(1, 0, fade_samples, dtype=np.float32)
+    signal = signal.copy()
+    signal[-fade_samples:] *= envelope
+    return signal
 
 
 def _afsk_encode(data: bytes, sample_rate: int) -> np.ndarray:
@@ -149,15 +172,21 @@ def _preamble(sample_rate: int) -> np.ndarray:
 def _tone_wxr(duration_s: float, sample_rate: int) -> np.ndarray:
     n = int(sample_rate * duration_s)
     t = np.linspace(0, duration_s, n, endpoint=False)
-    return np.sin(2 * np.pi * 1050.0 * t).astype(np.float32)
+    tone = np.sin(2 * np.pi * 1050.0 * t).astype(np.float32)
+    tone = _apply_fade_in(tone, 0.006, sample_rate)
+    tone = _apply_fade_out(tone, 0.006, sample_rate)
+    return tone
 
 
 def _tone_eas(duration_s: float, sample_rate: int) -> np.ndarray:
     n = int(sample_rate * duration_s)
     t = np.linspace(0, duration_s, n, endpoint=False)
-    return (
+    tone = (
         (np.sin(2 * np.pi * 853.0 * t) + np.sin(2 * np.pi * 960.0 * t)) / 2.0
     ).astype(np.float32)
+    tone = _apply_fade_in(tone, 0.006, sample_rate)
+    tone = _apply_fade_out(tone, 0.006, sample_rate)
+    return tone
 
 
 def _tone_npas(duration_s: float, sample_rate: int) -> np.ndarray:
@@ -170,8 +199,14 @@ def _tone_npas(duration_s: float, sample_rate: int) -> np.ndarray:
         chunk_n = min(half, n - i)
         t = np.arange(chunk_n, dtype=np.float64) / sample_rate
         freqs = freq_a if (i // half) % 2 == 0 else freq_b
-        chunks.append(sum(np.sin(2 * np.pi * f * t) for f in freqs))  # type: ignore[arg-type]
-    return (np.concatenate(chunks) / 3.0).astype(np.float32)
+        chunk = sum(np.sin(2 * np.pi * f * t) for f in freqs).astype(np.float32)  # type: ignore[arg-type]
+        chunk = _apply_fade_in(chunk, 0.003, sample_rate)
+        chunk = _apply_fade_out(chunk, 0.003, sample_rate)
+        chunks.append(chunk)
+    tone = (np.concatenate(chunks) / 3.0).astype(np.float32)
+    tone = _apply_highpass(tone, 900.0, sample_rate)
+    tone = _apply_lowpass(tone, 2400.0, sample_rate)
+    return tone
 
 
 def _tone_egg_timer(duration_s: float, sample_rate: int) -> np.ndarray:
@@ -181,6 +216,7 @@ def _tone_egg_timer(duration_s: float, sample_rate: int) -> np.ndarray:
     gap_len = int(round(sample_rate * 0.500))
     burst_period = tone_len + inter_len
     cycle_len = 4 * burst_period + gap_len
+    fade_samples = int(round(sample_rate * 0.003))
 
     t = np.arange(n, dtype=np.float64) / sample_rate
     wave = (
@@ -192,7 +228,25 @@ def _tone_egg_timer(duration_s: float, sample_rate: int) -> np.ndarray:
 
     pos = np.arange(n) % cycle_len
     active = (pos // burst_period < 4) & (pos % burst_period < tone_len)
-    return np.where(active, wave, 0.0).astype(np.float32)
+    tone = np.where(active, wave, 0.0).astype(np.float32)
+    
+    envelope = np.ones_like(tone)
+    for i in range(0, n, burst_period):
+        for j in range(4):
+            start = i + j * burst_period
+            end = min(start + tone_len, n)
+            if start < n:
+                fade_end = min(fade_samples, end - start)
+                envelope[start:start+fade_end] *= np.linspace(0, 1, fade_end)
+                fade_start = max(0, end - fade_samples)
+                fade_len = end - fade_start
+                if fade_len > 0:
+                    envelope[fade_start:end] *= np.linspace(1, 0, fade_len)
+    tone *= envelope
+    
+    tone = _apply_highpass(tone, 900.0, sample_rate)
+    tone = _apply_lowpass(tone, 2400.0, sample_rate)
+    return tone
 
 
 _TONE_DISPATCH: dict[str, Callable[[float, int], np.ndarray]] = {
@@ -204,27 +258,37 @@ _TONE_DISPATCH: dict[str, Callable[[float, int], np.ndarray]] = {
 
 
 def build_header_burst(header: SAMEHeader, sample_rate: int = _SAMPLE_RATE) -> np.ndarray:
-    return np.concatenate([
-        _silence(_BURST_LEAD_S, sample_rate),
-        _pilot(_PILOT_PREFIX_S, sample_rate),
-        _preamble(sample_rate),
-        _afsk_encode(header.encoded.encode("ascii"), sample_rate),
-        _pilot(_PILOT_SUFFIX_S, sample_rate),
-    ])
+    preamble = _preamble(sample_rate)
+    preamble = _apply_fade_in(preamble, 0.002, sample_rate)
+    afsk_data = _afsk_encode(header.encoded.encode("ascii"), sample_rate)
+    afsk_data = _apply_fade_out(afsk_data, 0.001, sample_rate)
+    pilot_suffix = _pilot(_PILOT_SUFFIX_S, sample_rate, _PILOT_SUFFIX_FREQ_HZ)
+    pilot_suffix = _apply_fade_out(pilot_suffix, 0.002, sample_rate)
+    burst = np.concatenate([preamble, afsk_data, pilot_suffix])
+    burst = _apply_highpass(burst, _AFSK_HIGHPASS_HZ, sample_rate)
+    burst = _apply_lowpass(burst, _AFSK_LOWPASS_HZ, sample_rate)
+    return burst
 
 
 def build_eom_burst(sample_rate: int = _SAMPLE_RATE) -> np.ndarray:
-    return np.concatenate([
-        _pilot(_PILOT_PREFIX_S, sample_rate),
-        _preamble(sample_rate),
-        _afsk_encode(b"NNNN", sample_rate),
-        _pilot(_PILOT_SUFFIX_S, sample_rate),
-    ])
+    preamble = _preamble(sample_rate)
+    preamble = _apply_fade_in(preamble, 0.003, sample_rate)
+    afsk_data = _afsk_encode(b"NNNN", sample_rate)
+    afsk_data = _apply_fade_out(afsk_data, 0.003, sample_rate)
+    pilot_suffix = _pilot(_PILOT_SUFFIX_S, sample_rate, _PILOT_SUFFIX_FREQ_HZ)
+    pilot_suffix = _apply_fade_out(pilot_suffix, 0.003, sample_rate)
+    burst = np.concatenate([preamble, afsk_data, pilot_suffix])
+    burst = _apply_highpass(burst, _AFSK_HIGHPASS_HZ, sample_rate)
+    burst = _apply_lowpass(burst, _AFSK_LOWPASS_HZ, sample_rate)
+    return burst
 
 
 def _triple_burst(burst: np.ndarray, sample_rate: int) -> np.ndarray:
+    pilot = _pilot(_PILOT_PREFIX_S, sample_rate, _PILOT_PREFIX_FREQ_HZ)
+    pilot = _apply_fade_in(pilot, 0.003, sample_rate)
+    pilot = _apply_fade_out(pilot, 0.003, sample_rate)
     gap = _silence(_INTER_BURST_S, sample_rate)
-    return np.concatenate([burst, gap, burst, gap, burst])
+    return np.concatenate([pilot, burst, gap, burst, gap, burst])
 
 
 def _load_audio(path: pathlib.Path, target_sr: int) -> np.ndarray:
@@ -236,6 +300,24 @@ def _load_audio(path: pathlib.Path, target_sr: int) -> np.ndarray:
         log.info("Resampling audio %d → %d Hz", sr, target_sr)
         audio = resample(audio, sr, target_sr)
     return audio
+
+
+def _apply_lowpass(signal: np.ndarray, cutoff_hz: float, sample_rate: int) -> np.ndarray:
+    nyquist = sample_rate / 2
+    normalized_cutoff = cutoff_hz / nyquist
+    if normalized_cutoff >= 1.0:
+        return signal
+    b, a = sp_signal.butter(5, normalized_cutoff, btype='low')
+    return sp_signal.filtfilt(b, a, signal).astype(np.float32)
+
+
+def _apply_highpass(signal: np.ndarray, cutoff_hz: float, sample_rate: int) -> np.ndarray:
+    nyquist = sample_rate / 2
+    normalized_cutoff = cutoff_hz / nyquist
+    if normalized_cutoff <= 0:
+        return signal
+    b, a = sp_signal.butter(5, normalized_cutoff, btype='high')
+    return sp_signal.filtfilt(b, a, signal).astype(np.float32)
 
 
 def generate_same(
@@ -256,6 +338,7 @@ def generate_same(
             "Generating SAME: %s tone=%s %.1fs @ %d Hz",
             header.encoded, tone_type, attn_duration_s, sample_rate,
         )
+        pre.append(_silence(_BURST_LEAD_S, sample_rate))
         pre.append(_triple_burst(build_header_burst(header, sample_rate), sample_rate))
 
         if tone_type is not None:
@@ -278,6 +361,7 @@ def generate_same(
     else:
         log.info("Generating EOM-only @ %d Hz", sample_rate)
         encoded_label = "EOM"
+    
 
     eom_seq = np.concatenate([
         _silence(_EOM_LEAD_S, sample_rate),
@@ -331,6 +415,10 @@ def to_wav(signal: np.ndarray, sample_rate: int = _SAMPLE_RATE) -> bytes:
 
 if __name__ == "__main__":
     import sys
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate a SAME test signal")
+    parser.add_argument("--att", choices=_TONE_DISPATCH.keys(), default="WXR", help="Attention tone type (default: WXR)")
+    args = parser.parse_args()
 
     h = SAMEHeader(
         originator="WXR",
@@ -340,7 +428,7 @@ if __name__ == "__main__":
         callsign="EC/GC/CA",
     )
     print(f"Encoded: {h.encoded}")
-    full = generate_same(h, sample_rate=_SAMPLE_RATE, tone_type="WXR")
-    out_path = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "same_test.wav")
+    full = generate_same(h, sample_rate=_SAMPLE_RATE, tone_type=args.att)
+    out_path = pathlib.Path("same_test.wav")
     out_path.write_bytes(to_wav(full))
     print(f"Written: {out_path} ({len(full) / _SAMPLE_RATE:.2f}s)")

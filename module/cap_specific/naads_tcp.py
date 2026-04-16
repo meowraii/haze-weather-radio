@@ -84,7 +84,11 @@ class CAPInfo:
     parameters: tuple[CAPParameter, ...]
 
     def param_dict(self) -> dict[str, str]:
-        return {p.name.lower(): p.value for p in self.parameters}
+        result = {}
+        for p in self.parameters:
+            if isinstance(p, CAPParameter):
+                result[p.name.lower()] = p.value
+        return result
 
     @property
     def parameter_map(self) -> dict[str, str]:
@@ -97,6 +101,13 @@ class CAPInfo:
     @property
     def area_descriptions(self) -> tuple[str, ...]:
         return tuple(area.description for area in self.areas if area.description)
+
+    def param_dict(self) -> dict[str, str]:
+        result = {}
+        for p in self.parameters:
+            if isinstance(p, CAPParameter):
+                result[p.name.lower()] = p.value
+        return result
 
 @dataclass(slots=True, frozen=True)
 class CAPAlert:
@@ -119,7 +130,11 @@ class CAPAlert:
         return i.parameters if i else ()
 
     def param_dict(self) -> dict[str, str]:
-        return {p.name.lower(): p.value for p in self.parameters}
+        result = {}
+        for p in self.parameters:
+            if isinstance(p, CAPParameter):
+                result[p.name.lower()] = p.value
+        return result
 
     def info_for_lang(self, lang: str) -> CAPInfo | None:
         for i in self.infos:
@@ -260,6 +275,7 @@ def _parse_info(el: ET.Element) -> CAPInfo:
             value=(p.findtext(_t("value")) or "").strip(),
         )
         for p in el.findall(_t("parameter"))
+        if isinstance(p, ET.Element)
     )
 
     return CAPInfo(
