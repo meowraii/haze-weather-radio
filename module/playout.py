@@ -247,9 +247,8 @@ async def _produce_tts(
                 log.warning('[%s] Chime %s produced no audio', feed_id, chime_type)
                 continue
             label = 'Top-of-Hour Chime' if chime_type == 'top' else 'Half-Hour Chime'
-            on_start = _make_segment_callback(label, feed_id, NowPlayingMetadata(title=label), metadata_cb)
             log.info('[%s] Inserting chime: %s', feed_id, label)
-            await pipeline.enqueue_segment(combined_pcm, on_start)
+            pipeline.enqueue_alert(combined_pcm)
 
     while not shutdown.is_set():
         if pipeline.alert_active:
