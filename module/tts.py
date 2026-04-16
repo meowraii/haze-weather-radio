@@ -415,9 +415,6 @@ def _piper_spec(ctx: dict, v_cfg: dict) -> Any:
     return cast(Any, SynthesisConfig)(
         speaker_id=int(v_cfg.get('speaker', global_cfg.get('speaker', 0))),
         volume=1.5,
-        length_scale=0.95,
-        noise_scale=0.75,
-        noise_w_scale=0.75,
         normalize_audio=True,
     )
 

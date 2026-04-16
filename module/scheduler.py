@@ -11,9 +11,9 @@ import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from managed.events import append_runtime_event, push_alert, shutdown_event
+from managed.events import append_runtime_event, push_alert, set_pending_chime, shutdown_event
 from module.alert import feed_same_codes
-from module.queue import CHANNELS, SAMPLE_RATE as BUS_SR
+from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
 from module.same import SAMEHeader, generate_same, resample, to_pcm16
 from module.tts import synthesize_pcm
 
@@ -208,6 +208,32 @@ def scheduler_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]])
             misfire_grace_time=60,
         )
         log.info('Scheduled %s monthly test', event_code)
+
+    chimes_cfg = config.get('playout', {}).get('chimes', {})
+    if chimes_cfg.get('enabled', False):
+        half_cfg = chimes_cfg.get('half_hour', {})
+        if half_cfg.get('enabled', True):
+            scheduler.add_job(
+                set_pending_chime,
+                trigger=CronTrigger(minute=30),
+                args=['half'],
+                id='chime_half',
+                name='Half-hour chime',
+                misfire_grace_time=30,
+            )
+            log.info('Scheduled half-hour chime')
+
+        top_cfg = chimes_cfg.get('top_of_hour', {})
+        if top_cfg.get('enabled', True):
+            scheduler.add_job(
+                set_pending_chime,
+                trigger=CronTrigger(minute=0),
+                args=['top'],
+                id='chime_top',
+                name='Top-of-hour chime',
+                misfire_grace_time=30,
+            )
+            log.info('Scheduled top-of-hour chime')
 
     for feed in feeds:
         feed_id = feed.get('id', 'default')

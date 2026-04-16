@@ -7,6 +7,7 @@ from typing import Any
 from managed.events import NowPlayingMetadata, PlayableItem, data_ready, initial_synthesis_done, read_data_pool, shutdown_event, update_playout_sequence
 from managed.packages import (
     Package_Config,
+    air_quality_package,
     alerts_package,
     climate_summary_package,
     current_conditions_package,
@@ -18,6 +19,8 @@ from managed.packages import (
     user_bulletin_package,
 )
 from module.feed_util import (
+    air_quality_locations as _air_quality_locations,
+    air_quality_name as _air_quality_name,
     climate_locations as _climate_locations,
     climate_name as _climate_name,
     current_conditions_name as _current_conditions_name,
@@ -39,9 +42,12 @@ _PACKAGE_METADATA_LABELS: dict[str, str] = {
     'user_bulletin': 'User Bulletin',
     'current_conditions': 'Current Conditions',
     'forecast': 'Forecast',
+    'air_quality': 'Air Quality',
     'eccc_discussion': 'Discussion',
     'geophysical_alert': 'Geophysical Alert',
     'climate_summary': 'Climate Summary',
+    'chime_8': 'Half-Hour Chime',
+    'chime_16': 'Top-of-Hour Chime',
 }
 
 _bulletins_cache: list[Any] = []
@@ -148,7 +154,10 @@ def playlist_thread_worker(config: dict[str, Any]) -> None:
         for feed in feeds:
             if shutdown_event.is_set():
                 break
-            _play_feed_cycle(config, feed)
+            try:
+                _play_feed_cycle(config, feed)
+            except Exception:
+                log.exception('Playlist cycle failed for feed %s', feed.get('id', '?'))
         if first_cycle:
             initial_synthesis_done.set()
             first_cycle = False
@@ -167,6 +176,7 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
     all_locs = _observation_locations(feed)
     forecast_locs = _forecast_locations(feed)
     climate_locs = _climate_locations(feed)
+    aqhi_locs = _air_quality_locations(feed)
     primary_loc = all_locs[0] if all_locs else (forecast_locs[0] if forecast_locs else None)
     loc_name = primary_loc.get('name') or primary_loc.get('id') if primary_loc else None
 
@@ -243,6 +253,14 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
             if part:
                 climate_parts.append(part)
 
+        aqhi_parts: list[str] = []
+        for loc in aqhi_locs:
+            loc_id = loc.get('id')
+            aqhi_data = read_data_pool(f"{feed_id}:aqhi:{loc_id}") if loc_id else None
+            part = air_quality_package(aqhi_data, _air_quality_name(loc), lang)
+            if part:
+                aqhi_parts.append(part)
+
         if area_name is None:
             area_name = feed.get('name') or loc_name or feed_id
         if current_station_name is None:
@@ -255,6 +273,7 @@ def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
             'station_id': station_id(config, feed_id, lang),
             'current_conditions': '  '.join(conditions_parts),
             'forecast': '  '.join(forecast_parts),
+            'air_quality': '  '.join(aqhi_parts),
             'climate_summary': '  '.join(climate_parts),
             'eccc_discussion': eccc_discussion_package(discussion_text, loc_name, lang),
             'geophysical_alert': geophysical_alert_package(wwv_text),

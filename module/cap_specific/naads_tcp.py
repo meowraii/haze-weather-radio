@@ -169,6 +169,14 @@ class CAPAlert:
         return None
 
     @property
+    def cap_cp_event(self) -> str | None:
+        for info in self.infos:
+            for name, value in info.event_codes:
+                if name == 'profile:CAP-CP:Event:0.4' and value.strip():
+                    return value.strip()
+        return None
+
+    @property
     def broadcast_immediately(self) -> bool:
         return any(
             info.param_dict().get('layer:sorem:1.0:broadcast_immediately', '').lower() == 'yes'

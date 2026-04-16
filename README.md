@@ -10,7 +10,6 @@ I, the developer of Haze Weather Radio, disclaim any responsibility for misuse o
 
 # Features
 - Generate weather radio packages with current conditions and forecasts for specified locations.
-- Geophysical product used on WWV that I took from NOAA because I like it and want to use it.
 - A centralized management system for multiple feeds servicing different locations.
 - Modular design that allows for easy addition of new data sources, TTS engines, and output methods.
 - API via FastAPI, with a web interface for monitoring, and alert origination and management.
