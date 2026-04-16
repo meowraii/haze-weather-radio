@@ -17,6 +17,15 @@ playout:
   sample_rate: 24000
   channels: 1
 
+  chimes:
+    enabled: true
+    half_hour:
+      enabled: true
+      # sequence: [chime, date_time]  # default
+    top_of_hour:
+      enabled: true
+      # sequence: [chime, date_time, station_id]  # default
+
   playlist_order:
     - alerts:
       ttl: 120
@@ -24,13 +33,15 @@ playout:
     - date_time
     - current_conditions:
       ttl: 2700
+    - air_quality:
+      ttl: 3600
     - forecast:
       ttl: 7200
     - date_time
     - climate_summary:
       ttl: 28800
-    - eccc_discussion:
-      ttl: 10800
+    #- eccc_discussion:
+    #  ttl: 10800
     - date_time
     - geophysical_alert:
       ttl: 10800
@@ -142,6 +153,10 @@ feeds:
           source: eccc
         - id: sk-49
           forecast_region: "065500-065521" # can include a subregion code to target a specific region only for weather alerts.
+          source: eccc
+
+      - airQualityLocations:
+        - id: HAHJJ
           source: eccc
           
       - climateLocations:
@@ -300,12 +315,12 @@ tts:
         piper:
           male:
             model: ./piper-tts/en_US-hfc_male-medium.onnx
-            speaker: 0 # 0 for default speaker, or the index of the speaker in the model if it contains multiple speakers.
-            config: ./piper-tts/en_US-ryan-high.onnx.json
+            speaker: 16 # 0 for default speaker, or the index of the speaker in the model if it contains multiple speakers.
+            config: ./piper-tts/en_US-hfc_male-medium.onnx.json
           female:
-            model: ./piper-tts/en_US-lessac-high.onnx
+            model: ./piper-tts/en_US-lessac-medium.onnx
             speaker: 0
-            config: ./piper-tts/en_US-lessac-high.onnx.json
+            config: ./piper-tts/en_US-lessac-medium.onnx.json
     fr-CA:
       backend:
         piper:

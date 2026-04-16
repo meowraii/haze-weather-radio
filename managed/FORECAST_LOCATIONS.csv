@@ -1888,14 +1888,14 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 020049,Northern and Western Shorelines of Bonavista Bay​,rives nord et ouest de la baie de Bonavista​,Coastal Flooding,Inondations côtières,NL,NL
 020050,Southern Shoreline of Bonavista Bay​,rive sud de la baie de Bonavista,Coastal Flooding,Inondations côtières,NL,NL
 020051,Northern Shoreline of Trinity Bay​,rive nord de la baie Trinity​,Coastal Flooding,Inondations côtières,NL,NL
-020052,Western Shoreline of Trinity Bay incl. Random Island​,rive ouest de la baie Trinity incl. l'île Random​,Coastal Flooding,Inondations côtières,NL,NL
+020052,Western Shoreline of Trinity Bay including Random Island​,rive ouest de la baie Trinity including l'île Random​,Coastal Flooding,Inondations côtières,NL,NL
 020053,Southern Shoreline of Trinity Bay,rive sud de la baie Trinity​,Coastal Flooding,Inondations côtières,NL,NL
 020054,Eastern Shoreline of Trinity Bay,rive est de la baie Trinity​,Coastal Flooding,Inondations côtières,NL,NL
 020055,Western Shoreline of Conception Bay,rive ouest de la baie de la Conception​,Coastal Flooding,Inondations côtières,NL,NL
-020056,Southern and Eastern Shorelines of Conception Bay incl. Bell Island​,rives sud et est de la baie de la Conception incl. l'île Bell​,Coastal Flooding,Inondations côtières,NL,NL
+020056,Southern and Eastern Shorelines of Conception Bay including Bell Island​,rives sud et est de la baie de la Conception including l'île Bell​,Coastal Flooding,Inondations côtières,NL,NL
 020057,Eastern Coastline of the Avalon Peninsula,littoral est de la péninsule d'Avalon​,Coastal Flooding,Inondations côtières,NL,NL
 020058,Southern Coastline of the Avalon Peninsula,littoral sud de la péninsule d'Avalon​,Coastal Flooding,Inondations côtières,NL,NL
-020059,Eastern and Northern Shorelines of Placentia Bay incl. Ragged Islands​,rives est et nord de la baie Placentia incl. les îles Ragged​,Coastal Flooding,Inondations côtières,NL,NL
+020059,Eastern and Northern Shorelines of Placentia Bay including Ragged Islands​,rives est et nord de la baie Placentia including les îles Ragged​,Coastal Flooding,Inondations côtières,NL,NL
 020060,Western Shoreline of Placentia Bay,rive ouest de la baie Placentia​,Coastal Flooding,Inondations côtières,NL,NL
 020061,Southern Coastline of the Burin Peninsula,littoral sud de la péninsule de Burin,Coastal Flooding,Inondations côtières,NL,NL
 020062,Western Coastline of the Burin Peninsula,littoral ouest de la péninsule de Burin,Coastal Flooding,Inondations côtières,NL,NL
@@ -2072,12 +2072,12 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 030012,Coastline from Qairtuinaq to Umiujaq,littoral de Qairtuinaq à Umiujaq,Coastal Flooding,Inondations côtières,QC,QC
 030013,Coastline of Baie-Johan-Beetz and Aguanish,littoral de Baie-Johan-Beetz et d'Aguanish,Coastal Flooding,Inondations côtières,QC,QC
 030014,Coastline of Baie-Trinité and Port-Cartier,littoral de Baie-Trinité et de Port-Cartier,Coastal Flooding,Inondations côtières,QC,QC
-030015,Coastline from Pessamit to Godbout incl. Baie-Comeau,littoral de Pessamit à Godbout incl. Baie-Comeau,Coastal Flooding,Inondations côtières,QC,QC
+030015,Coastline from Pessamit to Godbout including Baie-Comeau,littoral de Pessamit à Godbout including Baie-Comeau,Coastal Flooding,Inondations côtières,QC,QC
 030016,Coastline from Longue-Rive to Colombier,littoral de Longue-Rive à Colombier,Coastal Flooding,Inondations côtières,QC,QC
 030017,Coastline of Les Bergeronnes Les Escoumins and Essipit,littoral de Les Bergeronnes de Les Escoumins et d'Essipit,Coastal Flooding,Inondations côtières,QC,QC
 030018,Coastline of the City of Rimouski,littoral de la ville de Rimouski,Coastal Flooding,Inondations côtières,QC,QC
 030019,Coastline from Sainte-Luce to Baie-des-Sables,littoral de Sainte-Luce à Baie-des-Sables,Coastal Flooding,Inondations côtières,QC,QC
-030020,Coastline from Saint-Ulric to Les Méchins incl. Matane,littoral de Saint-Ulric à Les Méchins incl. Matane,Coastal Flooding,Inondations côtières,QC,QC
+030020,Coastline from Saint-Ulric to Les Méchins including Matane,littoral de Saint-Ulric à Les Méchins including Matane,Coastal Flooding,Inondations côtières,QC,QC
 030021,Coastline from Cap-Chat to Rivière-à-Claude,littoral de Cap-Chat à Rivière-à-Claude,Coastal Flooding,Inondations côtières,QC,QC
 030022,Coastline from Mont-Saint-Pierre to Cloridorme,littoral de Mont-Saint-Pierre à Cloridorme,Coastal Flooding,Inondations côtières,QC,QC
 030023,Coastline of the City of Percé,littoral de la ville de Percé,Coastal Flooding,Inondations côtières,QC,QC
@@ -2085,8 +2085,8 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 030025,Coastline from New Carlisle to Shigawake,littoral de New Carlisle à Shigawake,Coastal Flooding,Inondations côtières,QC,QC
 030027,Coastline from Ristigouche-Sud-Est to Nouvelle,littoral de Ristigouche-Sud-Est à Nouvelle,Coastal Flooding,Inondations côtières,QC,QC
 030028,Coastline of Îles-de-la-Madeleine,littoral des Îles-de-la-Madeleine,Coastal Flooding,Inondations côtières,QC,QC
-030029,Coastline from Cap-Tourmente to Les Éboulements incl. L'Isle-aux-Coudres ,littoral du Cap-Tourmente aux Éboulements incluant L'Isle-aux-Coudres,Coastal Flooding,Inondations côtières,QC,QC
-030030,Coastline from Boischatel to Saint-Joachim incl. Île d'Orléans,littoral de Boischatel à Saint-Joachim incl. l'Île d'Orléans,Coastal Flooding,Inondations côtières,QC,QC
+030029,Coastline from Cap-Tourmente to Les Éboulements including L'Isle-aux-Coudres ,littoral du Cap-Tourmente aux Éboulements incluant L'Isle-aux-Coudres,Coastal Flooding,Inondations côtières,QC,QC
+030030,Coastline from Boischatel to Saint-Joachim including Île d'Orléans,littoral de Boischatel à Saint-Joachim including l'Île d'Orléans,Coastal Flooding,Inondations côtières,QC,QC
 030031,Coastline of Québec City,littoral de la ville de Québec,Coastal Flooding,Inondations côtières,QC,QC
 030032,Coastline from Cap-Rouge to Le Petit-Village,littoral de Cap-Rouge à Le Petit-Village,Coastal Flooding,Inondations côtières,QC,QC
 030033,Coastline from Le Petit-Village to Grondines-Est,littoral du Petit-Village à Grondines-Est,Coastal Flooding,Inondations côtières,QC,QC
@@ -2116,7 +2116,7 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 030057,Coastline from Ruisseau-Blanc to Heath Point,littoral de Ruisseau-Blanc à Heath Point,Coastal Flooding,Inondations côtières,QC,QC
 030058,Coastline from Pointe-Sud to Heath Point,littoral de Pointe-Sud à Heath Point,Coastal Flooding,Inondations côtières,QC,QC
 030059,Coastline from Rivière à la Loutre to Pointe-Sud,littoral de la rivière à la Loutre à Pointe-Sud,Coastal Flooding,Inondations côtières,QC,QC
-030060,Coastline from Baie-Sainte-Claire to Rivière à la Loutre incl. Port-Menier,littoral de Baie-Sainte-Claire à la rivière à la Loutre incl. Port-Menier,Coastal Flooding,Inondations côtières,QC,QC
+030060,Coastline from Baie-Sainte-Claire to Rivière à la Loutre including Port-Menier,littoral de Baie-Sainte-Claire à la rivière à la Loutre including Port-Menier,Coastal Flooding,Inondations côtières,QC,QC
 030061,Coastline from Grand-Étang to Forillon National Park,littoral de Grand-Étang au parc national de Forillon,Coastal Flooding,Inondations côtières,QC,QC
 030062,Shoreline of Gaspé Bay,rives de la baie de Gaspé,Coastal Flooding,Inondations côtières,QC,QC
 030063,Coastline of the City of Saguenay,littoral de la ville de Saguenay,Coastal Flooding,Inondations côtières,QC,QC
@@ -2132,21 +2132,21 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 030073,Coastline from Leclercville to Saint-Nicolas,littoral de Leclercville à Saint-Nicolas,Coastal Flooding,Inondations côtières,QC,QC
 030074,Coastline of the City of Lévis,littoral de la ville de Lévis,Coastal Flooding,Inondations côtières,QC,QC
 030075,Coastline from Beaumont to Berthier-sur-Mer,littoral de Beaumont à Berthier-sur-Mer,Coastal Flooding,Inondations côtières,QC,QC
-030076,Coastline: Montmagny to Saint-Roch-des-Aulnaies incl. Isle-aux-Grues,littoral de Montmagny à Saint-Roch-des-Aulnaies incl. L'Isle-aux-Grues,Coastal Flooding,Inondations côtières,QC,QC
+030076,Coastline: Montmagny to Saint-Roch-des-Aulnaies including Isle-aux-Grues,littoral de Montmagny à Saint-Roch-des-Aulnaies including L'Isle-aux-Grues,Coastal Flooding,Inondations côtières,QC,QC
 030077,Coastline from La Pocatière to Saint-André-de-Kamouraska,littoral de La Pocatière à Saint-André-de-Kamouraska,Coastal Flooding,Inondations côtières,QC,QC
 030078,Coastline of Notre-Dame-du-Portage and Rivière-du-Loup,littoral de Notre-Dame-du-Portage et de Rivière-du-Loup,Coastal Flooding,Inondations côtières,QC,QC
-030079,Coastline: Cacouna to L'Isle-Verte incl. Notre-Dame-des-Sept-Douleurs,littoral de Cacouna à L'Isle-Verte incl. Notre-Dame-des-Sept-Douleurs ,Coastal Flooding,Inondations côtières,QC,QC
+030079,Coastline: Cacouna to L'Isle-Verte including Notre-Dame-des-Sept-Douleurs,littoral de Cacouna à L'Isle-Verte including Notre-Dame-des-Sept-Douleurs ,Coastal Flooding,Inondations côtières,QC,QC
 030080,Coastline from Rivière-Trois-Pistoles to Saint-Fabien,littoral de Rivière-Trois-Pistoles à Saint-Fabien,Coastal Flooding,Inondations côtières,QC,QC
 030081,Coastline from Verchères to Brossard,littoral de Verchères à Brossard,Coastal Flooding,Inondations côtières,QC,QC
 030082,Coastline from Verchères to Sorel-Tracy,littoral de Verchères à Sorel-Tracy,Coastal Flooding,Inondations côtières,QC,QC
 030083,Coastline from Sorel-Tracy to Notre-Dame-de-Pierreville,littoral de Sorel-Tracy à Notre-Dame-de-Pierreville,Coastal Flooding,Inondations côtières,QC,QC
 030084,Coastline from Killiniq to George River,littoral de Killiniq à la rivière George,Coastal Flooding,Inondations côtières,QC,QC
-030085,Coastline from Saint-Régis to Maple Grove incl. Grande Île,littoral de Saint-Régis à Maple Grove incl. Grande Île,Coastal Flooding,Inondations côtières,QC,QC
+030085,Coastline from Saint-Régis to Maple Grove including Grande Île,littoral de Saint-Régis à Maple Grove including Grande Île,Coastal Flooding,Inondations côtières,QC,QC
 030086,Coastline from Pointe-Lalonde to Coteau-du-Lac,littoral de Pointe-Lalonde à Coteau-du-Lac,Coastal Flooding,Inondations côtières,QC,QC
-030087,Coastline from Coteau-du-Lac to Hudson incl. Perrot Island,littoral de Coteau-du-Lac à Hudson incl. l'île Perrot,Coastal Flooding,Inondations côtières,QC,QC
+030087,Coastline from Coteau-du-Lac to Hudson including Perrot Island,littoral de Coteau-du-Lac à Hudson including l'île Perrot,Coastal Flooding,Inondations côtières,QC,QC
 030088,Coastline from Notre-Dame-de-Pierreville to Des Ormeaux,littoral de Notre-Dame-de-Pierreville à Des Ormeaux,Coastal Flooding,Inondations côtières,QC,QC
 030089,Coastline from Kegaska to Sainte-Marie Islands,littoral de Kegaska aux îles Sainte-Marie,Coastal Flooding,Inondations côtières,QC,QC
-030091,Coastline: Bois-des-Filion to Terrasse-Bigras incl. Oka National Park,littoral : de Bois-des-Filion à Terrasse-Bigras incl. le parc national d'Oka,Coastal Flooding,Inondations côtières,QC,QC
+030091,Coastline: Bois-des-Filion to Terrasse-Bigras including Oka National Park,littoral : de Bois-des-Filion à Terrasse-Bigras including le parc national d'Oka,Coastal Flooding,Inondations côtières,QC,QC
 030092,Quebec along the St. Lawrence waterways including Anticosti Island,Québec le long de la voie maritime du Saint-Laurent incluant l'île d'Anticosti,Tsunami,Tsunami,QC,QC
 030093,Quebec along the St. Lawrence waterways including Îles-de-la-Madeleine,Québec le long de la voie maritime du Saint-Laurent incluant les Îles-de-la-Madeleine,Tsunami,Tsunami,QC,QC
 030094,Quebec along the St. Lawrence waterways from Québec City area to Pointe-des-Monts and Capucins,Québec le long de la voie maritime du Saint-Laurent de la région de Québec à Pointe-des-Monts et Capucins,Tsunami,Tsunami,QC,QC
@@ -2640,8 +2640,8 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 040068,Sudbury,Sudbury,Air Quality,Qualité de l'air,ON,ON
 040069,Shoreline of the St Lawrence from Brockville to Iroquois,rives du Saint-Laurent de Brockville à Iroquois,Coastal Flooding,Inondations côtières,ON,ON
 040070,Shoreline of the St Lawrence from Gananoque to Lyn,rives du Saint-Laurent de Gananoque à Lyn,Coastal Flooding,Inondations côtières,ON,ON
-040071,Shoreline of Lake Ontario from Willowbank to Millers Corner incl. Kingston,rives du lac Ontario de Willowbank à Millers Corner incl. Kingston,Coastal Flooding,Inondations côtières,ON,ON
-040072,Shoreline of Lake Ontario from Millers Corner to Brighton incl. Prince Edward,rives du lac Ontario de Millers Corner à Brighton incl. Prince Edward,Coastal Flooding,Inondations côtières,ON,ON
+040071,Shoreline of Lake Ontario from Willowbank to Millers Corner including Kingston,rives du lac Ontario de Willowbank à Millers Corner including Kingston,Coastal Flooding,Inondations côtières,ON,ON
+040072,Shoreline of Lake Ontario from Millers Corner to Brighton including Prince Edward,rives du lac Ontario de Millers Corner à Brighton including Prince Edward,Coastal Flooding,Inondations côtières,ON,ON
 040073,Shoreline of Lake Ontario from Brighton to Wesleyville,rives du lac Ontario de Brighton à Wesleyville,Coastal Flooding,Inondations côtières,ON,ON
 040074,Shoreline of Lake Ontario from Wesleyville to West Rouge,rives du lac Ontario de Wesleyville à West Rouge,Coastal Flooding,Inondations côtières,ON,ON
 040075,Lake Ontario Shoreline: West Rouge - Toronto - Colonel Samuel Smith Park,rives du lac Ontario : West Rouge - Toronto - parc Colonel Samuel Smith,Coastal Flooding,Inondations côtières,ON,ON
@@ -2678,7 +2678,7 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 040106,Lake Superior Shoreline: Pukaskwa Nat. Park - Michipicoten,rives du lac Supérieur : parc nat. Pukaskwa - Michipicoten,Coastal Flooding,Inondations côtières,ON,ON
 040107,Lake Superior Shoreline: Schreiber to Pukaskwa Nat. Park,rives du lac Supérieur de Schreiber au parc nat. Pukaskwa,Coastal Flooding,Inondations côtières,ON,ON
 040108,Shoreline of Lake Superior from Coughlin to Schreiber,rives du lac Supérieur de Coughlin à Schreiber,Coastal Flooding,Inondations côtières,ON,ON
-040109,Shoreline of Lake Superior from Grand Portage to Coughlin incl. Thunder Bay,rives du lac Supérieur de Grand Portage à Coughlin incl. Thunder Bay,Coastal Flooding,Inondations côtières,ON,ON
+040109,Shoreline of Lake Superior from Grand Portage to Coughlin including Thunder Bay,rives du lac Supérieur de Grand Portage à Coughlin including Thunder Bay,Coastal Flooding,Inondations côtières,ON,ON
 040110,Coastline of the Fort Severn Region,littoral de la région de Fort Severn,Coastal Flooding,Inondations côtières,ON,ON
 040112,Coastline of the Attawapiskat Region,littoral de la région d'Attawapiskat,Coastal Flooding,Inondations côtières,ON,ON
 040113,Coastline of the Fort Albany Region,littoral de la région de Fort Albany,Coastal Flooding,Inondations côtières,ON,ON
@@ -3091,138 +3091,138 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 050016,Coastline of Port Nelson and York Factory,littoral de Port Nelson et de York Factory,Coastal Flooding,Inondations côtières,MB,MB
 050017,Coastline from York Factory to Ontario-Manitoba Border,littoral de York Factory à la frontière Ontario-Manitoba,Coastal Flooding,Inondations côtières,MB,MB
 051100,Virden - Souris,Virden - Souris,Public,Public,MB,MB
-051110,R.M. of Wallace-Woodworth incl. Virden Elkhorn and Kenton,m.r. de Wallace-Woodworth incluant Virden Elkhorn et Kenton,Public,Public,MB,MB
-051110,R.M. of Wallace-Woodworth incl. Virden Elkhorn and Kenton,m.r. de Wallace-Woodworth incluant Virden Elkhorn et Kenton,Air Quality,Qualité de l'air,MB,MB
-051130,Riverdale Mun. incl. Rivers and Wheatland,municipalité de Riverdale incluant Rivers et Wheatland,Public,Public,MB,MB
-051130,Riverdale Mun. incl. Rivers and Wheatland,municipalité de Riverdale incluant Rivers et Wheatland,Air Quality,Qualité de l'air,MB,MB
-051140,R.M. of Whitehead incl. Alexander and Beresford,m.r. de Whitehead incluant Alexander et Beresford,Public,Public,MB,MB
-051140,R.M. of Whitehead incl. Alexander and Beresford,m.r. de Whitehead incluant Alexander et Beresford,Air Quality,Qualité de l'air,MB,MB
-051150,R.M. of Sifton incl. Oak Lake and Deleau,m.r. de Sifton incluant Oak Lake et Deleau,Public,Public,MB,MB
-051150,R.M. of Sifton incl. Oak Lake and Deleau,m.r. de Sifton incluant Oak Lake et Deleau,Air Quality,Qualité de l'air,MB,MB
-051160,R.M. of Pipestone incl. Oak Lake Res.,m.r. de Pipestone incluant la rés. ind. Oak Lake,Public,Public,MB,MB
-051160,R.M. of Pipestone incl. Oak Lake Res.,m.r. de Pipestone incluant la rés. ind. Oak Lake,Air Quality,Qualité de l'air,MB,MB
+051110,R.M. of Wallace-Woodworth including Virden Elkhorn and Kenton,m.r. de Wallace-Woodworth incluant Virden Elkhorn et Kenton,Public,Public,MB,MB
+051110,R.M. of Wallace-Woodworth including Virden Elkhorn and Kenton,m.r. de Wallace-Woodworth incluant Virden Elkhorn et Kenton,Air Quality,Qualité de l'air,MB,MB
+051130,Riverdale Mun. including Rivers and Wheatland,municipalité de Riverdale incluant Rivers et Wheatland,Public,Public,MB,MB
+051130,Riverdale Mun. including Rivers and Wheatland,municipalité de Riverdale incluant Rivers et Wheatland,Air Quality,Qualité de l'air,MB,MB
+051140,R.M. of Whitehead including Alexander and Beresford,m.r. de Whitehead incluant Alexander et Beresford,Public,Public,MB,MB
+051140,R.M. of Whitehead including Alexander and Beresford,m.r. de Whitehead incluant Alexander et Beresford,Air Quality,Qualité de l'air,MB,MB
+051150,R.M. of Sifton including Oak Lake and Deleau,m.r. de Sifton incluant Oak Lake et Deleau,Public,Public,MB,MB
+051150,R.M. of Sifton including Oak Lake and Deleau,m.r. de Sifton incluant Oak Lake et Deleau,Air Quality,Qualité de l'air,MB,MB
+051160,R.M. of Pipestone including Oak Lake Res.,m.r. de Pipestone incluant la rés. ind. Oak Lake,Public,Public,MB,MB
+051160,R.M. of Pipestone including Oak Lake Res.,m.r. de Pipestone incluant la rés. ind. Oak Lake,Air Quality,Qualité de l'air,MB,MB
 051170,Mun. of Souris-Glenwood,municipalité de Souris-Glenwood,Public,Public,MB,MB
 051170,Mun. of Souris-Glenwood,municipalité de Souris-Glenwood,Air Quality,Qualité de l'air,MB,MB
 051200,Brandon - Neepawa - Carberry - Treherne,Brandon - Neepawa - Carberry - Treherne,Public,Public,MB,MB
-051211,R.M. of Elton incl. Forrest,m.r. d'Elton incluant Forrest,Public,Public,MB,MB
-051211,R.M. of Elton incl. Forrest,m.r. d'Elton incluant Forrest,Air Quality,Qualité de l'air,MB,MB
-051212,R.M. of Cornwallis west of Shilo incl. Chater,m.r. de Cornwallis à l'ouest de Shilo incluant Chater,Public,Public,MB,MB
-051212,R.M. of Cornwallis west of Shilo incl. Chater,m.r. de Cornwallis à l'ouest de Shilo incluant Chater,Air Quality,Qualité de l'air,MB,MB
-051213,Mun. of Oakland-Wawanesa incl. Carroll,municipalité d'Oakland-Wawanesa incluant Carroll,Public,Public,MB,MB
-051213,Mun. of Oakland-Wawanesa incl. Carroll,municipalité d'Oakland-Wawanesa incluant Carroll,Air Quality,Qualité de l'air,MB,MB
+051211,R.M. of Elton including Forrest,m.r. d'Elton incluant Forrest,Public,Public,MB,MB
+051211,R.M. of Elton including Forrest,m.r. d'Elton incluant Forrest,Air Quality,Qualité de l'air,MB,MB
+051212,R.M. of Cornwallis west of Shilo including Chater,m.r. de Cornwallis à l'ouest de Shilo incluant Chater,Public,Public,MB,MB
+051212,R.M. of Cornwallis west of Shilo including Chater,m.r. de Cornwallis à l'ouest de Shilo incluant Chater,Air Quality,Qualité de l'air,MB,MB
+051213,Mun. of Oakland-Wawanesa including Carroll,municipalité d'Oakland-Wawanesa incluant Carroll,Public,Public,MB,MB
+051213,Mun. of Oakland-Wawanesa including Carroll,municipalité d'Oakland-Wawanesa incluant Carroll,Air Quality,Qualité de l'air,MB,MB
 051220,City of Brandon,ville de Brandon,Public,Public,MB,MB
 051220,City of Brandon,ville de Brandon,Air Quality,Qualité de l'air,MB,MB
-051231,Mun. of North Cypress-Langford incl. Neepawa and Carberry,mun. de North Cypress-Langford incl. Neepawa et Carberry,Public,Public,MB,MB
-051231,Mun. of North Cypress-Langford incl. Neepawa and Carberry,mun. de North Cypress-Langford incl. Neepawa et Carberry,Air Quality,Qualité de l'air,MB,MB
-051232,Mun. of Glenboro-South Cypress incl. Treesbank,municipalité de Glenboro-South Cypress incluant Treesbank,Public,Public,MB,MB
-051232,Mun. of Glenboro-South Cypress incl. Treesbank,municipalité de Glenboro-South Cypress incluant Treesbank,Air Quality,Qualité de l'air,MB,MB
-051241,Mun. of North Norfolk incl. MacGregor Sidney and Austin,mun. de North Norfolk incl. MacGregor Sidney et Austin,Public,Public,MB,MB
-051241,Mun. of North Norfolk incl. MacGregor Sidney and Austin,mun. de North Norfolk incl. MacGregor Sidney et Austin,Air Quality,Qualité de l'air,MB,MB
+051231,Mun. of North Cypress-Langford including Neepawa and Carberry,mun. de North Cypress-Langford including Neepawa et Carberry,Public,Public,MB,MB
+051231,Mun. of North Cypress-Langford including Neepawa and Carberry,mun. de North Cypress-Langford including Neepawa et Carberry,Air Quality,Qualité de l'air,MB,MB
+051232,Mun. of Glenboro-South Cypress including Treesbank,municipalité de Glenboro-South Cypress incluant Treesbank,Public,Public,MB,MB
+051232,Mun. of Glenboro-South Cypress including Treesbank,municipalité de Glenboro-South Cypress incluant Treesbank,Air Quality,Qualité de l'air,MB,MB
+051241,Mun. of North Norfolk including MacGregor Sidney and Austin,mun. de North Norfolk including MacGregor Sidney et Austin,Public,Public,MB,MB
+051241,Mun. of North Norfolk including MacGregor Sidney and Austin,mun. de North Norfolk including MacGregor Sidney et Austin,Air Quality,Qualité de l'air,MB,MB
 051242,Mun. of Norfolk Treherne,municipalité de Norfolk Treherne,Public,Public,MB,MB
 051242,Mun. of Norfolk Treherne,municipalité de Norfolk Treherne,Air Quality,Qualité de l'air,MB,MB
-051243,R.M. of Victoria incl. Holland and Cypress River,m.r. de Victoria incluant Holland et Cypress River,Public,Public,MB,MB
-051243,R.M. of Victoria incl. Holland and Cypress River,m.r. de Victoria incluant Holland et Cypress River,Air Quality,Qualité de l'air,MB,MB
+051243,R.M. of Victoria including Holland and Cypress River,m.r. de Victoria incluant Holland et Cypress River,Public,Public,MB,MB
+051243,R.M. of Victoria including Holland and Cypress River,m.r. de Victoria incluant Holland et Cypress River,Air Quality,Qualité de l'air,MB,MB
 051300,Melita - Boissevain - Turtle Mountain Provincial Park,Melita - Boissevain - Turtle Mountain Prov. Park,Public,Public,MB,MB
-051310,Mun. of Grassland incl. Hartney and Minto,municipalité de Grassland incluant Hartney et Minto,Public,Public,MB,MB
-051310,Mun. of Grassland incl. Hartney and Minto,municipalité de Grassland incluant Hartney et Minto,Air Quality,Qualité de l'air,MB,MB
-051320,Mun. of Two Borders incl. Melita Coulter and Tilston,mun. de Two Borders incl. Melita Coulter et Tilston,Public,Public,MB,MB
-051320,Mun. of Two Borders incl. Melita Coulter and Tilston,mun. de Two Borders incl. Melita Coulter et Tilston,Air Quality,Qualité de l'air,MB,MB
-051331,Mun. of Brenda-Waskada incl. Medora and Goodlands,municipalité de Brenda-Waskada incluant Medora et Goodlands,Public,Public,MB,MB
-051331,Mun. of Brenda-Waskada incl. Medora and Goodlands,municipalité de Brenda-Waskada incluant Medora et Goodlands,Air Quality,Qualité de l'air,MB,MB
+051310,Mun. of Grassland including Hartney and Minto,municipalité de Grassland incluant Hartney et Minto,Public,Public,MB,MB
+051310,Mun. of Grassland including Hartney and Minto,municipalité de Grassland incluant Hartney et Minto,Air Quality,Qualité de l'air,MB,MB
+051320,Mun. of Two Borders including Melita Coulter and Tilston,mun. de Two Borders including Melita Coulter et Tilston,Public,Public,MB,MB
+051320,Mun. of Two Borders including Melita Coulter and Tilston,mun. de Two Borders including Melita Coulter et Tilston,Air Quality,Qualité de l'air,MB,MB
+051331,Mun. of Brenda-Waskada including Medora and Goodlands,municipalité de Brenda-Waskada incluant Medora et Goodlands,Public,Public,MB,MB
+051331,Mun. of Brenda-Waskada including Medora and Goodlands,municipalité de Brenda-Waskada incluant Medora et Goodlands,Air Quality,Qualité de l'air,MB,MB
 051332,Mun. of Deloraine-Winchester,municipalité de Deloraine-Winchester,Public,Public,MB,MB
 051332,Mun. of Deloraine-Winchester,municipalité de Deloraine-Winchester,Air Quality,Qualité de l'air,MB,MB
-051340,Mun. of Boissevain-Morton incl. Turtle Mtn Prov. Park,mun. de Boissevain-Morton incl. Turtle Mtn Prov. Park,Public,Public,MB,MB
-051340,Mun. of Boissevain-Morton incl. Turtle Mtn Prov. Park,mun. de Boissevain-Morton incl. Turtle Mtn Prov. Park,Air Quality,Qualité de l'air,MB,MB
+051340,Mun. of Boissevain-Morton including Turtle Mtn Prov. Park,mun. de Boissevain-Morton including Turtle Mtn Prov. Park,Public,Public,MB,MB
+051340,Mun. of Boissevain-Morton including Turtle Mtn Prov. Park,mun. de Boissevain-Morton including Turtle Mtn Prov. Park,Air Quality,Qualité de l'air,MB,MB
 051400,Killarney - Pilot Mound - Manitou,Killarney - Pilot Mound - Manitou,Public,Public,MB,MB
 051412,Mun. of Killarney-Turtle Mountain,municipalité de Killarney-Turtle Mountain,Public,Public,MB,MB
 051412,Mun. of Killarney-Turtle Mountain,municipalité de Killarney-Turtle Mountain,Air Quality,Qualité de l'air,MB,MB
-051422,R.M. of Argyle incl. Baldur Glenora and Greenway,m.r. d'Argyle incluant Baldur Glenora et Greenway,Public,Public,MB,MB
-051422,R.M. of Argyle incl. Baldur Glenora and Greenway,m.r. d'Argyle incluant Baldur Glenora et Greenway,Air Quality,Qualité de l'air,MB,MB
-051431,Cartwright-Roblin Mun. incl. Mather,municipalité de Cartwright-Roblin incluant Mather,Public,Public,MB,MB
-051431,Cartwright-Roblin Mun. incl. Mather,municipalité de Cartwright-Roblin incluant Mather,Air Quality,Qualité de l'air,MB,MB
-051432,Mun. of Louise incl. Pilot Mound and Crystal City,municipalité de Louise incluant Pilot Mound et Crystal City,Public,Public,MB,MB
-051432,Mun. of Louise incl. Pilot Mound and Crystal City,municipalité de Louise incluant Pilot Mound et Crystal City,Air Quality,Qualité de l'air,MB,MB
-051441,Mun. of Lorne incl. Notre Dame and Swan Lake,municipalité de Lorne incluant Notre Dame et Swan Lake,Public,Public,MB,MB
-051441,Mun. of Lorne incl. Notre Dame and Swan Lake,municipalité de Lorne incluant Notre Dame et Swan Lake,Air Quality,Qualité de l'air,MB,MB
-051442,Mun. of Pembina incl. Manitou La Rivière and Snowflake,mun. de Pembina incl. Manitou La Rivière et Snowflake,Public,Public,MB,MB
-051442,Mun. of Pembina incl. Manitou La Rivière and Snowflake,mun. de Pembina incl. Manitou La Rivière et Snowflake,Air Quality,Qualité de l'air,MB,MB
-051450,R.M. of Prairie Lakes incl. Margaret Ninette and Belmont,m.r. de Prairie Lakes incluant Margaret Ninette et Belmont,Public,Public,MB,MB
-051450,R.M. of Prairie Lakes incl. Margaret Ninette and Belmont,m.r. de Prairie Lakes incluant Margaret Ninette et Belmont,Air Quality,Qualité de l'air,MB,MB
+051422,R.M. of Argyle including Baldur Glenora and Greenway,m.r. d'Argyle incluant Baldur Glenora et Greenway,Public,Public,MB,MB
+051422,R.M. of Argyle including Baldur Glenora and Greenway,m.r. d'Argyle incluant Baldur Glenora et Greenway,Air Quality,Qualité de l'air,MB,MB
+051431,Cartwright-Roblin Mun. including Mather,municipalité de Cartwright-Roblin incluant Mather,Public,Public,MB,MB
+051431,Cartwright-Roblin Mun. including Mather,municipalité de Cartwright-Roblin incluant Mather,Air Quality,Qualité de l'air,MB,MB
+051432,Mun. of Louise including Pilot Mound and Crystal City,municipalité de Louise incluant Pilot Mound et Crystal City,Public,Public,MB,MB
+051432,Mun. of Louise including Pilot Mound and Crystal City,municipalité de Louise incluant Pilot Mound et Crystal City,Air Quality,Qualité de l'air,MB,MB
+051441,Mun. of Lorne including Notre Dame and Swan Lake,municipalité de Lorne incluant Notre Dame et Swan Lake,Public,Public,MB,MB
+051441,Mun. of Lorne including Notre Dame and Swan Lake,municipalité de Lorne incluant Notre Dame et Swan Lake,Air Quality,Qualité de l'air,MB,MB
+051442,Mun. of Pembina including Manitou La Rivière and Snowflake,mun. de Pembina including Manitou La Rivière et Snowflake,Public,Public,MB,MB
+051442,Mun. of Pembina including Manitou La Rivière and Snowflake,mun. de Pembina including Manitou La Rivière et Snowflake,Air Quality,Qualité de l'air,MB,MB
+051450,R.M. of Prairie Lakes including Margaret Ninette and Belmont,m.r. de Prairie Lakes incluant Margaret Ninette et Belmont,Public,Public,MB,MB
+051450,R.M. of Prairie Lakes including Margaret Ninette and Belmont,m.r. de Prairie Lakes incluant Margaret Ninette et Belmont,Air Quality,Qualité de l'air,MB,MB
 052100,City of Winnipeg,ville de Winnipeg,Public,Public,MB,MB
 052100,City of Winnipeg,ville de Winnipeg,Air Quality,Qualité de l'air,MB,MB
 052200,Selkirk - Gimli - Stonewall - Woodlands,Selkirk - Gimli - Stonewall - Woodlands,Public,Public,MB,MB
-052212,R.M. of Coldwell incl. Lundar and Clarkleigh,m.r. de Coldwell incluant Lundar et Clarkleigh,Public,Public,MB,MB
-052212,R.M. of Coldwell incl. Lundar and Clarkleigh,m.r. de Coldwell incluant Lundar et Clarkleigh,Air Quality,Qualité de l'air,MB,MB
-052223,R.M. of Gimli incl. Winnipeg Beach and Arnes,m.r. de Gimli incluant Winnipeg Beach et Arnes,Public,Public,MB,MB
-052223,R.M. of Gimli incl. Winnipeg Beach and Arnes,m.r. de Gimli incluant Winnipeg Beach et Arnes,Air Quality,Qualité de l'air,MB,MB
-052231,R.M. of St. Laurent incl. Oak Point,m.r. de St. Laurent incluant Oak Point,Public,Public,MB,MB
-052231,R.M. of St. Laurent incl. Oak Point,m.r. de St. Laurent incluant Oak Point,Air Quality,Qualité de l'air,MB,MB
-052232,R.M. of Woodlands incl. Warren and Lake Francis,m.r. de Woodlands incluant Warren et Lake Francis,Public,Public,MB,MB
-052232,R.M. of Woodlands incl. Warren and Lake Francis,m.r. de Woodlands incluant Warren et Lake Francis,Air Quality,Qualité de l'air,MB,MB
-052240,R.M. of Rockwood incl. Teulon Stonewall and Stony Mountain,m.r. de Rockwood incl. Teulon Stonewall et Stony Mountain,Public,Public,MB,MB
-052240,R.M. of Rockwood incl. Teulon Stonewall and Stony Mountain,m.r. de Rockwood incl. Teulon Stonewall et Stony Mountain,Air Quality,Qualité de l'air,MB,MB
-052251,R.M. of Rosser incl. Meadows,m.r. de Rosser incluant Meadows,Public,Public,MB,MB
-052251,R.M. of Rosser incl. Meadows,m.r. de Rosser incluant Meadows,Air Quality,Qualité de l'air,MB,MB
-052252,R.M. of West St. Paul incl. Middlechurch and Riverside,m.r. de West St. Paul incluant Middlechurch et Riverside,Public,Public,MB,MB
-052252,R.M. of West St. Paul incl. Middlechurch and Riverside,m.r. de West St. Paul incluant Middlechurch et Riverside,Air Quality,Qualité de l'air,MB,MB
-052260,R.M. of Armstrong incl. Chatfield Inwood and Narcisse,m.r. d'Armstrong incluant Chatfield Inwood et Narcisse,Public,Public,MB,MB
-052260,R.M. of Armstrong incl. Chatfield Inwood and Narcisse,m.r. d'Armstrong incluant Chatfield Inwood et Narcisse,Air Quality,Qualité de l'air,MB,MB
-052270,R.M. of St. Andrews incl. Selkirk Lockport and Ponemah,m.r. de St. Andrews incluant Selkirk Lockport et Ponemah,Public,Public,MB,MB
-052270,R.M. of St. Andrews incl. Selkirk Lockport and Ponemah,m.r. de St. Andrews incluant Selkirk Lockport et Ponemah,Air Quality,Qualité de l'air,MB,MB
+052212,R.M. of Coldwell including Lundar and Clarkleigh,m.r. de Coldwell incluant Lundar et Clarkleigh,Public,Public,MB,MB
+052212,R.M. of Coldwell including Lundar and Clarkleigh,m.r. de Coldwell incluant Lundar et Clarkleigh,Air Quality,Qualité de l'air,MB,MB
+052223,R.M. of Gimli including Winnipeg Beach and Arnes,m.r. de Gimli incluant Winnipeg Beach et Arnes,Public,Public,MB,MB
+052223,R.M. of Gimli including Winnipeg Beach and Arnes,m.r. de Gimli incluant Winnipeg Beach et Arnes,Air Quality,Qualité de l'air,MB,MB
+052231,R.M. of St. Laurent including Oak Point,m.r. de St. Laurent incluant Oak Point,Public,Public,MB,MB
+052231,R.M. of St. Laurent including Oak Point,m.r. de St. Laurent incluant Oak Point,Air Quality,Qualité de l'air,MB,MB
+052232,R.M. of Woodlands including Warren and Lake Francis,m.r. de Woodlands incluant Warren et Lake Francis,Public,Public,MB,MB
+052232,R.M. of Woodlands including Warren and Lake Francis,m.r. de Woodlands incluant Warren et Lake Francis,Air Quality,Qualité de l'air,MB,MB
+052240,R.M. of Rockwood including Teulon Stonewall and Stony Mountain,m.r. de Rockwood including Teulon Stonewall et Stony Mountain,Public,Public,MB,MB
+052240,R.M. of Rockwood including Teulon Stonewall and Stony Mountain,m.r. de Rockwood including Teulon Stonewall et Stony Mountain,Air Quality,Qualité de l'air,MB,MB
+052251,R.M. of Rosser including Meadows,m.r. de Rosser incluant Meadows,Public,Public,MB,MB
+052251,R.M. of Rosser including Meadows,m.r. de Rosser incluant Meadows,Air Quality,Qualité de l'air,MB,MB
+052252,R.M. of West St. Paul including Middlechurch and Riverside,m.r. de West St. Paul incluant Middlechurch et Riverside,Public,Public,MB,MB
+052252,R.M. of West St. Paul including Middlechurch and Riverside,m.r. de West St. Paul incluant Middlechurch et Riverside,Air Quality,Qualité de l'air,MB,MB
+052260,R.M. of Armstrong including Chatfield Inwood and Narcisse,m.r. d'Armstrong incluant Chatfield Inwood et Narcisse,Public,Public,MB,MB
+052260,R.M. of Armstrong including Chatfield Inwood and Narcisse,m.r. d'Armstrong incluant Chatfield Inwood et Narcisse,Air Quality,Qualité de l'air,MB,MB
+052270,R.M. of St. Andrews including Selkirk Lockport and Ponemah,m.r. de St. Andrews incluant Selkirk Lockport et Ponemah,Public,Public,MB,MB
+052270,R.M. of St. Andrews including Selkirk Lockport and Ponemah,m.r. de St. Andrews incluant Selkirk Lockport et Ponemah,Air Quality,Qualité de l'air,MB,MB
 052300,Portage la Prairie - Headingley - Brunkild - Carman,Portage la Prairie - Headingley - Brunkild - Carman,Public,Public,MB,MB
-052310,R.M. of Portage la Prairie incl. St. Ambroise,m.r. de Portage la Prairie incluant St. Ambroise,Public,Public,MB,MB
-052310,R.M. of Portage la Prairie incl. St. Ambroise,m.r. de Portage la Prairie incluant St. Ambroise,Air Quality,Qualité de l'air,MB,MB
+052310,R.M. of Portage la Prairie including St. Ambroise,m.r. de Portage la Prairie incluant St. Ambroise,Public,Public,MB,MB
+052310,R.M. of Portage la Prairie including St. Ambroise,m.r. de Portage la Prairie incluant St. Ambroise,Air Quality,Qualité de l'air,MB,MB
 052321,R.M. of St. François Xavier,m.r. de St. François Xavier,Public,Public,MB,MB
 052321,R.M. of St. François Xavier,m.r. de St. François Xavier,Air Quality,Qualité de l'air,MB,MB
-052322,R.M. of Cartier incl. Elie St. Eustache and Springstein,m.r. de Cartier incluant Elie St. Eustache et Springstein,Public,Public,MB,MB
-052322,R.M. of Cartier incl. Elie St. Eustache and Springstein,m.r. de Cartier incluant Elie St. Eustache et Springstein,Air Quality,Qualité de l'air,MB,MB
+052322,R.M. of Cartier including Elie St. Eustache and Springstein,m.r. de Cartier incluant Elie St. Eustache et Springstein,Public,Public,MB,MB
+052322,R.M. of Cartier including Elie St. Eustache and Springstein,m.r. de Cartier incluant Elie St. Eustache et Springstein,Air Quality,Qualité de l'air,MB,MB
 052323,R.M. of Headingley,m.r. de Headingley,Public,Public,MB,MB
 052323,R.M. of Headingley,m.r. de Headingley,Air Quality,Qualité de l'air,MB,MB
-052331,R.M. of Grey incl. St. Claude Elm Creek and Fannystelle,m.r. de Grey incluant St. Claude Elm Creek et Fannystelle,Public,Public,MB,MB
-052331,R.M. of Grey incl. St. Claude Elm Creek and Fannystelle,m.r. de Grey incluant St. Claude Elm Creek et Fannystelle,Air Quality,Qualité de l'air,MB,MB
-052332,R.M. of Dufferin incl. Carman Roseisle and Homewood,m.r. de Dufferin incluant Carman Roseisle et Homewood,Public,Public,MB,MB
-052332,R.M. of Dufferin incl. Carman Roseisle and Homewood,m.r. de Dufferin incluant Carman Roseisle et Homewood,Air Quality,Qualité de l'air,MB,MB
-052340,R.M. of Macdonald incl. Brunkild Starbuck and La Salle,m.r. de Macdonald incluant Brunkild Starbuck et La Salle,Public,Public,MB,MB
-052340,R.M. of Macdonald incl. Brunkild Starbuck and La Salle,m.r. de Macdonald incluant Brunkild Starbuck et La Salle,Air Quality,Qualité de l'air,MB,MB
+052331,R.M. of Grey including St. Claude Elm Creek and Fannystelle,m.r. de Grey incluant St. Claude Elm Creek et Fannystelle,Public,Public,MB,MB
+052331,R.M. of Grey including St. Claude Elm Creek and Fannystelle,m.r. de Grey incluant St. Claude Elm Creek et Fannystelle,Air Quality,Qualité de l'air,MB,MB
+052332,R.M. of Dufferin including Carman Roseisle and Homewood,m.r. de Dufferin incluant Carman Roseisle et Homewood,Public,Public,MB,MB
+052332,R.M. of Dufferin including Carman Roseisle and Homewood,m.r. de Dufferin incluant Carman Roseisle et Homewood,Air Quality,Qualité de l'air,MB,MB
+052340,R.M. of Macdonald including Brunkild Starbuck and La Salle,m.r. de Macdonald incluant Brunkild Starbuck et La Salle,Public,Public,MB,MB
+052340,R.M. of Macdonald including Brunkild Starbuck and La Salle,m.r. de Macdonald incluant Brunkild Starbuck et La Salle,Air Quality,Qualité de l'air,MB,MB
 052400,Dugald - Beausejour - Grand Beach,Dugald - Beausejour - Grand Beach,Public,Public,MB,MB
-052410,R.M. of St. Clements incl. Grand Beach Brokenhead and Libau,m.r. de St. Clements incl. Grand Beach Brokenhead et Libau,Public,Public,MB,MB
-052410,R.M. of St. Clements incl. Grand Beach Brokenhead and Libau,m.r. de St. Clements incl. Grand Beach Brokenhead et Libau,Air Quality,Qualité de l'air,MB,MB
-052422,R.M. of Brokenhead incl. Beausejour and Garson,m.r. de Brokenhead incluant Beausejour et Garson,Public,Public,MB,MB
-052422,R.M. of Brokenhead incl. Beausejour and Garson,m.r. de Brokenhead incluant Beausejour et Garson,Air Quality,Qualité de l'air,MB,MB
-052431,R.M. of Springfield incl. Anola and Birds Hill Prov. Park,m.r. de Springfield incluant Anola et Birds Hill Prov. Park,Public,Public,MB,MB
-052431,R.M. of Springfield incl. Anola and Birds Hill Prov. Park,m.r. de Springfield incluant Anola et Birds Hill Prov. Park,Air Quality,Qualité de l'air,MB,MB
-052433,R.M. of East St. Paul incl. Birds Hill,m.r. de East St. Paul incluant Birds Hill,Public,Public,MB,MB
-052433,R.M. of East St. Paul incl. Birds Hill,m.r. de East St. Paul incluant Birds Hill,Air Quality,Qualité de l'air,MB,MB
+052410,R.M. of St. Clements including Grand Beach Brokenhead and Libau,m.r. de St. Clements including Grand Beach Brokenhead et Libau,Public,Public,MB,MB
+052410,R.M. of St. Clements including Grand Beach Brokenhead and Libau,m.r. de St. Clements including Grand Beach Brokenhead et Libau,Air Quality,Qualité de l'air,MB,MB
+052422,R.M. of Brokenhead including Beausejour and Garson,m.r. de Brokenhead incluant Beausejour et Garson,Public,Public,MB,MB
+052422,R.M. of Brokenhead including Beausejour and Garson,m.r. de Brokenhead incluant Beausejour et Garson,Air Quality,Qualité de l'air,MB,MB
+052431,R.M. of Springfield including Anola and Birds Hill Prov. Park,m.r. de Springfield incluant Anola et Birds Hill Prov. Park,Public,Public,MB,MB
+052431,R.M. of Springfield including Anola and Birds Hill Prov. Park,m.r. de Springfield incluant Anola et Birds Hill Prov. Park,Air Quality,Qualité de l'air,MB,MB
+052433,R.M. of East St. Paul including Birds Hill,m.r. de East St. Paul incluant Birds Hill,Public,Public,MB,MB
+052433,R.M. of East St. Paul including Birds Hill,m.r. de East St. Paul incluant Birds Hill,Air Quality,Qualité de l'air,MB,MB
 052500,Morden - Winkler - Altona - Morris,Morden - Winkler - Altona - Morris,Public,Public,MB,MB
-052510,R.M. of Morris incl. Rosenort and Aubigny,m.r. de Morris incluant Rosenort et Aubigny,Public,Public,MB,MB
-052510,R.M. of Morris incl. Rosenort and Aubigny,m.r. de Morris incluant Rosenort et Aubigny,Air Quality,Qualité de l'air,MB,MB
-052520,R.M. of Thompson incl. Miami Rosebank and Deerwood,m.r. de Thompson incluant Miami Rosebank et Deerwood,Public,Public,MB,MB
-052520,R.M. of Thompson incl. Miami Rosebank and Deerwood,m.r. de Thompson incluant Miami Rosebank et Deerwood,Air Quality,Qualité de l'air,MB,MB
-052530,R.M. of Roland incl. Jordan and Myrtle,m.r. de Roland incluant Jordan et Myrtle,Public,Public,MB,MB
-052530,R.M. of Roland incl. Jordan and Myrtle,m.r. de Roland incluant Jordan et Myrtle,Air Quality,Qualité de l'air,MB,MB
-052540,R.M. of Montcalm incl. St. Jean Baptiste,m.r. de Montcalm incluant St. Jean Baptiste,Public,Public,MB,MB
-052540,R.M. of Montcalm incl. St. Jean Baptiste,m.r. de Montcalm incluant St. Jean Baptiste,Air Quality,Qualité de l'air,MB,MB
-052550,Mun. of Rhineland incl. Altona Plum Coulee and Gretna,mun. de Rhineland incl. Altona Plum Coulee et Gretna,Public,Public,MB,MB
-052550,Mun. of Rhineland incl. Altona Plum Coulee and Gretna,mun. de Rhineland incl. Altona Plum Coulee et Gretna,Air Quality,Qualité de l'air,MB,MB
-052560,R.M. of Stanley incl. Winkler and Morden,m.r. de Stanley incluant Winkler et Morden,Public,Public,MB,MB
-052560,R.M. of Stanley incl. Winkler and Morden,m.r. de Stanley incluant Winkler et Morden,Air Quality,Qualité de l'air,MB,MB
+052510,R.M. of Morris including Rosenort and Aubigny,m.r. de Morris incluant Rosenort et Aubigny,Public,Public,MB,MB
+052510,R.M. of Morris including Rosenort and Aubigny,m.r. de Morris incluant Rosenort et Aubigny,Air Quality,Qualité de l'air,MB,MB
+052520,R.M. of Thompson including Miami Rosebank and Deerwood,m.r. de Thompson incluant Miami Rosebank et Deerwood,Public,Public,MB,MB
+052520,R.M. of Thompson including Miami Rosebank and Deerwood,m.r. de Thompson incluant Miami Rosebank et Deerwood,Air Quality,Qualité de l'air,MB,MB
+052530,R.M. of Roland including Jordan and Myrtle,m.r. de Roland incluant Jordan et Myrtle,Public,Public,MB,MB
+052530,R.M. of Roland including Jordan and Myrtle,m.r. de Roland incluant Jordan et Myrtle,Air Quality,Qualité de l'air,MB,MB
+052540,R.M. of Montcalm including St. Jean Baptiste,m.r. de Montcalm incluant St. Jean Baptiste,Public,Public,MB,MB
+052540,R.M. of Montcalm including St. Jean Baptiste,m.r. de Montcalm incluant St. Jean Baptiste,Air Quality,Qualité de l'air,MB,MB
+052550,Mun. of Rhineland including Altona Plum Coulee and Gretna,mun. de Rhineland including Altona Plum Coulee et Gretna,Public,Public,MB,MB
+052550,Mun. of Rhineland including Altona Plum Coulee and Gretna,mun. de Rhineland including Altona Plum Coulee et Gretna,Air Quality,Qualité de l'air,MB,MB
+052560,R.M. of Stanley including Winkler and Morden,m.r. de Stanley incluant Winkler et Morden,Public,Public,MB,MB
+052560,R.M. of Stanley including Winkler and Morden,m.r. de Stanley incluant Winkler et Morden,Air Quality,Qualité de l'air,MB,MB
 052600,Steinbach - St. Adolphe - Emerson - Vita - Richer,Steinbach - St. Adolphe - Emerson - Vita - Richer,Public,Public,MB,MB
-052611,R.M. of Ritchot incl. St. Adolphe and Ste. Agathe,m.r. de Ritchot incluant St. Adolphe et Ste. Agathe,Public,Public,MB,MB
-052611,R.M. of Ritchot incl. St. Adolphe and Ste. Agathe,m.r. de Ritchot incluant St. Adolphe et Ste. Agathe,Air Quality,Qualité de l'air,MB,MB
-052612,R.M. of Tache incl. Lorette Ste-Geneviève and Landmark,m.r. de Tache incluant Lorette Ste-Geneviève et Landmark,Public,Public,MB,MB
-052612,R.M. of Tache incl. Lorette Ste-Geneviève and Landmark,m.r. de Tache incluant Lorette Ste-Geneviève et Landmark,Air Quality,Qualité de l'air,MB,MB
-052620,R.M. of De Salaberry incl. St-Pierre-Jolys and St. Malo,m.r. de De Salaberry incluant St-Pierre-Jolys et St. Malo,Public,Public,MB,MB
-052620,R.M. of De Salaberry incl. St-Pierre-Jolys and St. Malo,m.r. de De Salaberry incluant St-Pierre-Jolys et St. Malo,Air Quality,Qualité de l'air,MB,MB
-052630,R.M. of Hanover incl. Steinbach Niverville and Grunthal,m.r. de Hanover incluant Steinbach Niverville et Grunthal,Public,Public,MB,MB
-052630,R.M. of Hanover incl. Steinbach Niverville and Grunthal,m.r. de Hanover incluant Steinbach Niverville et Grunthal,Air Quality,Qualité de l'air,MB,MB
-052641,R.M. of Ste. Anne incl. Richer,m.r. de Ste. Anne incluant Richer,Public,Public,MB,MB
-052641,R.M. of Ste. Anne incl. Richer,m.r. de Ste. Anne incluant Richer,Air Quality,Qualité de l'air,MB,MB
-052642,R.M. of La Broquerie incl. Marchand,m.r. de La Broquerie incluant Marchand,Public,Public,MB,MB
-052642,R.M. of La Broquerie incl. Marchand,m.r. de La Broquerie incluant Marchand,Air Quality,Qualité de l'air,MB,MB
-052651,Mun. of Emerson-Franklin incl. Roseau River,mun. d'Emerson-Franklin incl. Roseau River,Public,Public,MB,MB
-052651,Mun. of Emerson-Franklin incl. Roseau River,mun. d'Emerson-Franklin incl. Roseau River,Air Quality,Qualité de l'air,MB,MB
-052652,R.M. of Stuartburn incl. Zhoda Vita and Sundown,m.r. de Stuartburn incluant Zhoda Vita et Sundown,Public,Public,MB,MB
-052652,R.M. of Stuartburn incl. Zhoda Vita and Sundown,m.r. de Stuartburn incluant Zhoda Vita et Sundown,Air Quality,Qualité de l'air,MB,MB
+052611,R.M. of Ritchot including St. Adolphe and Ste. Agathe,m.r. de Ritchot incluant St. Adolphe et Ste. Agathe,Public,Public,MB,MB
+052611,R.M. of Ritchot including St. Adolphe and Ste. Agathe,m.r. de Ritchot incluant St. Adolphe et Ste. Agathe,Air Quality,Qualité de l'air,MB,MB
+052612,R.M. of Tache including Lorette Ste-Geneviève and Landmark,m.r. de Tache incluant Lorette Ste-Geneviève et Landmark,Public,Public,MB,MB
+052612,R.M. of Tache including Lorette Ste-Geneviève and Landmark,m.r. de Tache incluant Lorette Ste-Geneviève et Landmark,Air Quality,Qualité de l'air,MB,MB
+052620,R.M. of De Salaberry including St-Pierre-Jolys and St. Malo,m.r. de De Salaberry incluant St-Pierre-Jolys et St. Malo,Public,Public,MB,MB
+052620,R.M. of De Salaberry including St-Pierre-Jolys and St. Malo,m.r. de De Salaberry incluant St-Pierre-Jolys et St. Malo,Air Quality,Qualité de l'air,MB,MB
+052630,R.M. of Hanover including Steinbach Niverville and Grunthal,m.r. de Hanover incluant Steinbach Niverville et Grunthal,Public,Public,MB,MB
+052630,R.M. of Hanover including Steinbach Niverville and Grunthal,m.r. de Hanover incluant Steinbach Niverville et Grunthal,Air Quality,Qualité de l'air,MB,MB
+052641,R.M. of Ste. Anne including Richer,m.r. de Ste. Anne incluant Richer,Public,Public,MB,MB
+052641,R.M. of Ste. Anne including Richer,m.r. de Ste. Anne incluant Richer,Air Quality,Qualité de l'air,MB,MB
+052642,R.M. of La Broquerie including Marchand,m.r. de La Broquerie incluant Marchand,Public,Public,MB,MB
+052642,R.M. of La Broquerie including Marchand,m.r. de La Broquerie incluant Marchand,Air Quality,Qualité de l'air,MB,MB
+052651,Mun. of Emerson-Franklin including Roseau River,mun. d'Emerson-Franklin including Roseau River,Public,Public,MB,MB
+052651,Mun. of Emerson-Franklin including Roseau River,mun. d'Emerson-Franklin including Roseau River,Air Quality,Qualité de l'air,MB,MB
+052652,R.M. of Stuartburn including Zhoda Vita and Sundown,m.r. de Stuartburn incluant Zhoda Vita et Sundown,Public,Public,MB,MB
+052652,R.M. of Stuartburn including Zhoda Vita and Sundown,m.r. de Stuartburn incluant Zhoda Vita et Sundown,Air Quality,Qualité de l'air,MB,MB
 053100,Bissett - Victoria Beach - Nopiming Prov. Park - Pine Falls,Bissett - Victoria Beach - Nopiming Prov. Park - Pine Falls,Public,Public,MB,MB
 053110,Manigotagan Black River Res. and Hollow Water Res.,Manigotagan rés. ind. Black River et rés. ind. Hollow Water,Public,Public,MB,MB
 053110,Manigotagan Black River Res. and Hollow Water Res.,Manigotagan rés. ind. Black River et rés. ind. Hollow Water,Air Quality,Qualité de l'air,MB,MB
@@ -3230,110 +3230,110 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 053120,Bissett,Bissett,Air Quality,Qualité de l'air,MB,MB
 053130,Nopiming Prov. Park,Nopiming Prov. Park,Public,Public,MB,MB
 053130,Nopiming Prov. Park,Nopiming Prov. Park,Air Quality,Qualité de l'air,MB,MB
-053140,R.M. of Alexander incl. Powerview-Pine Falls,m.r. d'Alexander incluant Powerview-Pine Falls,Public,Public,MB,MB
-053140,R.M. of Alexander incl. Powerview-Pine Falls,m.r. d'Alexander incluant Powerview-Pine Falls,Air Quality,Qualité de l'air,MB,MB
+053140,R.M. of Alexander including Powerview-Pine Falls,m.r. d'Alexander incluant Powerview-Pine Falls,Public,Public,MB,MB
+053140,R.M. of Alexander including Powerview-Pine Falls,m.r. d'Alexander incluant Powerview-Pine Falls,Air Quality,Qualité de l'air,MB,MB
 053150,R.M. of Victoria Beach,m.r. de Victoria Beach,Public,Public,MB,MB
 053150,R.M. of Victoria Beach,m.r. de Victoria Beach,Air Quality,Qualité de l'air,MB,MB
 053200,Whiteshell - Lac du Bonnet - Pinawa,Whiteshell - Lac du Bonnet - Pinawa,Public,Public,MB,MB
 053211,R.M. of Lac Du Bonnet,m.r. de Lac Du Bonnet,Public,Public,MB,MB
 053211,R.M. of Lac Du Bonnet,m.r. de Lac Du Bonnet,Air Quality,Qualité de l'air,MB,MB
-053221,L.G. of Pinawa incl. Seven Sisters Falls,adm. locale de Pinawa incluant Seven Sisters Falls,Public,Public,MB,MB
-053221,L.G. of Pinawa incl. Seven Sisters Falls,adm. locale de Pinawa incluant Seven Sisters Falls,Air Quality,Qualité de l'air,MB,MB
-053222,R.M. of Whitemouth incl. Elma,m.r. de Whitemouth incluant Elma,Public,Public,MB,MB
-053222,R.M. of Whitemouth incl. Elma,m.r. de Whitemouth incluant Elma,Air Quality,Qualité de l'air,MB,MB
+053221,L.G. of Pinawa including Seven Sisters Falls,adm. locale de Pinawa incluant Seven Sisters Falls,Public,Public,MB,MB
+053221,L.G. of Pinawa including Seven Sisters Falls,adm. locale de Pinawa incluant Seven Sisters Falls,Air Quality,Qualité de l'air,MB,MB
+053222,R.M. of Whitemouth including Elma,m.r. de Whitemouth incluant Elma,Public,Public,MB,MB
+053222,R.M. of Whitemouth including Elma,m.r. de Whitemouth incluant Elma,Air Quality,Qualité de l'air,MB,MB
 053231,Pointe du Bois,Pointe du Bois,Public,Public,MB,MB
 053231,Pointe du Bois,Pointe du Bois,Air Quality,Qualité de l'air,MB,MB
 053232,Falcon Lake and West Hawk Lake,Falcon Lake et West Hawk Lake,Public,Public,MB,MB
 053232,Falcon Lake and West Hawk Lake,Falcon Lake et West Hawk Lake,Air Quality,Qualité de l'air,MB,MB
 053243,Shoal Lake Reserves,rés. ind. Shoal Lake,Public,Public,MB,MB
 053243,Shoal Lake Reserves,rés. ind. Shoal Lake,Air Quality,Qualité de l'air,MB,MB
-053250,R.M. of Reynolds incl. Ste. Rita Hadashville and Rennie,m.r. de Reynolds incluant Ste. Rita Hadashville et Rennie,Public,Public,MB,MB
-053250,R.M. of Reynolds incl. Ste. Rita Hadashville and Rennie,m.r. de Reynolds incluant Ste. Rita Hadashville et Rennie,Air Quality,Qualité de l'air,MB,MB
+053250,R.M. of Reynolds including Ste. Rita Hadashville and Rennie,m.r. de Reynolds incluant Ste. Rita Hadashville et Rennie,Public,Public,MB,MB
+053250,R.M. of Reynolds including Ste. Rita Hadashville and Rennie,m.r. de Reynolds incluant Ste. Rita Hadashville et Rennie,Air Quality,Qualité de l'air,MB,MB
 053300,Sprague - Northwest Angle Provincial Forest,Sprague - forêt provinciale Northwest Angle,Public,Public,MB,MB
 053310,Buffalo Point Res. and Northwest Angle Prov. Forest,rés. ind. Buffalo Point et la forêt prov. Northwest Angle,Public,Public,MB,MB
 053310,Buffalo Point Res. and Northwest Angle Prov. Forest,rés. ind. Buffalo Point et la forêt prov. Northwest Angle,Air Quality,Qualité de l'air,MB,MB
-053320,R.M. of Piney incl. Sandilands and Sprague,m.r. de Piney incluant Sandilands et Sprague,Public,Public,MB,MB
-053320,R.M. of Piney incl. Sandilands and Sprague,m.r. de Piney incluant Sandilands et Sprague,Air Quality,Qualité de l'air,MB,MB
+053320,R.M. of Piney including Sandilands and Sprague,m.r. de Piney incluant Sandilands et Sprague,Public,Public,MB,MB
+053320,R.M. of Piney including Sandilands and Sprague,m.r. de Piney incluant Sandilands et Sprague,Air Quality,Qualité de l'air,MB,MB
 054100,Grand Rapids - Waterhen,Grand Rapids - Waterhen,Public,Public,MB,MB
 054110,Grand Rapids and Easterville,Grand Rapids et Easterville,Public,Public,MB,MB
 054110,Grand Rapids and Easterville,Grand Rapids et Easterville,Air Quality,Qualité de l'air,MB,MB
 054120,Waterhen Meadow Portage and Skownan,Waterhen Meadow Portage et Skownan,Public,Public,MB,MB
 054120,Waterhen Meadow Portage and Skownan,Waterhen Meadow Portage et Skownan,Air Quality,Qualité de l'air,MB,MB
 054200,Arborg - Hecla - Fisher River - Gypsumville - Ashern,Arborg - Hecla - Fisher River - Gypsumville - Ashern,Public,Public,MB,MB
-054210,R.M. of Grahamdale incl. Gypsumville Moosehorn and Camper,m.r. de Grahamdale incluant Gypsumville Moosehorn et Camper,Public,Public,MB,MB
-054210,R.M. of Grahamdale incl. Gypsumville Moosehorn and Camper,m.r. de Grahamdale incluant Gypsumville Moosehorn et Camper,Air Quality,Qualité de l'air,MB,MB
+054210,R.M. of Grahamdale including Gypsumville Moosehorn and Camper,m.r. de Grahamdale incluant Gypsumville Moosehorn et Camper,Public,Public,MB,MB
+054210,R.M. of Grahamdale including Gypsumville Moosehorn and Camper,m.r. de Grahamdale incluant Gypsumville Moosehorn et Camper,Air Quality,Qualité de l'air,MB,MB
 054221,Jackhead Res.,rés. ind. Jackhead,Public,Public,MB,MB
 054221,Jackhead Res.,rés. ind. Jackhead,Air Quality,Qualité de l'air,MB,MB
-054230,R.M. of West Interlake incl. Eriksdale and Ashern,m.r. de West Interlake incl. Eriksdale et Ashern,Public,Public,MB,MB
-054230,R.M. of West Interlake incl. Eriksdale and Ashern,m.r. de West Interlake incl. Eriksdale et Ashern,Air Quality,Qualité de l'air,MB,MB
-054242,Mun. of Bifrost-Riverton incl. Arborg Hnausa and Hecla,mun. de Bifrost-Riverton incl. Arborg Hnausa et Hecla,Public,Public,MB,MB
-054242,Mun. of Bifrost-Riverton incl. Arborg Hnausa and Hecla,mun. de Bifrost-Riverton incl. Arborg Hnausa et Hecla,Air Quality,Qualité de l'air,MB,MB
+054230,R.M. of West Interlake including Eriksdale and Ashern,m.r. de West Interlake including Eriksdale et Ashern,Public,Public,MB,MB
+054230,R.M. of West Interlake including Eriksdale and Ashern,m.r. de West Interlake including Eriksdale et Ashern,Air Quality,Qualité de l'air,MB,MB
+054242,Mun. of Bifrost-Riverton including Arborg Hnausa and Hecla,mun. de Bifrost-Riverton including Arborg Hnausa et Hecla,Public,Public,MB,MB
+054242,Mun. of Bifrost-Riverton including Arborg Hnausa and Hecla,mun. de Bifrost-Riverton including Arborg Hnausa et Hecla,Air Quality,Qualité de l'air,MB,MB
 054243,Moose Creek Prov. Forest Pine Dock and Matheson Island,forêt prov. Moose Creek Pine Dock et Matheson Island,Public,Public,MB,MB
 054243,Moose Creek Prov. Forest Pine Dock and Matheson Island,forêt prov. Moose Creek Pine Dock et Matheson Island,Air Quality,Qualité de l'air,MB,MB
-054250,R.M. of Fisher incl. Poplarfield,m.r. de Fisher incluant Poplarfield,Public,Public,MB,MB
-054250,R.M. of Fisher incl. Poplarfield,m.r. de Fisher incluant Poplarfield,Air Quality,Qualité de l'air,MB,MB
+054250,R.M. of Fisher including Poplarfield,m.r. de Fisher incluant Poplarfield,Public,Public,MB,MB
+054250,R.M. of Fisher including Poplarfield,m.r. de Fisher incluant Poplarfield,Air Quality,Qualité de l'air,MB,MB
 054260,Peguis Res. and Fisher River Res.,rés. ind. Peguis et rés. ind. Fisher River,Public,Public,MB,MB
 054260,Peguis Res. and Fisher River Res.,rés. ind. Peguis et rés. ind. Fisher River,Air Quality,Qualité de l'air,MB,MB
 055100,Dauphin - Russell - Roblin - Winnipegosis,Dauphin - Russell - Roblin - Winnipegosis,Public,Public,MB,MB
-055110,Mun. of Roblin incl. Makaroff Shortdale and Bield,mun. de Roblin incl. Makaroff Shortdale et Bield,Public,Public,MB,MB
-055110,Mun. of Roblin incl. Makaroff Shortdale and Bield,mun. de Roblin incl. Makaroff Shortdale et Bield,Air Quality,Qualité de l'air,MB,MB
-055121,R.M. of Dauphin incl. Sifton and Valley River,m.r. de Dauphin incluant Sifton et Valley River,Public,Public,MB,MB
-055121,R.M. of Dauphin incl. Sifton and Valley River,m.r. de Dauphin incluant Sifton et Valley River,Air Quality,Qualité de l'air,MB,MB
-055122,Mun. of Ethelbert incl. Garland,municipalité d'Ethelbert incluant Garland,Public,Public,MB,MB
-055122,Mun. of Ethelbert incl. Garland,municipalité d'Ethelbert incluant Garland,Air Quality,Qualité de l'air,MB,MB
-055123,Gilbert Plains Mun. incl. Ashville,municipalité de Gilbert Plains incluant Ashville,Public,Public,MB,MB
-055123,Gilbert Plains Mun. incl. Ashville,municipalité de Gilbert Plains incluant Ashville,Air Quality,Qualité de l'air,MB,MB
-055131,Mossey River Mun. incl. Winnipegosis and Fork River,mun. de Mossey River incl. Winnipegosis et Fork River,Public,Public,MB,MB
-055131,Mossey River Mun. incl. Winnipegosis and Fork River,mun. de Mossey River incl. Winnipegosis et Fork River,Air Quality,Qualité de l'air,MB,MB
-055132,Grandview Mun. incl. Valley River Res.,mun. de Grandview incl. la rés. ind. Valley River,Public,Public,MB,MB
-055132,Grandview Mun. incl. Valley River Res.,mun. de Grandview incl. la rés. ind. Valley River,Air Quality,Qualité de l'air,MB,MB
-055133,R.M. of Lakeshore incl. Ochre River and Makinak,m.r. de Lakeshore incluant Ochre River et Makinak,Public,Public,MB,MB
-055133,R.M. of Lakeshore incl. Ochre River and Makinak,m.r. de Lakeshore incluant Ochre River et Makinak,Air Quality,Qualité de l'air,MB,MB
-055140,R.M. of Riding Mountain West incl. Asessippi Prov. Park,m.r. de Riding Mountain West incluant Asessippi Prov. Park,Public,Public,MB,MB
-055140,R.M. of Riding Mountain West incl. Asessippi Prov. Park,m.r. de Riding Mountain West incluant Asessippi Prov. Park,Air Quality,Qualité de l'air,MB,MB
-055150,Mun. of Russell-Binscarth incl. Gambler Res.,mun. de Russell-Binscarth incl. la rés. ind. Gambler,Public,Public,MB,MB
-055150,Mun. of Russell-Binscarth incl. Gambler Res.,mun. de Russell-Binscarth incl. la rés. ind. Gambler,Air Quality,Qualité de l'air,MB,MB
-055160,R.M. of Lakeshore incl. Rorketon and Toutes Aides,m.r. de Lakeshore incluant Rorketon et Toutes Aides,Public,Public,MB,MB
-055160,R.M. of Lakeshore incl. Rorketon and Toutes Aides,m.r. de Lakeshore incluant Rorketon et Toutes Aides,Air Quality,Qualité de l'air,MB,MB
+055110,Mun. of Roblin including Makaroff Shortdale and Bield,mun. de Roblin including Makaroff Shortdale et Bield,Public,Public,MB,MB
+055110,Mun. of Roblin including Makaroff Shortdale and Bield,mun. de Roblin including Makaroff Shortdale et Bield,Air Quality,Qualité de l'air,MB,MB
+055121,R.M. of Dauphin including Sifton and Valley River,m.r. de Dauphin incluant Sifton et Valley River,Public,Public,MB,MB
+055121,R.M. of Dauphin including Sifton and Valley River,m.r. de Dauphin incluant Sifton et Valley River,Air Quality,Qualité de l'air,MB,MB
+055122,Mun. of Ethelbert including Garland,municipalité d'Ethelbert incluant Garland,Public,Public,MB,MB
+055122,Mun. of Ethelbert including Garland,municipalité d'Ethelbert incluant Garland,Air Quality,Qualité de l'air,MB,MB
+055123,Gilbert Plains Mun. including Ashville,municipalité de Gilbert Plains incluant Ashville,Public,Public,MB,MB
+055123,Gilbert Plains Mun. including Ashville,municipalité de Gilbert Plains incluant Ashville,Air Quality,Qualité de l'air,MB,MB
+055131,Mossey River Mun. including Winnipegosis and Fork River,mun. de Mossey River including Winnipegosis et Fork River,Public,Public,MB,MB
+055131,Mossey River Mun. including Winnipegosis and Fork River,mun. de Mossey River including Winnipegosis et Fork River,Air Quality,Qualité de l'air,MB,MB
+055132,Grandview Mun. including Valley River Res.,mun. de Grandview including la rés. ind. Valley River,Public,Public,MB,MB
+055132,Grandview Mun. including Valley River Res.,mun. de Grandview including la rés. ind. Valley River,Air Quality,Qualité de l'air,MB,MB
+055133,R.M. of Lakeshore including Ochre River and Makinak,m.r. de Lakeshore incluant Ochre River et Makinak,Public,Public,MB,MB
+055133,R.M. of Lakeshore including Ochre River and Makinak,m.r. de Lakeshore incluant Ochre River et Makinak,Air Quality,Qualité de l'air,MB,MB
+055140,R.M. of Riding Mountain West including Asessippi Prov. Park,m.r. de Riding Mountain West incluant Asessippi Prov. Park,Public,Public,MB,MB
+055140,R.M. of Riding Mountain West including Asessippi Prov. Park,m.r. de Riding Mountain West incluant Asessippi Prov. Park,Air Quality,Qualité de l'air,MB,MB
+055150,Mun. of Russell-Binscarth including Gambler Res.,mun. de Russell-Binscarth including la rés. ind. Gambler,Public,Public,MB,MB
+055150,Mun. of Russell-Binscarth including Gambler Res.,mun. de Russell-Binscarth including la rés. ind. Gambler,Air Quality,Qualité de l'air,MB,MB
+055160,R.M. of Lakeshore including Rorketon and Toutes Aides,m.r. de Lakeshore incluant Rorketon et Toutes Aides,Public,Public,MB,MB
+055160,R.M. of Lakeshore including Rorketon and Toutes Aides,m.r. de Lakeshore incluant Rorketon et Toutes Aides,Air Quality,Qualité de l'air,MB,MB
 055200,Minnedosa - Riding Mountain National Park,Minnedosa - parc national du Mont-Riding,Public,Public,MB,MB
-055210,Mun. of Harrison Park incl. Onanole Sandy Lake and Newdale,mun. de Harrison Park incl. Onanole Sandy Lake et Newdale,Public,Public,MB,MB
-055210,Mun. of Harrison Park incl. Onanole Sandy Lake and Newdale,mun. de Harrison Park incl. Onanole Sandy Lake et Newdale,Air Quality,Qualité de l'air,MB,MB
-055221,Rossburn Mun. incl. Waywayseecappo Res.,mun. de Rossburn incl. la rés. ind. Waywayseecappo,Public,Public,MB,MB
-055221,Rossburn Mun. incl. Waywayseecappo Res.,mun. de Rossburn incl. la rés. ind. Waywayseecappo,Air Quality,Qualité de l'air,MB,MB
+055210,Mun. of Harrison Park including Onanole Sandy Lake and Newdale,mun. de Harrison Park including Onanole Sandy Lake et Newdale,Public,Public,MB,MB
+055210,Mun. of Harrison Park including Onanole Sandy Lake and Newdale,mun. de Harrison Park including Onanole Sandy Lake et Newdale,Air Quality,Qualité de l'air,MB,MB
+055221,Rossburn Mun. including Waywayseecappo Res.,mun. de Rossburn including la rés. ind. Waywayseecappo,Public,Public,MB,MB
+055221,Rossburn Mun. including Waywayseecappo Res.,mun. de Rossburn including la rés. ind. Waywayseecappo,Air Quality,Qualité de l'air,MB,MB
 055222,Riding Mountain Nat. Park,parc national du Mont-Riding,Public,Public,MB,MB
 055222,Riding Mountain Nat. Park,parc national du Mont-Riding,Air Quality,Qualité de l'air,MB,MB
-055230,R.M. of Ellice-Archie incl. St-Lazare McAuley and Manson,m.r. d'Ellice-Archie incluant St-Lazare McAuley et Manson,Public,Public,MB,MB
-055230,R.M. of Ellice-Archie incl. St-Lazare McAuley and Manson,m.r. d'Ellice-Archie incluant St-Lazare McAuley et Manson,Air Quality,Qualité de l'air,MB,MB
-055241,R.M. of Yellowhead incl. Shoal Lake and Elphinstone,m.r. de Yellowhead incluant Shoal Lake et Elphinstone,Public,Public,MB,MB
-055241,R.M. of Yellowhead incl. Shoal Lake and Elphinstone,m.r. de Yellowhead incluant Shoal Lake et Elphinstone,Air Quality,Qualité de l'air,MB,MB
-055242,Prairie View Mun. incl. Birdtail Sioux Res.,mun. de Prairie View incl. la rés. ind. Birdtail Sioux,Public,Public,MB,MB
-055242,Prairie View Mun. incl. Birdtail Sioux Res.,mun. de Prairie View incl. la rés. ind. Birdtail Sioux,Air Quality,Qualité de l'air,MB,MB
-055243,Hamiota Mun. incl. McConnell and Lavinia,municipalité de Hamiota incluant McConnell et Lavinia,Public,Public,MB,MB
-055243,Hamiota Mun. incl. McConnell and Lavinia,municipalité de Hamiota incluant McConnell et Lavinia,Air Quality,Qualité de l'air,MB,MB
-055251,R.M. of Oakview incl. Oak River and Rapid City,m.r. d'Oakview incluant Oak River et Rapid City,Public,Public,MB,MB
-055251,R.M. of Oakview incl. Oak River and Rapid City,m.r. d'Oakview incluant Oak River et Rapid City,Air Quality,Qualité de l'air,MB,MB
-055252,R.M. of Minto-Odanah incl. Minnedosa and Moore Park,m.r. de Minto-Odanah incluant Minnedosa et Moore Park,Public,Public,MB,MB
-055252,R.M. of Minto-Odanah incl. Minnedosa and Moore Park,m.r. de Minto-Odanah incluant Minnedosa et Moore Park,Air Quality,Qualité de l'air,MB,MB
+055230,R.M. of Ellice-Archie including St-Lazare McAuley and Manson,m.r. d'Ellice-Archie incluant St-Lazare McAuley et Manson,Public,Public,MB,MB
+055230,R.M. of Ellice-Archie including St-Lazare McAuley and Manson,m.r. d'Ellice-Archie incluant St-Lazare McAuley et Manson,Air Quality,Qualité de l'air,MB,MB
+055241,R.M. of Yellowhead including Shoal Lake and Elphinstone,m.r. de Yellowhead incluant Shoal Lake et Elphinstone,Public,Public,MB,MB
+055241,R.M. of Yellowhead including Shoal Lake and Elphinstone,m.r. de Yellowhead incluant Shoal Lake et Elphinstone,Air Quality,Qualité de l'air,MB,MB
+055242,Prairie View Mun. including Birdtail Sioux Res.,mun. de Prairie View including la rés. ind. Birdtail Sioux,Public,Public,MB,MB
+055242,Prairie View Mun. including Birdtail Sioux Res.,mun. de Prairie View including la rés. ind. Birdtail Sioux,Air Quality,Qualité de l'air,MB,MB
+055243,Hamiota Mun. including McConnell and Lavinia,municipalité de Hamiota incluant McConnell et Lavinia,Public,Public,MB,MB
+055243,Hamiota Mun. including McConnell and Lavinia,municipalité de Hamiota incluant McConnell et Lavinia,Air Quality,Qualité de l'air,MB,MB
+055251,R.M. of Oakview including Oak River and Rapid City,m.r. d'Oakview incluant Oak River et Rapid City,Public,Public,MB,MB
+055251,R.M. of Oakview including Oak River and Rapid City,m.r. d'Oakview incluant Oak River et Rapid City,Air Quality,Qualité de l'air,MB,MB
+055252,R.M. of Minto-Odanah including Minnedosa and Moore Park,m.r. de Minto-Odanah incluant Minnedosa et Moore Park,Public,Public,MB,MB
+055252,R.M. of Minto-Odanah including Minnedosa and Moore Park,m.r. de Minto-Odanah incluant Minnedosa et Moore Park,Air Quality,Qualité de l'air,MB,MB
 055253,Mun. of Clanwilliam-Erickson,municipalité de Clanwilliam-Erickson,Public,Public,MB,MB
 055253,Mun. of Clanwilliam-Erickson,municipalité de Clanwilliam-Erickson,Air Quality,Qualité de l'air,MB,MB
-055260,R.M. of Rosedale incl. Eden and Kelwood,m.r. de Rosedale incluant Eden et Kelwood,Public,Public,MB,MB
-055260,R.M. of Rosedale incl. Eden and Kelwood,m.r. de Rosedale incluant Eden et Kelwood,Air Quality,Qualité de l'air,MB,MB
+055260,R.M. of Rosedale including Eden and Kelwood,m.r. de Rosedale incluant Eden et Kelwood,Public,Public,MB,MB
+055260,R.M. of Rosedale including Eden and Kelwood,m.r. de Rosedale incluant Eden et Kelwood,Air Quality,Qualité de l'air,MB,MB
 055300,Ste. Rose - McCreary - Alonsa - Gladstone,Ste. Rose - McCreary - Alonsa - Gladstone,Public,Public,MB,MB
-055310,R.M. of Alonsa incl. Ebb and Flow Res. and Sandy Bay Res.,m.r. d'Alonsa incl. les rés. ind. Ebb and Flow et Sandy Bay,Public,Public,MB,MB
-055310,R.M. of Alonsa incl. Ebb and Flow Res. and Sandy Bay Res.,m.r. d'Alonsa incl. les rés. ind. Ebb and Flow et Sandy Bay,Air Quality,Qualité de l'air,MB,MB
-055321,Mun. of Ste. Rose incl. Laurier,municipalité de Ste. Rose incluant Laurier,Public,Public,MB,MB
-055321,Mun. of Ste. Rose incl. Laurier,municipalité de Ste. Rose incluant Laurier,Air Quality,Qualité de l'air,MB,MB
-055331,Mun. of McCreary incl. Norgate,municipalité de McCreary incluant Norgate,Public,Public,MB,MB
-055331,Mun. of McCreary incl. Norgate,municipalité de McCreary incluant Norgate,Air Quality,Qualité de l'air,MB,MB
-055340,Mun. of Glenella-Lansdowne incl. Arden and Tenby,municipalité de Glenella-Lansdowne incluant Arden et Tenby,Public,Public,MB,MB
-055340,Mun. of Glenella-Lansdowne incl. Arden and Tenby,municipalité de Glenella-Lansdowne incluant Arden et Tenby,Air Quality,Qualité de l'air,MB,MB
-055350,Mun. of WestLake-Gladstone incl. Plumas and Langruth,mun. de WestLake-Gladstone incl. Plumas et Langruth,Public,Public,MB,MB
-055350,Mun. of WestLake-Gladstone incl. Plumas and Langruth,mun. de WestLake-Gladstone incl. Plumas et Langruth,Air Quality,Qualité de l'air,MB,MB
+055310,R.M. of Alonsa including Ebb and Flow Res. and Sandy Bay Res.,m.r. d'Alonsa including les rés. ind. Ebb and Flow et Sandy Bay,Public,Public,MB,MB
+055310,R.M. of Alonsa including Ebb and Flow Res. and Sandy Bay Res.,m.r. d'Alonsa including les rés. ind. Ebb and Flow et Sandy Bay,Air Quality,Qualité de l'air,MB,MB
+055321,Mun. of Ste. Rose including Laurier,municipalité de Ste. Rose incluant Laurier,Public,Public,MB,MB
+055321,Mun. of Ste. Rose including Laurier,municipalité de Ste. Rose incluant Laurier,Air Quality,Qualité de l'air,MB,MB
+055331,Mun. of McCreary including Norgate,municipalité de McCreary incluant Norgate,Public,Public,MB,MB
+055331,Mun. of McCreary including Norgate,municipalité de McCreary incluant Norgate,Air Quality,Qualité de l'air,MB,MB
+055340,Mun. of Glenella-Lansdowne including Arden and Tenby,municipalité de Glenella-Lansdowne incluant Arden et Tenby,Public,Public,MB,MB
+055340,Mun. of Glenella-Lansdowne including Arden and Tenby,municipalité de Glenella-Lansdowne incluant Arden et Tenby,Air Quality,Qualité de l'air,MB,MB
+055350,Mun. of WestLake-Gladstone including Plumas and Langruth,mun. de WestLake-Gladstone including Plumas et Langruth,Public,Public,MB,MB
+055350,Mun. of WestLake-Gladstone including Plumas and Langruth,mun. de WestLake-Gladstone including Plumas et Langruth,Air Quality,Qualité de l'air,MB,MB
 056100,The Pas - Wanless - Westray - Clearwater Lake Prov. Park,The Pas - Wanless - Westray - Clearwater Lake Prov. Park,Public,Public,MB,MB
 056110,The Pas Cormorant Westray and Wanless,The Pas Cormorant Westray et Wanless,Public,Public,MB,MB
 056110,The Pas Cormorant Westray and Wanless,The Pas Cormorant Westray et Wanless,Air Quality,Qualité de l'air,MB,MB
-056120,North and South Moose Lake incl. Moose Lake Res.,lacs North Moose et South Moose incl. rés. ind. Moose Lake,Public,Public,MB,MB
-056120,North and South Moose Lake incl. Moose Lake Res.,lacs North Moose et South Moose incl. rés. ind. Moose Lake,Air Quality,Qualité de l'air,MB,MB
+056120,North and South Moose Lake including Moose Lake Res.,lacs North Moose et South Moose including rés. ind. Moose Lake,Public,Public,MB,MB
+056120,North and South Moose Lake including Moose Lake Res.,lacs North Moose et South Moose including rés. ind. Moose Lake,Air Quality,Qualité de l'air,MB,MB
 056200,Swan River - Duck Mountain - Porcupine Provincial Forest,Swan River - mont Duck - forêt provinciale Porcupine,Public,Public,MB,MB
 056211,Westgate Red Deer Lake and Barrows,Westgate Red Deer Lake et Barrows,Public,Public,MB,MB
 056211,Westgate Red Deer Lake and Barrows,Westgate Red Deer Lake et Barrows,Air Quality,Qualité de l'air,MB,MB
@@ -3343,10 +3343,10 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 056221,R.M. of Mountain including Mafeking and Birch River,m.r. de Mountain incluant Mafeking et Birch River,Air Quality,Qualité de l'air,MB,MB
 056222,Pelican Rapids and Shoal River First Nations,Premières nations de Pelican Rapids et de Shoal River,Public,Public,MB,MB
 056222,Pelican Rapids and Shoal River First Nations,Premières nations de Pelican Rapids et de Shoal River,Air Quality,Qualité de l'air,MB,MB
-056231,Mun. of Swan Valley West incl. Benito,municipalité de Swan Valley West incluant Benito,Public,Public,MB,MB
-056231,Mun. of Swan Valley West incl. Benito,municipalité de Swan Valley West incluant Benito,Air Quality,Qualité de l'air,MB,MB
-056232,Mun. of Minitonas-Bowsman incl. Renwer,municipalité de Minitonas-Bowsman incluant Renwer,Public,Public,MB,MB
-056232,Mun. of Minitonas-Bowsman incl. Renwer,municipalité de Minitonas-Bowsman incluant Renwer,Air Quality,Qualité de l'air,MB,MB
+056231,Mun. of Swan Valley West including Benito,municipalité de Swan Valley West incluant Benito,Public,Public,MB,MB
+056231,Mun. of Swan Valley West including Benito,municipalité de Swan Valley West incluant Benito,Air Quality,Qualité de l'air,MB,MB
+056232,Mun. of Minitonas-Bowsman including Renwer,municipalité de Minitonas-Bowsman incluant Renwer,Public,Public,MB,MB
+056232,Mun. of Minitonas-Bowsman including Renwer,municipalité de Minitonas-Bowsman incluant Renwer,Air Quality,Qualité de l'air,MB,MB
 056241,Duck Mountain Prov. Park and Prov. Forest,Duck Mountain Prov. Park et forêt prov. Duck Mountain,Public,Public,MB,MB
 056241,Duck Mountain Prov. Park and Prov. Forest,Duck Mountain Prov. Park et forêt prov. Duck Mountain,Air Quality,Qualité de l'air,MB,MB
 056242,R.M. of Mountain including Cowan and Camperville,m.r. de Mountain incluant Cowan et Camperville,Public,Public,MB,MB
@@ -3845,8 +3845,8 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 065433,R.M. of Perdue including Perdue and Kinley,m.r. de Perdue incluant Perdue et Kinley,Air Quality,Qualité de l'air,SK,SK
 065434,R.M. of Vanscoy including Delisle Asquith and Vanscoy,m.r. de Vanscoy incluant Delisle Asquith et Vanscoy,Public,Public,SK,SK
 065434,R.M. of Vanscoy including Delisle Asquith and Vanscoy,m.r. de Vanscoy incluant Delisle Asquith et Vanscoy,Air Quality,Qualité de l'air,SK,SK
-065435,R.M. of Corman Park northeast of the Yellowhead Highway incl. Martensville Warman and Langham,m.r. de Corman Park au nord-est de la route Yellowhead incl. Martensville Warman et Langham,Public,Public,SK,SK
-065435,R.M. of Corman Park northeast of the Yellowhead Highway incl. Martensville Warman and Langham,m.r. de Corman Park au nord-est de la route Yellowhead incl. Martensville Warman et Langham,Air Quality,Qualité de l'air,SK,SK
+065435,R.M. of Corman Park northeast of the Yellowhead Highway including Martensville Warman and Langham,m.r. de Corman Park au nord-est de la route Yellowhead including Martensville Warman et Langham,Public,Public,SK,SK
+065435,R.M. of Corman Park northeast of the Yellowhead Highway including Martensville Warman and Langham,m.r. de Corman Park au nord-est de la route Yellowhead including Martensville Warman et Langham,Air Quality,Qualité de l'air,SK,SK
 065436,R.M. of Corman Park southwest of the Yellowhead Highway,m.r. de Corman Park au sud-ouest de la route Yellowhead,Public,Public,SK,SK
 065436,R.M. of Corman Park southwest of the Yellowhead Highway,m.r. de Corman Park au sud-ouest de la route Yellowhead,Air Quality,Qualité de l'air,SK,SK
 065441,R.M. of Aberdeen including Aberdeen,m.r. d'Aberdeen incluant Aberdeen,Public,Public,SK,SK
@@ -4879,7 +4879,7 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 080063,Mainland Coastline - Knight Inlet to Gibsons,littoral continental - de la baie Knight à Gibsons,Coastal Flooding,Inondations côtières,BC,BC
 080064,Shoreline of Howe Sound,rives de la baie Howe,Coastal Flooding,Inondations côtières,BC,BC
 080071,Coastline from Farrant Island to Price Island,littoral de l'île Farrant à l'île Price,Coastal Flooding,Inondations côtières,BC,BC
-080073,Coastline from Harbledown Island to Hardwicke Island incl. Knight Inlet,littoral de l'île Harbledown à l'île Hardwicke incl. la baie Knight,Coastal Flooding,Inondations côtières,BC,BC
+080073,Coastline from Harbledown Island to Hardwicke Island including Knight Inlet,littoral de l'île Harbledown à l'île Hardwicke including la baie Knight,Coastal Flooding,Inondations côtières,BC,BC
 080076,Zone A - the North Coast and Haida Gwaii,zone A - la côte nord et Haida Gwaii,Tsunami,Tsunami,BC,BC
 080077,Zone B - the Central Coast and Northeast Vancouver Island coast including Kitimat Bella Coola and Port Hardy,zone B - la côte centrale et la côte nord-est de l'île de Vancouver y compris Kitimat Bella Coola et Port Hardy,Tsunami,Tsunami,BC,BC
 080078,Zone C - the Outer West Coast of Vancouver Island from Cape Scott to Port Renfrew,zone C - la côte ouest extérieure de l'île de Vancouver du cap Scott à Port Renfrew,Tsunami,Tsunami,BC,BC
@@ -4887,24 +4887,24 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 080080,Zone E - the Strait of Georgia including the Gulf Islands Greater Vancouver and Johnstone Strait,zone E - le détroit de Georgie y compris les îles Gulf le Grand Vancouver et le détroit de Johnstone,Tsunami,Tsunami,BC,BC
 080081,Vancouver Island Coastline: Sayward to Duncan Bay,littoral de l'île de Vancouver de Sayward à Duncan Bay,Coastal Flooding,Inondations côtières,BC,BC
 080082,Vancouver Island Coastline: Campbell River to Oyster River,littoral de l'île de Vancouver de Campbell River à Oyster River,Coastal Flooding,Inondations côtières,BC,BC
-080083,Vancouver Island Coastline: Oyster River to Royston incl. Courtenay and Comox​,littoral de l'île de Vancouver d'Oyster River à Royston incl. Courtenay et Comox,Coastal Flooding,Inondations côtières,BC,BC
-080084,Vancouver Island Coastline: Royston to Lantzville incl. Parksville,littoral de l'île de Vancouver de Royston à Lantzville incl. Parksville,Coastal Flooding,Inondations côtières,BC,BC
+080083,Vancouver Island Coastline: Oyster River to Royston including Courtenay and Comox​,littoral de l'île de Vancouver d'Oyster River à Royston including Courtenay et Comox,Coastal Flooding,Inondations côtières,BC,BC
+080084,Vancouver Island Coastline: Royston to Lantzville including Parksville,littoral de l'île de Vancouver de Royston à Lantzville including Parksville,Coastal Flooding,Inondations côtières,BC,BC
 080085,Vancouver Island Coastline: Nanaimo to Saltair​,littoral de l'île de Vancouver de Nanaimo à Saltair,Coastal Flooding,Inondations côtières,BC,BC
 080086,Vancouver Island Coastline: Chemainus to Cowichan Bay,littoral de l'île de Vancouver de Chemainus à Cowichan Bay,Coastal Flooding,Inondations côtières,BC,BC
 080087,Shoreline of the Strait of Georgia including Tsawwassen,rives du détroit de Georgie incluant Tsawwassen,Coastal Flooding,Inondations côtières,BC,BC
 080088,Boundary Bay including Beach Grove,baie Boundary incluant Beach Grove,Coastal Flooding,Inondations côtières,BC,BC
 080089,Mud and Semiahmoo Bay: South Surrey - White Rock - Semiahmoo FN​,baies Mud et Semiahmoo : South Surrey - White Rock - PN Semiahmoo,Coastal Flooding,Inondations côtières,BC,BC
-080090,Coastline of Metro Vancouver incl. Vancouver and Musqueam FN​,littoral du Vancouver métropolitain incl. Vancouver et la PN Musqueam,Coastal Flooding,Inondations côtières,BC,BC
-080091,Coastline of Metro Vancouver incl. West Vancouver and Bowen Island,littoral du Vancouver métropolitain incl. West Vancouver et Bowen Island,Coastal Flooding,Inondations côtières,BC,BC
+080090,Coastline of Metro Vancouver including Vancouver and Musqueam FN​,littoral du Vancouver métropolitain including Vancouver et la PN Musqueam,Coastal Flooding,Inondations côtières,BC,BC
+080091,Coastline of Metro Vancouver including West Vancouver and Bowen Island,littoral du Vancouver métropolitain including West Vancouver et Bowen Island,Coastal Flooding,Inondations côtières,BC,BC
 080092,Shoreline of Saanich Inlet,rives de l'inlet Saanich,Coastal Flooding,Inondations côtières,BC,BC
 080093,Greater Victoria Coastline: Swartz Bay to Cordova Bay​,littoral du Grand Victoria de Swartz Bay à Cordova Bay​,Coastal Flooding,Inondations côtières,BC,BC
 080094,Greater Victoria Coastline: Cordova Bay to East Sooke,littoral du Grand Victoria de Cordova Bay​ à East Sooke,Coastal Flooding,Inondations côtières,BC,BC
 080095,Southern Gulf Islands,sud des îles Gulf,Coastal Flooding,Inondations côtières,BC,BC
 080096,Vancouver Island Coastline from Cape Scott to Nootka Sound​,littoral de l'île de Vancouver du cap Scott à la baie Nootka,Coastal Flooding,Inondations côtières,BC,BC
-080097,Vancouver Island Coastline from Nootka Sound to Barkley Sound incl. Tofino​,littoral de l'île de Vancouver de la baie Nootka à la baie Barkley incl. Tofino,Coastal Flooding,Inondations côtières,BC,BC
+080097,Vancouver Island Coastline from Nootka Sound to Barkley Sound including Tofino​,littoral de l'île de Vancouver de la baie Nootka à la baie Barkley including Tofino,Coastal Flooding,Inondations côtières,BC,BC
 080098,Vancouver Island Coastline from Bamfield to Clo-oose,littoral de l'île de Vancouver de Bamfield à Clo-oose,Coastal Flooding,Inondations côtières,BC,BC
 080099,Vancouver Island Coastline from Clo-oose to East Sooke​,littoral de l'île de Vancouver de Clo-oose à East Sooke​,Coastal Flooding,Inondations côtières,BC,BC
-080100,Vancouver Island Coastline from Cape Scott to Telegraph Cove incl. Port Hardy​,littoral de l'île de Vancouver du cap Scott à Telegraph Cove incl. Port Hardy​,Coastal Flooding,Inondations côtières,BC,BC
+080100,Vancouver Island Coastline from Cape Scott to Telegraph Cove including Port Hardy​,littoral de l'île de Vancouver du cap Scott à Telegraph Cove including Port Hardy​,Coastal Flooding,Inondations côtières,BC,BC
 080101,Shoreline of Johnstone Strait​,rives du détroit de Johnstone,Coastal Flooding,Inondations côtières,BC,BC
 080102,Eastern Coastline of Haida Gwaii from Rose Spit to Cumshewa Island,littoral est de Haida Gwaii de la flèche Rose à l'île Cumshewa,Coastal Flooding,Inondations côtières,BC,BC
 080103,Eastern Coastline of Haida Gwaii from Cumshewa Island to Cape St. James,littoral est de Haida Gwaii de l'île Cumshewa au cap St. James,Coastal Flooding,Inondations côtières,BC,BC
@@ -5120,42 +5120,42 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 090013,Coastline of the Charlton Island,littoral de l'île Charlton,Coastal Flooding,Inondations côtières,NU,NU
 090014,Coastline of the Twin Islands,littoral des îles Twin,Coastal Flooding,Inondations côtières,NU,NU
 090019,Southern Shoreline of Dolphin and Union Strait,rives sud du détroit du Dolphin et de l'Union,Coastal Flooding,Inondations côtières,NU,NU
-090020,Southern Shoreline of Coronation Gulf incl. Kugluktuk and Grays Bay,rives sud du golfe Coronation incl. Kugluktuk et la baie Grays,Coastal Flooding,Inondations côtières,NU,NU
-090021,Shorelines of Bathurst Inlet (Kiluhiqtuq) incl. Umingmaktok,rives de Bathurst Inlet (Kiluhiqtuq) incl. Umingmaktok,Coastal Flooding,Inondations côtières,NU,NU
-090022,Coastline from Umingmaktok to Ellice River (Aulattivigřuaq) incl. Melbourne Isl. (Qikiqtaryuaq),littoral de Umingmaktok à la rivière Ellice (Aulattivigřuaq) incl. l'île Melbourne (Qikiqtaryuaq),Coastal Flooding,Inondations côtières,NU,NU
-090023,Southern Shoreline of Queen Maud Gulf incl. Western Coastline of Adelaide Peninsula,rives sud de la baie de la Reine-Maud incl. le littoral ouest de la presqu'île Adelaide,Coastal Flooding,Inondations côtières,NU,NU
-090025,Western Coastline of Boothia Peninsula incl. Wrottesley Inlet (Kanngiqłukruaq),littoral ouest de la presqu'île de Boothia incl. le bras Wrottesley (Kanngiqłukruaq),Coastal Flooding,Inondations côtières,NU,NU
+090020,Southern Shoreline of Coronation Gulf including Kugluktuk and Grays Bay,rives sud du golfe Coronation including Kugluktuk et la baie Grays,Coastal Flooding,Inondations côtières,NU,NU
+090021,Shorelines of Bathurst Inlet (Kiluhiqtuq) including Umingmaktok,rives de Bathurst Inlet (Kiluhiqtuq) including Umingmaktok,Coastal Flooding,Inondations côtières,NU,NU
+090022,Coastline from Umingmaktok to Ellice River (Aulattivigřuaq) including Melbourne Isl. (Qikiqtaryuaq),littoral de Umingmaktok à la rivière Ellice (Aulattivigřuaq) including l'île Melbourne (Qikiqtaryuaq),Coastal Flooding,Inondations côtières,NU,NU
+090023,Southern Shoreline of Queen Maud Gulf including Western Coastline of Adelaide Peninsula,rives sud de la baie de la Reine-Maud including le littoral ouest de la presqu'île Adelaide,Coastal Flooding,Inondations côtières,NU,NU
+090025,Western Coastline of Boothia Peninsula including Wrottesley Inlet (Kanngiqłukruaq),littoral ouest de la presqu'île de Boothia including le bras Wrottesley (Kanngiqłukruaq),Coastal Flooding,Inondations côtières,NU,NU
 090026,Western Coastline of Somerset Island: Aston Bay to Bellot Strait,littoral ouest de l'île Somerset : de la baie Aston au détroit de Bellot,Coastal Flooding,Inondations côtières,NU,NU
-090027,Northern Coastline of Somerset Island incl. Garnier Bay (Kangiqsuk Tisuajulik),littoral nord de l'île Somerset incl. la baie Garnier (Kangiqsuk Tisuajulik),Coastal Flooding,Inondations côtières,NU,NU
+090027,Northern Coastline of Somerset Island including Garnier Bay (Kangiqsuk Tisuajulik),littoral nord de l'île Somerset including la baie Garnier (Kangiqsuk Tisuajulik),Coastal Flooding,Inondations côtières,NU,NU
 090029,Eastern Coastline of Boothia Peninsla from Menchikoff Bay to Lord Mayor Bay,littoral est de la presqu'île de Boothia de la baie Menchikoff à la baie Lord Mayor,Coastal Flooding,Inondations côtières,NU,NU
-090034,Eastern Coastline of Banks Isl. along Prince of Wales Strait (Ikirahak) incl. Jesse Bay,littoral est de l'île Banks le long du détroit Prince of Wales (Ikirahak) incl. la baie Jesse,Coastal Flooding,Inondations côtières,NT,NT
+090034,Eastern Coastline of Banks Isl. along Prince of Wales Strait (Ikirahak) including Jesse Bay,littoral est de l'île Banks le long du détroit Prince of Wales (Ikirahak) including la baie Jesse,Coastal Flooding,Inondations côtières,NT,NT
 090035,Northwest Coastline of Victoria Isl. along the Prince of Wales Strait (Ikirahak),littoral nord-ouest de l'île Victoria le long du détroit Prince of Wales (Ikirahak),Coastal Flooding,Inondations côtières,NT,NT
-090042,Northern Coastline of Victoria Island incl. Wynniatt Bay (Northwest Territories),littoral nord de l'île Victoria incl. la baie Wynniatt (Territoires du Nord-Ouest),Coastal Flooding,Inondations côtières,NT,NT
-090043,Western Coastline of Prince of Wales Island incl. Ommanney Bay,littoral ouest de l'île Prince of Wales incl. la baie Ommanney,Coastal Flooding,Inondations côtières,NU,NU
-090044,Eastern Coastline of Prince of Wales Island incl. Browne Bay,littoral est de l'île Prince of Wales incl. la baie Browne,Coastal Flooding,Inondations côtières,NU,NU
-090045,Northern Coastline of Prince of Wales Isl. incl. Russell Isl. (Innilisimajuq),littoral nord de l'île Prince of Wales incl. l'île Russell (Innilisimajuq),Coastal Flooding,Inondations côtières,NU,NU
-090047,Western Coastline of Bathurst Island incl. Qausuittuq National Park,littoral ouest de l'île Bathurst incl. le parc national Qausuittuq,Coastal Flooding,Inondations côtières,NU,NU
-090048,Northern Coastline of Bathurst Island incl. Qausuittuq National Park,littoral nord de l'île Bathurst incl. le parc national Qausuittuq,Coastal Flooding,Inondations côtières,NU,NU
+090042,Northern Coastline of Victoria Island including Wynniatt Bay (Northwest Territories),littoral nord de l'île Victoria including la baie Wynniatt (Territoires du Nord-Ouest),Coastal Flooding,Inondations côtières,NT,NT
+090043,Western Coastline of Prince of Wales Island including Ommanney Bay,littoral ouest de l'île Prince of Wales including la baie Ommanney,Coastal Flooding,Inondations côtières,NU,NU
+090044,Eastern Coastline of Prince of Wales Island including Browne Bay,littoral est de l'île Prince of Wales including la baie Browne,Coastal Flooding,Inondations côtières,NU,NU
+090045,Northern Coastline of Prince of Wales Isl. including Russell Isl. (Innilisimajuq),littoral nord de l'île Prince of Wales including l'île Russell (Innilisimajuq),Coastal Flooding,Inondations côtières,NU,NU
+090047,Western Coastline of Bathurst Island including Qausuittuq National Park,littoral ouest de l'île Bathurst including le parc national Qausuittuq,Coastal Flooding,Inondations côtières,NU,NU
+090048,Northern Coastline of Bathurst Island including Qausuittuq National Park,littoral nord de l'île Bathurst including le parc national Qausuittuq,Coastal Flooding,Inondations côtières,NU,NU
 090049,Eastern Coastline of Bathurst Island,littoral est de l'île Bathurst,Coastal Flooding,Inondations côtières,NU,NU
 090053,Northern Coastline of Devon Island,littoral nord de l'île Devon,Coastal Flooding,Inondations côtières,NU,NU
 090054,Western Coastline of Devon Island - Eastern Shoreline of Wellington Channel,littoral ouest de l'île Devon - rives est du détroit de Wellington,Coastal Flooding,Inondations côtières,NU,NU
 090057,Devon Island Coastline from Norfolk Inlet to Arthur Fjord,littoral de l'île Devon de l'inlet Norfolk au fjord Arthur,Coastal Flooding,Inondations côtières,NU,NU
 090058,Coastline of Byam Martin Island,littoral de l'île Byam Martin,Coastal Flooding,Inondations côtières,NU,NU
-090059,Eastern Coastline of Melville Island incl. Weatherall Bay,littoral est de l'île Melville incl. la baie Weatherall,Coastal Flooding,Inondations côtières,NU,NU
+090059,Eastern Coastline of Melville Island including Weatherall Bay,littoral est de l'île Melville including la baie Weatherall,Coastal Flooding,Inondations côtières,NU,NU
 090061,Shoreline of Liddon Gulf (Kangikhokyoak Gulf),rives du golfe Liddon (golfe Kangikhokyoak),Coastal Flooding,Inondations côtières,NT,NT
-090063,Western Coastline of Melville Island incl. Ibbett Bay,littoral ouest de l'île Melville incl. la baie Ibbett,Coastal Flooding,Inondations côtières,NT,NT
-090064,Southwestern Coastline of Melville Isl. incl. Warrington Bay and Hardy Bay,littoral sud-ouest de l'île Melville incl. la baie Warrington et la baie Hardy,Coastal Flooding,Inondations côtières,NT,NT
+090063,Western Coastline of Melville Island including Ibbett Bay,littoral ouest de l'île Melville including la baie Ibbett,Coastal Flooding,Inondations côtières,NT,NT
+090064,Southwestern Coastline of Melville Isl. including Warrington Bay and Hardy Bay,littoral sud-ouest de l'île Melville including la baie Warrington et la baie Hardy,Coastal Flooding,Inondations côtières,NT,NT
 090065,Coastline of Eglinton Island,littoral de l'île Eglinton,Coastal Flooding,Inondations côtières,NT,NT
 090066,Western Coastline of Brodeur Peninsula,littoral ouest de la presqu'île Brodeur,Coastal Flooding,Inondations côtières,NU,NU
 090067,Shoreline of Bernier Bay - Southern Shoreline of Brodeur Peninsula,rives de la baie Bernier - rives sud de la presqu'île Brodeur,Coastal Flooding,Inondations côtières,NU,NU
-090068,Coastline of Crown Prince Frederik Island incl. Agu Bay,littoral de l'île Crown Prince Frederik incl. la baie Agu,Coastal Flooding,Inondations côtières,NU,NU
-090069,Western Shoreline of Admirality Inlet incl. Jungersen Bay,rives ouest du bras Admiralty incl. la baie Jungersen,Coastal Flooding,Inondations côtières,NU,NU
+090068,Coastline of Crown Prince Frederik Island including Agu Bay,littoral de l'île Crown Prince Frederik including la baie Agu,Coastal Flooding,Inondations côtières,NU,NU
+090069,Western Shoreline of Admirality Inlet including Jungersen Bay,rives ouest du bras Admiralty including la baie Jungersen,Coastal Flooding,Inondations côtières,NU,NU
 090071,Northern Coastline of Brodeur Peninsula (Akuliaqattaup Nuvua),littoral nord de la presqu'île Brodeur (Akuliaqattaup Nuvua),Coastal Flooding,Inondations côtières,NU,NU
 090076,Southwestern Shoreline of Roes Welcome Sound: Wager Bay to Fullerton,rives sud-ouest du détroit de Roes Welcome: de la baie Wager à Fullerton,Coastal Flooding,Inondations côtières,NU,NU
-090077,Coastline of Ukkusiksalik Nat. Park incl. Wager Bay,littoral du parc nat. Ukkusiksalik incl. Wager Bay,Coastal Flooding,Inondations côtières,NU,NU
+090077,Coastline of Ukkusiksalik Nat. Park including Wager Bay,littoral du parc nat. Ukkusiksalik including Wager Bay,Coastal Flooding,Inondations côtières,NU,NU
 090078,Northwestern Shoreline of Roes Welcome Sound (Satliup Timaa),rives nord-ouest du détroit de Roes Welcome (Satliup Timaa),Coastal Flooding,Inondations côtières,NU,NU
-090079,Western Coastline of Southampton Island incl. Comer Strait,littoral ouest de l'île Southampton incl. le détroit de Comer,Coastal Flooding,Inondations côtières,NU,NU
-090080,Northeast Coastline of Southampton Isl. incl. Duke of York Bay and White Isl.,littoral nord-est de l'île Southampton incl. la baie Duke of York et l'île White,Coastal Flooding,Inondations côtières,NU,NU
+090079,Western Coastline of Southampton Island including Comer Strait,littoral ouest de l'île Southampton including le détroit de Comer,Coastal Flooding,Inondations côtières,NU,NU
+090080,Northeast Coastline of Southampton Isl. including Duke of York Bay and White Isl.,littoral nord-est de l'île Southampton including la baie Duke of York et l'île White,Coastal Flooding,Inondations côtières,NU,NU
 090081,Northwest Coastline of Coats Island,littoral nord-ouest de l'île Coats,Coastal Flooding,Inondations côtières,NU,NU
 090082,Southeast Coastline of Coats Island,littoral sud-est de l'île Coats,Coastal Flooding,Inondations côtières,NU,NU
 090083,Western Coastline of Mansel Island,littoral ouest de l'île Mansel,Coastal Flooding,Inondations côtières,NU,NU
@@ -5163,20 +5163,20 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 090085,Western Coastline of Prince Patrick Island,littoral ouest de l'île Prince Patrick,Coastal Flooding,Inondations côtières,NT,NT
 090088,Coastline of Brock Island,littoral de l'île Brock,Coastal Flooding,Inondations côtières,NT,NT
 090090,Northern Coastline of Mackenzie King Island (N.W.T.),littoral nord de l'île Mackenzie King (T.N.-O.),Coastal Flooding,Inondations côtières,NT,NT
-090091,Southern Coastline of Mackenzie King Island incl. Prince Gustaf Adolphus Sea (N.W.T.),littoral sud de l'île Mackenzie King incl. la mer du Prince-Gustave-Adolphe (T.N.-O.),Coastal Flooding,Inondations côtières,NT,NT
+090091,Southern Coastline of Mackenzie King Island including Prince Gustaf Adolphus Sea (N.W.T.),littoral sud de l'île Mackenzie King including la mer du Prince-Gustave-Adolphe (T.N.-O.),Coastal Flooding,Inondations côtières,NT,NT
 090092,Coastline of Lougheed Island,littoral de l'île Lougheed,Coastal Flooding,Inondations côtières,NU,NU
 090093,Western and Northern Coastlines of Ellef Ringnes Island,littoraux ouest et nord de l'île Ellef Ringnes,Coastal Flooding,Inondations côtières,NU,NU
-090094,Southern Coastline of Ellef Ringnes Island incl. King Christian Isl.,littoral sud de l'île Ellef Ringnes incl. l'île King Christian,Coastal Flooding,Inondations côtières,NU,NU
+090094,Southern Coastline of Ellef Ringnes Island including King Christian Isl.,littoral sud de l'île Ellef Ringnes including l'île King Christian,Coastal Flooding,Inondations côtières,NU,NU
 090095,Coastline of Meighen Island,littoral de l'île Meighen,Coastal Flooding,Inondations côtières,NU,NU
 090096,Western Coastlines of Amund Ringnes Island and Cornwall Island,littoraux ouest de l'île Amund Ringnes et de l'île Cornwall,Coastal Flooding,Inondations côtières,NU,NU
 090098,Eastern Coastlines of Amund Ringnes Island and Cornwall Island,littoraux est de l'île Amund Ringnes et de l'île Cornwall,Coastal Flooding,Inondations côtières,NU,NU
 090099,Coastline of Graham Island,littoral de l'île Graham,Coastal Flooding,Inondations côtières,NU,NU
 090100,Ellesmere Island Coastline: Beaumann Fjord - North Kent Isl.,littoral de l'île d'Ellesmere : fjord Beaumann - île North Kent,Coastal Flooding,Inondations côtières,NU,NU
 090101,Shoreline of Eureka Sound,rives du détroit d'Eureka,Coastal Flooding,Inondations côtières,NU,NU
-090102,Shoreline of Kane Basin incl. Alexandra Fiord,rives du bassin Kane incl. Alexandra Fiord,Coastal Flooding,Inondations côtières,NU,NU
+090102,Shoreline of Kane Basin including Alexandra Fiord,rives du bassin Kane including Alexandra Fiord,Coastal Flooding,Inondations côtières,NU,NU
 090105,Eastern Coastline of Devon Island,littoral est de l'île Devon,Coastal Flooding,Inondations côtières,NU,NU
-090106,Shoreline of Repulse Bay incl. Naujaat,rives de Repulse Bay incl. Naujaat,Coastal Flooding,Inondations côtières,NU,NU
-090107,Southern Coastline of Melville Peninsula: Cape Clarke (Ipjuriktuup nuvua) to Blake Bay incl. Vansittart Isl.,littoral sud de la presqu'île Melville: du cap Clarke (Ipjuriktuup nuvua) à la baie Blake incl. l'île Vansittart,Coastal Flooding,Inondations côtières,NU,NU
+090106,Shoreline of Repulse Bay including Naujaat,rives de Repulse Bay including Naujaat,Coastal Flooding,Inondations côtières,NU,NU
+090107,Southern Coastline of Melville Peninsula: Cape Clarke (Ipjuriktuup nuvua) to Blake Bay including Vansittart Isl.,littoral sud de la presqu'île Melville: du cap Clarke (Ipjuriktuup nuvua) à la baie Blake including l'île Vansittart,Coastal Flooding,Inondations côtières,NU,NU
 090108,Southeastern Coastline of Melville Peninsula from Winter Isl. to Owlitteeweek Isl.,littoral sud-est de la presqu'île Melville de l'île Winter à l'île Owlitteeweek,Coastal Flooding,Inondations côtières,NU,NU
 090110,Northern Shoreline of Fury and Hecla Strait (Agguup Tariunga),rives nord du détroit de Fury and Hecla (Agguup Tariunga),Coastal Flooding,Inondations côtières,NU,NU
 090114,Coastline of the Nottingham Mill and Salisbury Islands,littoral des îles Nottingham - Mill - Salisbury,Coastal Flooding,Inondations côtières,NU,NU
@@ -5184,113 +5184,113 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 090125,Coastline of Charles Island,littoral de l'île Charles,Coastal Flooding,Inondations côtières,NU,NU
 090126,Southern Shoreline of Fury and Hecla Strait (Agguup Tariunga),littoral sud du détroit de Fury and Hecla (Agguup Tariunga),Coastal Flooding,Inondations côtières,NU,NU
 090128,Coastline of Sanikiluaq,littoral de Sanikiluaq,Coastal Flooding,Inondations côtières,NU,NU
-090132,Western Coastline of Axel Heiberg Island incl. Strand Bay,littoral ouest de l'île Axel Heiberg incl. la baie Strand,Coastal Flooding,Inondations côtières,NU,NU
-090133,Shoreline of Nansen Sound and Greely Flord incl. Eureka ,rives du détroit de Nansen et du fjord Greely Flord incluant Eureka,Coastal Flooding,Inondations côtières,NU,NU
-090135,Northeastern Coastline of Ellesmere Isl.: Fort Conger to John Richardson Bay incl. Lady Franklin Bay,littoral nord-est de l’île d’Ellesmere : de Fort Conger à la baie John Richardson incl. la baie Lady Franklin ,Coastal Flooding,Inondations côtières,NU,NU
+090132,Western Coastline of Axel Heiberg Island including Strand Bay,littoral ouest de l'île Axel Heiberg including la baie Strand,Coastal Flooding,Inondations côtières,NU,NU
+090133,Shoreline of Nansen Sound and Greely Flord including Eureka ,rives du détroit de Nansen et du fjord Greely Flord incluant Eureka,Coastal Flooding,Inondations côtières,NU,NU
+090135,Northeastern Coastline of Ellesmere Isl.: Fort Conger to John Richardson Bay including Lady Franklin Bay,littoral nord-est de l’île d’Ellesmere : de Fort Conger à la baie John Richardson including la baie Lady Franklin ,Coastal Flooding,Inondations côtières,NU,NU
 090136,Shoreline of Great Bear Lake,rives du Grand lac de l'Ours,Coastal Flooding,Inondations côtières,NT,NT
 090137,Shoreline of Great Slave Lake Basin,rives du bassin du Grand lac des Esclaves,Coastal Flooding,Inondations côtières,NT,NT
 090138,Shoreline of Great Slave Lake - North Arm,rives du Grand lac des Esclaves - bras nord,Coastal Flooding,Inondations côtières,NT,NT
 090139,Shoreline of Great Slave Lake - East Arm,rives du Grand lac des Esclaves - bras est,Coastal Flooding,Inondations côtières,NT,NT
 090140,Coastline from Yukon Border to Mackenzie Bay,littoral de la frontière du Yukon à la baie Mackenzie,Coastal Flooding,Inondations côtières,NT,NT
-090141,Coastline from Mackenzie Bay to McKinley Bay incl. Tuktoyaktuk,littoral de la baie Mackenzie à la baie McKinley incl. Tuktoyaktuk,Coastal Flooding,Inondations côtières,NT,NT
-090142,Shoreline from McKinley Bay to Bathurst Peninsula incl. Liverpool Bay,rives de la baie McKinley à la péninsule Bathurst incl. la baie Liverpool,Coastal Flooding,Inondations côtières,NT,NT
-090143,Coastline from Bathurst Peninsula to Cape Perry incl. Franklin Bay,littoral de la péninsule Bathurst au cap Perry incl. la baie Franklin,Coastal Flooding,Inondations côtières,NT,NT
-090144,Coastline of Darnley Bay incl. Paulatuk,littoral de la baie Darnley incl. Paulatuk,Coastal Flooding,Inondations côtières,NT,NT
+090141,Coastline from Mackenzie Bay to McKinley Bay including Tuktoyaktuk,littoral de la baie Mackenzie à la baie McKinley including Tuktoyaktuk,Coastal Flooding,Inondations côtières,NT,NT
+090142,Shoreline from McKinley Bay to Bathurst Peninsula including Liverpool Bay,rives de la baie McKinley à la péninsule Bathurst including la baie Liverpool,Coastal Flooding,Inondations côtières,NT,NT
+090143,Coastline from Bathurst Peninsula to Cape Perry including Franklin Bay,littoral de la péninsule Bathurst au cap Perry including la baie Franklin,Coastal Flooding,Inondations côtières,NT,NT
+090144,Coastline of Darnley Bay including Paulatuk,littoral de la baie Darnley including Paulatuk,Coastal Flooding,Inondations côtières,NT,NT
 090145,Coastline along Tuktut Nogait National Park to Nunavut Border,littoral le long du parc national Tuktut Nogait à la frontière du Nunavut,Coastal Flooding,Inondations côtières,NT,NT
 090154,Fort Simpson,Fort Simpson,Air Quality,Qualité de l'air,NT,NT
 090155,Yukon Coastline,littoral du Yukon,Coastal Flooding,Inondations côtières,YT,YT
-090156,Coastline of Yukon incl. Herschel Island,littoral du Yukon incl. l'île Herschel,Coastal Flooding,Inondations côtières,YT,YT
-090157,Southern Shoreline of Rae Strait incl. Shoreline of Rasmussen Basin,rives sud du détroit de Rae incl. les rives du bassin Rasmussen,Coastal Flooding,Inondations côtières,NU,NU
-090158,Southwestern Coastline of Boothia Peninsula incl. Taloyoak,littoral sud-ouest de la presqu'île de Boothia incl. Taloyoak,Coastal Flooding,Inondations côtières,NU,NU
-090159,Southern Coastline of King William Isl. incl. Gjoa Haven and Douglas Bay (Kangiqługřuaq),littoral sud de l'île King William incl. Gjoa Haven et la baie Douglas (Kangiqługřuaq),Coastal Flooding,Inondations côtières,NU,NU
-090160,Southwestern Coastline of King William Island incl. Terror Bay,littoral sud-ouest de l'île King William incl. la baie Terror,Coastal Flooding,Inondations côtières,NU,NU
-090161,Northern Coastline of King William Isl.: Erebus Bay to Gibson Peninsula incl. Cape Felix,littoral nord de l'île King William: de la baie Erebus à la péninsule Gibson incl. le cap Felix,Coastal Flooding,Inondations côtières,NU,NU
-090162,Shoreline of Pelly Bay incl. Kugaaruk,rives de la baie Pelly incl. Kugaaruk,Coastal Flooding,Inondations côtières,NU,NU
+090156,Coastline of Yukon including Herschel Island,littoral du Yukon including l'île Herschel,Coastal Flooding,Inondations côtières,YT,YT
+090157,Southern Shoreline of Rae Strait including Shoreline of Rasmussen Basin,rives sud du détroit de Rae including les rives du bassin Rasmussen,Coastal Flooding,Inondations côtières,NU,NU
+090158,Southwestern Coastline of Boothia Peninsula including Taloyoak,littoral sud-ouest de la presqu'île de Boothia including Taloyoak,Coastal Flooding,Inondations côtières,NU,NU
+090159,Southern Coastline of King William Isl. including Gjoa Haven and Douglas Bay (Kangiqługřuaq),littoral sud de l'île King William including Gjoa Haven et la baie Douglas (Kangiqługřuaq),Coastal Flooding,Inondations côtières,NU,NU
+090160,Southwestern Coastline of King William Island including Terror Bay,littoral sud-ouest de l'île King William including la baie Terror,Coastal Flooding,Inondations côtières,NU,NU
+090161,Northern Coastline of King William Isl.: Erebus Bay to Gibson Peninsula including Cape Felix,littoral nord de l'île King William: de la baie Erebus à la péninsule Gibson including le cap Felix,Coastal Flooding,Inondations côtières,NU,NU
+090162,Shoreline of Pelly Bay including Kugaaruk,rives de la baie Pelly including Kugaaruk,Coastal Flooding,Inondations côtières,NU,NU
 090163,Shoreline of Committee Bay (Akuliup Imanga),rives de la baie Committee (Akuliup Imanga),Coastal Flooding,Inondations côtières,NU,NU
-090164,Western Coastline of Melville Peninsula incl. Garry Bay,littoral ouest de la presqu'île Melville incl. la baie Garry,Coastal Flooding,Inondations côtières,NU,NU
-090165,Coastline of Igloolik incl. Nirlirnaqtuuq and Hooper Inlet,littoral d'Igloolik incl. Nirlirnaqtuuq et le bras Hooper,Coastal Flooding,Inondations côtières,NU,NU
-090166,Coastline of Sanirajak incl. Parry Bay,littoral de Sanirajak incl. la baie Parry,Coastal Flooding,Inondations côtières,NU,NU
+090164,Western Coastline of Melville Peninsula including Garry Bay,littoral ouest de la presqu'île Melville including la baie Garry,Coastal Flooding,Inondations côtières,NU,NU
+090165,Coastline of Igloolik including Nirlirnaqtuuq and Hooper Inlet,littoral d'Igloolik including Nirlirnaqtuuq et le bras Hooper,Coastal Flooding,Inondations côtières,NU,NU
+090166,Coastline of Sanirajak including Parry Bay,littoral de Sanirajak including la baie Parry,Coastal Flooding,Inondations côtières,NU,NU
 090167,Eastern Coastline of Melville Peninsula from Parry Bay to Foxe Channel,littoral est de la presqu'île Melville de la baie Parry au détroit de Foxe,Coastal Flooding,Inondations côtières,NU,NU
 090168,Southeast Coastline of Southampton Island: Bell Peninsula,littoral sud-est de l'île Southampton - péninsule Bell,Coastal Flooding,Inondations côtières,NU,NU
-090169,Southern Coastline of Southampton Island incl. Coral Harbour,littoral sud de l'île Southampton incl. Coral Harbour,Coastal Flooding,Inondations côtières,NU,NU
-090170,Southwestern Coastline of Southampton Isl.: West of Coral Harbour incl. Bay of Gods Mercy,littoral sud-ouest de l'île Southampton: l'ouest de Coral Harbour incl. la baie de Gods Mercy,Coastal Flooding,Inondations côtières,NU,NU
+090169,Southern Coastline of Southampton Island including Coral Harbour,littoral sud de l'île Southampton including Coral Harbour,Coastal Flooding,Inondations côtières,NU,NU
+090170,Southwestern Coastline of Southampton Isl.: West of Coral Harbour including Bay of Gods Mercy,littoral sud-ouest de l'île Southampton: l'ouest de Coral Harbour including la baie de Gods Mercy,Coastal Flooding,Inondations côtières,NU,NU
 090171,Coastline from Rockhouse Island to Fullerton,littoral de l'île Rockhouse à Fullerton,Coastal Flooding,Inondations côtières,NU,NU
 090172,Coastline of Baker Lake,littoral du lac Baker,Coastal Flooding,Inondations côtières,NU,NU
 090173,Coastline of Chesterfield Inlet to Pikiuliarjuk (Baird Bay),littoral de Chesterfield Inlet à Pikiuliarjuk (baie Baird),Coastal Flooding,Inondations côtières,NU,NU
-090174,Coastline of Rankin Inlet incl. Marble Island (Uqsuriaq),littoral de Rankin Inlet incl. l'île Marble (Uqsuriaq),Coastal Flooding,Inondations côtières,NU,NU
-090175,Coastline of Whale Cove incl. Pistol Bay,littoral de Whale Cove incl. la baie Pistol,Coastal Flooding,Inondations côtières,NU,NU
-090176,Coastline from Maguse River to Tavani incl. Bibby Island,littoral de Maguse River à Tavani incl. l'île Bibby,Coastal Flooding,Inondations côtières,NU,NU
+090174,Coastline of Rankin Inlet including Marble Island (Uqsuriaq),littoral de Rankin Inlet including l'île Marble (Uqsuriaq),Coastal Flooding,Inondations côtières,NU,NU
+090175,Coastline of Whale Cove including Pistol Bay,littoral de Whale Cove including la baie Pistol,Coastal Flooding,Inondations côtières,NU,NU
+090176,Coastline from Maguse River to Tavani including Bibby Island,littoral de Maguse River à Tavani including l'île Bibby,Coastal Flooding,Inondations côtières,NU,NU
 090177,Coastline of Arviat: Maguse River to Arviaraarjuk,littoral d'Arviat de Maguse River à Arviaraarjuk,Coastal Flooding,Inondations côtières,NU,NU
 090178,Southern Kivalliq Coastline from Nunalla to Arviaraarjuk,littoral du sud du Kivalliq de Nunalla à Arviaraarjuk,Coastal Flooding,Inondations côtières,NU,NU
-090179,Northern Shoreline of Foxe Basin: Siorarsuk Peninsula to Bray Isl. incl. Steensby Inlet,rives nord du bassin Foxe: de la péninsule Siorarsuk à l'île Bray incl. le bras Steensby,Coastal Flooding,Inondations côtières,NU,NU
-090180,Northeastern Shoreline of Foxe Basin incl. Prince Charles Island,rives nord-est du bassin Foxe incl. l'île Prince-Charles,Coastal Flooding,Inondations côtières,NU,NU
+090179,Northern Shoreline of Foxe Basin: Siorarsuk Peninsula to Bray Isl. including Steensby Inlet,rives nord du bassin Foxe: de la péninsule Siorarsuk à l'île Bray including le bras Steensby,Coastal Flooding,Inondations côtières,NU,NU
+090180,Northeastern Shoreline of Foxe Basin including Prince Charles Island,rives nord-est du bassin Foxe including l'île Prince-Charles,Coastal Flooding,Inondations côtières,NU,NU
 090181,Coastline of Dewey Soper (Isulijarnik) Migratory Bird Sanctuary,littoral du refuge d’oiseaux migrateurs Dewey-Soper (Isulijarnik),Coastal Flooding,Inondations côtières,NU,NU
-090182,Western and Northern Coastline of Foxe Peninsula incl. Nuwata and Bowman Bay,littoral ouest et nord de la péninsule Foxe incl. Nuwata et la baie Bowman,Coastal Flooding,Inondations côtières,NU,NU
-090183,Southern Coastline of Foxe Peninsulav incl. Kinngait,littoral sud de la péninsule Foxe incl. Kinngait,Coastal Flooding,Inondations côtières,NU,NU
+090182,Western and Northern Coastline of Foxe Peninsula including Nuwata and Bowman Bay,littoral ouest et nord de la péninsule Foxe including Nuwata et la baie Bowman,Coastal Flooding,Inondations côtières,NU,NU
+090183,Southern Coastline of Foxe Peninsulav including Kinngait,littoral sud de la péninsule Foxe including Kinngait,Coastal Flooding,Inondations côtières,NU,NU
 090184,Southern Coastline of Baffin Island from Aquiatulavik Point to Big Island,littoral sud de l'île de Baffin de la pointe Aquiatulavikà l'île Big,Coastal Flooding,Inondations côtières,NU,NU
-090185,Kimmirut Coastline incl. McKellar Bay,littoral de Kimmirut incl. la baie McKellar,Coastal Flooding,Inondations côtières,NU,NU
+090185,Kimmirut Coastline including McKellar Bay,littoral de Kimmirut including la baie McKellar,Coastal Flooding,Inondations côtières,NU,NU
 090186,Southeastern Coastline of Meta Incognita Peninsula: Carew Bay (Tasiujarjuaq) to Nannuk Harbour,littoral sud-est de la péninsule Meta Incognita: de la baie Carew (Tasiujarjuaq) au havre Nannuk,Coastal Flooding,Inondations côtières,NU,NU
 090187,Coastlines near Resolution Island (Tujjaat),littoraux près de l'île Resolution (Tujjaat),Coastal Flooding,Inondations côtières,NU,NU
 090188,Southern Shoreline of Frobisher Bay: Bishop Island to Potter Island,rives sud de la baie Frobisher de l'île Bishop à l'île Potter,Coastal Flooding,Inondations côtières,NU,NU
-090189,Iqaluit Coastline and Headwaters of Frobisher Bay incl. Sylvia Grinnell Territorial Park and Foul Inlet,littoral d'Iqaluit et l'amont de la baie Frobisher incl. le parc territorial Sylvia Grinnell et le bras Foul,Coastal Flooding,Inondations côtières,NU,NU
+090189,Iqaluit Coastline and Headwaters of Frobisher Bay including Sylvia Grinnell Territorial Park and Foul Inlet,littoral d'Iqaluit et l'amont de la baie Frobisher including le parc territorial Sylvia Grinnell et le bras Foul,Coastal Flooding,Inondations côtières,NU,NU
 090190,Northern Shoreline of Frobisher Bay: Tarr Inlet to Loks Land,rives nord de la baie Frobisher du bras Tarr à l'île Loks Land,Coastal Flooding,Inondations côtières,NU,NU
-090191,Southern Shoreline of Cumberland Sound from Kipisa to Loks Land incl. Brevoort Isl.,rives sud de la baie Cumberland de Kipisa à Loks Land incl. l'île Brevoort,Coastal Flooding,Inondations côtières,NU,NU
-090192,Shoreline of Cumberland Sound West of Pangnirtung to Kipisa incl. Opingivik,rives de la baie Cumberland de l'ouest de Pangnirtung à Kipisa incl. Opingivik,Coastal Flooding,Inondations côtières,NU,NU
+090191,Southern Shoreline of Cumberland Sound from Kipisa to Loks Land including Brevoort Isl.,rives sud de la baie Cumberland de Kipisa à Loks Land including l'île Brevoort,Coastal Flooding,Inondations côtières,NU,NU
+090192,Shoreline of Cumberland Sound West of Pangnirtung to Kipisa including Opingivik,rives de la baie Cumberland de l'ouest de Pangnirtung à Kipisa including Opingivik,Coastal Flooding,Inondations côtières,NU,NU
 090193,Coastline of Pangnirtung,littoral de Pangnirtung,Coastal Flooding,Inondations côtières,NU,NU
-090194,Northern Shoreline of Cumberland Sound incl. Kingnait Fiord and Kekerten Isl.,rives nord de la baie Cumberland incl. le fjord Kingnait et l'île Kekerten,Coastal Flooding,Inondations côtières,NU,NU
-090195,Baffin Isl. Coastline from Padloping Isl. (Paallavvik) to Cape Mercy incl. Cape Dyer,littoral de l'île de Baffin de l'île Padloping (Paallavvik) au cap Mercy incl. le cap Dyer,Coastal Flooding,Inondations côtières,NU,NU
-090196,Coastline of Baffin Isl. from Kekertaluk Isl. to Kangaarjuuk incl. Qikiqtarjuaq and Kivitoo,littoral de l'île de Baffin de l'île Kekertaluk à Kangaarjuuk incl. Qikiqtarjuaq et Kivitoo,Coastal Flooding,Inondations côtières,NU,NU
-090197,Coastline of Baffin Isl. from Clyde Inlet to Kekertaluk Isl. incl. Isabella Bay and Home Bay,littoral de l'île de Baffin de l'inlet Clyde à l'île Kekertaluk incl. la baie Isabella Bay et la baie Home,Coastal Flooding,Inondations côtières,NU,NU
-090198,Shoreline of Clyde Inlet incl. Clyde River and Niaqurnaaluk,rives de l'inlet Clyde incl. Clyde River et Niaqurnaaluk,Coastal Flooding,Inondations côtières,NU,NU
+090194,Northern Shoreline of Cumberland Sound including Kingnait Fiord and Kekerten Isl.,rives nord de la baie Cumberland including le fjord Kingnait et l'île Kekerten,Coastal Flooding,Inondations côtières,NU,NU
+090195,Baffin Isl. Coastline from Padloping Isl. (Paallavvik) to Cape Mercy including Cape Dyer,littoral de l'île de Baffin de l'île Padloping (Paallavvik) au cap Mercy including le cap Dyer,Coastal Flooding,Inondations côtières,NU,NU
+090196,Coastline of Baffin Isl. from Kekertaluk Isl. to Kangaarjuuk including Qikiqtarjuaq and Kivitoo,littoral de l'île de Baffin de l'île Kekertaluk à Kangaarjuuk including Qikiqtarjuaq et Kivitoo,Coastal Flooding,Inondations côtières,NU,NU
+090197,Coastline of Baffin Isl. from Clyde Inlet to Kekertaluk Isl. including Isabella Bay and Home Bay,littoral de l'île de Baffin de l'inlet Clyde à l'île Kekertaluk including la baie Isabella Bay et la baie Home,Coastal Flooding,Inondations côtières,NU,NU
+090198,Shoreline of Clyde Inlet including Clyde River and Niaqurnaaluk,rives de l'inlet Clyde including Clyde River et Niaqurnaaluk,Coastal Flooding,Inondations côtières,NU,NU
 090199,Coastline of Baffin Island from Bylot Island to Sam Ford Fiord,littoral de l'île de Baffin de l'île Bylot au fjord Sam Ford,Coastal Flooding,Inondations côtières,NU,NU
-090200,Shorelines of Eclipse Sound (Tasiujaq) incl. Pond Inlet (Mittimatalik),rives du détroit d'Eclipse (Tasiujaq) incl. Pond Inlet (Mittimatalik),Coastal Flooding,Inondations côtières,NU,NU
-090201,Southern Shorelines of Eclipse Sound (Tasiujaq) incl. Milne Inlet to Oliver Sound,rives sud du détroit d'Eclipse (Tasiujaq) incl. le secteur de l'inlet Milne à la baie Oliver,Coastal Flooding,Inondations côtières,NU,NU
+090200,Shorelines of Eclipse Sound (Tasiujaq) including Pond Inlet (Mittimatalik),rives du détroit d'Eclipse (Tasiujaq) including Pond Inlet (Mittimatalik),Coastal Flooding,Inondations côtières,NU,NU
+090201,Southern Shorelines of Eclipse Sound (Tasiujaq) including Milne Inlet to Oliver Sound,rives sud du détroit d'Eclipse (Tasiujaq) including le secteur de l'inlet Milne à la baie Oliver,Coastal Flooding,Inondations côtières,NU,NU
 090202,Shorelines of Navy Board Inlet (Iglua),rives de la baie Navy Board (Iglua),Coastal Flooding,Inondations côtières,NU,NU
-090203,Northern Coastline of Borden Peninsula incl. Aqiarurnak Bay,littoral nord de la péninsule Borden incl. la baie Aqiarurnak,Coastal Flooding,Inondations côtières,NU,NU
-090204,Eastern Shoreline of Admiralty Inlet incl. Nanisivik and Elwin Inlet (Sinaasiurviup Kangiqłua),rives est du bras Admiralty incl. Nanisivik et le bras Elwin (Sinaasiurviup Kangiqłua),Coastal Flooding,Inondations côtières,NU,NU
-090205,Eastern Shoreline of Admiralty Inlet incl. Arctic Bay (Ikpiarjuk),rives est du bras Admiralty incl. Arctic Bay (Ikpiarjuk),Coastal Flooding,Inondations côtières,NU,NU
-090206,Southeastern Coastline of Banks Island incl. De Salis Bay,littoral sud-est de l'île Banks incl. la baie De Salis,Coastal Flooding,Inondations côtières,NT,NT
-090207,Southern Coastline of Banks Island incl. Thesiger Bay,littoral sud de l'île Banks incl. la baie Thesiger,Coastal Flooding,Inondations côtières,NT,NT
+090203,Northern Coastline of Borden Peninsula including Aqiarurnak Bay,littoral nord de la péninsule Borden including la baie Aqiarurnak,Coastal Flooding,Inondations côtières,NU,NU
+090204,Eastern Shoreline of Admiralty Inlet including Nanisivik and Elwin Inlet (Sinaasiurviup Kangiqłua),rives est du bras Admiralty including Nanisivik et le bras Elwin (Sinaasiurviup Kangiqłua),Coastal Flooding,Inondations côtières,NU,NU
+090205,Eastern Shoreline of Admiralty Inlet including Arctic Bay (Ikpiarjuk),rives est du bras Admiralty including Arctic Bay (Ikpiarjuk),Coastal Flooding,Inondations côtières,NU,NU
+090206,Southeastern Coastline of Banks Island including De Salis Bay,littoral sud-est de l'île Banks including la baie De Salis,Coastal Flooding,Inondations côtières,NT,NT
+090207,Southern Coastline of Banks Island including Thesiger Bay,littoral sud de l'île Banks including la baie Thesiger,Coastal Flooding,Inondations côtières,NT,NT
 090208,Coastline of Sachs Harbour,littoral de Sachs Harbour,Coastal Flooding,Inondations côtières,NT,NT
-090209,Southwestern Coastline of Banks Island incl. Lennie Harbour,littoral sud-ouest de l'île Banks incl. le havre Lennie,Coastal Flooding,Inondations côtières,NT,NT
-090210,Western Coastline of Banks Island incl. Burnett Bay and Storkerson Bay,littoral ouest de l'île Banks incl. la baie Burnett et la baie Storkerson,Coastal Flooding,Inondations côtières,NT,NT
-090211,Northwestern Coastline of Banks Island incl. Cape Prince Alfred,littoral nord-ouest de l'île Banks incl. le cap Prince Alfred,Coastal Flooding,Inondations côtières,NT,NT
-090212,Northern Coastline of Banks Isl. incl. Aulavik Nat. Park and Mouth of Thomsen River,littoral nord de l'île Banks incl. le parc nat. Aulavik et l'embouchure de la rivière Thomsen,Coastal Flooding,Inondations côtières,NT,NT
+090209,Southwestern Coastline of Banks Island including Lennie Harbour,littoral sud-ouest de l'île Banks including le havre Lennie,Coastal Flooding,Inondations côtières,NT,NT
+090210,Western Coastline of Banks Island including Burnett Bay and Storkerson Bay,littoral ouest de l'île Banks including la baie Burnett et la baie Storkerson,Coastal Flooding,Inondations côtières,NT,NT
+090211,Northwestern Coastline of Banks Island including Cape Prince Alfred,littoral nord-ouest de l'île Banks including le cap Prince Alfred,Coastal Flooding,Inondations côtières,NT,NT
+090212,Northern Coastline of Banks Isl. including Aulavik Nat. Park and Mouth of Thomsen River,littoral nord de l'île Banks including le parc nat. Aulavik et l'embouchure de la rivière Thomsen,Coastal Flooding,Inondations côtières,NT,NT
 090213,Northeastern Coastline of Banks Island along M'Clure Strait,littoral nord-est de l'île Banks le long du détroit de M'Clure,Coastal Flooding,Inondations côtières,NT,NT
-090214,Southeastern Coastline of Prince Patrick Island incl. Mould Bay,littoral sud-est de l'île Prince Patrick incl. la baie Mould,Coastal Flooding,Inondations côtières,NT,NT
-090215,Eastern Coastline of Prince Patrick Isl. incl. Intrepid Inlet and Emerald Isle,littoral est de l'île Prince Patrick incl. l'inlet Intrepid et l'île Emerald,Coastal Flooding,Inondations côtières,NT,NT
-090216,Northern Coastline of Ellesmere Island incl. Quttinirpaaq National Park,littoral nord de l’île d’Ellesmere incl. le parc national Quttinirpaaq,Coastal Flooding,Inondations côtières,NU,NU
-090217,Northeastern Coastline of Ellesmere Island incl. Alert,littoral nord-est de l’île d’Ellesmere incl. Alert,Coastal Flooding,Inondations côtières,NU,NU
-090218,Southeastern Coastline of Ellesmere Isl. incl. Shorelines of Smith Bay and Talbot Inlet,littoral sud-est de l’île d’Ellesmere incl. les rives de la baie Smith et du bras Talbot,Coastal Flooding,Inondations côtières,NU,NU
-090219,Southern Coastline of Ellesmere Isl. incl. Craig Harbour and Coburg Isl.,littoral sud de l’île d’Ellesmere incl. Craig Harbour et l'île Coburg,Coastal Flooding,Inondations côtières,NU,NU
-090220,Northeastern Shoreline of Jones Sound incl. Grise Fiord,rives nord-est du détroit de Jones incl. Grise Fiord,Coastal Flooding,Inondations côtières,NU,NU
+090214,Southeastern Coastline of Prince Patrick Island including Mould Bay,littoral sud-est de l'île Prince Patrick including la baie Mould,Coastal Flooding,Inondations côtières,NT,NT
+090215,Eastern Coastline of Prince Patrick Isl. including Intrepid Inlet and Emerald Isle,littoral est de l'île Prince Patrick including l'inlet Intrepid et l'île Emerald,Coastal Flooding,Inondations côtières,NT,NT
+090216,Northern Coastline of Ellesmere Island including Quttinirpaaq National Park,littoral nord de l’île d’Ellesmere including le parc national Quttinirpaaq,Coastal Flooding,Inondations côtières,NU,NU
+090217,Northeastern Coastline of Ellesmere Island including Alert,littoral nord-est de l’île d’Ellesmere including Alert,Coastal Flooding,Inondations côtières,NU,NU
+090218,Southeastern Coastline of Ellesmere Isl. including Shorelines of Smith Bay and Talbot Inlet,littoral sud-est de l’île d’Ellesmere including les rives de la baie Smith et du bras Talbot,Coastal Flooding,Inondations côtières,NU,NU
+090219,Southern Coastline of Ellesmere Isl. including Craig Harbour and Coburg Isl.,littoral sud de l’île d’Ellesmere including Craig Harbour et l'île Coburg,Coastal Flooding,Inondations côtières,NU,NU
+090220,Northeastern Shoreline of Jones Sound including Grise Fiord,rives nord-est du détroit de Jones including Grise Fiord,Coastal Flooding,Inondations côtières,NU,NU
 090221,Northwestern Shoreline of Jones Sound: Calf Isl. to Baad Fiord (Umimmaujaup Kangiqłua),rives nord-ouest du détroit de Jones de l'île Calf au fjord Baad (Umimmaujaup Kangiqłua),Coastal Flooding,Inondations côtières,NU,NU
-090222,Southeastern Coastline of Devon Island incl. Dundas Harbour,littoral sud-est de l'île Devon incl. le havre Dundas,Coastal Flooding,Inondations côtières,NU,NU
-090223,Southwestern Coastline of Devon Island incl. Beechey Island and Maxwell Bay,littoral sud-ouest de l'île Devon incl. l'île Beechey et la baie Maxwell,Coastal Flooding,Inondations côtières,NU,NU
-090224,Coastline of Grinnell Peninsula incl. Baillie-Hamilton Isl. (Qikiqtaq Tunuttiniittuq),littoral de la presqu'île Grinnell incl. l'île Baillie-Hamilton (Qikiqtaq Tunuttiniittuq),Coastal Flooding,Inondations côtières,NU,NU
-090225,Northwestern Coastline of Cornwallis Island incl. Polaris,littoral nord-ouest de l'île Cornwallis incl. Polaris,Coastal Flooding,Inondations côtières,NU,NU
-090226,Southern Coastline of Cornwallis Island incl. Resolute,littoral sud de l'île Cornwallis incl. Resolute,Coastal Flooding,Inondations côtières,NU,NU
+090222,Southeastern Coastline of Devon Island including Dundas Harbour,littoral sud-est de l'île Devon including le havre Dundas,Coastal Flooding,Inondations côtières,NU,NU
+090223,Southwestern Coastline of Devon Island including Beechey Island and Maxwell Bay,littoral sud-ouest de l'île Devon including l'île Beechey et la baie Maxwell,Coastal Flooding,Inondations côtières,NU,NU
+090224,Coastline of Grinnell Peninsula including Baillie-Hamilton Isl. (Qikiqtaq Tunuttiniittuq),littoral de la presqu'île Grinnell including l'île Baillie-Hamilton (Qikiqtaq Tunuttiniittuq),Coastal Flooding,Inondations côtières,NU,NU
+090225,Northwestern Coastline of Cornwallis Island including Polaris,littoral nord-ouest de l'île Cornwallis including Polaris,Coastal Flooding,Inondations côtières,NU,NU
+090226,Southern Coastline of Cornwallis Island including Resolute,littoral sud de l'île Cornwallis including Resolute,Coastal Flooding,Inondations côtières,NU,NU
 090227,Eastern Coastline of Cornwallis Island,littoral est de l'île Cornwallis,Coastal Flooding,Inondations côtières,NU,NU
-090228,Shoreline of Minto Inlet (Kangiryuaqtihuk) incl. Fort Collinson and Walker Bay,rives de l'inlet Minto (Kangiryuaqtihuk) incl. Fort Collinson et la baie Walker,Coastal Flooding,Inondations côtières,NT,NT
+090228,Shoreline of Minto Inlet (Kangiryuaqtihuk) including Fort Collinson and Walker Bay,rives de l'inlet Minto (Kangiryuaqtihuk) including Fort Collinson et la baie Walker,Coastal Flooding,Inondations côtières,NT,NT
 090229,Coastline of Ulukhaktok,littoral d'Ulukhaktok,Coastal Flooding,Inondations côtières,NT,NT
-090230,Shoreline of Prince Albert Sound incl. Kikiktakyok,rives de la baie Prince Albert incl. Kikiktakyok,Coastal Flooding,Inondations côtières,NT,NT
+090230,Shoreline of Prince Albert Sound including Kikiktakyok,rives de la baie Prince Albert including Kikiktakyok,Coastal Flooding,Inondations côtières,NT,NT
 090231,Southwestern Coastline of Victoria Isl.: Austin Bay (Tuktutuk) to Lady Richardson Bay (Hingialok),littoral sud-ouest de l'île Victoria de la baie Austin (Tuktutuk) à la baie Lady Richardson (Hingialok),Coastal Flooding,Inondations côtières,NU,NU
-090232,Northern Coastline of Victoria Island (Nunavut) incl. Hadley Bay,littoral nord de l'île Victoria (Nunavut) incl. la baie Hadley,Coastal Flooding,Inondations côtières,NU,NU
-090233,Northeastern Coastline of Victoria Island (Nunavut) incl. Stefansson Island,littoral nord-est de l'île Victoria (Nunavut) incl. l'île Stefansson,Coastal Flooding,Inondations côtières,NU,NU
-090234,Eastern Coastline of Victoria Island incl. Denmark Bay,littoral est de l'île Victoria (Nunavut) incl. la baie Denmark,Coastal Flooding,Inondations côtières,NU,NU
-090235,Shoreline of Albert Edward Bay incl. Qikiqtagafaaluk,rives de la baie Albert Edward incl. Qikiqtagafaaluk,Coastal Flooding,Inondations côtières,NU,NU
-090236,Southeastern Coastline of Victoria Island incl. Jenny Lind Island (Qikiqtaryuaq),littoral sud-est de l'île Victoria incl. l'île Jenny Lind (Qikiqtaryuaq),Coastal Flooding,Inondations côtières,NU,NU
-090237,Southern Coastline of Victoria Island incl. Anderson Bay and Parker Bay,littoral sud de l'île Victoria incl. la baie Anderson et la baie Parker,Coastal Flooding,Inondations côtières,NU,NU
-090238,Coastline near Cambridge Bay incl. Cambridge Bay and Starvation Cove,littoral près de Cambridge Bay incl. la baie Cambridge et l'anse Starvation,Coastal Flooding,Inondations côtières,NU,NU
+090232,Northern Coastline of Victoria Island (Nunavut) including Hadley Bay,littoral nord de l'île Victoria (Nunavut) including la baie Hadley,Coastal Flooding,Inondations côtières,NU,NU
+090233,Northeastern Coastline of Victoria Island (Nunavut) including Stefansson Island,littoral nord-est de l'île Victoria (Nunavut) including l'île Stefansson,Coastal Flooding,Inondations côtières,NU,NU
+090234,Eastern Coastline of Victoria Island including Denmark Bay,littoral est de l'île Victoria (Nunavut) including la baie Denmark,Coastal Flooding,Inondations côtières,NU,NU
+090235,Shoreline of Albert Edward Bay including Qikiqtagafaaluk,rives de la baie Albert Edward including Qikiqtagafaaluk,Coastal Flooding,Inondations côtières,NU,NU
+090236,Southeastern Coastline of Victoria Island including Jenny Lind Island (Qikiqtaryuaq),littoral sud-est de l'île Victoria including l'île Jenny Lind (Qikiqtaryuaq),Coastal Flooding,Inondations côtières,NU,NU
+090237,Southern Coastline of Victoria Island including Anderson Bay and Parker Bay,littoral sud de l'île Victoria including la baie Anderson et la baie Parker,Coastal Flooding,Inondations côtières,NU,NU
+090238,Coastline near Cambridge Bay including Cambridge Bay and Starvation Cove,littoral près de Cambridge Bay including la baie Cambridge et l'anse Starvation,Coastal Flooding,Inondations côtières,NU,NU
 090239,Southern Coastline of Victoria Island: Wellington Bay to Byron Bay,littoral sud de l'île Victoria : de la baie Wellington à la baie Byron,Coastal Flooding,Inondations côtières,NU,NU
 090240,Southwestern Coastline of Victoria Island: West of Paatlik to Tuktutuk,littoral sud-ouest de l'île Victoria : à l'ouest de Paatlik jusqu'à Tuktutuk,Coastal Flooding,Inondations côtières,NU,NU
-090241,Northeastern Coastline of Somerset Island incl. Batty Bay (Tinujjivik),littoral nord-est de l'île Somerset incl. la baie Batty (Tinujjivik),Coastal Flooding,Inondations côtières,NU,NU
-090242,Eastern Coastline of Somerset Island incl. Fort Ross,littoral est de l'île Somerset incl. Fort Ross,Coastal Flooding,Inondations côtières,NU,NU
+090241,Northeastern Coastline of Somerset Island including Batty Bay (Tinujjivik),littoral nord-est de l'île Somerset including la baie Batty (Tinujjivik),Coastal Flooding,Inondations côtières,NU,NU
+090242,Eastern Coastline of Somerset Island including Fort Ross,littoral est de l'île Somerset including Fort Ross,Coastal Flooding,Inondations côtières,NU,NU
 090243,Coastline of Borden Island (N.W.T.),littoral de l'île Borden (T.N.-O.),Coastal Flooding,Inondations côtières,NT,NT
 090244,Eastern Coastline of Borden Island (Nunavut),littoral est de l'île Borden (Nunavut),Coastal Flooding,Inondations côtières,NU,NU
 090245,Northeastern Coastline of Mackenzie King Island (Nunavut),littoral nord-est de l'île Mackenzie King (Nunavut),Coastal Flooding,Inondations côtières,NU,NU
-090246,Northern Coastline of Melville Island incl. Hecla and Griper Bay (N.W.T.),littoral nord de l'île Melville incl. les baies Hecla et Griper (T.N.-O.),Coastal Flooding,Inondations côtières,NT,NT
-090247,Northern Coastline of Melville Island incl. Hecla and Griper Bay (Nvt.),littoral nord de l'île Melville incl. les baies Hecla et Griper (Nt),Coastal Flooding,Inondations côtières,NU,NU
+090246,Northern Coastline of Melville Island including Hecla and Griper Bay (N.W.T.),littoral nord de l'île Melville including les baies Hecla et Griper (T.N.-O.),Coastal Flooding,Inondations côtières,NT,NT
+090247,Northern Coastline of Melville Island including Hecla and Griper Bay (Nvt.),littoral nord de l'île Melville including les baies Hecla et Griper (Nt),Coastal Flooding,Inondations côtières,NU,NU
 090248,Southwestern Coastline of Dundas Peninsula (N.W.T.),littoral sud-ouest de la péninsule Dundas (T.N.-O.),Coastal Flooding,Inondations côtières,NT,NT
 090249,Southeastern Coastline of Melville Island (Nunavut),littoral sud-est de l'île Melville (Nunavut),Coastal Flooding,Inondations côtières,NU,NU
 091100,Dawson,Dawson,Public,Public,YT,YT
@@ -5352,8 +5352,8 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
 095320,North Slave Region including Wekweeti - Whati - Behchoko,région de Slave Nord incluant Wekweeti - Whati - Behchoko,Air Quality,Qualité de l'air,NT,NT
 095400,Hay River Region including Enterprise,région de Hay River incluant Enterprise,Public,Public,NT,NT
 095400,Hay River Region including Enterprise,région de Hay River incluant Enterprise,Air Quality,Qualité de l'air,NT,NT
-095500,Thebacha Region including Ft. Smith - Salt River Reserve,région de Thebacha incl. Ft. Smith - réserve de Salt River,Public,Public,NT,NT
-095500,Thebacha Region including Ft. Smith - Salt River Reserve,région de Thebacha incl. Ft. Smith - réserve de Salt River,Air Quality,Qualité de l'air,NT,NT
+095500,Thebacha Region including Ft. Smith - Salt River Reserve,région de Thebacha including Ft. Smith - réserve de Salt River,Public,Public,NT,NT
+095500,Thebacha Region including Ft. Smith - Salt River Reserve,région de Thebacha including Ft. Smith - réserve de Salt River,Air Quality,Qualité de l'air,NT,NT
 095600,Ft. Resolution Region including Hwy. 6,région de Fort Resolution incluant la rte 6,Public,Public,NT,NT
 095600,Ft. Resolution Region including Hwy. 6,région de Fort Resolution incluant la rte 6,Air Quality,Qualité de l'air,NT,NT
 095700,Lutsel K'e Region,région de Lutsel K'e,Public,Public,NT,NT

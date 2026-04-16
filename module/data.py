@@ -20,7 +20,6 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_POLL_INTERVAL = 2700
 _TIMEOUT = aiohttp.ClientTimeout(connect=5, total=20)
-
 _CITYPAGE_URL = (
     "https://api.weather.gc.ca/collections/citypageweather-realtime/items/{location_id}?f=json"
 )
@@ -37,6 +36,12 @@ _NWS_HEADERS = {
 _TWC_OBSERVATIONS_URL = (
     "https://api.weather.com/v3/wx/observations/current"
     "?icaoCode={station_id}&units={units}&language={language}&format=json&apiKey={api_key}"
+)
+_ECCC_AQHI_CURRENT_URL = (
+    "https://api.weather.gc.ca/collections/aqhi-observations-realtime/items?offset=0&limit=1000&sortby=-latest&location_id={station_id}&f=json"
+)
+_ECCC_AQHI_URL = (
+    "https://api.weather.gc.ca/collections/aqhi-forecasts-realtime/items?limit=1000&offset=0&f=json&sortby=-publication_datetime&aqhi_type=-Period&location_id={station_id}"
 )
 _TWC_LOCATION_POINT_URL = "https://api.weather.com/v3/location/point"
 _ECCC_LTCE_PRECIP_URL = "https://api.weather.gc.ca/collections/ltce-precipitation/items/{vclimate_id}-{month}-{year}?lang=en&f=json"
@@ -80,6 +85,13 @@ class ClimateLocation:
     source: str
     feed_id: str
     timezone: str = "UTC"
+
+
+@dataclass(frozen=True, slots=True)
+class AirQualityLocation:
+    id: str
+    source: str
+    feed_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,12 +219,13 @@ def _derive_citypage_id_from_climate_id(climate_id: str) -> str:
 
 def _parse_locations_config(
     config: dict[str, Any],
-) -> tuple[list[ObservationLocation], list[ForecastLocation], list[ClimateLocation]]:
+) -> tuple[list[ObservationLocation], list[ForecastLocation], list[ClimateLocation], list[AirQualityLocation]]:
     region_names = _load_forecast_region_names()
 
     obs_locs: list[ObservationLocation] = []
     forecast_locs: list[ForecastLocation] = []
     climate_locs: list[ClimateLocation] = []
+    aqhi_locs: list[AirQualityLocation] = []
     for feed in config.get("feeds", []):
         if not isinstance(feed, dict):
             continue
@@ -251,6 +264,15 @@ def _parse_locations_config(
                     name_fr=name_fr,
                 ))
 
+            for entry in block.get("airQualityLocations", []):
+                if not isinstance(entry, dict):
+                    continue
+                loc_id = (entry.get("id") or "").strip()
+                source = (entry.get("source") or "eccc").strip()
+                if not loc_id:
+                    continue
+                aqhi_locs.append(AirQualityLocation(id=loc_id, source=source, feed_id=feed_id))
+
             for entry in block.get("climateLocations", []):
                 if not isinstance(entry, dict):
                     continue
@@ -268,12 +290,12 @@ def _parse_locations_config(
                     timezone=(feed.get("timezone") or "UTC"),
                 ))
 
-    return obs_locs, forecast_locs, climate_locs
+    return obs_locs, forecast_locs, climate_locs, aqhi_locs
 
 
 def iter_locations(
     config: dict[str, Any],
-) -> tuple[list[ObservationLocation], list[ForecastLocation], list[ClimateLocation]]:
+) -> tuple[list[ObservationLocation], list[ForecastLocation], list[ClimateLocation], list[AirQualityLocation]]:
     return _parse_locations_config(config)
 
 
@@ -417,6 +439,87 @@ def _normalize_eccc_regional_normals(forecast_group: dict[str, Any]) -> dict[str
         "textSummary": _bilingual(regional_normals, "textSummary") or {},
         "temperature": values,
     }
+
+def _parse_eccc_aqhi_observation(raw: dict[str, Any], station_id: str) -> dict[str, Any] | None:
+    try:
+        features = raw.get("features") or []
+        if not features:
+            return None
+        props = features[0]["properties"]
+        return {
+            "location": {
+                "en": props.get("location_name_en") or "",
+                "fr": props.get("location_name_fr") or "",
+            },
+            "observed_at": props.get("observation_datetime"),
+            "aqhi": props.get("aqhi"),
+            "special_notes": {
+                "en": props.get("special_notes_en") or "",
+                "fr": props.get("special_notes_fr") or "",
+            },
+        }
+    except (KeyError, IndexError, TypeError) as e:
+        log.error("Failed to parse ECCC AQHI observation for %s: %s", station_id, e)
+        return None
+
+
+def _parse_eccc_aqhi_forecast(raw: dict[str, Any], station_id: str) -> dict[str, Any] | None:
+    try:
+        features = raw.get("features") or []
+        if not features:
+            return None
+        props = features[0]["properties"]
+        forecast_period = props.get("forecast_period") or {}
+        periods = [
+            {
+                "period": {
+                    "en": p.get("forecast_period_en") or "",
+                    "fr": p.get("forecast_period_fr") or "",
+                },
+                "aqhi": p.get("aqhi"),
+                "aqhi_insmoke": p.get("aqhi_insmoke"),
+            }
+            for p in (
+                forecast_period.get(key)
+                for key in sorted(forecast_period)
+            )
+            if isinstance(p, dict)
+        ]
+        return {
+            "published_at": props.get("publication_datetime"),
+            "periods": periods,
+        }
+    except (KeyError, IndexError, TypeError) as e:
+        log.error("Failed to parse ECCC AQHI forecast for %s: %s", station_id, e)
+        return None
+
+
+async def _fetch_eccc_aqhi_observation_raw(
+    session: aiohttp.ClientSession,
+    station_id: str,
+) -> dict[str, Any] | None:
+    url = _ECCC_AQHI_CURRENT_URL.format(station_id=station_id)
+    try:
+        async with session.get(url, timeout=_TIMEOUT) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+    except aiohttp.ClientError as e:
+        log.error("Failed to fetch ECCC AQHI observation for %s: %s", station_id, e)
+        return None
+
+
+async def _fetch_eccc_aqhi_forecast_raw(
+    session: aiohttp.ClientSession,
+    station_id: str,
+) -> dict[str, Any] | None:
+    url = _ECCC_AQHI_URL.format(station_id=station_id)
+    try:
+        async with session.get(url, timeout=_TIMEOUT) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+    except aiohttp.ClientError as e:
+        log.error("Failed to fetch ECCC AQHI forecast for %s: %s", station_id, e)
+        return None
 
 
 def _build_eccc_conditions_dict(raw_props: dict[str, Any]) -> dict[str, Any]:
@@ -1129,6 +1232,10 @@ def _climate_cache_path(source: str, location_id: str) -> str:
     return os.path.join(base_dir, f"{location_id}.climate.json")
 
 
+def _aqhi_cache_path(location_id: str) -> str:
+    return os.path.join(_ECCC_DATA_DIR, f"{location_id}.aqhi.json")
+
+
 def _build_twc_conditions_dict(
     raw: dict[str, Any],
     station_id: str,
@@ -1410,8 +1517,39 @@ async def _fetch_and_publish_climate(
     log.debug("Climate published: %s:climate:%s (citypage %s)", loc.feed_id, loc.id, loc.citypage_id)
 
 
+async def _fetch_and_publish_aqhi(
+    session: aiohttp.ClientSession,
+    loc: AirQualityLocation,
+) -> None:
+    if loc.source != "eccc":
+        log.warning("Unsupported source '%s' for air quality location %s", loc.source, loc.id)
+        return
+
+    obs_raw, fcst_raw = await asyncio.gather(
+        _fetch_eccc_aqhi_observation_raw(session, loc.id),
+        _fetch_eccc_aqhi_forecast_raw(session, loc.id),
+    )
+
+    observation = _parse_eccc_aqhi_observation(obs_raw, loc.id) if obs_raw is not None else None
+    forecast = _parse_eccc_aqhi_forecast(fcst_raw, loc.id) if fcst_raw is not None else None
+
+    if observation is None and forecast is None:
+        log.warning("No AQHI data returned for %s", loc.id)
+        return
+
+    aqhi_dict: dict[str, Any] = {
+        "source": "eccc",
+        **(observation or {}),
+        "forecast": forecast,
+    }
+
+    await asyncio.to_thread(_write_json, _aqhi_cache_path(loc.id), aqhi_dict)
+    update_data_pool(f"{loc.feed_id}:aqhi:{loc.id}", aqhi_dict, notify=False)
+    log.debug("AQHI published: %s:aqhi:%s", loc.feed_id, loc.id)
+
+
 async def fetch_once(config: dict[str, Any]) -> None:
-    obs_locs, forecast_locs, climate_locs = _parse_locations_config(config)
+    obs_locs, forecast_locs, climate_locs, aqhi_locs = _parse_locations_config(config)
     twc_cfg = config.get("sources", {}).get("twc") or {}
     twc_cfg.setdefault("api_key", (config.get("twc_api_key") or ""))
     twc_cfg.setdefault("units", config.get("twc_units") or "m")
@@ -1506,6 +1644,13 @@ async def fetch_once(config: dict[str, Any]) -> None:
                 name=f"climate:{loc.source}:{loc.id}",
             )
             for loc in climate_locs
+        ]
+        tasks += [
+            asyncio.create_task(
+                _fetch_and_publish_aqhi(session, loc),
+                name=f"aqhi:{loc.source}:{loc.id}",
+            )
+            for loc in aqhi_locs
         ]
         tasks += [
             asyncio.create_task(_fetch_and_publish_focn45(session), name="focn45"),

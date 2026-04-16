@@ -1,0 +1,384 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+    <identifier>urn:oid:2.49.0.1.124.1729419976.2026</identifier>
+    <sender>cap-pac@canada.ca</sender>
+    <sent>2026-04-15T21:09:14-00:00</sent>
+    <status>Actual</status>
+    <msgType>Update</msgType>
+    <source>Env. Can. - Can. Met. Ctr. – Montréal</source>
+    <scope>Public</scope>
+    <code>profile:CAP-CP:0.4</code>
+    <code>layer:SOREM:1.0</code>
+    <code>layer:EC-MSC-SMC:1.0</code>
+    <code>layer:EC-MSC-SMC:1.1</code>
+    <code>layer:SOREM:2.0</code>
+    <note>Service Notice – February 2026: The Environment and Climate Change Canada (ECCC) CAP Service undergoes changes from time to time as the business of alerting evolves. For 2026, changes are expected to include... 1) ECCC's initiative to introduce free-form polygons to represent the true threat area of a weather hazard is tentatively set for Spring 2026 deployment. Data changes will appear in CAP following this deployment and 2) other minor improvements and corrections. For more information on these changes: https://comm.collab.science.gc.ca/mailman3/hyperkitty/list/dd_info@comm.collab.science.gc.ca/ | Notification de service – février 2026: Le service du PAC d’Environnement et Changement climatique Canada (ECCC) subit périodiquement des changements à mesure que le système d’alerte évolue. Pour 2026, il y aura des changements incluant... 1) l’initiative d’ECCC visant à introduire des polygones libres pour représenter la véritable zone de menace d’un danger météorologique devrait être déployée provisoirement au printemps 2026. Des changements de données apparaîtront dans le PAC à la suite de ce déploiement et 2) d’autres améliorations et corrections mineures. Pour plus d’informations sur ces changements: https://comm.collab.science.gc.ca/mailman3/hyperkitty/list/dd_info@comm.collab.science.gc.ca/</note>
+    <references>cap-pac@canada.ca,urn:oid:2.49.0.1.124.1794725899.2026,2026-04-13T21:39:08-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.3115505150.2026,2026-04-14T10:33:26-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.1887954231.2026,2026-04-14T21:35:16-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.2268038994.2026,2026-04-15T03:14:08-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.1941735125.2026,2026-04-15T10:34:56-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.0828743287.2026,2026-04-15T17:59:59-00:00</references>
+    <info>
+        <language>en-CA</language>
+        <category>Met</category>
+        <event>snowfall</event>
+        <responseType>AllClear</responseType>
+        <urgency>Past</urgency>
+        <severity>Minor</severity>
+        <certainty>Observed</certainty>
+        <audience>general public</audience>
+        <eventCode>
+            <valueName>profile:CAP-CP:Event:0.4</valueName>
+            <value>snowfall</value>
+        </eventCode>
+        <eventCode>
+            <valueName>SAME</valueName>
+            <value>WSW</value>
+        </eventCode>
+        <effective>2026-04-15T21:09:14-00:00</effective>
+        <expires>2026-04-15T22:09:14-00:00</expires>
+        <senderName>Environment Canada</senderName>
+        <headline>yellow warning - snowfall - ended</headline>
+        <description>
+Significant snowfall is no longer expected.
+
+
+###
+</description>
+        <instruction/>
+        <web>https://weather.gc.ca/</web>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Type</valueName>
+            <value>warning</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Broadcast_Intrusive</valueName>
+            <value>no</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:1.0:Broadcast_Immediately</valueName>
+            <value>No</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Parent_URI</valueName>
+            <value>msc/alert/environment/hazard/alert-3.0-ascii/consolidated-xml-2.0/20260415210914594/WW_16_76_CWWG/SFW/2009414652083609468202604130501_WW_16_76_CWWG/actual/en_proper_complete_c-fr_proper_complete_c/NinJo</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:CAP_count</valueName>
+            <value>A:17418 M:90158 C:101593</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Location_Status</valueName>
+            <value>ended</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Name</valueName>
+            <value>yellow warning - snowfall</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Coverage</valueName>
+            <value>Northern Alberta</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Designation_Code</valueName>
+            <value>WW_16_76_CWWG</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:2.0:WirelessImmediate</valueName>
+            <value>No</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Alert_Location_Status</valueName>
+            <value>ended</value>
+        </parameter>
+        <area>
+            <areaDesc>M.D. of Greenview near Grande Cache Botten and Amundson</areaDesc>
+            <polygon>54.0527,-117.5282 54.0246,-117.4971 53.9975,-117.5676 53.9808,-117.6769 53.9283,-117.7606 53.9265,-117.8521 53.8937,-117.9973 53.8684,-117.9974 53.8062,-117.9999 53.7966,-118.4027 53.8055,-118.8906 53.8049,-118.9984 53.8449,-118.9977 53.8402,-119.2193 53.8467,-119.4844 53.9666,-119.4915 53.9686,-119.4916 54.0784,-119.484 54.5875,-119.484 54.5875,-119.0577 54.5875,-117.997 54.5875,-117.5267 54.0883,-117.5281 54.0527,-117.5282</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077210</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4818005</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4818015</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>M.D. of Greenview near Kakwa Wildland Prov. Park and Nose Lake</areaDesc>
+            <polygon>53.9666,-119.4915 53.8631,-119.7212 53.8894,-120.0013 53.9374,-120.0013 53.9904,-120.0013 54.5874,-120.0013 54.5875,-119.484 54.0784,-119.484 54.0248,-119.484 53.9699,-119.4841 53.9666,-119.4915</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077220</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4818015</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>Yellowhead Co. near William A. Switzer Prov. Park</areaDesc>
+            <polygon>53.632,-117.9433 53.6282,-117.73 53.3759,-117.73 53.3685,-117.73 53.3686,-117.764 53.3687,-117.9462 53.3686,-118.0779 53.3685,-118.0833 53.3222,-118.0682 53.2749,-118.2189 53.3537,-118.3218 53.4182,-118.2928 53.4399,-118.2932 53.4772,-118.2938 53.5423,-118.2948 53.5415,-118.1465 53.6285,-118.1462 53.632,-117.9433</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077230</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814003</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>Yellowhead Co. near Big Berland and the Wildhay River</areaDesc>
+            <polygon>53.9175,-117.9973 53.9551,-118.0153 54.0009,-117.8014 54.0525,-117.731 54.0594,-117.6056 54.0883,-117.5281 54.0527,-117.5282 54.0246,-117.4971 53.9859,-117.4572 53.6282,-117.0859 53.6283,-117.1057 53.6282,-117.73 53.6255,-117.9485 53.6285,-118.1462 53.6295,-118.1462 53.6293,-118.2936 53.6362,-118.295 53.6437,-118.2947 53.6433,-118.4419 53.7603,-118.4441 53.7607,-118.8902 53.8055,-118.8906 53.8158,-118.4225 53.8062,-117.9999 53.9175,-117.9973</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077240</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814003</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>Willmore Wilderness Park</areaDesc>
+            <polygon>53.9904,-120.0013 53.9601,-119.7759 54.0784,-119.484 53.9696,-119.4774 53.8467,-119.4844 53.8522,-119.2196 53.8449,-118.9977 53.8049,-118.9984 53.8055,-118.8906 53.7607,-118.8902 53.7603,-118.4441 53.6433,-118.4419 53.6437,-118.2947 53.6364,-118.2933 53.6293,-118.2936 53.6295,-118.1462 53.6285,-118.1462 53.5415,-118.1465 53.5423,-118.2948 53.4772,-118.2938 53.4399,-118.2932 53.4182,-118.2928 53.3537,-118.3218 53.3782,-118.6168 53.3868,-119.1694 53.4175,-119.3341 53.3461,-119.3097 53.3454,-119.3121 53.3072,-119.4485 53.2883,-119.5155 53.3383,-119.8079 53.6168,-120.0188 53.6685,-119.9089 53.7836,-120.0959 53.804,-120.0013 53.8162,-120.0013 53.8281,-120.0013 53.835,-120.0013 53.8698,-120.0013 53.8703,-120.0013 53.8894,-120.0013 53.9374,-120.0013 53.9904,-120.0013</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077250</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814028</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>Yellowhead Co. near Hinton and Obed Lake Prov. Park</areaDesc>
+            <polygon>53.6282,-117.0859 53.3667,-116.814 53.3666,-117.3641 53.1857,-117.3639 53.1859,-117.592 53.1858,-117.7042 53.1527,-117.7487 53.2107,-117.8927 53.3262,-118.0305 53.3222,-118.0682 53.3685,-118.0833 53.3686,-118.0779 53.3687,-117.9462 53.3686,-117.764 53.3749,-117.7523 53.3759,-117.73 53.6282,-117.73 53.6283,-117.1057 53.6282,-117.0859</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077260</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814003</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814019</value>
+            </geocode>
+        </area>
+    </info>
+    <info>
+        <language>fr-CA</language>
+        <category>Met</category>
+        <event>neige</event>
+        <responseType>AllClear</responseType>
+        <urgency>Past</urgency>
+        <severity>Minor</severity>
+        <certainty>Observed</certainty>
+        <audience>grand public</audience>
+        <eventCode>
+            <valueName>profile:CAP-CP:Event:0.4</valueName>
+            <value>snowfall</value>
+        </eventCode>
+        <eventCode>
+            <valueName>SAME</valueName>
+            <value>WSW</value>
+        </eventCode>
+        <effective>2026-04-15T21:09:14-00:00</effective>
+        <expires>2026-04-15T22:09:14-00:00</expires>
+        <senderName>Environnement Canada</senderName>
+        <headline>avertissement jaune - neige - terminé</headline>
+        <description>
+On ne prévoit plus d'importantes chutes de neige.
+
+###
+</description>
+        <instruction/>
+        <web>https://meteo.gc.ca/</web>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Type</valueName>
+            <value>warning</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Broadcast_Intrusive</valueName>
+            <value>no</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:1.0:Broadcast_Immediately</valueName>
+            <value>No</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Parent_URI</valueName>
+            <value>msc/alert/environment/hazard/alert-3.0-ascii/consolidated-xml-2.0/20260415210914594/WW_16_76_CWWG/SFW/2009414652083609468202604130501_WW_16_76_CWWG/actual/en_proper_complete_c-fr_proper_complete_c/NinJo</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:CAP_count</valueName>
+            <value>A:17418 M:90158 C:101593</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Location_Status</valueName>
+            <value>ended</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Name</valueName>
+            <value>avertissement jaune - neige</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Coverage</valueName>
+            <value>nord de l'Alberta</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Designation_Code</valueName>
+            <value>WW_16_76_CWWG</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:2.0:WirelessImmediate</valueName>
+            <value>No</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Alert_Location_Status</valueName>
+            <value>ended</value>
+        </parameter>
+        <area>
+            <areaDesc>d.m. de Greenview près de Grande Cache Botten et Amundson</areaDesc>
+            <polygon>54.0527,-117.5282 54.0246,-117.4971 53.9975,-117.5676 53.9808,-117.6769 53.9283,-117.7606 53.9265,-117.8521 53.8937,-117.9973 53.8684,-117.9974 53.8062,-117.9999 53.7966,-118.4027 53.8055,-118.8906 53.8049,-118.9984 53.8449,-118.9977 53.8402,-119.2193 53.8467,-119.4844 53.9666,-119.4915 53.9686,-119.4916 54.0784,-119.484 54.5875,-119.484 54.5875,-119.0577 54.5875,-117.997 54.5875,-117.5267 54.0883,-117.5281 54.0527,-117.5282</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077210</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4818005</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4818015</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>d.m. de Greenview près du Kakwa Wildland Prov. Park et du lac Nose</areaDesc>
+            <polygon>53.9666,-119.4915 53.8631,-119.7212 53.8894,-120.0013 53.9374,-120.0013 53.9904,-120.0013 54.5874,-120.0013 54.5875,-119.484 54.0784,-119.484 54.0248,-119.484 53.9699,-119.4841 53.9666,-119.4915</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077220</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4818015</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>cté de Yellowhead près du William A. Switzer Prov. Park</areaDesc>
+            <polygon>53.632,-117.9433 53.6282,-117.73 53.3759,-117.73 53.3685,-117.73 53.3686,-117.764 53.3687,-117.9462 53.3686,-118.0779 53.3685,-118.0833 53.3222,-118.0682 53.2749,-118.2189 53.3537,-118.3218 53.4182,-118.2928 53.4399,-118.2932 53.4772,-118.2938 53.5423,-118.2948 53.5415,-118.1465 53.6285,-118.1462 53.632,-117.9433</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077230</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814003</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>cté de Yellowhead près de Big Berland et de la riv. Wildhay</areaDesc>
+            <polygon>53.9175,-117.9973 53.9551,-118.0153 54.0009,-117.8014 54.0525,-117.731 54.0594,-117.6056 54.0883,-117.5281 54.0527,-117.5282 54.0246,-117.4971 53.9859,-117.4572 53.6282,-117.0859 53.6283,-117.1057 53.6282,-117.73 53.6255,-117.9485 53.6285,-118.1462 53.6295,-118.1462 53.6293,-118.2936 53.6362,-118.295 53.6437,-118.2947 53.6433,-118.4419 53.7603,-118.4441 53.7607,-118.8902 53.8055,-118.8906 53.8158,-118.4225 53.8062,-117.9999 53.9175,-117.9973</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077240</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814003</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>parc sauvage de Willmore</areaDesc>
+            <polygon>53.9904,-120.0013 53.9601,-119.7759 54.0784,-119.484 53.9696,-119.4774 53.8467,-119.4844 53.8522,-119.2196 53.8449,-118.9977 53.8049,-118.9984 53.8055,-118.8906 53.7607,-118.8902 53.7603,-118.4441 53.6433,-118.4419 53.6437,-118.2947 53.6364,-118.2933 53.6293,-118.2936 53.6295,-118.1462 53.6285,-118.1462 53.5415,-118.1465 53.5423,-118.2948 53.4772,-118.2938 53.4399,-118.2932 53.4182,-118.2928 53.3537,-118.3218 53.3782,-118.6168 53.3868,-119.1694 53.4175,-119.3341 53.3461,-119.3097 53.3454,-119.3121 53.3072,-119.4485 53.2883,-119.5155 53.3383,-119.8079 53.6168,-120.0188 53.6685,-119.9089 53.7836,-120.0959 53.804,-120.0013 53.8162,-120.0013 53.8281,-120.0013 53.835,-120.0013 53.8698,-120.0013 53.8703,-120.0013 53.8894,-120.0013 53.9374,-120.0013 53.9904,-120.0013</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077250</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814028</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>cté de Yellowhead près de Hinton et Obed Lake Prov Park</areaDesc>
+            <polygon>53.6282,-117.0859 53.3667,-116.814 53.3666,-117.3641 53.1857,-117.3639 53.1859,-117.592 53.1858,-117.7042 53.1527,-117.7487 53.2107,-117.8927 53.3262,-118.0305 53.3222,-118.0682 53.3685,-118.0833 53.3686,-118.0779 53.3687,-117.9462 53.3686,-117.764 53.3749,-117.7523 53.3759,-117.73 53.6282,-117.73 53.6283,-117.1057 53.6282,-117.0859</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>077260</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814003</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>4814019</value>
+            </geocode>
+        </area>
+    </info>
+<Signature Id="NAADS Signature" xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo><CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/><SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><Reference URI=""><Transforms><Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>n9BFpH8ZaJN0KMklFCK5XdhdhWRz8IOUx8i/pHW4M34=</DigestValue></Reference></SignedInfo><SignatureValue>IocERst/7p9EIAg4jZoypeIP340UxvRr3lB6DJH+GkBDWo4aarONLszkzgg7TLpcwjXv3nDTYZTV9B1Oz11PdEWy7Qh2Mp8UMNSfNaIGPjcpzqDGu3r3I0kfxG0g83vRWfZXEGiqEotc1BUP3nFhcIFzA/vDJHcFw/XaHdbNwPEuByQIgJysOg5nBwmiAJYIVm6Xtk0pbdwCwT9/R2hV0OPoJ3JKLqqcnMeHN4dyJzMJslBinnTa1A7zEcW/vzTtu6dkqf/3bI35KwgDwXnGxkyQ6IBfXj5LNnq6eOiSP/HJBEBCwAaThSHWus9zzku8s/ErNyOqbx8H9bl2aN+SXA==</SignatureValue><KeyInfo><X509Data><X509Certificate>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</X509Certificate></X509Data></KeyInfo><Object xmlns=""><SignatureProperties><SignatureProperty Id="NAADS-DSS1" Target="https://dss1.naad-adna.pelmorex.com"><xc:value xmlns:xc="http://docs.oasis-open.org/emergency/cap/v1.2/CAP-v1.2.xsd"/></SignatureProperty><SignatureProperty Id="NAADS-DSS2" Target="https://dss2.naad-adna.pelmorex.com"><xc:value xmlns:xc="http://docs.oasis-open.org/emergency/cap/v1.2/CAP-v1.2.xsd"/></SignatureProperty></SignatureProperties></Object></Signature><Signature xmlns="http://www.w3.org/2000/09/xmldsig#" Id="Environment Canada">
+<SignedInfo>
+<CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+<SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+<Reference URI="">
+<Transforms>
+<Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+</Transforms>
+<DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+<DigestValue>n9BFpH8ZaJN0KMklFCK5XdhdhWRz8IOUx8i/pHW4M34=</DigestValue>
+</Reference>
+</SignedInfo>
+<SignatureValue>Nl7rOH4Ir8qkXKOjEgz6eaLwbsd+Cm54m2G5/ZEWqZGVRHwNpSJts65fgJe1FviS
+Vkel83knlj4AD7T2FH2fHLr1BO6bU4WaZLJL0h84/UPdg0QjZUHpp59xpmqVcn2U
+Ynn8/5ngDt7dSi/CQvghf1r0c+3/4MkZTMRNrp48vyLSe1FRTOU369ck8VlP6VLo
+1BqSVo2kvFGLkR1JzYXi7XYSh7Aw80mBQzqCQ2+VS/WFANhXZ7N03p66vxQmkRHC
+2GHmvO2kdNOK/bLrbZnlLaYoySsHI5bmkMhE/QuD9znKM+5qw7lqjoM1UtJwr3OD
+tG4vQT7BanhzysHJIlPWiA==</SignatureValue>
+<KeyInfo>
+<X509Data>
+<X509Certificate>MIIHDDCCBfSgAwIBAgIQM2dJyev0XEPJoQlSaOQgYDANBgkqhkiG9w0BAQsFADCB
+ujELMAkGA1UEBhMCVVMxFjAUBgNVBAoTDUVudHJ1c3QsIEluYy4xKDAmBgNVBAsT
+H1NlZSB3d3cuZW50cnVzdC5uZXQvbGVnYWwtdGVybXMxOTA3BgNVBAsTMChjKSAy
+MDEyIEVudHJ1c3QsIEluYy4gLSBmb3IgYXV0aG9yaXplZCB1c2Ugb25seTEuMCwG
+A1UEAxMlRW50cnVzdCBDZXJ0aWZpY2F0aW9uIEF1dGhvcml0eSAtIEwxSzAeFw0y
+NDA0MTkwOTQ3MDZaFw0yNTA1MTkwOTQ3MDRaMGwxCzAJBgNVBAYTAkNBMQ8wDQYD
+VQQIEwZRdWViZWMxETAPBgNVBAcTCEdhdGluZWF1MR8wHQYDVQQKExZTaGFyZWQg
+U2VydmljZXMgQ2FuYWRhMRgwFgYDVQQDDA8qLndlYXRoZXIuZ2MuY2EwggEiMA0G
+CSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDARd6fBVAjKlOvocp442ydQbSCoxHW
+91i1r5TkucsGLkzm92HQsj4eVNCl6Uti3hd3yYL1QxFTImdyUs2ETlDoU/hVFEey
+IevKo3m3ufuv9YryXGtoRcthMITEPrIy6vOyNbGaxJw1J6/AkOs7oAm3kUlx6PS8
+vOnuoyik1r6Q9qx1XP9Z05cIyyIBhsyjdS124Jj01quCjz5COPMXKU1LlaU8LeSA
+qILe9DyC3XWluZGxZH+tGiw42mpiCD3JGlCsXQujU5y4jg2fq8/ePsM3OUzM/Dxs
+kGMMN7LAG9/H4CINJ+aXZQvlgTfIZp2eWLvHy5dnsbi3VAJOEtgRVzedAgMBAAGj
+ggNZMIIDVTAMBgNVHRMBAf8EAjAAMB0GA1UdDgQWBBSSLKB4osVSIvgfhk+6NayJ
+BDAXuDAfBgNVHSMEGDAWgBSConB03bxTP8971PfNf6dgxgpMvzBoBggrBgEFBQcB
+AQRcMFowIwYIKwYBBQUHMAGGF2h0dHA6Ly9vY3NwLmVudHJ1c3QubmV0MDMGCCsG
+AQUFBzAChidodHRwOi8vYWlhLmVudHJ1c3QubmV0L2wxay1jaGFpbjI1Ni5jZXIw
+MwYDVR0fBCwwKjAooCagJIYiaHR0cDovL2NybC5lbnRydXN0Lm5ldC9sZXZlbDFr
+LmNybDCBnQYDVR0RBIGVMIGSgg8qLndlYXRoZXIuZ2MuY2GCDXdlYXRoZXIuZ2Mu
+Y2GCC21ldGVvLmdjLmNhgg0qLm1ldGVvLmdjLmNhghUqLmFscGhhLndlYXRoZXIu
+Z2MuY2GCEyouYWxwaGEubWV0ZW8uZ2MuY2GCFCouYmV0YS53ZWF0aGVyLmdjLmNh
+ghIqLmJldGEubWV0ZW8uZ2MuY2EwDgYDVR0PAQH/BAQDAgWgMB0GA1UdJQQWMBQG
+CCsGAQUFBwMBBggrBgEFBQcDAjATBgNVHSAEDDAKMAgGBmeBDAECAjCCAYAGCisG
+AQQB1nkCBAIEggFwBIIBbAFqAHYAouMK5EXvva2bfjjtR2d3U9eCW4SU1yteGyzE
+uVCkR+cAAAGO9cCizQAABAMARzBFAiEA7hlkvyyYsnhbas5WDwoTkdGWf92Ukckw
+rGyUqMPZQjkCID8oQlHWS11haifx+i9tBr0epmrzkh2/bbneb9WNrlUvAHcATnWj
+J1yaEMM4W2zU3z9S6x3w4I4bjWnAsfpksWKaOd8AAAGO9cCi2AAABAMASDBGAiEA
+iE1jLaXrlPxrkIiq7NU0gH/sDiUlHCmMrT79KUy2V+YCIQCb2GrTID6NO3hb8bGs
+ctd8ipYRuu1FnDY8X3MGVDcWnAB3AObSMWNAd4zBEEEG13G5zsHSQPaWhIb7uocy
+Hf0eN45QAAABjvXAovkAAAQDAEgwRgIhALRWB9aVOe3Zi9j6MEVKJl1NKQKIycr3
+8IfKeHxckblpAiEA85xjN3iBFvEVT4yIxO4qKRelbpFGomgSrYnfwTSUwHIwDQYJ
+KoZIhvcNAQELBQADggEBADGEK5tU92TqoTWPh1lfSRTDVCpk5qhqmIuaTeYQMonV
+AgHF5rktrUhXmMzRJEef8XRwLvApT4zOn+TV+NOUpi8q6tDWxx7dE8+moIf6tXq8
+d4OQ+VDO/C6nz/xA8FqvxAbPfqCJ6DqgitSyXhF01XkNMfVcknGAzhc/HemuukI1
+3DTuaATlbaXkHjSp+O0mXCykCIgH/9eMuOoFMzhdQhtJiLf2MMVclJ72/YzgVveA
+XrSTVE5F4BYdp9hX+0BTg5zNgg1wwvVVOwuIOTFqSSJCzGHjl/1i8IyyPLKB3ilt
+B+0V7IdmIxlvPbL//qNkzyUVufkewAoLMqCOUIZA0eY=</X509Certificate>
+</X509Data>
+</KeyInfo>
+</Signature></alert>

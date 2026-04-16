@@ -3,7 +3,7 @@
     "en-CA": {
       "provider": "piper",
       "model": "./piper-tts/en_US-hfc_male-medium.onnx",
-      "speaker": 0
+      "speaker": 16
     }
   },
   "lang_clips": {
@@ -185,7 +185,7 @@
       "en-CA": {
         "provider": "piper",
         "model": "./piper-tts/en_US-hfc_male-medium.onnx",
-        "speaker": 0,
+        "speaker": 16,
         "text_hash": "8804a4f8cf1c7b3d10f1884a2fd6aed5"
       }
     }

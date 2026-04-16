@@ -82,6 +82,7 @@
     "biological": "BHW",
     "boilWater": "BWW",
     "blizzard": "BZW",
+    "blowingSnow": "BZW",
     "amber": "CAE",
     "missingPer": "CAE",
     "missingVPer": "CAE",
@@ -113,10 +114,12 @@
     "extremeWind": "EWW",
     "flashFlood": "FFW",
     "flood": "FLW",
+    "rainfall": "FLW",
     "fire": "FRW",
     "wildFire": "WFW",
     "forestFire": "WFW",
     "freeze": "FZW",
+    "freezingRain": "FZW",
     "weather": "SPS",
     "food": "FCW",
     "hurricane": "HUW",
@@ -149,6 +152,11 @@
     "volcano": "VOW",
     "winterStorm": "WSW",
     "snow": "WSW",
-    "snowSquall": "SQW"
+    "snowfall": "WSW",
+    "icePellets": "WSW",
+    "snowSquall": "SQW",
+    "911Outage": "TOE",
+    "shelterInPlace": "SPW",
+    "evacuation": "EVI"
   }
 }

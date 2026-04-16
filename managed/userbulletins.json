@@ -2,7 +2,7 @@
     {
         "dateStart": null,
         "dateEnd": null,
-        "enabled": true,
+        "enabled": false,
         "text": {
             "en-CA": {
                 "header": "You are listening to a live test broadcast and demonstration of the Haze Weather Radio open source project.",

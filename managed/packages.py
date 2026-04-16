@@ -366,6 +366,54 @@ _AE_PH: dict[str, dict[str, str]] = {
         'sunrise_tomorrow': "El sol saldrá a las {time} mañana.",
     },
 }
+_AQI_PH: dict[str, dict[str, str]] = {
+    'en': {
+        'opener_twc': "The global air quality report for {name}, powered by Copernicus Atmosphere Monitoring Service Information {copyyear} and provided by The Weather Channel. Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus Information or Data it contains",
+        'unavailable_report': "The air quality information for {name} was unavailable.",
+        'now_eccc': "The air quality health index was observed at {name} and reported a value of {val} at {time}.",
+        'low_eccc': "This is ideal air quality for outdoor activities for both at-risk and general populations.",
+        'moderate_eccc': "This is acceptable air quality for outdoor activities for most people. However, at-risk individuals should consider reducing or rescheduling strenuous outdoor activities if symptoms occur.",
+        'high_eccc': "This is unhealthy air quality for at-risk individuals, which include children, seniors, and those with pre-existing respiratory or heart conditions. At-risk individuals should reduce or reschedule strenuous outdoor activities. The general population is not likely to be affected.",
+        'very_eccc': "I may not be a detective, but it is probably hazardous for most people to be outdoors right now. At-risk individuals should avoid strenuous outdoor activities. Everyone else should also reduce or reschedule strenuous outdoor activities.",
+        #'super_frickin_high_eccc': "Attention! Breaking news! The air quality health index has reached a never-before-seen level of {val} at {name}! This is an unprecidented event, general population should avoid being outside at all costs, and at-risk individuals WILL EXPLODE if they even look out the smoggy window. If you have to go outside in case of an emergency, make sure to wear a Hazardous EnVironment suit from Half-Life 2, a facemask straight out of 2020, a canister of oxygen, and a personal air purifier from TEMU, and even then, general population individuals will experience a severe case of literally melting to the ground, and at-risk individuals, if not exploded already, might literally diffuse between plains of reality, ultimately causing a supernova that disperses atoms of themselves into various parallel universes, rendering search and rescue operations probably a little difficult. Stay safe out there, folks.",
+        'forecast_opener_eccc': "The air quality health index forecast for {name} is {val} for {period_name} and is considered {risk}.",
+        'forecast_eccc': "For {period_name}, the maximum air quality health index is forecast to be {val}, or {risk}.",
+        'forecast_trailing_eccc': "{period2_val} on {period2_name}, and lastly, {period3_val} on {period3_name}.",
+        'forecast_insmoke_eccc': "The air quality health index is expected to be {val} in smoke."
+    },
+    'fr': {
+        'opener_twc': "Le rapport mondial sur la qualité de l'air pour {name}, propulsé par le Service de surveillance de l'atmosphère Copernicus Information {copyyear} et fourni par The Weather Channel. Ni la Commission européenne ni le Centre européen pour les prévisions météorologiques à moyen terme (CEPMMT) ne sont responsables de toute utilisation qui pourrait être faite des informations ou des données de Copernicus qu'il contient.",
+        'unavailable_report': "Les informations sur la qualité de l'air pour {name} n'étaient pas disponibles.",
+        'now_eccc': "L'indice de santé de la qualité de l'air a été observé à {name} et a rapporté une valeur de {val} à {time}.",
+        'low_eccc': "C'est une qualité d'air idéale pour les activités de plein air, tant pour les populations à risque que pour le grand public.",
+        'moderate_eccc': "C'est une qualité d'air acceptable pour les activités de plein air pour la plupart des gens. Cependant, les personnes à risque devraient envisager de réduire ou de reprogrammer les activités de plein air intenses si des symptômes surviennent.",
+        'high_eccc': "C'est une qualité d'air malsaine pour les personnes à risque, qui comprennent les enfants, les personnes âgées et celles ayant des conditions respiratoires ou cardiaques préexistantes. Les personnes à risque devraient réduire ou reprogrammer les activités de plein air intenses. Le grand public n'est probablement pas affecté.",
+        'very_eccc': "Je ne suis peut-être pas un détective, mais il est probablement dangereux pour la plupart des gens d'être à l'extérieur en ce moment. Les personnes à risque devraient éviter les activités de plein air intenses. Tout le monde devrait également réduire ou reprogrammer les activités de plein air intenses.",
+        'forecast_opener_eccc': "La prévision de l'indice de santé de la qualité de l'air pour {name} est de {val} pour {period_name} et est considérée comme {risk}.",
+        'forecast_eccc': "Pour {period_name}, l'indice de santé de la qualité de l'air maximum est prévu à {val}, ou {risk}.",
+        'forecast_trailing_eccc': "{period2_val} pour {period2_name}, et enfin, {period3_val} pour {period3_name}.",
+        'forecast_insmoke_eccc': "L'indice de santé de la qualité de l'air devrait être de {val} en présence de fumée.",
+    },
+    'es': {
+        'opener_twc': "El informe global de calidad del aire para {name}, impulsado por el Servicio de Monitoreo de la Atmósfera Copernicus Information {copyyear} y proporcionado por The Weather Channel. Ni la Comisión Europea ni el ECMWF son responsables de cualquier uso que se pueda hacer de la Información o los Datos de Copernicus que contiene.",
+        'unavailable_report': "La información sobre la calidad del aire para {name} no estaba disponible.",
+        'now_eccc': "El índice de salud de la calidad del aire se observó en {name} y reportó un valor de {val} a las {time}.",
+        'low_eccc': "Esta es una calidad del aire ideal para actividades al aire libre tanto para poblaciones en riesgo como para el público en general.",
+        'moderate_eccc': "Esta es una calidad del aire aceptable para actividades al aire libre para la mayoría de las personas. Sin embargo, las personas en riesgo deben considerar reducir o reprogramar las actividades al aire libre extenuantes si ocurren síntomas.",
+        'high_eccc': "Esta es una calidad del aire insalubre para personas en riesgo, que incluyen niños, ancianos y aquellos con condiciones respiratorias o cardíacas preexistentes. Las personas en riesgo deben reducir o reprogramar las actividades al aire libre extenuantes. El público en general no es probable que se vea afectado.",
+        'very_eccc': "Puede que no sea un detective, pero probablemente sea peligroso para la mayoría de las personas estar al aire libre en este momento. Las personas en riesgo deben evitar las actividades al aire libre extenuantes. Todos los demás también deberían reducir o reprogramar las actividades al aire libre extenuantes.",
+        'forecast_opener_eccc': "El pronóstico del índice de salud de la calidad del aire para {name} es {val} para {period_name} y se considera {risk}.",
+        'forecast_eccc': "Para {period_name}, el índice máximo de salud de la calidad del aire se pronostica en {val}, o {risk}.",
+        'forecast_trailing_eccc': "{period2_val} para {period2_name}, y finalmente, {period3_val} para {period3_name}.",
+        'forecast_insmoke_eccc': "Se espera que el índice de salud de la calidad del aire sea {val} en presencia de humo.",
+    },
+}
+
+_AQHI_RISK_LABELS: dict[str, dict[str, str]] = {
+    'en': {'low': 'Low', 'moderate': 'Moderate', 'high': 'High', 'very_high': 'Very High'},
+    'fr': {'low': 'Faible', 'moderate': 'Modéré', 'high': 'Élevé', 'very_high': 'Très élevé'},
+    'es': {'low': 'Bajo', 'moderate': 'Moderado', 'high': 'Alto', 'very_high': 'Muy alto'},
+}
 
 _DISCUSSION_SECTION_HEADERS: dict[str, str] = {
     'SYNOPTIC OVERVIEW': 'Synoptic overview.',
@@ -464,6 +512,7 @@ class Package_Config:
         'date_time': 24.0,
         'current_conditions': 2700.0,
         'forecast': 7200.0,
+        'air_quality': 3600.0,
         'climate_summary': 86400.0,
         'eccc_discussion': 10800.0,
         'geophysical_alert': 10800.0,
@@ -657,12 +706,17 @@ _ALERT_VERBS: dict[str, dict[str, str]] = {
     'en': {
         'Alert': 'has issued',
         'Update': 'has updated',
-        'Cancel': 'has ended',
+        'Cancel': 'has cancelled',
     },
     'fr': {
         'Alert': 'a émis',
         'Update': 'a mis à jour',
         'Cancel': 'a annulé',
+    },
+    'es': {
+        'Alert': 'ha emitido',
+        'Update': 'ha actualizado',
+        'Cancel': 'ha cancelado',
     },
 }
 
@@ -711,37 +765,48 @@ def _resolve_alert_areas(
     feed: dict[str, Any],
     lang_short: str,
 ) -> list[str]:
-    raw = _alert_param(params, 'layer:EC-MSC-SMC:1.1:Newly_Active_Areas')
-    if isinstance(raw, list):
-        alert_clcs = [str(c).strip() for c in raw]
-    elif isinstance(raw, str) and raw:
-        alert_clcs = [c.strip() for c in raw.split(',')]
+    raw_param = _alert_param(params, 'layer:EC-MSC-SMC:1.1:Newly_Active_Areas')
+    if isinstance(raw_param, list):
+        alert_clcs = [str(c).strip() for c in raw_param if str(c).strip()]
+    elif isinstance(raw_param, str) and raw_param:
+        alert_clcs = [c.strip() for c in raw_param.split(',') if c.strip()]
     else:
         return []
 
-    feed_sames: list[str] = []
+    feed_patterns: list[str] = []
     for block in feed.get('locations', []):
         if not isinstance(block, dict):
             continue
         for loc in block.get('forecastLocations', []):
             if not isinstance(loc, dict):
                 continue
-            same = loc.get('same') or loc.get('forecast_region')
-            if same:
-                raw = str(same).strip()
-                feed_sames.append(raw.split('-', 1)[-1] if '-' in raw else raw)
+            explicit = str(loc.get('same') or '').strip()
+            if explicit:
+                feed_patterns.extend(p.strip() for p in explicit.split(',') if p.strip())
+            else:
+                raw_fc = str(loc.get('forecast_region') or '').strip()
+                if not raw_fc:
+                    continue
+                if '-' in raw_fc:
+                    left, right = raw_fc.split('-', 1)
+                    if left.replace('*', '').isdigit() and right.replace('*', '').isdigit():
+                        raw_fc = right
+                feed_patterns.extend(p.strip() for p in raw_fc.split(',') if p.strip())
 
-    if not feed_sames:
+    if not feed_patterns:
         return []
 
+    seen: set[str] = set()
     matched: list[str] = []
     for clc in alert_clcs:
-        for same in feed_sames:
-            if same.endswith('*'):
-                if clc.startswith(same[:-1]):
+        for pattern in feed_patterns:
+            if pattern.endswith('*'):
+                if clc.startswith(pattern[:-1]) and clc not in seen:
+                    seen.add(clc)
                     matched.append(clc)
                     break
-            elif clc == same:
+            elif clc == pattern and clc not in seen:
+                seen.add(clc)
                 matched.append(clc)
                 break
 
@@ -750,21 +815,143 @@ def _resolve_alert_areas(
 
     db = _load_forecast_loc_db()
     lang_idx = 1 if lang_short == 'fr' else 0
-    seen: set[str] = set()
+    seen_names: set[str] = set()
     names: list[str] = []
     for clc in matched:
-        parent = clc[:4] + "00"
-        if parent in db:
-            if parent not in seen:
-                seen.add(parent)
-                name = db[parent][lang_idx].replace(' - ', ', ')
+        entry = db.get(clc)
+        if entry:
+            name = entry[lang_idx].replace(' - ', ', ')
+            if name and name not in seen_names:
+                seen_names.add(name)
                 names.append(name)
-        elif clc in db:
-            if clc not in seen:
-                seen.add(clc)
-                names.append(db[clc][lang_idx])
     return names
 
+
+_ECCC_BOILERPLATE_RE = re.compile(r'\s*###.*', re.DOTALL)
+_ECCC_MULTISPACE_RE = re.compile(r'\n{2,}')
+
+_AL_PH: dict[str, dict[str, str]] = {
+    'en': {
+        'opener_1':          "The following alert is currently in effect.",
+        'opener':            "The following {count} alerts are currently in effect.",
+        'eccc_issued':       "{sender} has issued a {subject} for {coverage}.",
+        'eccc_updated':      "{sender} has updated a {subject} for {coverage}.",
+        'eccc_ended':        "The {subject} that was in effect for portions of {coverage} has now ended.",
+        'onset':             "Beginning {datetime}.",
+        'expires':           "In effect until {datetime}.",
+        'expires_areas':     "In effect until {datetime}, for {areas}.",
+        'confidence_impact': "Forecast confidence is {confidence}, with a {impact} impact.",
+        'civil_issued':      "{sender} has issued a {event}.",
+        'civil_updated':     "{sender} has updated a {event}.",
+        'civil_for':         "This affects {coverage}.",
+        'civil_expires':     "In effect until {datetime}.",
+        'nws':               "{description}",
+        'generic_issued':    "{sender} has issued a {event}.",
+        'generic_onset':     "Beginning {datetime}.",
+        'generic_expires':   "In effect until {datetime}.",
+        'list_and':          "and",
+    },
+    'fr': {
+        'opener_1':          "L'alerte suivante est actuellement en vigueur.",
+        'opener':            "Les {count} alertes suivantes sont actuellement en vigueur.",
+        'eccc_issued':       "{sender} a émis un {subject} pour {coverage}.",
+        'eccc_updated':      "{sender} a mis à jour un {subject} pour {coverage}.",
+        'eccc_ended':        "Le {subject} qui était en vigueur pour des parties de {coverage} est maintenant terminé.",
+        'onset':             "À compter du {datetime}.",
+        'expires':           "En vigueur jusqu'au {datetime}.",
+        'expires_areas':     "En vigueur jusqu'au {datetime}, pour {areas}.",
+        'confidence_impact': "Niveau de confiance : {confidence}. Niveau d'impact : {impact}.",
+        'civil_issued':      "{sender} a émis un {event}.",
+        'civil_updated':     "{sender} a mis à jour un {event}.",
+        'civil_for':         "Cela affecte {coverage}.",
+        'civil_expires':     "En vigueur jusqu'au {datetime}.",
+        'nws':               "{description}",
+        'generic_issued':    "{sender} a émis un {event}.",
+        'generic_onset':     "À compter du {datetime}.",
+        'generic_expires':   "En vigueur jusqu'au {datetime}.",
+        'list_and':          "et",
+    },
+    'es': {
+        'opener_1':          "La siguiente alerta está actualmente en vigor.",
+        'opener':            "Las siguientes {count} alertas están actualmente en vigor.",
+        'eccc_issued':       "{sender} ha emitido un {subject} para {coverage}.",
+        'eccc_updated':      "{sender} ha actualizado un {subject} para {coverage}.",
+        'eccc_ended':        "El {subject} que estaba en vigor para partes de {coverage} ha terminado.",
+        'onset':             "A partir de {datetime}.",
+        'expires':           "En vigor hasta {datetime}.",
+        'expires_areas':     "En vigor hasta {datetime}, para {areas}.",
+        'confidence_impact': "Confianza del pronóstico: {confidence}. Nivel de impacto: {impact}.",
+        'civil_issued':      "{sender} ha emitido un {event}.",
+        'civil_updated':     "{sender} ha actualizado un {event}.",
+        'civil_for':         "Esto afecta a {coverage}.",
+        'civil_expires':     "En vigor hasta {datetime}.",
+        'nws':               "{description}",
+        'generic_issued':    "{sender} ha emitido un {event}.",
+        'generic_onset':     "A partir de {datetime}.",
+        'generic_expires':   "En vigor hasta {datetime}.",
+        'list_and':          "y",
+    },
+}
+
+
+def _clean_alert_text(text: str) -> str:
+    text = _ECCC_BOILERPLATE_RE.sub('', text)
+    text = _ECCC_MULTISPACE_RE.sub(' ', text)
+    text = _reformat_times_in_text(text)
+    return text.strip()
+
+
+def _detect_alert_source(params: list[dict[str, Any]], sender_name: str) -> str:
+    for p in params:
+        if p.get('valueName', '').startswith('layer:EC-MSC-SMC'):
+            return 'eccc'
+    sender_lower = sender_name.lower()
+    if 'weather.gov' in sender_lower or 'national weather service' in sender_lower:
+        return 'nws'
+    for p in params:
+        if p.get('valueName', '').upper() == 'EAS-ORG':
+            return 'nws'
+    return 'civil'
+
+
+def _parse_eccc_subject(alert_name: str, colour: str, alert_type: str) -> str:
+    name = alert_name.strip()
+    if colour and alert_type:
+        prefix = f"{colour} {alert_type} - "
+        if name.lower().startswith(prefix.lower()):
+            event = name[len(prefix):].strip().title()
+            return f"{colour.title()} {event} {alert_type.title()}"
+    return name.title()
+
+
+def _join_areas(areas: list[str], lang_short: str) -> str:
+    conj = {'fr': 'et', 'es': 'y'}.get(lang_short, 'and')
+    if not areas:
+        return ''
+    if len(areas) == 1:
+        return areas[0]
+    if len(areas) == 2:
+        return f"{areas[0]} {conj} {areas[1]}"
+    return f"{', '.join(areas[:-1])}, {conj} {areas[-1]}"
+
+
+def _format_datetime_spoken(dt: datetime.datetime, lang_short: str) -> str:
+    date_part = _format_date_spoken(dt, lang_short)
+    time_part = _format_time_spoken(dt)
+    if lang_short == 'fr':
+        return f"{date_part} à {time_part}"
+    if lang_short == 'es':
+        return f"{date_part} a las {time_part}"
+    return f"{date_part}, at {time_part}"
+
+
+def _civil_area_desc(entry: dict[str, Any]) -> str:
+    for area in entry.get('areas', []):
+        if isinstance(area, dict):
+            desc = area.get('areaDesc', '').strip()
+            if desc:
+                return desc
+    return ''
 
 def alerts_package(
     registry: list[Any] | None = None,
@@ -779,78 +966,122 @@ def alerts_package(
     lang_short = _lang[:2]
     zone = ZoneInfo(tz or 'UTC')
     now = datetime.datetime.now(tz=zone)
-    verbs = _ALERT_VERBS.get(lang_short, _ALERT_VERBS['en'])
+    ph = _AL_PH.get(lang_short, _AL_PH['en'])
 
-    parts: list[str] = []
+    rendered: list[str] = []
+
     for entry in registry:
         if not isinstance(entry, dict):
             continue
 
         meta = entry.get('metadata', {})
-        source = entry.get('source', {})
+        source_meta = entry.get('source', {})
         params = entry.get('parameters', [])
 
         expires_raw = meta.get('expires')
         expires_dt: datetime.datetime | None = None
         if expires_raw:
             try:
-                expires_dt = datetime.datetime.fromisoformat(expires_raw)
-                if expires_dt.tzinfo is None:
-                    expires_dt = expires_dt.replace(tzinfo=zone)
+                expires_dt = datetime.datetime.fromisoformat(expires_raw).astimezone(zone)
                 if now > expires_dt:
                     continue
             except (ValueError, TypeError):
                 pass
 
         sender_name = meta.get('senderName', '')
-        msg_type = source.get('msgType', 'Alert')
-        verb = verbs.get(msg_type, verbs['Alert'])
-
-        alert_name = _alert_param(params, 'layer:EC-MSC-SMC:1.0:Alert_Name')
-        if not alert_name:
-            alert_name = meta.get('headline', meta.get('event', ''))
-        alert_name_tc = str(alert_name).title()
-
-        article = 'an' if alert_name_tc[:1].lower() in _AN_PREFIXES else 'a'
-
-        coverage = _alert_param(params, 'layer:EC-MSC-SMC:1.0:Alert_Coverage')
-
-        sentence = f"{sender_name} {verb} {article} {alert_name_tc}"
-        if coverage:
-            sentence += f", for {coverage}"
-        sentence += "."
-
-        onset_raw = meta.get('onset') or meta.get('effective')
-        if onset_raw:
-            try:
-                onset_dt = datetime.datetime.fromisoformat(onset_raw).astimezone(zone)
-                sentence += f" Starting {_format_date_spoken(onset_dt, lang_short)}."
-            except (ValueError, TypeError):
-                pass
-
-        if expires_dt:
-            exp_local = expires_dt.astimezone(zone)
-            areas = _resolve_alert_areas(params, feed, lang_short) if feed else []
-            exp_str = f"Until {_format_date_spoken(exp_local, lang_short)}"
-            if areas:
-                exp_str += f", for {', '.join(areas)}"
-            exp_str += "."
-            sentence += " " + exp_str
+        msg_type = source_meta.get('msgType', 'Alert')
+        source_type = _detect_alert_source(params, sender_name)
 
         text_block = entry.get('text', {})
-        desc = (text_block.get('description') or '').strip()
-        instr = (text_block.get('instruction') or '').strip()
-        if desc:
-            sentence += " " + desc
-        if instr:
-            sentence += " " + instr
+        description = _clean_alert_text(text_block.get('description') or '')
+        instruction = _clean_alert_text(text_block.get('instruction') or '')
 
-        parts.append(sentence)
+        sentences: list[str] = []
 
-    if not parts:
+        if source_type == 'eccc':
+            alert_name = str(_alert_param(params, 'layer:EC-MSC-SMC:1.0:Alert_Name') or '')
+            colour     = str(_alert_param(params, 'layer:EC-MSC-SMC:1.1:Colour') or '')
+            alert_type = str(_alert_param(params, 'layer:EC-MSC-SMC:1.0:Alert_Type') or '')
+            coverage   = str(_alert_param(params, 'layer:EC-MSC-SMC:1.0:Alert_Coverage') or meta.get('event', ''))
+            confidence = str(_alert_param(params, 'layer:EC-MSC-SMC:1.1:MSC_Confidence') or '')
+            impact     = str(_alert_param(params, 'layer:EC-MSC-SMC:1.1:MSC_Impact') or '')
+            loc_status = str(
+                _alert_param(params, 'layer:EC-MSC-SMC:1.1:Alert_Location_Status') or
+                _alert_param(params, 'layer:EC-MSC-SMC:1.0:Alert_Location_Status') or ''
+            ).lower()
+
+            subject = _parse_eccc_subject(alert_name, colour, alert_type) if alert_name else meta.get('event', '').title()
+
+            if loc_status == 'ended' or msg_type == 'Cancel':
+                sentences.append(ph['eccc_ended'].format(subject=subject, coverage=coverage))
+            elif msg_type == 'Update':
+                sentences.append(ph['eccc_updated'].format(sender=sender_name, subject=subject, coverage=coverage))
+            else:
+                sentences.append(ph['eccc_issued'].format(sender=sender_name, subject=subject, coverage=coverage))
+
+            if loc_status != 'ended' and msg_type != 'Cancel':
+                onset_raw = meta.get('onset') or meta.get('effective')
+                if onset_raw:
+                    try:
+                        onset_dt = datetime.datetime.fromisoformat(onset_raw).astimezone(zone)
+                        if onset_dt > now:
+                            sentences.append(ph['onset'].format(datetime=_format_datetime_spoken(onset_dt, lang_short)))
+                    except (ValueError, TypeError):
+                        pass
+
+                areas = _resolve_alert_areas(params, feed, lang_short) if feed else []
+                if expires_dt:
+                    if areas:
+                        sentences.append(ph['expires_areas'].format(
+                            datetime=_format_datetime_spoken(expires_dt, lang_short),
+                            areas=_join_areas(areas, lang_short),
+                        ))
+                    else:
+                        sentences.append(ph['expires'].format(datetime=_format_datetime_spoken(expires_dt, lang_short)))
+
+                if confidence and impact:
+                    sentences.append(ph['confidence_impact'].format(confidence=confidence, impact=impact))
+
+                if description:
+                    sentences.append(description)
+                if instruction:
+                    sentences.append(instruction)
+
+        elif source_type == 'nws':
+            if description:
+                sentences.append(ph['nws'].format(description=description))
+            if instruction:
+                sentences.append(instruction)
+
+        else:
+            event_name = str(meta.get('event') or meta.get('headline') or '').title()
+            coverage = _civil_area_desc(entry)
+
+            if msg_type == 'Update':
+                sentences.append(ph['civil_updated'].format(sender=sender_name or 'Alert Ready', event=event_name))
+            else:
+                sentences.append(ph['civil_issued'].format(sender=sender_name or 'Alert Ready', event=event_name))
+
+            if coverage:
+                sentences.append(ph['civil_for'].format(coverage=coverage))
+
+            if expires_dt:
+                sentences.append(ph['civil_expires'].format(datetime=_format_datetime_spoken(expires_dt, lang_short)))
+
+            if description:
+                sentences.append(description)
+            if instruction:
+                sentences.append(instruction)
+
+        if sentences:
+            rendered.append('  '.join(sentences))
+
+    if not rendered:
         return ""
 
-    return '  '.join(parts)
+    count = len(rendered)
+    opener = ph['opener_1'] if count == 1 else ph['opener'].format(count=_num_to_words(count))
+    return opener + '  ' + '  '.join(rendered)
 
 
 def current_conditions_package(
@@ -1348,3 +1579,120 @@ def geophysical_alert_package(
     sentences = [s for s in sentences if not s.startswith('#') if not s.startswith(':Product:') and not s.startswith(':Issued:') and not s.startswith('Prepared by')]
     sentences = [_reformat_times_in_text(s) for s in sentences]
     return '  '.join(sentences)
+
+
+def _aqhi_risk_key(val: float) -> str:
+    if val <= 3:
+        return 'low'
+    if val <= 6:
+        return 'moderate'
+    if val <= 10:
+        return 'high'
+    return 'very_high'
+
+
+def air_quality_package(
+    aqhi_data: Optional[dict[str, Any]] = None,
+    location_name: Optional[str] = None,
+    lang: Optional[str] = "en-CA",
+) -> str:
+    _lang = lang or 'en-CA'
+    lang_short = _lang[:2]
+    ph = _AQI_PH.get(lang_short, _AQI_PH['en'])
+    risk_labels = _AQHI_RISK_LABELS.get(lang_short, _AQHI_RISK_LABELS['en'])
+
+    station_name: str | None = None
+    if isinstance(aqhi_data, dict):
+        location_block = aqhi_data.get('location')
+        if isinstance(location_block, dict):
+            station_name = location_block.get(lang_short) or location_block.get('en')
+    name = location_name or station_name or 'this area'
+
+    if aqhi_data is None:
+        return ph['unavailable_report'].format(name=name)
+
+    aqhi_val = aqhi_data.get('aqhi')
+    observed_at = aqhi_data.get('observed_at')
+    special_notes_block = aqhi_data.get('special_notes') or {}
+    forecast_block = aqhi_data.get('forecast') or {}
+
+    sentences: list[str] = []
+
+    if aqhi_val is not None:
+        time_str = _format_spoken_time_value(observed_at) if observed_at else ''
+        sentences.append(ph['now_eccc'].format(name=name, val=aqhi_val, time=time_str))
+        risk_key = _aqhi_risk_key(float(aqhi_val))
+        narrative = ph.get(f'{risk_key}_eccc')
+        if narrative:
+            sentences.append(narrative)
+
+    special_notes = ''
+    if isinstance(special_notes_block, dict):
+        special_notes = special_notes_block.get(lang_short) or special_notes_block.get('en') or ''
+    if special_notes:
+        sentences.append(special_notes.strip())
+
+    periods: list[dict[str, Any]] = []
+    if isinstance(forecast_block, dict):
+        raw_periods = forecast_block.get('periods')
+        if isinstance(raw_periods, list):
+            periods = [p for p in raw_periods if isinstance(p, dict)]
+
+    def _period_name(p: dict[str, Any]) -> str:
+        blk = p.get('period') or {}
+        return (blk.get(lang_short) or blk.get('en') or '') if isinstance(blk, dict) else str(blk)
+
+    for i in range(min(2, len(periods))):
+        period = periods[i]
+        period_val = period.get('aqhi')
+        if period_val is None:
+            continue
+        period_name = _period_name(period)
+        risk_key = _aqhi_risk_key(float(period_val))
+        risk_label = risk_labels[risk_key]
+        if i == 0:
+            opener = ph.get('forecast_opener_eccc', '')
+            if opener:
+                sentences.append(opener.format(name=name, val=period_val, period_name=period_name, risk=risk_label))
+        else:
+            fcst = ph.get('forecast_eccc', '')
+            if fcst:
+                sentences.append(fcst.format(period_name=period_name, val=period_val, risk=risk_label))
+        period_insmoke = period.get('aqhi_insmoke')
+        if period_insmoke is not None:
+            insmoke = ph.get('forecast_insmoke_eccc', '')
+            if insmoke:
+                sentences.append(insmoke.format(val=period_insmoke))
+
+    if len(periods) >= 4:
+        p2, p3 = periods[2], periods[3]
+        p2_val, p3_val = p2.get('aqhi'), p3.get('aqhi')
+        if p2_val is not None and p3_val is not None:
+            trailing = ph.get('forecast_trailing_eccc', '')
+            if trailing:
+                sentences.append(trailing.format(
+                    period2_val=p2_val,
+                    period2_name=_period_name(p2),
+                    period3_val=p3_val,
+                    period3_name=_period_name(p3),
+                ))
+    elif len(periods) >= 3:
+        period = periods[2]
+        period_val = period.get('aqhi')
+        if period_val is not None:
+            period_name = _period_name(period)
+            risk_key = _aqhi_risk_key(float(period_val))
+            risk_label = risk_labels[risk_key]
+            fcst = ph.get('forecast_eccc', '')
+            if fcst:
+                sentences.append(fcst.format(period_name=period_name, val=period_val, risk=risk_label))
+            period_insmoke = period.get('aqhi_insmoke')
+            if period_insmoke is not None:
+                insmoke = ph.get('forecast_insmoke_eccc', '')
+                if insmoke:
+                    sentences.append(insmoke.format(val=period_insmoke))
+
+    if not sentences:
+        return ph['unavailable_report'].format(name=name)
+
+    return ' '.join(sentences)

@@ -19,7 +19,7 @@ except Exception:
     sd = None
 
 from managed.events import NowPlayingMetadata
-from module.queue import CHANNELS, SAMPLE_RATE
+from module.buffer import CHANNELS, SAMPLE_RATE
 
 log = logging.getLogger(__name__)
 
@@ -223,17 +223,16 @@ class FileSink:
 
 
 _RADIO_DYNAMICS = (
-    'equalizer=f=320:t=q:w=1.8:g=-3,'
-    'equalizer=f=650:t=q:w=1.4:g=3,'
-    'equalizer=f=800:t=q:w=1.8:g=8,'
-    'equalizer=f=960:t=q:w=1.8:g=10,'
-    'equalizer=f=1000:t=q:w=1:g=8,'
+    'equalizer=f=320:t=q:w=1.5:g=-2,'
+    'equalizer=f=650:t=q:w=1:g=0,'
+    'equalizer=f=800:t=q:w=1:g=2,'
+    'equalizer=f=960:t=q:w=0.8:g=2,'
+    'equalizer=f=1000:t=q:w=1:g=4,'
     'equalizer=f=1800:t=q:w=1.2:g=4,'
-    'loudnorm=I=-13:TP=0.0:LRA=8,'
+    'equalizer=f=2000:t=q:w=1.5:g=2,'
+    'acompressor=threshold=-22dB:ratio=18:attack=5:release=70:makeup=16dB,'
     'highpass=f=200,'
     'lowpass=f=3000,'
-    'acompressor=threshold=-16dB:ratio=10:attack=5:release=70:makeup=10dB,'
-    'lowpass=f=2400,'
 )
 
 _PIFMADV_PREFILL_CHUNKS = 6

@@ -29,6 +29,7 @@ from managed.events import (
     snapshot_runtime,
     update_runtime_status,
 )
+from managed.packages import air_quality_package
 from module.alert import feed_same_codes
 from module.scheduler import fire_test as _fire_test
 
@@ -57,7 +58,7 @@ class SAMAirRequest(BaseModel):
     air_on_all_feeds: bool = False
 
 
-_ALL_PACKAGES = ('date_time', 'station_id', 'current_conditions', 'forecast',
+_ALL_PACKAGES = ('date_time', 'station_id', 'current_conditions', 'forecast', 'air_quality',
                  'climate_summary', 'eccc_discussion', 'geophysical_alert', 'user_bulletin')
 
 
@@ -637,7 +638,7 @@ class WebServer:
             voice_path = candidate
         elif payload.voice_message.strip():
             from module.tts import synthesize_pcm
-            from module.queue import CHANNELS, SAMPLE_RATE as BUS_SR
+            from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
             from module.same import resample as _resample
             import numpy as np
             pcm = synthesize_pcm(self.config, payload.voice_message.strip())
@@ -658,7 +659,7 @@ class WebServer:
             attn_duration_s=8.0,
         )
 
-        from module.queue import SAMPLE_RATE as _BUS_SR
+        from module.buffer import SAMPLE_RATE as _BUS_SR
         from module.same import resample as _resample2
         alert_pcm = to_pcm16(_resample2(full_signal, same_sr, _BUS_SR))
 
@@ -679,7 +680,7 @@ class WebServer:
     async def wx_generate(self, payload: WXGenerateRequest) -> StreamingResponse:
         from module.tts import synthesize_pcm_stream
         from managed.packages import (
-            alerts_package, climate_summary_package, current_conditions_package,
+            alerts_package, climate_summary_package, current_conditions_package, air_quality_package,
             date_time_package, eccc_discussion_package, forecast_package,
             geophysical_alert_package, station_id, user_bulletin_package,
         )
@@ -705,6 +706,7 @@ class WebServer:
         obs_index:  dict[str, list[tuple[str, str, str, dict[str, Any]]]] = {}
         fcst_index: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
         clim_index: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
+        aqhi_index: dict[str, list[tuple[str, str, str, dict[str, Any]]]] = {}
         for _feed in feeds_cfg:
             _fid = _feed.get('id', '')
             _tz  = _feed.get('timezone', 'UTC')
@@ -715,17 +717,22 @@ class WebServer:
                     _lid = _e.get('id', '')
                     _source = _normalize_wx_source(_e.get('source') or _feed.get('data_source') or 'eccc') or 'eccc'
                     if _lid:
-                        obs_index.setdefault(_lid, []).append((_source, _fid, _tz, _e))
+                        obs_index.setdefault(_lid.lower(), []).append((_source, _fid, _tz, _e))
                 for _e in _block.get('forecastLocations', []):
                     _lid = _e.get('id', '')
                     _source = _normalize_wx_source(_e.get('source') or _feed.get('data_source') or 'eccc') or 'eccc'
                     if _lid:
-                        fcst_index.setdefault(_lid, []).append((_source, _fid, _e))
+                        fcst_index.setdefault(_lid.lower(), []).append((_source, _fid, _e))
                 for _e in _block.get('climateLocations', []):
                     _lid = _e.get('id', '')
                     _source = _normalize_wx_source(_e.get('source') or _feed.get('data_source') or 'eccc') or 'eccc'
                     if _lid:
-                        clim_index.setdefault(_lid, []).append((_source, _fid, _e))
+                        clim_index.setdefault(_lid.lower(), []).append((_source, _fid, _e))
+                for _e in _block.get('airQualityLocations', []):
+                    _lid = _e.get('id', '')
+                    _source = _normalize_wx_source(_e.get('source') or _feed.get('data_source') or 'eccc') or 'eccc'
+                    if _lid:
+                        aqhi_index.setdefault(_lid.lower(), []).append((_source, _fid, _tz, _e))
 
         def _pick_match[T](matches: list[T], source_getter) -> T | None:
             if not matches:
@@ -745,17 +752,22 @@ class WebServer:
             )
             if str(location_id).strip()
         ]
+        requested_locs_lower = [lid.lower() for lid in requested_locs]
         resolved_obs = [
-            match for lid in requested_locs
+            match for lid in requested_locs_lower
             if (match := _pick_match(obs_index.get(lid, []), lambda item: item[0])) is not None
         ]
         resolved_fcst = [
-            match for lid in requested_locs
+            match for lid in requested_locs_lower
             if (match := _pick_match(fcst_index.get(lid, []), lambda item: item[0])) is not None
         ]
         resolved_clim = [
-            match for lid in requested_locs
+            match for lid in requested_locs_lower
             if (match := _pick_match(clim_index.get(lid, []), lambda item: item[0])) is not None
+        ]
+        resolved_aqhi = [
+            match for lid in requested_locs_lower
+            if (match := _pick_match(aqhi_index.get(lid, []), lambda item: item[0])) is not None
         ]
 
         tz              = 'UTC'
@@ -767,6 +779,8 @@ class WebServer:
             _, primary_feed_id, _ = resolved_fcst[0]
         elif resolved_clim:
             _, primary_feed_id, _ = resolved_clim[0]
+        elif resolved_aqhi:
+            _, primary_feed_id, tz, _ = resolved_aqhi[0]
         if primary_feed_id:
             primary_feed = next((f for f in feeds_cfg if f.get('id') == primary_feed_id), primary_feed)
             tz = primary_feed.get('timezone', tz)
@@ -828,6 +842,14 @@ class WebServer:
             )
             for _, fid, entry in resolved_clim
         ]
+        aqhi_parts = [
+            air_quality_package(
+                read_data_pool(f"{fid}:aqhi:{entry.get('id')}") if entry.get('id') else None,
+                entry.get('name_override') or entry.get('name'),
+                lang,
+            )
+            for _, fid, _, entry in resolved_aqhi
+        ]
 
         pkg_lookup: dict[str, str] = {
             'date_time':          date_time_package(tz, lang),
@@ -835,6 +857,7 @@ class WebServer:
             'current_conditions': '  '.join(p for p in conditions_parts if p),
             'forecast':           '  '.join(p for p in forecast_parts if p),
             'climate_summary':    '  '.join(p for p in climate_parts if p),
+            'air_quality':        '  '.join(p for p in aqhi_parts if p),
             'eccc_discussion':    eccc_discussion_package(discussion_text, None, lang) if discussion_text else '',
             'geophysical_alert':  geophysical_alert_package(wwv_text) if wwv_text else '',
             'user_bulletin':      user_bulletin_package(bulletins, lang, tz),
@@ -892,7 +915,7 @@ class WebServer:
                 },
             )
 
-        from module.queue import SAMPLE_RATE as _BUS_SR, CHANNELS as _BUS_CH
+        from module.buffer import SAMPLE_RATE as _BUS_SR, CHANNELS as _BUS_CH
 
         def _pcm_generator():
             for pkg_id in requested:

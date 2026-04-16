@@ -4,7 +4,9 @@ import asyncio
 from collections import OrderedDict
 import datetime
 import logging
+import pathlib
 import queue
+import subprocess
 import threading
 import zoneinfo
 from typing import Any
@@ -14,17 +16,50 @@ from managed.events import (
     append_runtime_event,
     get_playout_sequence,
     register_alert_queue,
+    register_chime_queue,
     shutdown_event,
     update_feed_runtime,
 )
 from module.output import AudioDeviceSink, FileSink, IcecastSink, PiFmAdvSink
-from module.queue import SAMPLE_RATE, AudioPipeline, OnSegmentStart
+from module.buffer import CHANNELS, SAMPLE_RATE, AudioPipeline, OnSegmentStart
 from module.same import SAMEHeader, generate_same, resample, to_pcm16
 from module.alert import feed_same_codes
 from module.tts import synthesize_pcm_stream
 from module.static_phrases import splice_date_time, splice_station_id
 
 log = logging.getLogger(__name__)
+
+_CHIME_WAV_PATHS: dict[int, pathlib.Path] = {
+    8:  pathlib.Path('audio') / '8-step_chime.wav',
+    16: pathlib.Path('audio') / '16-step_chime.wav',
+}
+
+
+def _decode_chime_wav(path: pathlib.Path) -> bytes | None:
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-loglevel', 'error', '-i', str(path),
+             '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS), 'pipe:1'],
+            capture_output=True, check=True,
+        )
+        return result.stdout or None
+    except Exception as exc:
+        log.warning('Failed to decode chime %s: %s', path.name, exc)
+        return None
+
+
+def _load_chime_pcm() -> dict[int, bytes]:
+    pcm: dict[int, bytes] = {}
+    for steps, path in _CHIME_WAV_PATHS.items():
+        data = _decode_chime_wav(path)
+        if data:
+            pcm[steps] = data
+        else:
+            log.warning('Chime %d-step unavailable, will be skipped', steps)
+    return pcm
+
+
+_CHIME_PCM: dict[int, bytes] = _load_chime_pcm()
 
 _SEGMENT_LOOKAHEAD = 3
 _PCM_CACHE_LIMIT = 48
@@ -38,6 +73,8 @@ _PKG_LABELS: dict[str, str] = {
     'eccc_discussion': 'Discussion',
     'geophysical_alert': 'Geophysical Alert',
     'climate_summary': 'Climate Summary',
+    'chime_8': 'Half-Hour Chime',
+    'chime_16': 'Top-of-Hour Chime',
 }
 
 def _make_segment_callback(
@@ -106,6 +143,57 @@ def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
     message = generate_same(header=data, tone_type="EGG_TIMER", sample_rate=same_sr)
     return to_pcm16(resample(message, same_sr, SAMPLE_RATE))
 
+def _build_chime_pcm(
+    config: dict[str, Any],
+    feed: dict[str, Any],
+    feed_id: str,
+    chime_type: str,
+) -> bytes:
+    chimes_cfg = config.get('playout', {}).get('chimes', {})
+    languages_cfg = feed.get('languages')
+    lang = (
+        str(next(iter(languages_cfg)))
+        if isinstance(languages_cfg, dict) and languages_cfg
+        else str(feed.get('language', 'en-CA'))
+    )
+    tz_name = feed.get('timezone', 'UTC')
+    chime_steps = 16 if chime_type == 'top' else 8
+    chime_key = 'top_of_hour' if chime_type == 'top' else 'half_hour'
+    default_seq = (
+        ['chime', 'date_time', 'station_id'] if chime_type == 'top'
+        else ['chime', 'date_time']
+    )
+    chime_seq: list[str] = chimes_cfg.get(chime_key, {}).get('sequence', default_seq)
+
+    try:
+        tz_obj = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tz_obj = zoneinfo.ZoneInfo('UTC')
+    now = datetime.datetime.now(tz_obj)
+    tz_abbr = now.tzname() or 'UTC'
+
+    parts: list[bytes] = []
+    for ci in chime_seq:
+        pkg = f'chime_{chime_steps}' if ci == 'chime' else ci
+        if pkg in ('chime_8', 'chime_16'):
+            steps = 16 if pkg == 'chime_16' else 8
+            pcm = _CHIME_PCM.get(steps)
+            if pcm:
+                parts.append(pcm)
+            else:
+                log.warning('[%s] Chime WAV %d-step unavailable', feed_id, steps)
+        elif pkg == 'date_time':
+            pcm = splice_date_time(config, lang, tz_abbr, now)
+            if pcm:
+                parts.append(pcm)
+        elif pkg == 'station_id':
+            pcm = splice_station_id(feed_id, lang)
+            if pcm:
+                parts.append(pcm)
+
+    return b''.join(parts)
+
+
 async def _produce_tts(
     pipeline: AudioPipeline,
     shutdown: asyncio.Event,
@@ -115,6 +203,7 @@ async def _produce_tts(
     on_air_name: str,
     metadata_cb: Any,
     txp_pcm: bytes | None,
+    chime_queue: asyncio.Queue | None = None,
 ) -> None:
     pcm_cache: OrderedDict[tuple[str, str, str | None, str], bytes] = OrderedDict()
 
@@ -141,11 +230,33 @@ async def _produce_tts(
         await pipeline.enqueue_segment(txp_pcm)
 
     segment_consumed = pipeline.segment_consumed_event
+    chimes_enabled = config.get('playout', {}).get('chimes', {}).get('enabled', False)
+
+    async def _drain_chime() -> None:
+        if not chimes_enabled or chime_queue is None:
+            return
+        while True:
+            try:
+                chime_type = chime_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            combined_pcm = await asyncio.to_thread(
+                _build_chime_pcm, config, feed, feed_id, chime_type,
+            )
+            if not combined_pcm:
+                log.warning('[%s] Chime %s produced no audio', feed_id, chime_type)
+                continue
+            label = 'Top-of-Hour Chime' if chime_type == 'top' else 'Half-Hour Chime'
+            on_start = _make_segment_callback(label, feed_id, NowPlayingMetadata(title=label), metadata_cb)
+            log.info('[%s] Inserting chime: %s', feed_id, label)
+            await pipeline.enqueue_segment(combined_pcm, on_start)
 
     while not shutdown.is_set():
         if pipeline.alert_active:
             await pipeline.wait_alert_done()
             continue
+
+        await _drain_chime()
 
         seq = get_playout_sequence(feed_id)
         if not seq:
@@ -158,6 +269,8 @@ async def _produce_tts(
         for item in seq:
             if shutdown.is_set():
                 return
+
+            await _drain_chime()
 
             if pipeline.alert_active:
                 await pipeline.wait_alert_done()
@@ -195,6 +308,10 @@ async def _produce_tts(
                     return splice_station_id(feed_id, lang)
 
                 segment_source = _splice_station_id_live
+
+            elif pkg_id in ('chime_8', 'chime_16'):
+                steps = 16 if pkg_id == 'chime_16' else 8
+                segment_source = _CHIME_PCM.get(steps)
 
             if segment_source is None:
                 cache_key = (pkg_id, item.lang, item.voice, item.text)
@@ -262,6 +379,7 @@ async def feed_runner(
     config: dict[str, Any],
     feed: dict[str, Any],
     alert_queue: asyncio.PriorityQueue[tuple[int, bytes, str]],
+    chime_queue: asyncio.Queue,
     shutdown: asyncio.Event,
 ) -> None:
     pipeline = AudioPipeline()
@@ -335,6 +453,7 @@ async def feed_runner(
         _produce_tts(
             pipeline, shutdown, feed_id, config, feed, on_air_name,
             _update_metadata if metadata_cbs else None, txp_pcm,
+            chime_queue,
         ),
         name=f'{feed_id}:tts_producer',
     )
@@ -365,7 +484,9 @@ async def _playout_main(
     shutdown = asyncio.Event()
     watchdog = asyncio.create_task(_watch_shutdown(shutdown))
     alert_queue: asyncio.PriorityQueue[tuple[int, bytes, str]] = asyncio.PriorityQueue()
+    chime_queue: asyncio.Queue = asyncio.Queue()
     thread_alert_q = register_alert_queue(feed_id)
+    thread_chime_q = register_chime_queue(feed_id)
     loop = asyncio.get_running_loop()
 
     _bridge_stop = asyncio.Event()
@@ -373,16 +494,21 @@ async def _playout_main(
     def _bridge_thread() -> None:
         while not shutdown_event.is_set() and not _bridge_stop.is_set():
             try:
-                item = thread_alert_q.get(timeout=0.25)
+                item = thread_alert_q.get(timeout=0.1)
+                loop.call_soon_threadsafe(alert_queue.put_nowait, item)
             except queue.Empty:
-                continue
-            loop.call_soon_threadsafe(alert_queue.put_nowait, item)
+                pass
+            try:
+                chime_type = thread_chime_q.get_nowait()
+                loop.call_soon_threadsafe(chime_queue.put_nowait, chime_type)
+            except queue.Empty:
+                pass
 
-    bridge = threading.Thread(target=_bridge_thread, name=f'{feed_id}:alert_bridge', daemon=True)
+    bridge = threading.Thread(target=_bridge_thread, name=f'{feed_id}:bridge', daemon=True)
     bridge.start()
 
     try:
-        await feed_runner(config, feed, alert_queue, shutdown)
+        await feed_runner(config, feed, alert_queue, chime_queue, shutdown)
     except BrokenPipeError:
         log.warning('Playout pipe closed for %s', feed_id)
     finally:

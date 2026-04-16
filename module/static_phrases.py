@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from module.queue import CHANNELS, SAMPLE_RATE
+from module.buffer import CHANNELS, SAMPLE_RATE
 from module.tts import synthesize_pcm
 
 log = logging.getLogger(__name__)

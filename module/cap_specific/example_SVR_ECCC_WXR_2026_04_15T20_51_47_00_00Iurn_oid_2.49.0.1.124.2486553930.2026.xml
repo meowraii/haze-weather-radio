@@ -1,0 +1,337 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+    <identifier>urn:oid:2.49.0.1.124.2486553930.2026</identifier>
+    <sender>cap-pac@canada.ca</sender>
+    <sent>2026-04-15T20:51:47-00:00</sent>
+    <status>Actual</status>
+    <msgType>Update</msgType>
+    <source>Env. Can. - Can. Met. Ctr. – Montréal</source>
+    <scope>Public</scope>
+    <code>profile:CAP-CP:0.4</code>
+    <code>layer:SOREM:1.0</code>
+    <code>layer:EC-MSC-SMC:1.0</code>
+    <code>layer:EC-MSC-SMC:1.1</code>
+    <code>layer:SOREM:2.0</code>
+    <note>Service Notice – February 2026: The Environment and Climate Change Canada (ECCC) CAP Service undergoes changes from time to time as the business of alerting evolves. For 2026, changes are expected to include... 1) ECCC's initiative to introduce free-form polygons to represent the true threat area of a weather hazard is tentatively set for Spring 2026 deployment. Data changes will appear in CAP following this deployment and 2) other minor improvements and corrections. For more information on these changes: https://comm.collab.science.gc.ca/mailman3/hyperkitty/list/dd_info@comm.collab.science.gc.ca/ | Notification de service – février 2026: Le service du PAC d’Environnement et Changement climatique Canada (ECCC) subit périodiquement des changements à mesure que le système d’alerte évolue. Pour 2026, il y aura des changements incluant... 1) l’initiative d’ECCC visant à introduire des polygones libres pour représenter la véritable zone de menace d’un danger météorologique devrait être déployée provisoirement au printemps 2026. Des changements de données apparaîtront dans le PAC à la suite de ce déploiement et 2) d’autres améliorations et corrections mineures. Pour plus d’informations sur ces changements: https://comm.collab.science.gc.ca/mailman3/hyperkitty/list/dd_info@comm.collab.science.gc.ca/</note>
+    <references>cap-pac@canada.ca,urn:oid:2.49.0.1.124.2729036932.2026,2026-04-15T19:13:46-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.2881727459.2026,2026-04-15T19:17:28-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.0545089375.2026,2026-04-15T19:45:24-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.1460712987.2026,2026-04-15T19:47:39-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.3547687247.2026,2026-04-15T20:19:02-00:00 cap-pac@canada.ca,urn:oid:2.49.0.1.124.1117283387.2026,2026-04-15T20:20:33-00:00</references>
+    <info>
+        <language>en-CA</language>
+        <category>Met</category>
+        <event>thunderstorm</event>
+        <responseType>Monitor</responseType>
+        <urgency>Immediate</urgency>
+        <severity>Moderate</severity>
+        <certainty>Likely</certainty>
+        <audience>general public</audience>
+        <eventCode>
+            <valueName>profile:CAP-CP:Event:0.4</valueName>
+            <value>thunderstorm</value>
+        </eventCode>
+        <eventCode>
+            <valueName>SAME</valueName>
+            <value>SVR</value>
+        </eventCode>
+        <effective>2026-04-15T20:51:47-00:00</effective>
+        <onset>2026-04-15T20:51:00-00:00</onset>
+        <expires>2026-04-15T23:50:47-00:00</expires>
+        <senderName>Environment Canada</senderName>
+        <headline>yellow warning - severe thunderstorm - in effect</headline>
+        <description>
+At 4:51 p.m. EDT, Environment Canada meteorologists are tracking a severe thunderstorm capable of producing very strong wind gusts, up to nickel size hail and heavy rain.
+
+###
+
+Damage to roofs, fences, soft shelters or trees is likely. Heavy rain may cause flash flooding and significant reductions to visibility.
+
+Severe thunderstorm warnings are issued when imminent or occurring thunderstorms are expected to produce damaging hail, wind or rain.
+</description>
+        <instruction>
+Take immediate cover if a thunderstorm approaches. If outside, protect yourself from flying debris and hail.
+
+Emergency Management Ontario recommends that you take cover immediately if threatening weather approaches.
+</instruction>
+        <web>https://weather.gc.ca/</web>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Type</valueName>
+            <value>warning</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Broadcast_Intrusive</valueName>
+            <value>no</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:1.0:Broadcast_Immediately</valueName>
+            <value>No</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Parent_URI</valueName>
+            <value>msc/alert/environment/hazard/alert-3.0-ascii/consolidated-xml-2.0/20260415205147439/ON_00_01_LAND/STW/191346175485131865202604150503_ON_00_01_LAND/actual/en_proper_complete_c-fr_not_present_u/NinJo</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:CAP_count</valueName>
+            <value>A:17418 M:90154 C:101588</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Location_Status</valueName>
+            <value>active</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Name</valueName>
+            <value>yellow warning - severe thunderstorm</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Coverage</valueName>
+            <value>Ontario</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:1.0:Broadcast_Text</valueName>
+            <value>At 4:51 p.m. Eastern Daylight Time Wednesday, Environment Canada has issued a severe thunderstorm warning for Southwestern Ontario. Extra care and attention should be exercised in and around the following localities: Windsor, Essex and Chatham-Kent. Environment Canada meteorologists are tracking a severe thunderstorm capable of producing very strong wind gusts, up to nickel size hail and heavy rain. Take cover immediately if threatening weather approaches. Intense lightning is likely and tornadoes are possible with any thunderstorm that develops.</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Designation_Code</valueName>
+            <value>ON_00_01_LAND</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:2.0:WirelessImmediate</valueName>
+            <value>No</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Alert_Location_Status</valueName>
+            <value>active</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Event_End_Time</valueName>
+            <value>2026-04-15T22:51:00.000Z</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:MSC_Risk_Tiered_Ranking</valueName>
+            <value>8</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:MSC_Impact</valueName>
+            <value>moderate</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:MSC_Confidence</valueName>
+            <value>high</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Colour</valueName>
+            <value>yellow</value>
+        </parameter>
+        <area>
+            <areaDesc>Chatham-Kent - Rondeau Park</areaDesc>
+            <polygon>42.0578,-82.455 42.0454,-82.4759 42.0823,-82.4753 42.0847,-82.4806 42.109,-82.4791 42.1156,-82.4735 42.2027,-82.4678 42.2039,-82.4481 42.2408,-82.4467 42.2615,-82.4628 42.2809,-82.4456 42.2961,-82.4429 42.3013,-82.4511 42.3107,-82.4512 42.3154,-82.4659 42.3238,-82.467 42.3338,-82.4653 42.4783,-82.4404 42.4901,-82.436 42.4982,-82.4529 42.5351,-82.4386 42.5651,-82.4483 42.5756,-82.4881 42.5931,-82.5071 42.6337,-82.4767 42.6364,-82.2818 42.627,-82.1003 42.6276,-82.065 42.6246,-82.0234 42.6357,-82.0259 42.6486,-82.0159 42.6506,-82.008 42.6531,-81.926 42.651,-81.8354 42.63,-81.8308 42.6081,-81.835 42.5782,-81.7925 42.5492,-81.7512 42.4727,-81.6662 42.4497,-81.6432 42.3626,-81.7639 42.2365,-81.8364 42.2401,-82.0268 42.1118,-82.3596 42.0742,-82.4273 42.0578,-82.455</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>041410</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>3536</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>Windsor - Leamington - Essex County</areaDesc>
+            <polygon>41.7225,-82.6052 41.7134,-82.6941 41.9268,-82.8988 42.0409,-83.1223 42.0737,-83.1387 42.1202,-83.1232 42.1202,-83.1232 42.1217,-83.1227 42.1217,-83.1227 42.1217,-83.1227 42.1232,-83.1223 42.1233,-83.1222 42.1251,-83.1217 42.126,-83.1219 42.126,-83.1219 42.1264,-83.122 42.1265,-83.1221 42.1292,-83.1227 42.1295,-83.1227 42.1305,-83.123 42.1387,-83.1251 42.1439,-83.1263 42.1451,-83.1266 42.1503,-83.1279 42.1523,-83.1284 42.1538,-83.1288 42.1544,-83.1289 42.1873,-83.1058 42.2416,-83.1074 42.2589,-83.1076 42.2919,-83.0885 42.3089,-83.0695 42.3189,-83.0439 42.3263,-83.0118 42.3262,-82.9949 42.327,-82.9856 42.3338,-82.9542 42.3426,-82.9423 42.3481,-82.9061 42.3338,-82.4653 42.3337,-82.4642 42.3208,-82.4245 42.3094,-82.4273 42.3008,-82.4179 42.2799,-82.417 42.2634,-82.4291 42.2447,-82.4199 42.1848,-82.4235 42.1841,-82.4441 42.108,-82.4499 42.103,-82.4558 42.0928,-82.4559 42.0867,-82.4518 42.0578,-82.455 42.0436,-82.4335 41.928,-82.4541 41.8127,-82.5705 41.7225,-82.6052</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>041420</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>3537</value>
+            </geocode>
+        </area>
+    </info>
+    <info>
+        <language>fr-CA</language>
+        <category>Met</category>
+        <event>orages</event>
+        <responseType>Monitor</responseType>
+        <urgency>Immediate</urgency>
+        <severity>Moderate</severity>
+        <certainty>Likely</certainty>
+        <audience>grand public</audience>
+        <eventCode>
+            <valueName>profile:CAP-CP:Event:0.4</valueName>
+            <value>thunderstorm</value>
+        </eventCode>
+        <eventCode>
+            <valueName>SAME</valueName>
+            <value>SVR</value>
+        </eventCode>
+        <effective>2026-04-15T20:51:47-00:00</effective>
+        <onset>2026-04-15T20:51:00-00:00</onset>
+        <expires>2026-04-15T23:50:47-00:00</expires>
+        <senderName>Environnement Canada</senderName>
+        <headline>alerte jaune - orages violents - en vigueur</headline>
+        <description>
+À 16h51 HAE, les météorologues d’Environnement Canada surveillent un orage violent pouvant produire des rafales très fortes, de la grêle pouvant atteindre la taille d’une pièce de cinq cents et de la pluie forte.
+
+###
+
+Des dommages aux toits, aux clôtures, aux abris souples ou aux arbres sont probables. Les fortes pluies pourraient causer des crues soudaines et réduire considérablement la visibilité.
+
+Les alertes d'orages violents sont émises lorsque des orages imminents ou en cours risquent de produire de la pluie, de la grêle ou des vents destructeurs.
+</description>
+        <instruction>
+Mettez-vous immédiatement à l'abri si un orage approche. Si vous êtes à l'extérieur, protégez-vous des débris volants et de la grêle.
+
+Gestion des situations d'urgence Ontario vous recommande de trouver un abri immédiatement si un phénomène météorologique menaçant est imminent.
+</instruction>
+        <web>https://meteo.gc.ca/</web>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Type</valueName>
+            <value>warning</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Broadcast_Intrusive</valueName>
+            <value>no</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:1.0:Broadcast_Immediately</valueName>
+            <value>No</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Parent_URI</valueName>
+            <value>msc/alert/environment/hazard/alert-3.0-ascii/consolidated-xml-2.0/20260415205147439/ON_00_01_LAND/STW/191346175485131865202604150503_ON_00_01_LAND/actual/en_proper_complete_c-fr_not_present_u/NinJo</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:CAP_count</valueName>
+            <value>A:17418 M:90154 C:101588</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Location_Status</valueName>
+            <value>active</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Name</valueName>
+            <value>alerte jaune - orages violents</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.0:Alert_Coverage</valueName>
+            <value>Ontario</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:1.0:Broadcast_Text</valueName>
+            <value>À 16h51 heure avancée de l'Est le mercredi, Environnement Canada a émis une alerte d'orages violents pour le sud-ouest  de l'Ontario. Une attention et des précautions additionnelles devraient être exercées près et autour des localités suivantes: Windsor, Essex et Chatham-Kent. Les météorologues d’Environnement Canada surveillent un orage violent pouvant produire des rafales très fortes, de la grêle pouvant atteindre la taille d’une pièce de cinq cents et de la pluie forte. Mettez-vous immédiatement à l'abri si un phénomène météorologique menaçant s'approche. De nombreux éclairs sont probables et il y a toujours un risque de tornade avec un orage.</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Designation_Code</valueName>
+            <value>ON_00_01_LAND</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:SOREM:2.0:WirelessImmediate</valueName>
+            <value>No</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Alert_Location_Status</valueName>
+            <value>active</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Event_End_Time</valueName>
+            <value>2026-04-15T22:51:00.000Z</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:MSC_Risk_Tiered_Ranking</valueName>
+            <value>8</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:MSC_Impact</valueName>
+            <value>modéré</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:MSC_Confidence</valueName>
+            <value>élevée</value>
+        </parameter>
+        <parameter>
+            <valueName>layer:EC-MSC-SMC:1.1:Colour</valueName>
+            <value>jaune</value>
+        </parameter>
+        <area>
+            <areaDesc>Chatham-Kent - parc Rondeau</areaDesc>
+            <polygon>42.0578,-82.455 42.0454,-82.4759 42.0823,-82.4753 42.0847,-82.4806 42.109,-82.4791 42.1156,-82.4735 42.2027,-82.4678 42.2039,-82.4481 42.2408,-82.4467 42.2615,-82.4628 42.2809,-82.4456 42.2961,-82.4429 42.3013,-82.4511 42.3107,-82.4512 42.3154,-82.4659 42.3238,-82.467 42.3338,-82.4653 42.4783,-82.4404 42.4901,-82.436 42.4982,-82.4529 42.5351,-82.4386 42.5651,-82.4483 42.5756,-82.4881 42.5931,-82.5071 42.6337,-82.4767 42.6364,-82.2818 42.627,-82.1003 42.6276,-82.065 42.6246,-82.0234 42.6357,-82.0259 42.6486,-82.0159 42.6506,-82.008 42.6531,-81.926 42.651,-81.8354 42.63,-81.8308 42.6081,-81.835 42.5782,-81.7925 42.5492,-81.7512 42.4727,-81.6662 42.4497,-81.6432 42.3626,-81.7639 42.2365,-81.8364 42.2401,-82.0268 42.1118,-82.3596 42.0742,-82.4273 42.0578,-82.455</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>041410</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>3536</value>
+            </geocode>
+        </area>
+        <area>
+            <areaDesc>Windsor - Leamington - comté d'Essex</areaDesc>
+            <polygon>41.7225,-82.6052 41.7134,-82.6941 41.9268,-82.8988 42.0409,-83.1223 42.0737,-83.1387 42.1202,-83.1232 42.1202,-83.1232 42.1217,-83.1227 42.1217,-83.1227 42.1217,-83.1227 42.1232,-83.1223 42.1233,-83.1222 42.1251,-83.1217 42.126,-83.1219 42.126,-83.1219 42.1264,-83.122 42.1265,-83.1221 42.1292,-83.1227 42.1295,-83.1227 42.1305,-83.123 42.1387,-83.1251 42.1439,-83.1263 42.1451,-83.1266 42.1503,-83.1279 42.1523,-83.1284 42.1538,-83.1288 42.1544,-83.1289 42.1873,-83.1058 42.2416,-83.1074 42.2589,-83.1076 42.2919,-83.0885 42.3089,-83.0695 42.3189,-83.0439 42.3263,-83.0118 42.3262,-82.9949 42.327,-82.9856 42.3338,-82.9542 42.3426,-82.9423 42.3481,-82.9061 42.3338,-82.4653 42.3337,-82.4642 42.3208,-82.4245 42.3094,-82.4273 42.3008,-82.4179 42.2799,-82.417 42.2634,-82.4291 42.2447,-82.4199 42.1848,-82.4235 42.1841,-82.4441 42.108,-82.4499 42.103,-82.4558 42.0928,-82.4559 42.0867,-82.4518 42.0578,-82.455 42.0436,-82.4335 41.928,-82.4541 41.8127,-82.5705 41.7225,-82.6052</polygon>
+            <geocode>
+                <valueName>layer:EC-MSC-SMC:1.0:CLC</valueName>
+                <value>041420</value>
+            </geocode>
+            <geocode>
+                <valueName>profile:CAP-CP:Location:0.3</valueName>
+                <value>3537</value>
+            </geocode>
+        </area>
+    </info>
+<Signature Id="NAADS Signature" xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo><CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/><SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><Reference URI=""><Transforms><Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>js2bcW6YZHh2JdeIk2SbPp/AECEbPPNHJLtMp27F/mY=</DigestValue></Reference></SignedInfo><SignatureValue>uA/5zck3qPBLXZnOTTx4bsiTU1LUOdDBHlLhEAhrIihrGS5erH+8uOBVgctSl5ZD5cWMPvnTVmrLtdCzKCEv9qNKv1asRt9PZwQblt3LYGG+9D2uvSknsMCeNhJedhy9M58xGbjJmhlquApBDiyUq0JqJU0SWe/YCaOXVBz/YaBuZrYqLOAEbE7XSjkQ1/4g5Yme18oJWK81jvARbIEphPXmwS2pjccC3KT2rmEAZf5oz4bc8ZSa9seYYeVJjjJKvD46/fyvYPiZV3w0zSfK6JHTERD7Lrz6zvFAvtXrTbuPQNzQRME+Stg/gh5P/uHoIt49/ZqpLp3n1VptaQS1EA==</SignatureValue><KeyInfo><X509Data><X509Certificate>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</X509Certificate></X509Data></KeyInfo><Object xmlns=""><SignatureProperties><SignatureProperty Id="NAADS-DSS1" Target="https://dss1.naad-adna.pelmorex.com"><xc:value xmlns:xc="http://docs.oasis-open.org/emergency/cap/v1.2/CAP-v1.2.xsd"/></SignatureProperty><SignatureProperty Id="NAADS-DSS2" Target="https://dss2.naad-adna.pelmorex.com"><xc:value xmlns:xc="http://docs.oasis-open.org/emergency/cap/v1.2/CAP-v1.2.xsd"/></SignatureProperty></SignatureProperties></Object></Signature><Signature xmlns="http://www.w3.org/2000/09/xmldsig#" Id="Environment Canada">
+<SignedInfo>
+<CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+<SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+<Reference URI="">
+<Transforms>
+<Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+</Transforms>
+<DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+<DigestValue>js2bcW6YZHh2JdeIk2SbPp/AECEbPPNHJLtMp27F/mY=</DigestValue>
+</Reference>
+</SignedInfo>
+<SignatureValue>crcZDkItpnpBPL/fVDS3Xl/82E8rWoSvmQor7NhP8KdiGHW07O0UAC3+bobjvmPh
+/0sg7IXwzl7Tm8llv3HYvdfduBN4t7yLymdc9JKgW1PMJLf16YtfO2BBFZ2xQkPu
+2EdcIL7du5ZjoFTcIrMOsWgMdHF3I/GTIUsGeoKGmBmRIUvB53j8z3lyNypBPpSO
+KX2P6MW7VrmNIGtXeE28K/GvG0VBPY7c/QPxcA9xSOkx9j1YIxnQHxOaw/4E46ll
+EAH7oK2k+oaTLWt3IB6PyWWMSN6iHSVSpNFF8gUmwmI4IQmsMhuYo4yAGIVcWjpN
+EF4/a6l9pgW5IayjW8tDMg==</SignatureValue>
+<KeyInfo>
+<X509Data>
+<X509Certificate>MIIHDDCCBfSgAwIBAgIQM2dJyev0XEPJoQlSaOQgYDANBgkqhkiG9w0BAQsFADCB
+ujELMAkGA1UEBhMCVVMxFjAUBgNVBAoTDUVudHJ1c3QsIEluYy4xKDAmBgNVBAsT
+H1NlZSB3d3cuZW50cnVzdC5uZXQvbGVnYWwtdGVybXMxOTA3BgNVBAsTMChjKSAy
+MDEyIEVudHJ1c3QsIEluYy4gLSBmb3IgYXV0aG9yaXplZCB1c2Ugb25seTEuMCwG
+A1UEAxMlRW50cnVzdCBDZXJ0aWZpY2F0aW9uIEF1dGhvcml0eSAtIEwxSzAeFw0y
+NDA0MTkwOTQ3MDZaFw0yNTA1MTkwOTQ3MDRaMGwxCzAJBgNVBAYTAkNBMQ8wDQYD
+VQQIEwZRdWViZWMxETAPBgNVBAcTCEdhdGluZWF1MR8wHQYDVQQKExZTaGFyZWQg
+U2VydmljZXMgQ2FuYWRhMRgwFgYDVQQDDA8qLndlYXRoZXIuZ2MuY2EwggEiMA0G
+CSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDARd6fBVAjKlOvocp442ydQbSCoxHW
+91i1r5TkucsGLkzm92HQsj4eVNCl6Uti3hd3yYL1QxFTImdyUs2ETlDoU/hVFEey
+IevKo3m3ufuv9YryXGtoRcthMITEPrIy6vOyNbGaxJw1J6/AkOs7oAm3kUlx6PS8
+vOnuoyik1r6Q9qx1XP9Z05cIyyIBhsyjdS124Jj01quCjz5COPMXKU1LlaU8LeSA
+qILe9DyC3XWluZGxZH+tGiw42mpiCD3JGlCsXQujU5y4jg2fq8/ePsM3OUzM/Dxs
+kGMMN7LAG9/H4CINJ+aXZQvlgTfIZp2eWLvHy5dnsbi3VAJOEtgRVzedAgMBAAGj
+ggNZMIIDVTAMBgNVHRMBAf8EAjAAMB0GA1UdDgQWBBSSLKB4osVSIvgfhk+6NayJ
+BDAXuDAfBgNVHSMEGDAWgBSConB03bxTP8971PfNf6dgxgpMvzBoBggrBgEFBQcB
+AQRcMFowIwYIKwYBBQUHMAGGF2h0dHA6Ly9vY3NwLmVudHJ1c3QubmV0MDMGCCsG
+AQUFBzAChidodHRwOi8vYWlhLmVudHJ1c3QubmV0L2wxay1jaGFpbjI1Ni5jZXIw
+MwYDVR0fBCwwKjAooCagJIYiaHR0cDovL2NybC5lbnRydXN0Lm5ldC9sZXZlbDFr
+LmNybDCBnQYDVR0RBIGVMIGSgg8qLndlYXRoZXIuZ2MuY2GCDXdlYXRoZXIuZ2Mu
+Y2GCC21ldGVvLmdjLmNhgg0qLm1ldGVvLmdjLmNhghUqLmFscGhhLndlYXRoZXIu
+Z2MuY2GCEyouYWxwaGEubWV0ZW8uZ2MuY2GCFCouYmV0YS53ZWF0aGVyLmdjLmNh
+ghIqLmJldGEubWV0ZW8uZ2MuY2EwDgYDVR0PAQH/BAQDAgWgMB0GA1UdJQQWMBQG
+CCsGAQUFBwMBBggrBgEFBQcDAjATBgNVHSAEDDAKMAgGBmeBDAECAjCCAYAGCisG
+AQQB1nkCBAIEggFwBIIBbAFqAHYAouMK5EXvva2bfjjtR2d3U9eCW4SU1yteGyzE
+uVCkR+cAAAGO9cCizQAABAMARzBFAiEA7hlkvyyYsnhbas5WDwoTkdGWf92Ukckw
+rGyUqMPZQjkCID8oQlHWS11haifx+i9tBr0epmrzkh2/bbneb9WNrlUvAHcATnWj
+J1yaEMM4W2zU3z9S6x3w4I4bjWnAsfpksWKaOd8AAAGO9cCi2AAABAMASDBGAiEA
+iE1jLaXrlPxrkIiq7NU0gH/sDiUlHCmMrT79KUy2V+YCIQCb2GrTID6NO3hb8bGs
+ctd8ipYRuu1FnDY8X3MGVDcWnAB3AObSMWNAd4zBEEEG13G5zsHSQPaWhIb7uocy
+Hf0eN45QAAABjvXAovkAAAQDAEgwRgIhALRWB9aVOe3Zi9j6MEVKJl1NKQKIycr3
+8IfKeHxckblpAiEA85xjN3iBFvEVT4yIxO4qKRelbpFGomgSrYnfwTSUwHIwDQYJ
+KoZIhvcNAQELBQADggEBADGEK5tU92TqoTWPh1lfSRTDVCpk5qhqmIuaTeYQMonV
+AgHF5rktrUhXmMzRJEef8XRwLvApT4zOn+TV+NOUpi8q6tDWxx7dE8+moIf6tXq8
+d4OQ+VDO/C6nz/xA8FqvxAbPfqCJ6DqgitSyXhF01XkNMfVcknGAzhc/HemuukI1
+3DTuaATlbaXkHjSp+O0mXCykCIgH/9eMuOoFMzhdQhtJiLf2MMVclJ72/YzgVveA
+XrSTVE5F4BYdp9hX+0BTg5zNgg1wwvVVOwuIOTFqSSJCzGHjl/1i8IyyPLKB3ilt
+B+0V7IdmIxlvPbL//qNkzyUVufkewAoLMqCOUIZA0eY=</X509Certificate>
+</X509Data>
+</KeyInfo>
+</Signature></alert>

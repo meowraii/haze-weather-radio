@@ -36,6 +36,17 @@ def climate_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
     return locations
 
 
+def air_quality_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
+    locations: list[dict[str, Any]] = []
+    for block in feed.get('locations', []):
+        if not isinstance(block, dict):
+            continue
+        for entry in block.get('airQualityLocations', []):
+            if isinstance(entry, dict):
+                locations.append(entry)
+    return locations
+
+
 def location_label(loc: dict[str, Any], fallback_id: str | None = None) -> str | None:
     return loc.get('name_override') or loc.get('name') or fallback_id or loc.get('id')
 
@@ -49,6 +60,10 @@ def current_conditions_name(loc: dict[str, Any]) -> str | None:
 
 
 def climate_name(loc: dict[str, Any]) -> str | None:
+    return loc.get('name_override') or loc.get('name')
+
+
+def air_quality_name(loc: dict[str, Any]) -> str | None:
     return loc.get('name_override') or loc.get('name')
 
 

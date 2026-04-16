@@ -143,3 +143,42 @@ def append_runtime_event(
 def snapshot_runtime() -> dict[str, Any]:
     with _runtime_lock:
         return deepcopy(_runtime_state)
+
+
+_chime_lock: threading.Lock = threading.Lock()
+_pending_chime_version: int = 0
+_pending_chime_type: str | None = None
+_chime_consumed_versions: dict[str, int] = {}
+
+
+_chime_feed_queues: dict[str, queue.Queue] = {}
+_chime_queues_lock: threading.Lock = threading.Lock()
+
+
+def register_chime_queue(feed_id: str) -> queue.Queue:
+    with _chime_queues_lock:
+        q: queue.Queue = queue.Queue(maxsize=4)
+        _chime_feed_queues[feed_id] = q
+        return q
+
+
+def set_pending_chime(chime_type: str) -> None:
+    global _pending_chime_version, _pending_chime_type
+    with _chime_lock:
+        _pending_chime_type = chime_type
+        _pending_chime_version += 1
+    with _chime_queues_lock:
+        for q in _chime_feed_queues.values():
+            try:
+                q.put_nowait(chime_type)
+            except queue.Full:
+                pass
+
+
+def consume_pending_chime(feed_id: str) -> str | None:
+    with _chime_lock:
+        consumed = _chime_consumed_versions.get(feed_id, 0)
+        if consumed >= _pending_chime_version:
+            return None
+        _chime_consumed_versions[feed_id] = _pending_chime_version
+        return _pending_chime_type
