@@ -32,11 +32,13 @@ _CODEC_MAP: dict[str, tuple[str, str, str]] = {
 }
 
 _STREAM_DYNAMICS = (
-    'volume=1.2,'
-    'alimiter=limit=0.98:level=0,'
-    'speechnorm,'
-    'loudnorm=I=-6:TP=-0.0:LRA=11,'
-    'acompressor=threshold=-28dB:ratio=12:attack=5:release=70:makeup=22dB,'
+    'equalizer=f=125:t=q:w=0.7:g=4,'
+    'equalizer=f=200:t=q:w=1:g=2,'
+    'equalizer=f=350:t=q:w=1:g=3,'
+    'equalizer=f=500:t=q:w=1:g=2,'
+    'equalizer=f=1200:t=q:w=1.2:g=1.5,'
+    'equalizer=f=2500:t=q:w=1.5:g=2,'
+    'acompressor=threshold=-22dB:ratio=16:attack=5:release=70:makeup=18dB,'
 )
 
 class IcecastSink:
@@ -226,16 +228,7 @@ class FileSink:
 
 
 _RADIO_DYNAMICS = (
-    'equalizer=f=320:t=q:w=1.5:g=-2,'
-    'equalizer=f=650:t=q:w=1:g=0,'
-    'equalizer=f=800:t=q:w=1:g=2,'
-    'equalizer=f=875:t=q:w=1:g=4,'
-    'equalizer=f=900:t=q:w=1:g=3,'
-    'equalizer=f=960:t=q:w=0.8:g=6,'
-    'equalizer=f=1000:t=q:w=1:g=6,'
-    'equalizer=f=1800:t=q:w=1.2:g=4,'
-    'equalizer=f=2000:t=q:w=1.5:g=2,'
-    'acompressor=threshold=-32dB:ratio=20:attack=5:release=70:makeup=22dB,'
+    _STREAM_DYNAMICS +
     'lowpass=f=2800,'
     'highpass=f=120,'
     'lowpass=f=3000,'
