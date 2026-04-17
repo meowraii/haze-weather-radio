@@ -667,7 +667,7 @@ class WebServer:
         for fid in target_ids:
             push_alert(fid, 0, alert_pcm, f'manual_{int(time.time())}')
 
-        encoded = header.encode()
+        encoded = header.encoded
         append_runtime_event('manual-same', f'Manual SAME aired: {encoded} → {", ".join(target_ids)}')
         return {'ok': True, 'header': encoded, 'feed_id': target_ids[0], 'feeds_aired': target_ids}
 

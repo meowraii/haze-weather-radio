@@ -34,6 +34,9 @@ _CODEC_MAP: dict[str, tuple[str, str, str]] = {
 _STREAM_DYNAMICS = (
     'volume=1.2,'
     'alimiter=limit=0.98:level=0,'
+    'speechnorm,'
+    'loudnorm=I=-6:TP=-0.0:LRA=11,'
+    'acompressor=threshold=-28dB:ratio=12:attack=5:release=70:makeup=22dB,'
 )
 
 class IcecastSink:
@@ -226,21 +229,24 @@ _RADIO_DYNAMICS = (
     'equalizer=f=320:t=q:w=1.5:g=-2,'
     'equalizer=f=650:t=q:w=1:g=0,'
     'equalizer=f=800:t=q:w=1:g=2,'
-    'equalizer=f=960:t=q:w=0.8:g=2,'
-    'equalizer=f=1000:t=q:w=1:g=4,'
+    'equalizer=f=875:t=q:w=1:g=4,'
+    'equalizer=f=900:t=q:w=1:g=3,'
+    'equalizer=f=960:t=q:w=0.8:g=6,'
+    'equalizer=f=1000:t=q:w=1:g=6,'
     'equalizer=f=1800:t=q:w=1.2:g=4,'
     'equalizer=f=2000:t=q:w=1.5:g=2,'
-    'acompressor=threshold=-22dB:ratio=18:attack=5:release=70:makeup=16dB,'
-    'highpass=f=200,'
+    'acompressor=threshold=-32dB:ratio=20:attack=5:release=70:makeup=22dB,'
+    'lowpass=f=2800,'
+    'highpass=f=120,'
     'lowpass=f=3000,'
 )
 
-_PIFMADV_PREFILL_CHUNKS = 6
-_WRITE_STALL_TIMEOUT = 0.5
+_PIFMADV_PREFILL_CHUNKS = 10
+_WRITE_STALL_TIMEOUT = 1.0
 
 
 class PiFmAdvSink:
-    bus_queue_limit = 32
+    bus_queue_limit = 48
     bus_drop_oldest = False
     bus_clocked = True
     bus_prefill_chunks = _PIFMADV_PREFILL_CHUNKS
@@ -363,6 +369,7 @@ class PiFmAdvSink:
             )
             if self._ffmpeg.stdout is not None:
                 self._ffmpeg.stdout.close()
+            time.sleep(0.2)
 
     def _kill(self) -> None:
         for proc in (self._ffmpeg, self._fm):
@@ -383,6 +390,7 @@ class PiFmAdvSink:
 
     def _restart(self) -> None:
         self._kill()
+        time.sleep(0.1)
         self._start()
 
     async def write(self, pcm: bytes) -> None:
@@ -407,8 +415,12 @@ class PiFmAdvSink:
             log.warning('PiFmAdv: broken pipe on %s, restarting', self._label)
             await asyncio.to_thread(self._restart)
             raise RuntimeError('PiFmAdv pipe broken') from exc
+        except OSError as exc:
+            log.warning('PiFmAdv: OS error on %s, restarting: %s', self._label, exc)
+            await asyncio.to_thread(self._restart)
+            raise RuntimeError(f'PiFmAdv OS error: {exc}') from exc
         except Exception as exc:
-            log.error('PiFmAdv: write error: %s', exc)
+            log.error('PiFmAdv: unexpected write error on %s: %s', self._label, exc)
             self._closed = True
             raise RuntimeError(f'PiFmAdv write error: {exc}') from exc
 

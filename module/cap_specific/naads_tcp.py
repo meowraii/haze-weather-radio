@@ -53,9 +53,14 @@ class CAPParameter:
     value: str
 
 @dataclass(slots=True, frozen=True)
+class CAPGeocode:
+    name: str
+    value: str
+
+@dataclass(slots=True, frozen=True)
 class CAPArea:
     description: str
-    geocodes: tuple[str, ...]
+    geocodes: tuple[CAPGeocode, ...]
     clc_codes: tuple[str, ...]
     polygons: tuple[str, ...]
 
@@ -96,7 +101,7 @@ class CAPInfo:
 
     @property
     def area_geocodes(self) -> tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]:
-        return tuple((area.description, area.geocodes, area.clc_codes) for area in self.areas)
+        return tuple((area.description, tuple(g.value for g in area.geocodes), area.clc_codes) for area in self.areas)
 
     @property
     def area_descriptions(self) -> tuple[str, ...]:
@@ -204,7 +209,8 @@ class CAPAlert:
         seen: set[str] = set()
         for info in self.infos:
             for area in info.areas:
-                for code in area.geocodes:
+                for geo in area.geocodes:
+                    code = geo.value
                     if code and code not in seen:
                         seen.add(code)
                         values.append(code)
@@ -239,11 +245,11 @@ def _parse_area(el: ET.Element) -> CAPArea:
     clc_codes = []
     polygons = []
     for g in el.findall(_t("geocode")):
-        name = g.findtext(_t("valueName"))
-        val = g.findtext(_t("value"))
+        name = (g.findtext(_t("valueName")) or "").strip()
+        val = (g.findtext(_t("value")) or "").strip()
         if not val:
             continue
-        geocodes.append(val)
+        geocodes.append(CAPGeocode(name=name, value=val))
         if name == "layer:EC-MSC-SMC:1.0:CLC":
             clc_codes.append(val)
     for p in el.findall(_t("polygon")):
