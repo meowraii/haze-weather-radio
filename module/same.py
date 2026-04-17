@@ -52,15 +52,15 @@ _PILOT_PREFIX_FREQ_HZ: Final[float] = 1575.0
 _PILOT_SUFFIX_FREQ_HZ: Final[float] = 2088.0
 _BURST_LEAD_S: Final[float] = 0.100
 
-_AFSK_HIGHPASS_HZ: Final[float] = 1000.0
-_AFSK_LOWPASS_HZ: Final[float] = 2400.0
-_SEQUENCE_AMPLITUDE: Final[float] = 0.20
+_AFSK_HIGHPASS_HZ: Final[float] = 750.0
+_AFSK_LOWPASS_HZ: Final[float] = 2200.0
+_SEQUENCE_AMPLITUDE: Final[float] = 0.1
 
 _INTER_BURST_S: Final[float] = 1.0
 _PRE_ATTN_S: Final[float] = 1.0
 _PRE_VOICE_S: Final[float] = 1.0
 _EOM_LEAD_S: Final[float] = 1.0
-_EOM_TAIL_S: Final[float] = 0.1
+_EOM_TAIL_S: Final[float] = 0.8
 
 _ATTN_DEFAULT_S: Final[float] = 8.0
 
@@ -216,36 +216,31 @@ def _tone_egg_timer(duration_s: float, sample_rate: int) -> np.ndarray:
     gap_len = int(round(sample_rate * 0.500))
     burst_period = tone_len + inter_len
     cycle_len = 4 * burst_period + gap_len
-    fade_samples = int(round(sample_rate * 0.003))
+    fade_time = 0.006
 
     t = np.arange(n, dtype=np.float64) / sample_rate
     wave = (
         np.sin(2 * np.pi * 2055.0 * t)
-        + 0.25 * np.sin(2 * np.pi * 4110.0 * t)
-        + 0.10 * np.sin(2 * np.pi * 6165.0 * t)
-        + 0.05 * np.sin(2 * np.pi * 8220.0 * t)
+#        + 0.25 * np.sin(2 * np.pi * 4110.0 * t)
+#        + 0.10 * np.sin(2 * np.pi * 6165.0 * t)
+#        + 0.05 * np.sin(2 * np.pi * 8220.0 * t)
     ).astype(np.float32) / 1.40
 
     pos = np.arange(n) % cycle_len
     active = (pos // burst_period < 4) & (pos % burst_period < tone_len)
     tone = np.where(active, wave, 0.0).astype(np.float32)
     
-    envelope = np.ones_like(tone)
+    beeps: list[np.ndarray] = []
     for i in range(0, n, burst_period):
         for j in range(4):
             start = i + j * burst_period
             end = min(start + tone_len, n)
-            if start < n:
-                fade_end = min(fade_samples, end - start)
-                envelope[start:start+fade_end] *= np.linspace(0, 1, fade_end)
-                fade_start = max(0, end - fade_samples)
-                fade_len = end - fade_start
-                if fade_len > 0:
-                    envelope[fade_start:end] *= np.linspace(1, 0, fade_len)
-    tone *= envelope
+            if start < end:
+                beep = tone[start:end].copy()
+                beep = _apply_fade_in(beep, fade_time, sample_rate)
+                beep = _apply_fade_out(beep, fade_time, sample_rate)
+                tone[start:end] = beep
     
-    tone = _apply_highpass(tone, 900.0, sample_rate)
-    tone = _apply_lowpass(tone, 2400.0, sample_rate)
     return tone
 
 
