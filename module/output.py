@@ -386,9 +386,22 @@ class PiFmAdvSink:
         time.sleep(0.1)
         self._start()
 
+    def _subprocesses_alive(self) -> bool:
+        if self._ffmpeg is not None and self._ffmpeg.poll() is not None:
+            log.warning('PiFmAdv: ffmpeg exited (rc=%s) on %s', self._ffmpeg.returncode, self._label)
+            return False
+        if self._fm is not None and self._fm.poll() is not None:
+            log.warning('PiFmAdv: fm process exited (rc=%s) on %s', self._fm.returncode, self._label)
+            return False
+        return True
+
     async def write(self, pcm: bytes) -> None:
         if self._closed or self._ffmpeg is None or self._ffmpeg.stdin is None or not pcm:
             return
+        if not self._subprocesses_alive():
+            log.warning('PiFmAdv: dead subprocess detected on %s, restarting', self._label)
+            await asyncio.to_thread(self._restart)
+            raise RuntimeError('PiFmAdv: subprocess died; restarted')
         ffmpeg = self._ffmpeg
         stdin = ffmpeg.stdin
         if stdin is None:
