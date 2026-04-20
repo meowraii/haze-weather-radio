@@ -38,7 +38,8 @@ _STREAM_DYNAMICS = (
     'equalizer=f=500:t=q:w=1:g=2,'
     'equalizer=f=1200:t=q:w=1.2:g=1.5,'
     'equalizer=f=2500:t=q:w=1.5:g=2,'
-    'acompressor=threshold=-22dB:ratio=16:attack=5:release=70:makeup=18dB,'
+    'acompressor=threshold=-22dB:ratio=16:attack=5:release=70:makeup=12dB,'
+    'alimiter=limit=0.95:level=0.9:lookahead=5:attack=1:release=100,'
 )
 
 class IcecastSink:
@@ -160,7 +161,7 @@ class IcecastSink:
         params = {
             'mount': self._mount,
             'mode': 'updinfo',
-            'song': f"{self._stream_name} - {metadata.title}" if isinstance(metadata, NowPlayingMetadata) else title,
+            'song': metadata.title if isinstance(metadata, NowPlayingMetadata) else title,
             'artist': self._stream_artist,
             'genre': self._stream_genre,
             'name': self._stream_name,
@@ -232,6 +233,7 @@ _RADIO_DYNAMICS = (
     'lowpass=f=2800,'
     'highpass=f=120,'
     'lowpass=f=3000,'
+    'volume=2,'
 )
 
 _PIFMADV_PREFILL_CHUNKS = 10

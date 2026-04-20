@@ -188,62 +188,79 @@ _MANAGED = pathlib.Path(__file__).parent.parent / "managed"
 _geocode_db: dict[str, tuple[str, str]] | None = None
 _forecast_db: dict[str, str] | None = None
 
+_aggregate_clc_to_geocodes: dict[str, set[str]] | None = None
+_aggregate_geocode_to_clcs: dict[str, set[str]] | None = None
+_aggregate_clc_to_province: dict[str, str] | None = None
+
+
+def _load_aggregate_db() -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, str]]:
+    global _aggregate_clc_to_geocodes, _aggregate_geocode_to_clcs, _aggregate_clc_to_province
+    if _aggregate_clc_to_geocodes is not None:
+        return _aggregate_clc_to_geocodes, _aggregate_geocode_to_clcs, _aggregate_clc_to_province  # type: ignore[return-value]
+    path = _MANAGED / "AGGREGATE_LOCATION_CODES.csv"
+    clc_to_geo: dict[str, set[str]] = {}
+    geo_to_clc: dict[str, set[str]] = {}
+    clc_to_prov: dict[str, str] = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        for row in reader:
+            if len(row) < 10:
+                continue
+            clc = row[6].strip().strip('"')
+            province = row[5].strip().strip('"')
+            geocode = row[9].strip().strip('"')
+            if not clc or not geocode:
+                continue
+            clc_to_geo.setdefault(clc, set()).add(geocode)
+            geo_to_clc.setdefault(geocode, set()).add(clc)
+            if clc not in clc_to_prov and province:
+                clc_to_prov[clc] = province
+    _aggregate_clc_to_geocodes = clc_to_geo
+    _aggregate_geocode_to_clcs = geo_to_clc
+    _aggregate_clc_to_province = clc_to_prov
+    log.debug("Loaded aggregate location DB: %d CLCs, %d geocodes", len(clc_to_geo), len(geo_to_clc))
+    return clc_to_geo, geo_to_clc, clc_to_prov
+
 
 def _load_geocode_db() -> dict[str, tuple[str, str]]:
     global _geocode_db
     if _geocode_db is not None:
         return _geocode_db
-    path = _MANAGED / "CAP-CP_GEOCODES.csv"
-    db: dict[str, tuple[str, str]] = {}
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        next(reader, None)
-        for row in reader:
-            if len(row) >= 3:
-                code = row[0].strip()
-                scale = row[1].strip()
-                name = row[2].strip()
-                if code and scale:
-                    db[code] = (scale, name)
-    _geocode_db = db
-    log.debug("Loaded %d CAP-CP geocodes", len(db))
-    return db
+    _geocode_db = {}
+    log.debug("_load_geocode_db: stub — use _load_aggregate_db()")
+    return _geocode_db
 
 
 def _load_forecast_db() -> dict[str, str]:
     global _forecast_db
     if _forecast_db is not None:
         return _forecast_db
-    path = _MANAGED / "FORECAST_LOCATIONS.csv"
-    db: dict[str, str] = {}
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        next(reader, None)
-        next(reader, None)
-        for row in reader:
-            if len(row) >= 6:
-                code = row[0].strip()
-                prov = row[5].strip().strip('"').split(",")[0].strip()
-                if code and prov and code not in db:
-                    db[code] = prov
-    _forecast_db = db
-    log.debug("Loaded %d forecast locations", len(db))
-    return db
+    _, _, clc_to_prov = _load_aggregate_db()
+    _forecast_db = clc_to_prov
+    log.debug("Loaded %d forecast locations from aggregate DB", len(_forecast_db))
+    return _forecast_db
 
 
 def _geocodes_cover_clc(geocodes: tuple[str, ...] | list[str], clc_code: str) -> bool:
+    clc_to_geo, _, _ = _load_aggregate_db()
+    known_geocodes = clc_to_geo.get(clc_code, set())
+    if known_geocodes:
+        return bool(set(geocodes) & known_geocodes)
     for gc in geocodes:
         if gc == clc_code:
             return True
-        if gc.startswith('0'):
-            wbd_clc = gc + '0' if len(gc) == 5 else None
-            if wbd_clc and wbd_clc == clc_code:
-                return True
-            if len(gc) <= 3:
-                wb_prefix = gc.zfill(3)
-                if clc_code.startswith(wb_prefix):
-                    return True
     return False
+
+
+def _feed_clc_geocodes(feed_codes: list[str]) -> set[str]:
+    clc_to_geo, _, _ = _load_aggregate_db()
+    result: set[str] = set()
+    for code in feed_codes:
+        matched = clc_to_geo.get(code)
+        if matched:
+            result.update(matched)
+    return result
 
 
 def _is_national_geocode(geocodes: tuple[str, ...] | list[str]) -> bool:
@@ -333,9 +350,26 @@ def _matching_feed_codes(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
         return []
 
     alert_codes = set(alert.all_geocodes) | set(alert.clc_codes)
+
     direct_matches = [code for code in feed_codes if _matches_feed_alert_code(code, alert_codes)]
     if direct_matches:
         return direct_matches[:31]
+
+    feed_geocodes = _feed_clc_geocodes(feed_codes)
+    if feed_geocodes:
+        alert_geocodes = set(alert.all_geocodes)
+        if alert_geocodes & feed_geocodes:
+            _, geo_to_clc, _ = _load_aggregate_db()
+            matched_clcs: list[str] = []
+            seen: set[str] = set()
+            for gc in alert_geocodes & feed_geocodes:
+                for clc in geo_to_clc.get(gc, ()):
+                    if clc in set(feed_codes) and clc not in seen:
+                        seen.add(clc)
+                        matched_clcs.append(clc)
+            if matched_clcs:
+                return matched_clcs[:31]
+            return feed_codes[:31]
 
     waterbody_matches = [
         code for code in feed_codes
@@ -381,13 +415,15 @@ def _header_locations(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
     return feed_codes[:31]
 
 
-def _normalize_blocklist(raw_blocklist: Any) -> dict[str, set[str]]:
-    normalized: dict[str, set[str]] = {
+def _normalize_blocklist(raw_blocklist: Any) -> dict[str, Any]:
+    normalized: dict[str, Any] = {
         "severity": set(),
         "certainty": set(),
         "urgency": set(),
         "status": set(),
         "scope": set(),
+        "naads_events": set(),
+        "other": [],
     }
 
     sources: list[dict[str, Any]]
@@ -403,8 +439,14 @@ def _normalize_blocklist(raw_blocklist: Any) -> dict[str, set[str]]:
         sources = []
 
     for source in sources:
-        for key in normalized:
+        for key in ("severity", "certainty", "urgency", "status", "scope", "naads_events"):
             normalized[key].update(_normalize_strings(source.get(key)))
+
+        raw_other = source.get("other")
+        if isinstance(raw_other, list):
+            for entry in raw_other:
+                if isinstance(entry, dict) and "value_name" in entry and "value" in entry:
+                    normalized["other"].append(entry)
 
     return normalized
 
@@ -426,10 +468,32 @@ def _alert_blocked(alert: CAPAlert, cap_filter: dict[str, Any]) -> tuple[bool, s
         "status": alert.status,
         "scope": alert.scope,
     }
-    for key, blocked_values in blocklist.items():
+    for key in ("severity", "certainty", "urgency", "status", "scope"):
+        blocked_values = blocklist.get(key, set())
         value = current_values.get(key, "")
         if value and value in blocked_values:
             return True, f"{key}={value}"
+
+    blocked_events: set[str] = blocklist.get("naads_events", set())
+    if blocked_events:
+        cap_event = alert.cap_cp_event or ""
+        alert_event = alert.event
+        for blocked in blocked_events:
+            blocked_lower = blocked.lower()
+            if (cap_event and _event_key(cap_event) == _event_key(blocked_lower)) or \
+               (alert_event and _event_key(alert_event) == _event_key(blocked_lower)):
+                return True, f"naads_event={blocked}"
+
+    other_rules: list[dict[str, str]] = blocklist.get("other", [])
+    if other_rules:
+        params = alert.param_dict()
+        for rule in other_rules:
+            vn = rule.get("value_name", "")
+            rv = rule.get("value", "")
+            if vn and rv:
+                actual = params.get(vn, "")
+                if actual and actual.lower() == rv.lower():
+                    return True, f"other({vn}={rv})"
 
     return False, None
 
@@ -581,7 +645,7 @@ def _generate_alert_audio(
     push_alert(feed_id, priority, alert_pcm, alert.identifier)
     log.info(
         '[%s] SAME queued: %s (event=%s, tone=%s, priority=%d)',
-        feed_id, header.encode(), same_event, tone_type, priority,
+        feed_id, header.encoded, same_event, tone_type, priority,
     )
 
 
@@ -637,16 +701,19 @@ def _covers_feed_area(
         if matched_feed_codes:
             return True, "feed code coverage"
 
+        feed_geocodes = _feed_clc_geocodes(feed_same_codes(feed))
+        if feed_geocodes and alert_geocodes & feed_geocodes:
+            return True, "aggregate geocode coverage"
+
+        return False, "outside feed coverage"
+
     filter_geocodes = _normalize_strings(cap_filter.get("geocodes"))
     if filter_geocodes:
         if any(_matches_geocode_pattern(pattern, alert_geocodes) for pattern in filter_geocodes):
             return True, "configured geocode filter"
         return False, "no geocode filter match"
 
-    if not use_feed_locs and not filter_geocodes:
-        return True, "filters disabled"
-
-    return False, "outside feed coverage"
+    return True, "filters disabled"
 
 
 def _alert_expired(alert: CAPAlert) -> bool:
