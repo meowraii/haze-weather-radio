@@ -130,7 +130,7 @@ feeds:
         - id: sk-6 # Humboldt
           source: eccc
         - id: CWIW # Watrous
-          source: nws
+          source: twc
           name_override: "Watrous"
         - id: sk-37 # Outlook
           source: eccc
@@ -138,10 +138,6 @@ feeds:
           source: twc
         - id: sk-2 # Biggar
           name_override: "Biggar"
-          source: eccc
-        - id: sk-34 # North Battleford
-          source: eccc
-        - id: sk-18 # Elbow
           source: eccc
         
       - forecastLocations:
@@ -216,13 +212,19 @@ cap:
         timeout_seconds: 10
     filter:
       use_feed_locations: true # whether to filter alerts based on the locations defined in the feed. if true, only alerts that match the SAME location codes of the feed's locations will be included. if false, all alerts are subject to the settings below.
-      geocodes: ["4711*", "4712*"] # can wild card with * to match any geocode that starts with the specified string.
       blocklist: [ # leave any array empty to not filter by that parameter.
         severity: ["Minor", "Unknown"], # block alerts with these severities. valid values are Extreme, Severe, Moderate, Minor, and Unknown.
         certainty: ["Unknown", "Past"], # block alerts with these certainties. valid values are Immediate, Expected, Future, Past, and Unknown.
+        naads_events: ["fog"], # block alerts with these NAADS event codes.
         urgency: [],
         status: [],
         scope: [],
+        other: [ # custom parameters that are not part of the standard CAP-CP schema but can be included in the alert's parameters. like how Environment Canada alerts have layer-specific parameters that include things like SAME event and location codes for weather radio, or the severity colour code.
+          {
+            value_name: "layer:EC-MSC-SMC:1.0:Alert_Type",
+            value: "advisory"
+          }
+        ]
       ]
     dedup:
       window_seconds: 300

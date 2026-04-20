@@ -723,22 +723,34 @@ _ALERT_VERBS: dict[str, dict[str, str]] = {
 _AN_PREFIXES = ('a', 'e', 'i', 'o', 'u')
 
 _FORECAST_LOC_DB: dict[str, tuple[str, str]] | None = None
-_FORECAST_LOC_CSV = pathlib.Path(__file__).parent / 'FORECAST_LOCATIONS.csv'
+_FORECAST_LOC_CSV = pathlib.Path(__file__).parent / 'AGGREGATE_LOCATION_CODES.csv'
 
 
 def _load_forecast_loc_db() -> dict[str, tuple[str, str]]:
     global _FORECAST_LOC_DB
     if _FORECAST_LOC_DB is not None:
         return _FORECAST_LOC_DB
+    import csv as _csv
     db: dict[str, tuple[str, str]] = {}
     try:
-        with open(_FORECAST_LOC_CSV, encoding='utf-8') as f:
-            for line in f:
-                parts = line.strip().split(',')
-                if len(parts) >= 3 and parts[0][:1].isdigit():
-                    code = parts[0].strip()
-                    if code not in db:
-                        db[code] = (parts[1].strip(), parts[2].strip())
+        with open(_FORECAST_LOC_CSV, newline='', encoding='utf-8') as f:
+            reader = _csv.reader(f)
+            header = next(reader, None)
+            if header is None:
+                _FORECAST_LOC_DB = db
+                return db
+            h = [c.strip().upper() for c in header]
+            rgn_idx, rgn_en, rgn_fr = h.index('FCST_RGN_CLC'), h.index('FCST_RGN_NAME'), h.index('FCST_RGN_NOM')
+            clc_idx, clc_en, clc_fr = h.index('CLC'), h.index('NAME'), h.index('NOM')
+            for row in reader:
+                if len(row) <= max(rgn_idx, rgn_en, rgn_fr, clc_idx, clc_en, clc_fr):
+                    continue
+                rgn = row[rgn_idx].strip().strip('"')
+                if rgn and rgn not in db:
+                    db[rgn] = (row[rgn_en].strip().strip('"'), row[rgn_fr].strip().strip('"'))
+                clc = row[clc_idx].strip().strip('"')
+                if clc and clc not in db:
+                    db[clc] = (row[clc_en].strip().strip('"'), row[clc_fr].strip().strip('"'))
     except Exception:
         pass
     _FORECAST_LOC_DB = db
