@@ -251,7 +251,7 @@ def _init_feed_clips(config: dict[str, Any], cache: dict[str, Any], feed: dict[s
 
     feed_id = feed.get('id', '')
     text = gen_station_id(config, feed_id, lang)
-    text_hash = hashlib.md5(text.encoded(), usedforsecurity=False).hexdigest()
+    text_hash = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
     fingerprint = {**_tts_fingerprint(config, lang), 'text_hash': text_hash}
 
     cached = cache.get('feed_clip_config', {}).get(feed_id, {}).get(lang, {})
