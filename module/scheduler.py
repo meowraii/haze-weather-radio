@@ -136,7 +136,7 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
 
         alert_pcm = to_pcm16(resample(full_signal, same_sr, BUS_SR))
         push_alert(feed_id, 0, alert_pcm, f'test_{event_code}_{int(time.time())}')
-        log.info('[%s] Queued %s test: %s', feed_id, event_code, header.encode())
+        log.info('[%s] Queued %s test: %s', feed_id, event_code, header.encoded())
         fired_any = True
 
     if fired_any:

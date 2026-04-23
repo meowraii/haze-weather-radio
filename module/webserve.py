@@ -872,16 +872,16 @@ class WebServer:
         if fmt in _TEXT_FORMATS:
             pkg_texts = {pkg_id: pkg_lookup.get(pkg_id, '') for pkg_id in requested}
             if fmt == 'json':
-                body = _json.dumps({'packages': pkg_texts, 'locations': requested_locs, 'lang': lang}).encode()
+                body = _json.dumps({'packages': pkg_texts, 'locations': requested_locs, 'lang': lang}).encoded()
             elif fmt == 'xml':
                 parts = [f'  <package id="{p}">{t}</package>' for p, t in pkg_texts.items() if t]
-                body = ('<?xml version="1.0" encoding="UTF-8"?>\n<wx>\n' + '\n'.join(parts) + '\n</wx>').encode()
+                body = ('<?xml version="1.0" encoding="UTF-8"?>\n<wx>\n' + '\n'.join(parts) + '\n</wx>').encoded()
             elif fmt == 'ssml':
                 paras = '\n  '.join(f'<p>{t}</p>' for t in pkg_texts.values() if t)
                 body = (
                     f'<speak version="1.1" xmlns="http://www.w3.org/2001/10/synthesis"'
                     f' xml:lang="{lang}">\n  {paras}\n</speak>'
-                ).encode()
+                ).encoded()
             elif fmt == 'html':
                 rows = '\n'.join(
                     f'<section id="{p}"><h2>{p.replace("_", " ").title()}</h2><p>{t}</p></section>'
@@ -890,11 +890,11 @@ class WebServer:
                 body = (
                     f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
                     f'<title>Weather Report</title></head><body>{rows}</body></html>'
-                ).encode()
+                ).encoded()
             elif fmt == 'markdown':
                 body = '\n\n'.join(
                     f'## {p.replace("_", " ").title()}\n\n{t}' for p, t in pkg_texts.items() if t
-                ).encode()
+                ).encoded()
             else:
                 sections = '\n\n'.join(
                     f'\\section{{{p.replace("_", " ").title()}}}\n{t}' for p, t in pkg_texts.items() if t
@@ -903,7 +903,7 @@ class WebServer:
                     '\\documentclass{article}\n\\usepackage[utf8]{inputenc}\n'
                     '\\begin{document}\n\\title{Weather Report}\n\\maketitle\n'
                     f'{sections}\n\\end{{document}}'
-                ).encode()
+                ).encoded()
             return StreamingResponse(
                 iter([body]),
                 media_type=_FORMAT_MEDIA_TYPES[fmt],
