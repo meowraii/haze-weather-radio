@@ -788,27 +788,30 @@ def _build_alert_tts_script(
         subject = _parse_eccc_subject(alert_name, colour, alert_type) if alert_name else info.event.title()
         sender_name = info.sender_name
 
-        if loc_status == 'ended' or msg_type == 'Cancel':
-            sentences.append(ph['eccc_ended'].format(subject=subject, coverage=coverage))
+        areas = _resolve_cap_areas(info, feed, lang_short)
+        area_str = _join_areas(areas, lang_short) if areas else coverage
+
+        if loc_status == 'ended':
+            sentences.append(ph['eccc_ended'].format(subject=subject, areas=area_str))
+        elif msg_type == 'Cancel':
+            sentences.append(ph['eccc_cancelled'].format(sender=sender_name, subject=subject, areas=area_str))
         elif msg_type == 'Update':
-            sentences.append(ph['eccc_updated'].format(sender=sender_name, subject=subject, coverage=coverage))
+            sentences.append(ph['eccc_updated'].format(sender=sender_name, subject=subject, areas=area_str))
         else:
-            sentences.append(ph['eccc_issued'].format(sender=sender_name, subject=subject, coverage=coverage))
+            sentences.append(ph['eccc_issued'].format(sender=sender_name, subject=subject, areas=area_str))
 
         if loc_status != 'ended' and msg_type != 'Cancel':
             onset_dt = info.onset or info.effective
-            if onset_dt and onset_dt > now:
-                sentences.append(ph['onset'].format(datetime=_format_datetime_spoken(onset_dt, lang_short)))
-
-            areas = _resolve_cap_areas(info, feed, lang_short)
-            if info.expires:
-                if areas:
-                    sentences.append(ph['expires_areas'].format(
-                        datetime=_format_datetime_spoken(info.expires, lang_short),
-                        areas=_join_areas(areas, lang_short),
-                    ))
-                else:
-                    sentences.append(ph['expires'].format(datetime=_format_datetime_spoken(info.expires, lang_short)))
+            onset_future = onset_dt is not None and onset_dt > now
+            if onset_future and info.expires:
+                sentences.append(ph['timing_span'].format(
+                    onset=_format_datetime_spoken(onset_dt, lang_short),
+                    expires=_format_datetime_spoken(info.expires, lang_short),
+                ))
+            elif info.expires:
+                sentences.append(ph['timing_expires'].format(expires=_format_datetime_spoken(info.expires, lang_short)))
+            elif onset_future:
+                sentences.append(ph['timing_onset'].format(onset=_format_datetime_spoken(onset_dt, lang_short)))
 
             if confidence and impact:
                 sentences.append(ph['confidence_impact'].format(confidence=confidence, impact=impact))
@@ -819,6 +822,15 @@ def _build_alert_tts_script(
                 sentences.append(_clean_alert_text(info.instruction))
 
     elif source_type == 'nws':
+        nws_sender = info.sender_name or 'The National Weather Service'
+        event_name = info.event.title() if info.event else ''
+        nws_area = next((a.description for a in info.areas if a.description), '')
+        if nws_area:
+            sentences.append(ph['nws_header'].format(sender=nws_sender, event=event_name, areas=nws_area))
+        elif event_name:
+            sentences.append(ph['generic_issued'].format(sender=nws_sender, event=event_name))
+        if info.expires:
+            sentences.append(ph['timing_expires'].format(expires=_format_datetime_spoken(info.expires, lang_short)))
         if info.description:
             sentences.append(_clean_alert_text(info.description))
         if info.instruction:
@@ -826,21 +838,19 @@ def _build_alert_tts_script(
 
     else:
         event_name = str(info.event or info.headline or '').title()
-        coverage = next(
-            (area.description for area in info.areas if area.description), ''
-        )
-        sender_name = info.sender_name
+        civil_area = next((a.description for a in info.areas if a.description), '')
+        civil_sender = info.sender_name or 'Alert Ready'
+        area_str_civil = civil_area or event_name
 
-        if msg_type == 'Update':
-            sentences.append(ph['civil_updated'].format(sender=sender_name or 'Alert Ready', event=event_name))
+        if msg_type == 'Cancel':
+            sentences.append(ph['civil_cancelled'].format(sender=civil_sender, event=event_name, areas=area_str_civil))
+        elif msg_type == 'Update':
+            sentences.append(ph['civil_updated'].format(sender=civil_sender, event=event_name, areas=area_str_civil))
         else:
-            sentences.append(ph['civil_issued'].format(sender=sender_name or 'Alert Ready', event=event_name))
-
-        if coverage:
-            sentences.append(ph['civil_for'].format(coverage=coverage))
+            sentences.append(ph['civil_issued'].format(sender=civil_sender, event=event_name, areas=area_str_civil))
 
         if info.expires:
-            sentences.append(ph['civil_expires'].format(datetime=_format_datetime_spoken(info.expires, lang_short)))
+            sentences.append(ph['civil_timing'].format(expires=_format_datetime_spoken(info.expires, lang_short)))
 
         if info.description:
             sentences.append(_clean_alert_text(info.description))
