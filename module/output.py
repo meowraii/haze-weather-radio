@@ -171,7 +171,7 @@ class IcecastSink:
             f"?{urllib.parse.urlencode({k: v for k, v in params.items() if v})}"
         )
         credentials = base64.b64encode(
-            f"{self._username}:{self._password}".encode()
+            f"{self._username}:{self._password}".encoded()
         ).decode()
         req = urllib.request.Request(
             url, headers={'Authorization': f'Basic {credentials}'}
