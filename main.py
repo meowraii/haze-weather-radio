@@ -19,7 +19,7 @@ from managed.events import (
     shutdown_event,
     update_runtime_status,
 )
-from module.alert import alert_worker
+from module.alert import alert_worker, purge_expired_alerts
 from module.data import data_thread_worker, fetch_once
 from module.playlist import playlist_thread_worker
 from module.playout import playout_thread_worker
@@ -267,6 +267,10 @@ def main(config: dict[str, Any], log_level: str | None = None) -> None:
     for feed in feeds:
         purge_count = clean_stale_data(feed)
         log.info('Cleaned %d stale audio file(s) for feed: %s', purge_count, feed['id'])
+
+    expired_count = purge_expired_alerts()
+    if expired_count:
+        log.info('Purged %d long-expired alert(s) from registry on startup', expired_count)
 
     log.info('Initializing static phrase cache...')
     init_static_phrases(config, feeds)

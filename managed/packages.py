@@ -838,6 +838,12 @@ def _resolve_alert_areas(
 
 _ECCC_BOILERPLATE_RE = re.compile(r'\s*###.*', re.DOTALL)
 _ECCC_MULTISPACE_RE = re.compile(r'\n{2,}')
+_ECCC_FOOTER_RE = re.compile(
+    r'\s*Please continue to monitor[^\n]*\n?'
+    r'|\s*To report (?:severe|extreme|hazardous|) ?weather[^\n]*\n?'
+    r'|\s*(?:Envoyez un courriel|Pour signaler)[^\n]*\n?',
+    re.IGNORECASE,
+)
 
 _AL_PH: dict[str, dict[str, str]] = {
     'en': {
@@ -904,6 +910,7 @@ _AL_PH: dict[str, dict[str, str]] = {
 
 
 def _clean_alert_text(text: str) -> str:
+    text = _ECCC_FOOTER_RE.sub('', text)
     text = _ECCC_BOILERPLATE_RE.sub('', text)
     text = _ECCC_MULTISPACE_RE.sub(' ', text)
     text = _reformat_times_in_text(text)
@@ -1103,9 +1110,7 @@ def alerts_package(
     if not rendered:
         return ""
 
-    count = len(rendered)
-    opener = ph['opener_1'] if count == 1 else ph['opener'].format(count=_num_to_words(count))
-    return opener + '  ' + '  '.join(rendered)
+    return '  '.join(rendered)
 
 
 def current_conditions_package(

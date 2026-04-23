@@ -19,6 +19,36 @@ import numpy as np
 _REGISTRY_PATH = pathlib.Path('data') / 'alertsRegistry.json'
 _registry_lock = threading.Lock()
 
+_MAX_ALERT_SCRIPT_WORDS = 400
+_ALERT_SENT_RE = re.compile(r'(?<=[.!?])\s+')
+
+
+def _truncate_at_sentence_boundary(text: str, max_words: int) -> str:
+    if len(text.split()) <= max_words:
+        return text
+    parts = _ALERT_SENT_RE.split(text)
+    result: list[str] = []
+    count = 0
+    for part in parts:
+        w = len(part.split())
+        if count + w > max_words and result:
+            break
+        result.append(part)
+        count += w
+    return ' '.join(result) if result else ' '.join(text.split()[:max_words])
+
+
+def _fit_sentences_to_word_budget(sentences: list[str]) -> list[str]:
+    if sum(len(s.split()) for s in sentences) <= _MAX_ALERT_SCRIPT_WORDS:
+        return sentences
+    out = list(sentences)
+    for i in range(len(out) - 1, -1, -1):
+        if sum(len(s.split()) for s in out) <= _MAX_ALERT_SCRIPT_WORDS:
+            break
+        budget = _MAX_ALERT_SCRIPT_WORDS - sum(len(out[j].split()) for j in range(i))
+        out[i] = _truncate_at_sentence_boundary(out[i], budget) if budget > 0 else ''
+    return [s for s in out if s]
+
 
 def _parse_cap_references(references: str) -> list[str]:
     ids: list[str] = []
@@ -140,6 +170,46 @@ def _write_registry_entry(feed_id: str, alert: Any) -> bool:
         except Exception as e:
             log.error('Failed to write alert registry: %s', e)
             return False
+
+
+_REGISTRY_EXPIRY_GRACE = _dt.timedelta(hours=24)
+
+
+def purge_expired_alerts() -> int:
+    if not _REGISTRY_PATH.exists():
+        return 0
+    cutoff = _dt.datetime.now(_dt.UTC) - _REGISTRY_EXPIRY_GRACE
+    with _registry_lock:
+        try:
+            registry: list[dict] = json.loads(_REGISTRY_PATH.read_text(encoding='utf-8'))
+        except Exception:
+            return 0
+
+        before = len(registry)
+        pruned: list[dict] = []
+        for entry in registry:
+            expires_raw: str | None = (entry.get('metadata') or {}).get('expires')
+            if not expires_raw:
+                pruned.append(entry)
+                continue
+            try:
+                expires_dt = _dt.datetime.fromisoformat(expires_raw)
+                if expires_dt.tzinfo is None:
+                    expires_dt = expires_dt.replace(tzinfo=_dt.UTC)
+            except ValueError:
+                pruned.append(entry)
+                continue
+            if expires_dt >= cutoff:
+                pruned.append(entry)
+
+        removed = before - len(pruned)
+        if removed:
+            try:
+                _REGISTRY_PATH.write_text(json.dumps(pruned, indent=2), encoding='utf-8')
+            except Exception as e:
+                log.error('Failed to write alert registry during purge: %s', e)
+                return 0
+        return removed
 
 
 from managed.events import append_runtime_event, push_alert, update_feed_runtime
@@ -355,6 +425,32 @@ def _is_national_geocode(geocodes: tuple[str, ...] | list[str]) -> bool:
     return False
 
 
+def _eccc_active_clcs_for_update(alert: CAPAlert) -> tuple[frozenset[str], bool]:
+    """Returns (active_clc_codes, is_eccc_update).
+
+    For ECCC msgType=Update: returns the set of CLC codes that are currently
+    active in this update.  Prefers Newly_Active_Areas if populated; otherwise
+    falls back to the CLC geocodes in the alert's area blocks.  Returns
+    (frozenset(), False) for non-ECCC or non-Update alerts.
+    """
+    if alert.msg_type != 'Update':
+        return frozenset(), False
+    info = alert.english or (alert.infos[0] if alert.infos else None)
+    if not info:
+        return frozenset(), False
+    pd = info.param_dict()
+    if not any(k.startswith('layer:ec-msc-smc') for k in pd):
+        return frozenset(), False
+    raw_newly_active = pd.get('layer:ec-msc-smc:1.1:newly_active_areas', '')
+    if raw_newly_active.strip():
+        return frozenset(c.strip() for c in raw_newly_active.split(',') if c.strip()), True
+    area_clcs: set[str] = set()
+    for area in info.areas:
+        for code in area.clc_codes:
+            if code:
+                area_clcs.add(code)
+    return frozenset(area_clcs), True
+
 def _normalize_strings(values: Any) -> list[str]:
     if values is None:
         return []
@@ -482,6 +578,11 @@ def _header_locations(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
 
     if not feed_codes:
         return ["000000"]
+
+    active_clcs, is_eccc_update = _eccc_active_clcs_for_update(alert)
+    if is_eccc_update:
+        matched = [c for c in feed_codes if c in active_clcs]
+        return matched[:31] if matched else feed_codes[:31]
 
     all_geocodes = alert.all_geocodes
     if _is_national_geocode(all_geocodes):
@@ -857,7 +958,7 @@ def _build_alert_tts_script(
         if info.instruction:
             sentences.append(_clean_alert_text(info.instruction))
 
-    return '  '.join(filter(None, sentences))
+    return '  '.join(filter(None, _fit_sentences_to_word_budget(sentences)))
 
 
 def _generate_alert_audio(
@@ -925,6 +1026,7 @@ class AlertDedup:
         self._window = window_s
         self._key_fields = key_fields or ["identifier", "sent"]
         self._seen: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def _build_key(self, alert: CAPAlert) -> str:
         parts: list[str] = []
@@ -935,12 +1037,13 @@ class AlertDedup:
 
     def is_new(self, alert: CAPAlert) -> bool:
         now = time.monotonic()
-        self._seen = {k: v for k, v in self._seen.items() if now - v < self._window}
-        key = self._build_key(alert)
-        if key in self._seen:
-            return False
-        self._seen[key] = now
-        return True
+        with self._lock:
+            self._seen = {k: v for k, v in self._seen.items() if now - v < self._window}
+            key = self._build_key(alert)
+            if key in self._seen:
+                return False
+            self._seen[key] = now
+            return True
 
 
 def _covers_feed_area(
@@ -964,6 +1067,14 @@ def _covers_feed_area(
         return True, "national coverage"
 
     if use_feed_locs:
+        active_clcs, is_eccc_update = _eccc_active_clcs_for_update(alert)
+        if is_eccc_update:
+            feed_codes = feed_same_codes(feed)
+            matched = [c for c in feed_codes if c in active_clcs]
+            if matched:
+                return True, "eccc update CLC coverage"
+            return False, "eccc update outside feed CLC coverage"
+
         matched_feed_codes = _matching_feed_codes(alert, feed)
         if matched_feed_codes:
             return True, "feed code coverage"
@@ -1009,6 +1120,7 @@ async def alert_worker(
         cap_filter: dict[str, Any],
         dedup: AlertDedup,
         source_name: str,
+        suppress_audio: bool = False,
     ) -> None:
         if not dedup.is_new(alert):
             log.debug("Duplicate %s alert skipped: %s", source_name, alert.identifier)
@@ -1063,10 +1175,13 @@ async def alert_worker(
                     {'severity': alert.severity},
                 )
                 log.info("[%s] %s alert registered: %s — %s (%s)", feed_id, source_name, alert.event, alert.headline, cover_reason)
-                try:
-                    _generate_alert_audio(alert, feed, config)
-                except Exception:
-                    log.exception('[%s] SAME generation failed for %s', feed_id, alert.identifier)
+                if not suppress_audio:
+                    try:
+                        _generate_alert_audio(alert, feed, config)
+                    except Exception:
+                        log.exception('[%s] SAME generation failed for %s', feed_id, alert.identifier)
+                else:
+                    log.debug('[%s] Archive alert registered without audio: %s', feed_id, alert.identifier)
             else:
                 log.debug("[%s] %s alert already in registry, skipping SAME: %s", feed_id, source_name, alert.identifier)
 
@@ -1099,11 +1214,14 @@ async def alert_worker(
         async def on_cap_cp_alert(alert: CAPAlert) -> None:
             await asyncio.to_thread(_dispatch_alert, alert, 'cap_cp', cap_filter, cap_cp_dedup, 'CAP-CP')
 
+        async def on_cap_cp_alert_archive(alert: CAPAlert) -> None:
+            await asyncio.to_thread(_dispatch_alert, alert, 'cap_cp', cap_filter, cap_cp_dedup, 'CAP-CP', True)
+
         naads_sources = cap_cp_cfg.get("sources", [])
         if naads_sources:
             try:
-                count = await naad_archive_fetch(naads_sources, on_cap_cp_alert)
-                log.info("NAADS startup archive: %d active alert(s) fetched", count)
+                count = await naad_archive_fetch(naads_sources, on_cap_cp_alert_archive)
+                log.info("NAADS startup archive: %d active alert(s) fetched (audio suppressed)", count)
             except Exception as exc:
                 log.warning("NAADS startup archive fetch failed: %s", exc)
 

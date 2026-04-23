@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from managed.events import append_runtime_event, push_alert, set_pending_chime, shutdown_event
-from module.alert import feed_same_codes
+from module.alert import feed_same_codes, purge_expired_alerts
 from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
 from module.same import SAMEHeader, generate_same, resample, to_pcm16
 from module.tts import synthesize_pcm
@@ -175,7 +175,10 @@ def _run_cleanup(feed: dict[str, Any]) -> None:
     feed_id = feed.get('id', '')
     count = clean_stale_data(feed)
     log.info('Nightly cleanup removed %d file(s) for feed: %s', count, feed_id)
-    append_runtime_event('cleanup', f'Nightly cleanup: {count} file(s) removed for {feed_id}')
+    expired = purge_expired_alerts()
+    if expired:
+        log.info('Nightly cleanup purged %d long-expired alert(s) from registry', expired)
+    append_runtime_event('cleanup', f'Nightly cleanup: {count} file(s) removed, {expired} expired alert(s) purged for {feed_id}')
 
 
 def scheduler_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]]) -> None:
