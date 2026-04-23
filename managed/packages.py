@@ -841,62 +841,62 @@ _ECCC_MULTISPACE_RE = re.compile(r'\n{2,}')
 
 _AL_PH: dict[str, dict[str, str]] = {
     'en': {
-        'opener_1':          "The following alert is currently in effect.",
-        'opener':            "The following {count} alerts are currently in effect.",
-        'eccc_issued':       "{sender} has issued a {subject} for {coverage}.",
-        'eccc_updated':      "{sender} has updated a {subject} for {coverage}.",
-        'eccc_ended':        "The {subject} that was in effect for portions of {coverage} has now ended.",
-        'onset':             "Beginning {datetime}.",
-        'expires':           "In effect until {datetime}.",
-        'expires_areas':     "In effect until {datetime}, for {areas}.",
-        'confidence_impact': "Forecast confidence is {confidence}, with a {impact} impact.",
-        'civil_issued':      "{sender} has issued a {event}.",
-        'civil_updated':     "{sender} has updated a {event}.",
-        'civil_for':         "This affects {coverage}.",
-        'civil_expires':     "In effect until {datetime}.",
-        'nws':               "{description}",
+        'opener_1':          "Attention: the following alert is currently in effect.",
+        'opener':            "Attention: the following {count} alerts are currently in effect.",
+        'eccc_issued':       "{sender} has issued a {subject} for {areas}.",
+        'eccc_updated':      "{sender} has updated the {subject} for {areas}.",
+        'eccc_cancelled':    "{sender} has cancelled the {subject} for {areas}.",
+        'eccc_ended':        "The {subject} for {areas} has now ended.",
+        'timing_span':       "In effect from {onset} through {expires}.",
+        'timing_expires':    "In effect until {expires}.",
+        'timing_onset':      "Beginning {onset}.",
+        'confidence_impact': "Forecast confidence is {confidence}, with {impact} impacts expected.",
+        'nws_header':        "{sender} has issued a {event} for {areas}.",
+        'civil_issued':      "{sender} has issued a {event} for {areas}.",
+        'civil_updated':     "{sender} has updated the {event} for {areas}.",
+        'civil_cancelled':   "{sender} has cancelled the {event} for {areas}.",
+        'civil_timing':      "In effect until {expires}.",
         'generic_issued':    "{sender} has issued a {event}.",
-        'generic_onset':     "Beginning {datetime}.",
         'generic_expires':   "In effect until {datetime}.",
         'list_and':          "and",
     },
     'fr': {
-        'opener_1':          "L'alerte suivante est actuellement en vigueur.",
-        'opener':            "Les {count} alertes suivantes sont actuellement en vigueur.",
-        'eccc_issued':       "{sender} a émis un {subject} pour {coverage}.",
-        'eccc_updated':      "{sender} a mis à jour un {subject} pour {coverage}.",
-        'eccc_ended':        "Le {subject} qui était en vigueur pour des parties de {coverage} est maintenant terminé.",
-        'onset':             "À compter du {datetime}.",
-        'expires':           "En vigueur jusqu'au {datetime}.",
-        'expires_areas':     "En vigueur jusqu'au {datetime}, pour {areas}.",
-        'confidence_impact': "Niveau de confiance : {confidence}. Niveau d'impact : {impact}.",
-        'civil_issued':      "{sender} a émis un {event}.",
-        'civil_updated':     "{sender} a mis à jour un {event}.",
-        'civil_for':         "Cela affecte {coverage}.",
-        'civil_expires':     "En vigueur jusqu'au {datetime}.",
-        'nws':               "{description}",
+        'opener_1':          "Attention : l'alerte suivante est actuellement en vigueur.",
+        'opener':            "Attention : les {count} alertes suivantes sont actuellement en vigueur.",
+        'eccc_issued':       "{sender} a émis un {subject} pour {areas}.",
+        'eccc_updated':      "{sender} a mis à jour le {subject} pour {areas}.",
+        'eccc_cancelled':    "{sender} a annulé le {subject} pour {areas}.",
+        'eccc_ended':        "Le {subject} pour {areas} est maintenant terminé.",
+        'timing_span':       "En vigueur du {onset} jusqu'au {expires}.",
+        'timing_expires':    "En vigueur jusqu'au {expires}.",
+        'timing_onset':      "À compter du {onset}.",
+        'confidence_impact': "Niveau de confiance : {confidence}. Impacts prévus : {impact}.",
+        'nws_header':        "{sender} a émis un {event} pour {areas}.",
+        'civil_issued':      "{sender} a émis un {event} pour {areas}.",
+        'civil_updated':     "{sender} a mis à jour le {event} pour {areas}.",
+        'civil_cancelled':   "{sender} a annulé le {event} pour {areas}.",
+        'civil_timing':      "En vigueur jusqu'au {expires}.",
         'generic_issued':    "{sender} a émis un {event}.",
-        'generic_onset':     "À compter du {datetime}.",
         'generic_expires':   "En vigueur jusqu'au {datetime}.",
         'list_and':          "et",
     },
     'es': {
-        'opener_1':          "La siguiente alerta está actualmente en vigor.",
-        'opener':            "Las siguientes {count} alertas están actualmente en vigor.",
-        'eccc_issued':       "{sender} ha emitido un {subject} para {coverage}.",
-        'eccc_updated':      "{sender} ha actualizado un {subject} para {coverage}.",
-        'eccc_ended':        "El {subject} que estaba en vigor para partes de {coverage} ha terminado.",
-        'onset':             "A partir de {datetime}.",
-        'expires':           "En vigor hasta {datetime}.",
-        'expires_areas':     "En vigor hasta {datetime}, para {areas}.",
-        'confidence_impact': "Confianza del pronóstico: {confidence}. Nivel de impacto: {impact}.",
-        'civil_issued':      "{sender} ha emitido un {event}.",
-        'civil_updated':     "{sender} ha actualizado un {event}.",
-        'civil_for':         "Esto afecta a {coverage}.",
-        'civil_expires':     "En vigor hasta {datetime}.",
-        'nws':               "{description}",
+        'opener_1':          "Atención: la siguiente alerta está actualmente en vigor.",
+        'opener':            "Atención: las siguientes {count} alertas están actualmente en vigor.",
+        'eccc_issued':       "{sender} ha emitido un {subject} para {areas}.",
+        'eccc_updated':      "{sender} ha actualizado el {subject} para {areas}.",
+        'eccc_cancelled':    "{sender} ha cancelado el {subject} para {areas}.",
+        'eccc_ended':        "El {subject} para {areas} ha finalizado.",
+        'timing_span':       "En vigor desde {onset} hasta {expires}.",
+        'timing_expires':    "En vigor hasta {expires}.",
+        'timing_onset':      "A partir de {onset}.",
+        'confidence_impact': "Confianza del pronóstico: {confidence}. Impactos esperados: {impact}.",
+        'nws_header':        "{sender} ha emitido un {event} para {areas}.",
+        'civil_issued':      "{sender} ha emitido un {event} para {areas}.",
+        'civil_updated':     "{sender} ha actualizado el {event} para {areas}.",
+        'civil_cancelled':   "{sender} ha cancelado el {event} para {areas}.",
+        'civil_timing':      "En vigor hasta {expires}.",
         'generic_issued':    "{sender} ha emitido un {event}.",
-        'generic_onset':     "A partir de {datetime}.",
         'generic_expires':   "En vigor hasta {datetime}.",
         'list_and':          "y",
     },
@@ -1021,32 +1021,37 @@ def alerts_package(
 
             subject = _parse_eccc_subject(alert_name, colour, alert_type) if alert_name else meta.get('event', '').title()
 
-            if loc_status == 'ended' or msg_type == 'Cancel':
-                sentences.append(ph['eccc_ended'].format(subject=subject, coverage=coverage))
+            areas = _resolve_alert_areas(params, feed, lang_short) if feed else []
+            area_str = _join_areas(areas, lang_short) if areas else coverage
+
+            if loc_status == 'ended':
+                sentences.append(ph['eccc_ended'].format(subject=subject, areas=area_str))
+            elif msg_type == 'Cancel':
+                sentences.append(ph['eccc_cancelled'].format(sender=sender_name, subject=subject, areas=area_str))
             elif msg_type == 'Update':
-                sentences.append(ph['eccc_updated'].format(sender=sender_name, subject=subject, coverage=coverage))
+                sentences.append(ph['eccc_updated'].format(sender=sender_name, subject=subject, areas=area_str))
             else:
-                sentences.append(ph['eccc_issued'].format(sender=sender_name, subject=subject, coverage=coverage))
+                sentences.append(ph['eccc_issued'].format(sender=sender_name, subject=subject, areas=area_str))
 
             if loc_status != 'ended' and msg_type != 'Cancel':
+                onset_dt_eccc: datetime.datetime | None = None
                 onset_raw = meta.get('onset') or meta.get('effective')
                 if onset_raw:
                     try:
-                        onset_dt = datetime.datetime.fromisoformat(onset_raw).astimezone(zone)
-                        if onset_dt > now:
-                            sentences.append(ph['onset'].format(datetime=_format_datetime_spoken(onset_dt, lang_short)))
+                        onset_dt_eccc = datetime.datetime.fromisoformat(onset_raw).astimezone(zone)
                     except (ValueError, TypeError):
                         pass
 
-                areas = _resolve_alert_areas(params, feed, lang_short) if feed else []
-                if expires_dt:
-                    if areas:
-                        sentences.append(ph['expires_areas'].format(
-                            datetime=_format_datetime_spoken(expires_dt, lang_short),
-                            areas=_join_areas(areas, lang_short),
-                        ))
-                    else:
-                        sentences.append(ph['expires'].format(datetime=_format_datetime_spoken(expires_dt, lang_short)))
+                onset_future = onset_dt_eccc is not None and onset_dt_eccc > now
+                if onset_future and expires_dt:
+                    sentences.append(ph['timing_span'].format(
+                        onset=_format_datetime_spoken(onset_dt_eccc, lang_short),
+                        expires=_format_datetime_spoken(expires_dt, lang_short),
+                    ))
+                elif expires_dt:
+                    sentences.append(ph['timing_expires'].format(expires=_format_datetime_spoken(expires_dt, lang_short)))
+                elif onset_future:
+                    sentences.append(ph['timing_onset'].format(onset=_format_datetime_spoken(onset_dt_eccc, lang_short)))
 
                 if confidence and impact:
                     sentences.append(ph['confidence_impact'].format(confidence=confidence, impact=impact))
@@ -1057,25 +1062,35 @@ def alerts_package(
                     sentences.append(instruction)
 
         elif source_type == 'nws':
+            event_name = str(meta.get('event') or '').title()
+            nws_area = _civil_area_desc(entry)
+            nws_sender = sender_name or 'The National Weather Service'
+            if nws_area:
+                sentences.append(ph['nws_header'].format(sender=nws_sender, event=event_name, areas=nws_area))
+            elif event_name:
+                sentences.append(ph['generic_issued'].format(sender=nws_sender, event=event_name))
+            if expires_dt:
+                sentences.append(ph['timing_expires'].format(expires=_format_datetime_spoken(expires_dt, lang_short)))
             if description:
-                sentences.append(ph['nws'].format(description=description))
+                sentences.append(description)
             if instruction:
                 sentences.append(instruction)
 
         else:
             event_name = str(meta.get('event') or meta.get('headline') or '').title()
-            coverage = _civil_area_desc(entry)
+            civil_area = _civil_area_desc(entry)
+            civil_sender = sender_name or 'Alert Ready'
+            area_str_civil = civil_area or event_name
 
-            if msg_type == 'Update':
-                sentences.append(ph['civil_updated'].format(sender=sender_name or 'Alert Ready', event=event_name))
+            if msg_type == 'Cancel':
+                sentences.append(ph['civil_cancelled'].format(sender=civil_sender, event=event_name, areas=area_str_civil))
+            elif msg_type == 'Update':
+                sentences.append(ph['civil_updated'].format(sender=civil_sender, event=event_name, areas=area_str_civil))
             else:
-                sentences.append(ph['civil_issued'].format(sender=sender_name or 'Alert Ready', event=event_name))
-
-            if coverage:
-                sentences.append(ph['civil_for'].format(coverage=coverage))
+                sentences.append(ph['civil_issued'].format(sender=civil_sender, event=event_name, areas=area_str_civil))
 
             if expires_dt:
-                sentences.append(ph['civil_expires'].format(datetime=_format_datetime_spoken(expires_dt, lang_short)))
+                sentences.append(ph['civil_timing'].format(expires=_format_datetime_spoken(expires_dt, lang_short)))
 
             if description:
                 sentences.append(description)
