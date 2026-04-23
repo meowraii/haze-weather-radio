@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import csv
 import datetime as _dt
+import functools
 import json
 import logging
+import math
 import pathlib
 import re
 import threading
@@ -141,7 +143,15 @@ def _write_registry_entry(feed_id: str, alert: Any) -> bool:
 
 
 from managed.events import append_runtime_event, push_alert, update_feed_runtime
-from module.cap_specific.naads_tcp import CAPAlert, naad_listener
+from managed.packages import (
+    _AL_PH,
+    _clean_alert_text,
+    _format_datetime_spoken,
+    _join_areas,
+    _load_forecast_loc_db,
+    _parse_eccc_subject,
+)
+from module.cap_specific.naads_tcp import CAPAlert, CAPInfo, naad_listener
 from module.cap_specific.naadsatom_http import naad_archive_fetch
 from module.cap_specific.nwsatom_http import nws_atom_listener
 from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
@@ -192,35 +202,92 @@ _aggregate_clc_to_geocodes: dict[str, set[str]] | None = None
 _aggregate_geocode_to_clcs: dict[str, set[str]] | None = None
 _aggregate_clc_to_province: dict[str, str] | None = None
 
+_SPATIAL_RADIUS_FACTOR = 2.0
+_SPATIAL_MIN_RADIUS_KM = 15.0
+
+
+@functools.lru_cache(maxsize=1)
+def _load_clc_spatial_db() -> dict[str, tuple[float, float, float]]:
+    db: dict[str, tuple[float, float, float]] = {}
+    try:
+        with open(_MANAGED / "CLC_Base_Zone.csv", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            h = [c.strip().upper() for c in next(reader)]
+            clc_idx, lat_idx, lon_idx, area_idx = h.index("CLC"), h.index("LAT_DD"), h.index("LON_DD"), h.index("AREA_KM2")
+            for row in reader:
+                if len(row) <= max(clc_idx, lat_idx, lon_idx, area_idx):
+                    continue
+                clc = row[clc_idx].strip().strip('"')
+                try:
+                    lat, lon, area = float(row[lat_idx]), float(row[lon_idx]), float(row[area_idx])
+                except ValueError:
+                    continue
+                if clc:
+                    db[clc] = (lat, lon, area)
+    except (OSError, csv.Error) as e:
+        log.error("Failed to load CLC spatial DB: %s", e)
+    return db
+
+
+@functools.lru_cache(maxsize=1)
+def _load_geocode_spatial_db() -> dict[str, tuple[float, float]]:
+    db: dict[str, tuple[float, float]] = {}
+    try:
+        with open(_MANAGED / "CAP-CP_Geocodes.csv", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            h = [c.strip().upper() for c in next(reader)]
+            geo_idx, lat_idx, lon_idx = h.index("CAPCPGCODE"), h.index("LAT_DD"), h.index("LON_DD")
+            for row in reader:
+                if len(row) <= max(geo_idx, lat_idx, lon_idx):
+                    continue
+                geo = row[geo_idx].strip().strip('"')
+                try:
+                    lat, lon = float(row[lat_idx]), float(row[lon_idx])
+                except ValueError:
+                    continue
+                if geo:
+                    db[geo] = (lat, lon)
+    except (OSError, csv.Error) as e:
+        log.error("Failed to load geocode spatial DB: %s", e)
+    return db
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 6371.0 * 2 * math.asin(math.sqrt(a))
+
+
+def _geocodes_near_any_clc(alert_geocodes: set[str], feed_clcs: list[str]) -> list[str]:
+    geocode_db = _load_geocode_spatial_db()
+    clc_db = _load_clc_spatial_db()
+
+    alert_points = [(geocode_db[gc][0], geocode_db[gc][1]) for gc in alert_geocodes if gc in geocode_db]
+    if not alert_points:
+        return []
+
+    matched: list[str] = []
+    for clc in feed_clcs:
+        entry = clc_db.get(clc)
+        if not entry:
+            continue
+        clat, clon, area = entry
+        radius_km = max(_SPATIAL_MIN_RADIUS_KM, _SPATIAL_RADIUS_FACTOR * math.sqrt(area / math.pi))
+        if any(_haversine_km(clat, clon, glat, glon) <= radius_km for glat, glon in alert_points):
+            matched.append(clc)
+    return matched
+
 
 def _load_aggregate_db() -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, str]]:
     global _aggregate_clc_to_geocodes, _aggregate_geocode_to_clcs, _aggregate_clc_to_province
     if _aggregate_clc_to_geocodes is not None:
         return _aggregate_clc_to_geocodes, _aggregate_geocode_to_clcs, _aggregate_clc_to_province  # type: ignore[return-value]
-    path = _MANAGED / "AGGREGATE_LOCATION_CODES.csv"
-    clc_to_geo: dict[str, set[str]] = {}
-    geo_to_clc: dict[str, set[str]] = {}
-    clc_to_prov: dict[str, str] = {}
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        next(reader, None)
-        for row in reader:
-            if len(row) < 10:
-                continue
-            clc = row[6].strip().strip('"')
-            province = row[5].strip().strip('"')
-            geocode = row[9].strip().strip('"')
-            if not clc or not geocode:
-                continue
-            clc_to_geo.setdefault(clc, set()).add(geocode)
-            geo_to_clc.setdefault(geocode, set()).add(clc)
-            if clc not in clc_to_prov and province:
-                clc_to_prov[clc] = province
-    _aggregate_clc_to_geocodes = clc_to_geo
-    _aggregate_geocode_to_clcs = geo_to_clc
-    _aggregate_clc_to_province = clc_to_prov
-    log.debug("Loaded aggregate location DB: %d CLCs, %d geocodes", len(clc_to_geo), len(geo_to_clc))
-    return clc_to_geo, geo_to_clc, clc_to_prov
+    _aggregate_clc_to_geocodes = {}
+    _aggregate_geocode_to_clcs = {}
+    _aggregate_clc_to_province = _load_forecast_db()
+    return _aggregate_clc_to_geocodes, _aggregate_geocode_to_clcs, _aggregate_clc_to_province
 
 
 def _load_geocode_db() -> dict[str, tuple[str, str]]:
@@ -236,10 +303,24 @@ def _load_forecast_db() -> dict[str, str]:
     global _forecast_db
     if _forecast_db is not None:
         return _forecast_db
-    _, _, clc_to_prov = _load_aggregate_db()
-    _forecast_db = clc_to_prov
-    log.debug("Loaded %d forecast locations from aggregate DB", len(_forecast_db))
-    return _forecast_db
+    db: dict[str, str] = {}
+    try:
+        with (_MANAGED / "CLC_Base_Zone.csv").open(newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = [c.strip().upper() for c in next(reader, [])]
+            clc_idx = header.index("CLC")
+            prov_idx = header.index("PROVINCE_C")
+            for row in reader:
+                if len(row) <= max(clc_idx, prov_idx):
+                    continue
+                clc = row[clc_idx].strip().strip('"')
+                if clc:
+                    db[clc] = row[prov_idx].strip().strip('"')
+    except Exception:
+        pass
+    _forecast_db = db
+    log.debug("Loaded %d CLC entries from CLC_Base_Zone.csv", len(db))
+    return db
 
 
 def _geocodes_cover_clc(geocodes: tuple[str, ...] | list[str], clc_code: str) -> bool:
@@ -355,21 +436,19 @@ def _matching_feed_codes(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
     if direct_matches:
         return direct_matches[:31]
 
-    feed_geocodes = _feed_clc_geocodes(feed_codes)
-    if feed_geocodes:
-        alert_geocodes = set(alert.all_geocodes)
-        if alert_geocodes & feed_geocodes:
-            _, geo_to_clc, _ = _load_aggregate_db()
-            matched_clcs: list[str] = []
-            seen: set[str] = set()
-            for gc in alert_geocodes & feed_geocodes:
-                for clc in geo_to_clc.get(gc, ()):
-                    if clc in set(feed_codes) and clc not in seen:
-                        seen.add(clc)
-                        matched_clcs.append(clc)
-            if matched_clcs:
-                return matched_clcs[:31]
-            return feed_codes[:31]
+    # No direct CLC hit — spatial proximity using geocode centroids from CAP-CP_Geocodes.csv
+    # and CLC zone centroids + areas from CLC_Base_Zone.csv.  This correctly rejects alerts
+    # whose CAP-CP geocodes happen to be listed under a feed CLC in the aggregate table but
+    # are geographically hundreds of km away.
+    alert_geocodes = set(alert.all_geocodes)
+    if alert_geocodes:
+        spatial_matches = _geocodes_near_any_clc(alert_geocodes, feed_codes)
+        if spatial_matches:
+            log.debug(
+                "Spatial geocode match for feed %s: alert_geocodes=%s → clcs=%s",
+                feed.get("id"), _format_log_codes(alert_geocodes), _format_log_codes(spatial_matches),
+            )
+            return spatial_matches[:31]
 
     waterbody_matches = [
         code for code in feed_codes
@@ -590,6 +669,187 @@ def _pcm_to_voice_array(pcm: bytes, same_sr: int) -> np.ndarray:
     return resample(samples, BUS_SR, same_sr)
 
 
+def _info_param(info: CAPInfo, name: str) -> str:
+    return str(info.param_dict().get(name.lower(), ''))
+
+
+def _cap_alert_source(info: CAPInfo) -> str:
+    pd = info.param_dict()
+    if any(k.startswith('layer:ec-msc-smc') for k in pd):
+        return 'eccc'
+    sender_lower = info.sender_name.lower()
+    if 'weather.gov' in sender_lower or 'national weather service' in sender_lower:
+        return 'nws'
+    if 'eas-org' in pd:
+        return 'nws'
+    return 'civil'
+
+
+def _resolve_cap_areas(
+    info: CAPInfo,
+    feed: dict[str, Any],
+    lang_short: str,
+) -> list[str]:
+    raw_newly_active = _info_param(info, 'layer:ec-msc-smc:1.1:newly_active_areas')
+    if raw_newly_active:
+        alert_clcs = [c.strip() for c in raw_newly_active.split(',') if c.strip()]
+    else:
+        seen_clcs: set[str] = set()
+        alert_clcs = []
+        for area in info.areas:
+            for code in area.clc_codes:
+                if code and code not in seen_clcs:
+                    seen_clcs.add(code)
+                    alert_clcs.append(code)
+
+    feed_patterns: list[str] = []
+    for block in feed.get('locations', []):
+        if not isinstance(block, dict):
+            continue
+        for loc in block.get('forecastLocations', []):
+            if not isinstance(loc, dict):
+                continue
+            explicit = str(loc.get('same') or '').strip()
+            if explicit:
+                feed_patterns.extend(p.strip() for p in explicit.split(',') if p.strip())
+            else:
+                raw_fc = str(loc.get('forecast_region') or '').strip()
+                if not raw_fc:
+                    continue
+                if '-' in raw_fc:
+                    left, right = raw_fc.split('-', 1)
+                    if left.replace('*', '').isdigit() and right.replace('*', '').isdigit():
+                        raw_fc = right
+                feed_patterns.extend(p.strip() for p in raw_fc.split(',') if p.strip())
+
+    if not feed_patterns:
+        return []
+
+    seen_matched: set[str] = set()
+    matched_clcs: list[str] = []
+    for clc in alert_clcs:
+        for pattern in feed_patterns:
+            if pattern.endswith('*'):
+                if clc.startswith(pattern[:-1]) and clc not in seen_matched:
+                    seen_matched.add(clc)
+                    matched_clcs.append(clc)
+                    break
+            elif clc == pattern and clc not in seen_matched:
+                seen_matched.add(clc)
+                matched_clcs.append(clc)
+                break
+
+    if not matched_clcs:
+        return []
+
+    db = _load_forecast_loc_db()
+    lang_idx = 1 if lang_short == 'fr' else 0
+    seen_names: set[str] = set()
+    names: list[str] = []
+    for clc in matched_clcs:
+        entry = db.get(clc)
+        if entry:
+            name = entry[lang_idx].replace(' - ', ', ')
+            if name and name not in seen_names:
+                seen_names.add(name)
+                names.append(name)
+    return names
+
+
+def _build_alert_tts_script(
+    alert: CAPAlert,
+    feed: dict[str, Any],
+    lang: str,
+) -> str:
+    info = alert.info_for_lang(lang)
+    if not info:
+        return ""
+
+    lang_short = lang[:2]
+    ph = _AL_PH.get(lang_short, _AL_PH['en'])
+    pd = info.param_dict()
+    source_type = _cap_alert_source(info)
+    msg_type = alert.msg_type
+    now = _dt.datetime.now(_dt.UTC)
+    sentences: list[str] = []
+
+    if source_type == 'eccc':
+        alert_name = str(pd.get('layer:ec-msc-smc:1.0:alert_name', ''))
+        colour     = str(pd.get('layer:ec-msc-smc:1.1:colour', ''))
+        alert_type = str(pd.get('layer:ec-msc-smc:1.0:alert_type', ''))
+        coverage   = str(pd.get('layer:ec-msc-smc:1.0:alert_coverage', '') or info.event)
+        confidence = str(pd.get('layer:ec-msc-smc:1.1:msc_confidence', ''))
+        impact     = str(pd.get('layer:ec-msc-smc:1.1:msc_impact', ''))
+        loc_status = str(
+            pd.get('layer:ec-msc-smc:1.1:alert_location_status', '') or
+            pd.get('layer:ec-msc-smc:1.0:alert_location_status', '')
+        ).lower()
+
+        subject = _parse_eccc_subject(alert_name, colour, alert_type) if alert_name else info.event.title()
+        sender_name = info.sender_name
+
+        if loc_status == 'ended' or msg_type == 'Cancel':
+            sentences.append(ph['eccc_ended'].format(subject=subject, coverage=coverage))
+        elif msg_type == 'Update':
+            sentences.append(ph['eccc_updated'].format(sender=sender_name, subject=subject, coverage=coverage))
+        else:
+            sentences.append(ph['eccc_issued'].format(sender=sender_name, subject=subject, coverage=coverage))
+
+        if loc_status != 'ended' and msg_type != 'Cancel':
+            onset_dt = info.onset or info.effective
+            if onset_dt and onset_dt > now:
+                sentences.append(ph['onset'].format(datetime=_format_datetime_spoken(onset_dt, lang_short)))
+
+            areas = _resolve_cap_areas(info, feed, lang_short)
+            if info.expires:
+                if areas:
+                    sentences.append(ph['expires_areas'].format(
+                        datetime=_format_datetime_spoken(info.expires, lang_short),
+                        areas=_join_areas(areas, lang_short),
+                    ))
+                else:
+                    sentences.append(ph['expires'].format(datetime=_format_datetime_spoken(info.expires, lang_short)))
+
+            if confidence and impact:
+                sentences.append(ph['confidence_impact'].format(confidence=confidence, impact=impact))
+
+            if info.description:
+                sentences.append(_clean_alert_text(info.description))
+            if info.instruction:
+                sentences.append(_clean_alert_text(info.instruction))
+
+    elif source_type == 'nws':
+        if info.description:
+            sentences.append(_clean_alert_text(info.description))
+        if info.instruction:
+            sentences.append(_clean_alert_text(info.instruction))
+
+    else:
+        event_name = str(info.event or info.headline or '').title()
+        coverage = next(
+            (area.description for area in info.areas if area.description), ''
+        )
+        sender_name = info.sender_name
+
+        if msg_type == 'Update':
+            sentences.append(ph['civil_updated'].format(sender=sender_name or 'Alert Ready', event=event_name))
+        else:
+            sentences.append(ph['civil_issued'].format(sender=sender_name or 'Alert Ready', event=event_name))
+
+        if coverage:
+            sentences.append(ph['civil_for'].format(coverage=coverage))
+
+        if info.expires:
+            sentences.append(ph['civil_expires'].format(datetime=_format_datetime_spoken(info.expires, lang_short)))
+
+        if info.description:
+            sentences.append(_clean_alert_text(info.description))
+        if info.instruction:
+            sentences.append(_clean_alert_text(info.instruction))
+
+    return '  '.join(filter(None, sentences))
+
+
 def _generate_alert_audio(
     alert: CAPAlert,
     feed: dict[str, Any],
@@ -611,10 +871,7 @@ def _generate_alert_audio(
 
     voice_pcm_parts: list[bytes] = []
     for lang in feed_langs:
-        info = alert.info_for_lang(lang)
-        if not info:
-            continue
-        msg = info.description or info.headline
+        msg = _build_alert_tts_script(alert, feed, lang)
         if not msg:
             continue
         pcm = synthesize_pcm(config, msg, lang=lang)
@@ -700,10 +957,6 @@ def _covers_feed_area(
         matched_feed_codes = _matching_feed_codes(alert, feed)
         if matched_feed_codes:
             return True, "feed code coverage"
-
-        feed_geocodes = _feed_clc_geocodes(feed_same_codes(feed))
-        if feed_geocodes and alert_geocodes & feed_geocodes:
-            return True, "aggregate geocode coverage"
 
         return False, "outside feed coverage"
 

@@ -723,7 +723,7 @@ _ALERT_VERBS: dict[str, dict[str, str]] = {
 _AN_PREFIXES = ('a', 'e', 'i', 'o', 'u')
 
 _FORECAST_LOC_DB: dict[str, tuple[str, str]] | None = None
-_FORECAST_LOC_CSV = pathlib.Path(__file__).parent / 'AGGREGATE_LOCATION_CODES.csv'
+_FORECAST_LOC_CSV = pathlib.Path(__file__).parent / 'FORECAST_LOCATIONS.csv'
 
 
 def _load_forecast_loc_db() -> dict[str, tuple[str, str]]:
@@ -733,24 +733,21 @@ def _load_forecast_loc_db() -> dict[str, tuple[str, str]]:
     import csv as _csv
     db: dict[str, tuple[str, str]] = {}
     try:
-        with open(_FORECAST_LOC_CSV, newline='', encoding='utf-8') as f:
+        with open(_FORECAST_LOC_CSV, newline='', encoding='utf-8-sig') as f:
             reader = _csv.reader(f)
-            header = next(reader, None)
+            next(reader, None)  # row 0: BOM + title row
+            header = next(reader, None)  # row 1: column headers
             if header is None:
                 _FORECAST_LOC_DB = db
                 return db
             h = [c.strip().upper() for c in header]
-            rgn_idx, rgn_en, rgn_fr = h.index('FCST_RGN_CLC'), h.index('FCST_RGN_NAME'), h.index('FCST_RGN_NOM')
-            clc_idx, clc_en, clc_fr = h.index('CLC'), h.index('NAME'), h.index('NOM')
+            code_idx, name_idx, nom_idx = h.index('CODE'), h.index('NAME'), h.index('NOM')
             for row in reader:
-                if len(row) <= max(rgn_idx, rgn_en, rgn_fr, clc_idx, clc_en, clc_fr):
+                if len(row) <= max(code_idx, name_idx, nom_idx):
                     continue
-                rgn = row[rgn_idx].strip().strip('"')
-                if rgn and rgn not in db:
-                    db[rgn] = (row[rgn_en].strip().strip('"'), row[rgn_fr].strip().strip('"'))
-                clc = row[clc_idx].strip().strip('"')
-                if clc and clc not in db:
-                    db[clc] = (row[clc_en].strip().strip('"'), row[clc_fr].strip().strip('"'))
+                code = row[code_idx].strip().strip('"')
+                if code and code not in db:
+                    db[code] = (row[name_idx].strip().strip('"'), row[nom_idx].strip().strip('"'))
     except Exception:
         pass
     _FORECAST_LOC_DB = db
