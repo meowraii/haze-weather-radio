@@ -52,7 +52,7 @@ _ECCC_CLIMATE_DAILY_URL = "https://api.weather.gc.ca/collections/climate-daily/i
 _ECCC_DATA_DIR = os.path.join("data", "eccc")
 _NWS_DATA_DIR = os.path.join("data", "nws")
 _TWC_DATA_DIR = os.path.join("data", "weatherdotcom")
-_ECCC_FORECAST_REGIONS = os.path.join("managed", "AGGREGATE_LOCATION_CODES.csv")
+_ECCC_FORECAST_REGIONS = os.path.join("managed", "FORECAST_LOCATIONS.csv")
 
 _CARDINAL_DIRS = (
     "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
@@ -173,31 +173,29 @@ class FOBulletin:
 def _load_forecast_region_names() -> dict[str, tuple[str, str]]:
     names: dict[str, tuple[str, str]] = {}
     try:
-        with open(_ECCC_FORECAST_REGIONS, newline="", encoding="utf-8") as f:
+        with open(_ECCC_FORECAST_REGIONS, newline="", encoding="utf-8-sig") as f:
             reader = csv.reader(f)
-            header_row = next(reader, None)
+            next(reader, None)  # row 0: BOM + title row
+            header_row = next(reader, None)  # row 1: column headers
             if header_row is None:
                 return names
             header = [cell.strip().upper() for cell in header_row]
             try:
-                rgn_idx = header.index("FCST_RGN_CLC")
-                rgn_en_idx = header.index("FCST_RGN_NAME")
-                rgn_fr_idx = header.index("FCST_RGN_NOM")
-                clc_idx = header.index("CLC")
-                clc_en_idx = header.index("NAME")
-                clc_fr_idx = header.index("NOM")
+                code_idx = header.index("CODE")
+                name_idx = header.index("NAME")
+                nom_idx = header.index("NOM")
             except ValueError as e:
                 log.error("Failed to load forecast region names: missing column %s", e)
                 return names
             for row in reader:
-                if len(row) <= max(rgn_idx, rgn_en_idx, rgn_fr_idx, clc_idx, clc_en_idx, clc_fr_idx):
+                if len(row) <= max(code_idx, name_idx, nom_idx):
                     continue
-                rgn = row[rgn_idx].strip().strip('"')
-                if rgn and rgn not in names:
-                    names[rgn] = (row[rgn_en_idx].strip().strip('"'), row[rgn_fr_idx].strip().strip('"'))
-                clc = row[clc_idx].strip().strip('"')
-                if clc and clc not in names:
-                    names[clc] = (row[clc_en_idx].strip().strip('"'), row[clc_fr_idx].strip().strip('"'))
+                code = row[code_idx].strip().strip('"')
+                if code and code not in names:
+                    names[code] = (
+                        row[name_idx].strip().strip('"'),
+                        row[nom_idx].strip().strip('"'),
+                    )
     except (OSError, csv.Error) as e:
         log.error("Failed to load forecast region names: %s", e)
     return names
