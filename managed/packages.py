@@ -270,6 +270,7 @@ _FC_PH: dict[str, dict[str, str]] = {
         'twc_opener': "The forecast, courtesy of The Weather Channel, for {name} issued at {time}.",
         'generic_unavailable': "The forecast for {name} is unavailable at this time.",
         'generic_opener': "The forecast for {name} issued at {time}.",
+        'station': 'this area',
     },
     'fr': {
         'eccc_opener': "Votre prévision officielle d'Environnement Canada pour la région de {name} émise à {time}.",
@@ -278,6 +279,7 @@ _FC_PH: dict[str, dict[str, str]] = {
         'twc_opener': "La prévision, courtoisie de The Weather Channel, pour {name} émise à {time}.",
         'generic_unavailable': "La prévision pour {name} n'est pas disponible pour le moment.",
         'generic_opener': "La prévision pour {name} émise à {time}.",
+        'station': 'cette zone',
     },
     'es': {
         'eccc_opener': "Su pronóstico oficial de Environment Canada para la región de {name} emitido a las {time}.",
@@ -286,6 +288,7 @@ _FC_PH: dict[str, dict[str, str]] = {
         'twc_opener': "El pronóstico, cortesía de The Weather Channel, para {name} emitido a las {time}.",
         'generic_unavailable': "El pronóstico para {name} no está disponible en este momento.",
         'generic_opener': "El pronóstico para {name} emitido a las {time}.",
+        'station': 'esta zona',
     },
 }
 

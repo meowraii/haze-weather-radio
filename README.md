@@ -18,10 +18,13 @@ I, the developer of Haze Weather Radio, disclaim any responsibility for misuse o
 - Support for multiple output methods including Icecast streaming, local audio playback, and on-air broadcasting via PiFmAdv.
 - Integration with official CAP feeds such as NAADS (Alert Ready/NPAS) for real-time weather alerts.
 - The Weather On-Demand interface allows applications to generate custom audio packages for specific locations and conditions on demand. (e.g. An IVR system that provides weather updates for a caller's location, or a smart home device that announces weather forecasts in the morning.)
+- Weather data from ECCC, TWC, and NWS APIs.
 
 # Planned Features
 - Make the web interface not look vibecoded by Claude.
-- **Support for additional data sources such as NOAA, TWC, and more. (mostly finalized)**
 - **Support for additional TTS engines such as PyTTSx3, eSpeak NG, Maki, and more. (pyttsx3 is now implemented, which i guess will be what the grand majority of users might want to use)**
 - Be better than Weatheradio Canada.
 - **Support for additional CAP feeds such as those from the US NWS (NWS-CAP ATOM, IPAWSOPEN, etc.), and international sources. (NWS-CAP has been implemented, but not thoroughly tested yet. Because I am Canadian.)**
+
+# As a Standalone EAS Encoder
+Haze Weather Radio can function as a standalone EAS/Alert Ready encoder, slotting into a broadcast chain anywhere a hardware encoder would. For television, it generates video streams with alert crawls or full-screen overlays, accepts external video inputs for live superimposition, and outputs directly to broadcast hardware or software. For radio, it produces audio streams with fully compliant SAME headers, ready for injection into any broadcast audio chain. Haze can also augment an existing analog EAS encoder, adding CAP ingestion, customizable TTS voices, and other features that traditional hardware lacks.

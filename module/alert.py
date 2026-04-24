@@ -16,8 +16,12 @@ from typing import Any, cast
 
 import numpy as np
 
-_REGISTRY_PATH = pathlib.Path('data') / 'alertsRegistry.json'
+_REGISTRY_DIR = pathlib.Path('data') / 'alerts'
 _registry_lock = threading.Lock()
+
+
+def _registry_path(feed_id: str) -> pathlib.Path:
+    return _REGISTRY_DIR / f'{feed_id}.json'
 
 _MAX_ALERT_SCRIPT_WORDS = 400
 _ALERT_SENT_RE = re.compile(r'(?<=[.!?])\s+')
@@ -63,13 +67,14 @@ def _write_registry_entry(feed_id: str, alert: Any) -> bool:
     identifier = alert.identifier if hasattr(alert, 'identifier') else str(alert)
     if not identifier:
         return False
-    _REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    reg_path = _registry_path(feed_id)
+    reg_path.parent.mkdir(parents=True, exist_ok=True)
     with _registry_lock:
         try:
-            registry: list[dict] = json.loads(_REGISTRY_PATH.read_text(encoding='utf-8')) if _REGISTRY_PATH.exists() else []
+            registry: list[dict] = json.loads(reg_path.read_text(encoding='utf-8')) if reg_path.exists() else []
         except Exception:
             registry = []
-        if any(r.get('identifier') == identifier and r.get('feed_id') == feed_id for r in registry):
+        if any(r.get('identifier') == identifier for r in registry):
             return False
 
         referenced_ids: set[str] = set()
@@ -79,17 +84,14 @@ def _write_registry_entry(feed_id: str, alert: Any) -> bool:
 
         if referenced_ids:
             before = len(registry)
-            registry = [
-                r for r in registry
-                if not (r.get('feed_id') == feed_id and r.get('identifier') in referenced_ids)
-            ]
+            registry = [r for r in registry if r.get('identifier') not in referenced_ids]
             removed = before - len(registry)
             if removed:
                 log.debug('Registry: removed %d superseded entry/entries for feed %s', removed, feed_id)
 
         if getattr(alert, 'msg_type', '') == 'Cancel':
             try:
-                _REGISTRY_PATH.write_text(json.dumps(registry, indent=2), encoding='utf-8')
+                reg_path.write_text(json.dumps(registry, indent=2), encoding='utf-8')
                 log.debug('Registry: cancelled entries removed for %s', identifier)
             except Exception as e:
                 log.error('Failed to write alert registry: %s', e)
@@ -164,7 +166,7 @@ def _write_registry_entry(feed_id: str, alert: Any) -> bool:
 
         registry.append(entry)
         try:
-            _REGISTRY_PATH.write_text(json.dumps(registry, indent=2), encoding='utf-8')
+            reg_path.write_text(json.dumps(registry, indent=2), encoding='utf-8')
             log.debug('Registry updated: %s', identifier)
             return True
         except Exception as e:
@@ -176,40 +178,43 @@ _REGISTRY_EXPIRY_GRACE = _dt.timedelta(hours=24)
 
 
 def purge_expired_alerts() -> int:
-    if not _REGISTRY_PATH.exists():
+    if not _REGISTRY_DIR.exists():
         return 0
     cutoff = _dt.datetime.now(_dt.UTC) - _REGISTRY_EXPIRY_GRACE
+    total_removed = 0
     with _registry_lock:
-        try:
-            registry: list[dict] = json.loads(_REGISTRY_PATH.read_text(encoding='utf-8'))
-        except Exception:
-            return 0
-
-        before = len(registry)
-        pruned: list[dict] = []
-        for entry in registry:
-            expires_raw: str | None = (entry.get('metadata') or {}).get('expires')
-            if not expires_raw:
-                pruned.append(entry)
-                continue
+        for reg_path in _REGISTRY_DIR.glob('*.json'):
             try:
-                expires_dt = _dt.datetime.fromisoformat(expires_raw)
-                if expires_dt.tzinfo is None:
-                    expires_dt = expires_dt.replace(tzinfo=_dt.UTC)
-            except ValueError:
-                pruned.append(entry)
+                registry: list[dict] = json.loads(reg_path.read_text(encoding='utf-8'))
+            except Exception:
                 continue
-            if expires_dt >= cutoff:
-                pruned.append(entry)
 
-        removed = before - len(pruned)
-        if removed:
-            try:
-                _REGISTRY_PATH.write_text(json.dumps(pruned, indent=2), encoding='utf-8')
-            except Exception as e:
-                log.error('Failed to write alert registry during purge: %s', e)
-                return 0
-        return removed
+            before = len(registry)
+            pruned: list[dict] = []
+            for entry in registry:
+                expires_raw: str | None = (entry.get('metadata') or {}).get('expires')
+                if not expires_raw:
+                    pruned.append(entry)
+                    continue
+                try:
+                    expires_dt = _dt.datetime.fromisoformat(expires_raw)
+                    if expires_dt.tzinfo is None:
+                        expires_dt = expires_dt.replace(tzinfo=_dt.UTC)
+                except ValueError:
+                    pruned.append(entry)
+                    continue
+                if expires_dt >= cutoff:
+                    pruned.append(entry)
+
+            removed = before - len(pruned)
+            if removed:
+                try:
+                    reg_path.write_text(json.dumps(pruned, indent=2), encoding='utf-8')
+                except Exception as e:
+                    log.error('Failed to write alert registry during purge: %s', e)
+                    continue
+                total_removed += removed
+    return total_removed
 
 
 from managed.events import append_runtime_event, push_alert, update_feed_runtime
@@ -961,6 +966,19 @@ def _build_alert_tts_script(
     return '  '.join(filter(None, _fit_sentences_to_word_budget(sentences)))
 
 
+def _feed_playout_cfg(feed: dict[str, Any]) -> dict[str, Any]:
+    raw = feed.get('playout', {})
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        merged: dict[str, Any] = {}
+        for item in raw:
+            if isinstance(item, dict):
+                merged.update(item)
+        return merged
+    return {}
+
+
 def _generate_alert_audio(
     alert: CAPAlert,
     feed: dict[str, Any],
@@ -970,6 +988,9 @@ def _generate_alert_audio(
     same_cfg = config.get('same', {})
     callsign = str(same_cfg.get('sender', 'HAZE0000'))
     same_sr = int(same_cfg.get('sample_rate_hz', 22050))
+
+    playout_cfg = _feed_playout_cfg(feed)
+    include_same = playout_cfg.get('same', True)
 
     same_event = _resolve_same_event(alert)
     originator = _same_originator(alert)
@@ -988,6 +1009,18 @@ def _generate_alert_audio(
         pcm = synthesize_pcm(config, msg, lang=lang)
         if pcm:
             voice_pcm_parts.append(pcm)
+
+    if not include_same:
+        if not voice_pcm_parts:
+            return
+        raw_pcm = b''.join(voice_pcm_parts)
+        samples = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32767.0
+        if CHANNELS == 2:
+            samples = samples.reshape(-1, 2).mean(axis=1)
+        alert_pcm = to_pcm16(resample(samples, BUS_SR, BUS_SR))
+        push_alert(feed_id, priority, alert_pcm, alert.identifier)
+        log.info('[%s] Alert queued (no SAME): %s (event=%s, priority=%d)', feed_id, alert.identifier, same_event, priority)
+        return
 
     voice_array: np.ndarray | None = None
     if voice_pcm_parts:
@@ -1146,7 +1179,11 @@ async def alert_worker(
             if not cap_cfg.get("enabled", True):
                 continue
 
-            covers, cover_reason = _covers_feed_area(alert, feed, cap_filter)
+            effective_filter = dict(cap_filter)
+            if "use_feed_locations" in cap_cfg:
+                effective_filter["use_feed_locations"] = bool(cap_cfg["use_feed_locations"])
+
+            covers, cover_reason = _covers_feed_area(alert, feed, effective_filter)
             if not covers:
                 log.info(
                     "[%s] %s alert outside area: %s — %s (%s; %s)",
@@ -1155,7 +1192,7 @@ async def alert_worker(
                     alert.event,
                     alert.headline,
                     cover_reason,
-                    _match_log_context(alert, feed, cap_filter),
+                    _match_log_context(alert, feed, effective_filter),
                 )
                 continue
 

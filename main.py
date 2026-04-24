@@ -9,6 +9,8 @@ import argparse
 import json
 from typing import Any
 
+import yaml
+
 os.environ.setdefault('OMP_NUM_THREADS', '2')
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '2')
 
@@ -41,7 +43,7 @@ from managed.packages import (
 )
 
 _BULLETINS_PATH = pathlib.Path(__file__).parent / 'managed' / 'userbulletins.json'
-_REGISTRY_PATH = pathlib.Path(__file__).parent / 'data' / 'alertsRegistry.json'
+_REGISTRY_DIR = pathlib.Path(__file__).parent / 'data' / 'alerts'
 _DEFAULT_PACKAGE_TYPES = [
     'date_time',
     'station_id',
@@ -170,7 +172,7 @@ def _build_feed_package_lookup(config: dict[str, Any], feed: dict[str, Any], lan
     if focn45_bulletin is not None:
         discussion_text = getattr(focn45_bulletin, 'text', None) or (focn45_bulletin if isinstance(focn45_bulletin, str) else None)
 
-    registry = _load_json_list(_REGISTRY_PATH)
+    registry = _load_json_list(_REGISTRY_DIR / f'{feed_id}.json')
     bulletins = _load_json_list(_BULLETINS_PATH)
     wwv_text = read_data_pool('wwv')
 
@@ -249,7 +251,6 @@ def _run_gen_tts(config: dict[str, Any], selector: str | None) -> int:
                 if path is not None:
                     print(path)
     return 0
-
 
 def main(config: dict[str, Any], log_level: str | None = None) -> None:
     _setup_logging(config, log_level)

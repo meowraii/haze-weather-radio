@@ -86,16 +86,25 @@ webpanel:
     password: HackMeMommy!12# # change this lol. it needs to be at least 8 characters long, contain at least: three uppercase letters, four lowercase letters, two numbers, and two special characters.
     # blank to autogenerate a random one time password on startup and print it in the logs.
 
-twc_api_key: "e1f10a1e78da46f5b10a1e78da96f525"
-twc_units: m
-language: en-CA
-
 feeds:
   - id: sk-saskatoon
     callsign: VDI651
     enabled: true
-    timezone: America/Regina
-    data_source: eccc # api.weather.gc.ca (ECCC), api.weather.gov (NWS), or api.weather.com (TWC).
+    timezone: America/Regina # none for local system
+
+    playout: [
+      priority: true, # priority queue is used for alerts and chimes.
+      routine: true, # routine queue is used for playout of regular packages like forecasts and current conditions.
+      same: true,
+      chimes: true,
+      packages: [], # enable or disable packages regardless of global settings. none for default. asterisk for all packages.
+    ]
+
+    alerts:
+      cap_cp:
+        enabled: true
+      nws_cap:
+        enabled: false
 
     languages: # a list of languages that the feed can broadcast in. it is ordered by preference, with the first language being the first to broadcast, then switching to the next language in the list after a predefined interval or when there are no more items to broadcast in the current language. this allows for multilingual broadcasts without needing separate feeds for each language.
       en-CA:
@@ -162,7 +171,7 @@ feeds:
           source: eccc
           # citypage_id: sk-40
 
-    output: # multiple outputs can be configured, none for only audio file generation without playout, streaming, or broadcasting. if multiple outputs are enabled, the same audio will be sent to all of them simultaneously.
+    output: # multiple outputs can be configured
       stream:
         enabled: true
         type: icecast
@@ -173,7 +182,58 @@ feeds:
         password: aluser
         ssl: false
         format: opus
-        bitrate_kbps: 32
+        bitrate_kbps: 32 # audio bitrate
+      
+      udp:
+        enabled: false
+        ip: 0.0.0.0
+        port: 12345
+        format: mpegts
+        bitrate_kbps: 32 # audio bitrate
+        vcodec: libx265 # video codec for mpegts streaming. leave blank for audio only.
+        acodec: aac # audio codec for mpegts streaming. leave blank for pcm audio.
+      
+      rtp:
+        enabled: false
+        ip: 0.0.0.0
+        port: 12345
+        format: rtp
+        bitrate_kbps: 32 # audio bitrate
+        vcodec: libx265 # video codec for rtp streaming. leave blank for audio only.
+        acodec: aac # audio codec for rtp streaming. leave blank for pcm audio.
+      
+      rtmp:
+        enabled: false
+        url: rtmp://localhost/live/stream
+        format: flv
+        bitrate_kbps: 32 # audio bitrate
+        vcodec: libx264 # video codec for rtmp streaming. leave blank for audio only.
+        acodec: aac # audio codec for rtmp streaming. leave blank for pcm audio.
+      
+      srt:
+        enabled: false
+        url: srt://localhost:12345
+        format: mpegts
+        bitrate_kbps: 32 # audio bitrate
+        vcodec: libx265 # video codec for srt streaming. leave blank for audio only.
+        acodec: aac # audio codec for srt streaming. leave blank for pcm audio.
+      
+      rtsp:
+        enabled: false
+        url: rtsp://localhost:8554/stream
+        format: rtsp
+        bitrate_kbps: 32 # audio bitrate
+        vcodec: libx264 # video codec for rtsp streaming. leave blank for audio only.
+        acodec: aac # audio codec for rtsp streaming. leave blank for pcm audio.
+      
+      webrtc:
+        enabled: false
+        port: 8765
+        format: opus
+        bitrate_kbps: 32 # audio bitrate
+        vcodec: libx264 # video codec for webrtc streaming. leave blank for audio only.
+        acodec: aac # audio codec for webrtc streaming. leave blank for pcm audio.
+
 
       audio_device:
         enabled: false
@@ -183,7 +243,7 @@ feeds:
         bin_root: /home/rai/PiFmAdv/src # root directory of the PiFmAdv binary on your local machine or the remote machine if using ssh.
         enabled: true # enable this output?
         frequency_mhz: 162.450 # frequency to broadcast on in hertz.
-        tx_power: 4 # transmission power level from 0 to 7. 0 is the lowest power and 7 is the highest. the actual range will depend on your hardware and antenna setup.
+        tx_power: 7 # transmission power level from 0 to 7. 0 is the lowest power and 7 is the highest. the actual range will depend on your hardware and antenna setup.
         alternative_frequencies: [] # PiAdvFm accepts this parameter but i dont know how to use it. so ill just pass whatever you put here to the binary.
         bandwidth_hz: 12500 # bandwidth of the actual transmitted signal
         deviation_hz: 5000 # frequency deviation for fm modulation.
@@ -197,6 +257,90 @@ feeds:
           username: rai
           password:
           public_key_path: ~/.ssh/almora
+  
+  - id: naads-catchall # this feed is supposed to have no actual content of its own, but broadcasts all naads alerts.
+    # haze can also act as a standalone CAP alert aggregator/EAS encoder to be fed into a broadcast chain just like any regular hardware SAGE DIGITAL ENDEC or DASDEC would do.
+    callsign: SSPWXR
+    enabled: true
+    timezone: America/Regina
+
+    playout: [
+        priority: true, # priority queue is used for alerts and chimes.
+        routine: false, # routine queue is used for playout of regular packages like forecasts and current conditions.
+        same: true, # whether to include SAME headers in the alert messages for this feed. if true, it will use the SAME header sender specified in the SAME configuration and the location codes of the feed's locations. if false, no SAME headers will be included in the alert messages for this feed.
+        chimes: false,
+        packages: [], # enable or disable packages regardless of global settings. none for default. asterisk for all packages.
+      ]
+
+    alerts:
+      cap_cp:
+        enabled: true
+        use_feed_locations: false # override: accept all CAP-CP alerts regardless of geocode, since this feed is a catchall.
+      nws_cap:
+        enabled: false
+    
+    description: # for station identification.
+      en-CA:
+        text: "EMERGENCY ALERT CHANNEL FOR METEOCHANNEL."
+
+    locations:
+      - forecastLocations:
+        - forecast_region: "06*" # stub forecast location entry to enable all feed locations
+        - forecast_region: "07*"
+        - forecast_region: "05*"
+        - forecast_region: "08*"
+    
+    output: # multiple outputs can be configured, none for only audio file generation without playout, streaming, or broadcasting. if multiple outputs are enabled, the same audio will be sent to all of them simultaneously.
+      stream:
+        enabled: false
+        type: icecast
+        mount: # blank will use /{feed_id}
+        host: icecast.almora.tv
+        port: 8443
+        username: source
+        password: aluser
+        ssl: false
+        format: vp9
+        bitrate_kbps: 32
+      
+      udp:
+        enabled: false
+        ip: 0.0.0.0
+        port: 8899
+        format: mpegts
+        bitrate_kbps: 32 # audio bitrate
+        vrate_kbps: 1000 # video bitrate for mpegts streaming. ignored if vcodec is blank.
+        vcodec: libx265 # video codec for mpegts streaming. leave blank for audio only.
+        acodec: aac # audio codec for mpegts streaming. leave blank for pcm audio.
+      
+      framebuffer:
+        enabled: false
+        path: /dev/fb0 # output directly to a linux framebuffer device. JUST LIKE THE DASDEC.
+      
+      dri:
+        enabled: false
+        path: /dev/dri/card0
+      
+      v4l2:
+        enabled: false
+        device: /dev/video0 # output to a v4l2 loopback device for use with software like OBS or Zoom. not really sure what the use case for this is but hey its an option now.
+      
+      rtp:
+        enabled: true
+        ip: 0.0.0.0
+        port: 8899
+        format: rtp_mpegts
+        bitrate_kbps: 32 # audio bitrate
+        vrate_kbps: 1000 # video bitrate for rtp streaming. ignored if vcodec is blank.
+        vcodec: libx265 # video codec for rtp streaming. leave blank for audio only.
+        acodec: aac # audio codec for rtp streaming. leave blank for pcm audio.
+
+      audio_device:
+        enabled: false
+        device_name: null
+
+      PiFmAdv:
+        enabled: false
 
 cap:
   cap_cp:
@@ -246,6 +390,77 @@ cap:
           "certainty=observed,likely,possible",
         ]
 
+video: # haze can output a video stream to accompany emergency alerts like what youd see on television.
+  - feed: naads-catchall # the feed to output the video stream for. if an alert goes out on this feed, the alert crawl or fullscreen alert will be overlaid on the video stream output defined below.
+    enabled: true
+    width: 1920
+    height: 1080
+    fps: 59.94
+    passthrough: [
+      video: false, # haze can accept an incoming video stream and overlay the alert crawl on top of it, then passing it through to the output.
+      audio: false,
+      input_urls: [
+        "udp://239.0.10.75:3000?pkt_size=1316",
+      ],
+    ]
+    style:
+      format: crawl # crawl or fullscreen.
+      crawl_repeat: 1 # number of times to repeat the crawl after the alert ends or EOM headers are sent.
+      font: IBM Plex Sans # font family or path to a .ttf font file to use for the alert text.
+      font_weight: bold
+      font_size: 48
+      font_color: "#FFFFFF"
+      opacity: 0.8
+      text_stroke:
+        enabled: true
+        color: "#000000"
+        width: 2
+      text_alignment: left # left, center, or right. ignored if crawl.
+      text_shadow:
+        enabled: true
+        color: "#000000"
+        offset_x: 2
+        offset_y: 2
+        blur_radius: 4
+      fullscreen_border:
+        enabled: true
+        color: "#FF0000"
+        width: 10
+      interlace: false,
+      background_image: null # path to an image file to use as the background for either fullscreen or crawl style. null for transparent. can also use ffmpeg filters to generate dynamic backgrounds if you set this to a filtergraph string like "color=c=blue:s=1920x1080:d=1" or something.
+      colors: [ # for crawl banners or the fullscreen background.
+        same: [
+          advisory: "#FFFF00",
+          watch: "#FFA500",
+          warning: "#FF0000",
+          unknown: "#FFFFFF",
+        ],
+        naads: [
+          severity: [
+            extreme: "#FF0000",
+            severe: "#FFA500",
+            moderate: "#FFFF00",
+            minor: "#00FF00",
+            unknown: "#FFFFFF"
+          ],
+          certainty: [
+            observed: "#FF0000",
+            likely: "#FFA500",
+            possible: "#FFFF00",
+            unlikely: "#00FF00",
+            unknown: "#FFFFFF"
+          ],
+          urgency: [
+            immediate: "#FF0000",
+            expected: "#FFA500",
+            future: "#FFFF00",
+            past: "#00FF00",
+            unknown: "#FFFFFF"
+          ]
+        ]
+      ]
+
+
 same:
   sender: "MEWRAI:3" # SAME header sender field (callsign or other identifier, max 8 chars. will be either truncated or padded with spaces to 8 chars in the actual SAME message).
 
@@ -253,12 +468,13 @@ same:
   #               Typically on Weatheradio Canada, the RWT is broadcast every Wednesday at noon local time, and RMT is broadcast on the first Wednesday of each month at noon local time.
     enabled: true
     weeks: [2, 3, 4] # broadcast the weekly test on these weeks of the month on the specified weekday at the specified time.
-    weekday: wed
+    weekday: wed # mon tue wed thu fri sat sun son fon jon con non bod fod nod tod sod 
     hour: 12 # in local time of the station.
     minute: 0
     second: 0
     event_code: RWT
     same_expir: 0030 # 30 minutes in SAME.
+    except_feed: []
   
   monthlytest:
     enabled: true
@@ -269,7 +485,7 @@ same:
     second: 0
     event_code: RMT
     same_expir: 0030 # 30 minutes in SAME.
-  
+    except_feed: []
   default_attention_tone: EGG_TIMER # WXR is the 8 second 1050hz tone, NPAS is the Canadian Alerting Attention Signal, which is an 8 second sequence of alternating, 500ms tones. (i hope that kid flipping dies), EAS is an 8 second dual-tone signal of 853 hz and 960 hz sine waves, and egg_timer is the old attention tone used in Ontario's Weatheradio Canada network until 2021 before the AVIPADS system was decommissioned in favor of INOTIFY.
 
   attention_tone_override: # override the default attention tone for specific event codes. if an event code is not listed here, the default_attention_tone will be used.

@@ -7,3 +7,4 @@ audio/_uploads
 audio/static
 piper-tts/*
 logs/*
+twc.yaml
