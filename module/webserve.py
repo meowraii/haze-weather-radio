@@ -812,8 +812,8 @@ class WebServer:
             bulletins = []
 
         try:
-            registry_raw = (_pl.Path('data') / 'alertsRegistry.json').read_text(encoding='utf-8')
-            registry: list[Any] = _json.loads(registry_raw)
+            _reg_path = _pl.Path('data') / 'alerts' / f'{primary_feed_id}.json'
+            registry: list[Any] = _json.loads(_reg_path.read_text(encoding='utf-8'))
         except Exception:
             registry = []
 

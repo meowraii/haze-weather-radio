@@ -20,7 +20,11 @@ from managed.events import (
     shutdown_event,
     update_feed_runtime,
 )
-from module.output import AudioDeviceSink, FileSink, IcecastSink, PiFmAdvSink
+from module.output import (
+    AudioDeviceSink, FileSink, FramebufferSink, DriSink, V4L2Sink,
+    IcecastSink, PiFmAdvSink, RtmpSink, RtpSink, RtspSink, SrtSink, UdpSink,
+)
+from module.video import VideoIcecastSink, _VIDEO_FORMATS
 from module.buffer import CHANNELS, SAMPLE_RATE, AudioPipeline, OnSegmentStart
 from module.same import SAMEHeader, generate_same, resample, to_pcm16
 from module.alert import feed_same_codes
@@ -338,6 +342,8 @@ async def _alert_feeder(
     feed_id: str,
     on_air_name: str,
     metadata_cb: Any,
+    alert_start_cbs: list[Any] | None = None,
+    alert_end_cbs: list[Any] | None = None,
 ) -> None:
     alert_metadata = NowPlayingMetadata(title='Alert')
     while not shutdown.is_set():
@@ -359,8 +365,22 @@ async def _alert_feeder(
             except Exception:
                 pass
 
+        if alert_start_cbs:
+            for cb in alert_start_cbs:
+                try:
+                    await cb(identifier)
+                except Exception:
+                    log.debug('[%s] alert_start_cb failed', feed_id, exc_info=True)
+
         pipeline.enqueue_alert(pcm_data)
         await pipeline.wait_alert_done()
+
+        if alert_end_cbs:
+            for cb in alert_end_cbs:
+                try:
+                    await cb()
+                except Exception:
+                    log.debug('[%s] alert_end_cb failed', feed_id, exc_info=True)
 
 def _build_file_path(config: dict[str, Any], feed: dict[str, Any]) -> str:
     file_cfg = config.get('output', {}).get('file', {})
@@ -373,6 +393,13 @@ def _build_file_path(config: dict[str, Any], feed: dict[str, Any]) -> str:
     path = pathlib.Path(directory) / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     return str(path)
+
+def _find_video_cfg(config: dict[str, Any], feed_id: str) -> dict[str, Any] | None:
+    for vc in (config.get('video') or []):
+        if isinstance(vc, dict) and vc.get('feed') == feed_id and vc.get('enabled', True):
+            return vc
+    return None
+
 
 async def feed_runner(
     config: dict[str, Any],
@@ -391,6 +418,8 @@ async def feed_runner(
     metadata_lang = _preferred_metadata_language(config, feed)
     stream_description = _feed_stream_description(feed, metadata_lang)
     metadata_cbs: list[Any] = []
+    alert_start_cbs: list[Any] = []
+    alert_end_cbs: list[Any] = []
 
     update_feed_runtime(feed_id, {
         'display_name': feed.get('name', feed_id),
@@ -400,21 +429,36 @@ async def feed_runner(
 
     if output_cfg.get('stream', {}).get('enabled'):
         try:
-            stream_cfg = {
-                **output_cfg['stream'],
-                'feed_id': feed_id,
-                'stream_name': stream_identity,
-                'stream_description': stream_description,
-                'stream_genre': 'Weather Radio',
-                'stream_album': stream_identity,
-                'stream_creator': operator_name,
-                'stream_artist': on_air_name,
-            }
-            sink = IcecastSink(stream_cfg)
-            metadata_cbs.append(sink.set_metadata)
-            pipeline.attach_sink(sink, name=f'{feed_id}:icecast')
+            raw_stream_cfg = output_cfg['stream']
+            stream_fmt = str(raw_stream_cfg.get('format', 'opus'))
+            if stream_fmt in _VIDEO_FORMATS:
+                video_cfg = _find_video_cfg(config, feed_id)
+                if video_cfg:
+                    vsink = VideoIcecastSink(feed, video_cfg, raw_stream_cfg)
+                    pipeline.attach_sink(vsink, name=f'{feed_id}:video')
+                    alert_start_cbs.append(vsink.on_alert_start)
+                    alert_end_cbs.append(vsink.on_alert_end)
+                else:
+                    log.warning(
+                        '[%s] Stream format %r is a video format but no video config found — stream skipped',
+                        feed_id, stream_fmt,
+                    )
+            else:
+                stream_cfg = {
+                    **raw_stream_cfg,
+                    'feed_id': feed_id,
+                    'stream_name': stream_identity,
+                    'stream_description': stream_description,
+                    'stream_genre': 'Weather Radio',
+                    'stream_album': stream_identity,
+                    'stream_creator': operator_name,
+                    'stream_artist': on_air_name,
+                }
+                sink = IcecastSink(stream_cfg)
+                metadata_cbs.append(sink.set_metadata)
+                pipeline.attach_sink(sink, name=f'{feed_id}:icecast')
         except Exception:
-            log.exception('Failed to start Icecast sink for %s', feed_id)
+            log.exception('Failed to start stream sink for %s', feed_id)
 
     if output_cfg.get('audio_device', {}).get('enabled'):
         try:
@@ -437,6 +481,32 @@ async def feed_runner(
             pipeline.attach_sink(sink, name=f'{feed_id}:PiFmAdv')
         except Exception:
             log.exception('Failed to start PiFmAdv sink for %s', feed_id)
+
+    _video_cfg = _find_video_cfg(config, feed_id)
+    _feed_tz = str(feed.get('timezone', 'UTC'))
+
+    for _sink_key, _factory, _label in (
+        ('udp',       lambda cfg: UdpSink(cfg, feed_id, _video_cfg, _feed_tz),       'UDP'),
+        ('rtp',       lambda cfg: RtpSink(cfg, feed_id, _video_cfg, _feed_tz),       'RTP'),
+        ('rtmp',      lambda cfg: RtmpSink(cfg, feed_id, _video_cfg, _feed_tz),      'RTMP'),
+        ('srt',       lambda cfg: SrtSink(cfg, feed_id, _video_cfg, _feed_tz),       'SRT'),
+        ('rtsp',      lambda cfg: RtspSink(cfg, feed_id, _video_cfg, _feed_tz),      'RTSP'),
+        ('framebuffer', lambda cfg: FramebufferSink(cfg, feed_id, _video_cfg, _feed_tz), 'framebuffer'),
+        ('dri',       lambda cfg: DriSink(cfg, feed_id, _video_cfg, _feed_tz),       'DRI'),
+        ('v4l2',      lambda cfg: V4L2Sink(cfg, feed_id, _video_cfg, _feed_tz),      'V4L2'),
+    ):
+        _sink_cfg = output_cfg.get(_sink_key, {})
+        if not (_sink_cfg and _sink_cfg.get('enabled')):
+            continue
+        try:
+            sink = _factory(_sink_cfg)
+            pipeline.attach_sink(sink, name=f'{feed_id}:{_sink_key}')
+            if hasattr(sink, 'on_alert_start'):
+                alert_start_cbs.append(sink.on_alert_start)
+            if hasattr(sink, 'on_alert_end'):
+                alert_end_cbs.append(sink.on_alert_end)
+        except Exception:
+            log.exception('Failed to start %s sink for %s', _label, feed_id)
 
     async def _update_metadata(metadata: NowPlayingMetadata) -> None:
         for cb in metadata_cbs:
@@ -461,6 +531,8 @@ async def feed_runner(
         _alert_feeder(
             pipeline, alert_queue, shutdown, feed_id, on_air_name,
             _update_metadata if metadata_cbs else None,
+            alert_start_cbs or None,
+            alert_end_cbs or None,
         ),
         name=f'{feed_id}:alert_feeder',
     )

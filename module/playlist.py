@@ -163,8 +163,25 @@ def playlist_thread_worker(config: dict[str, Any]) -> None:
             first_cycle = False
 
 
+def _feed_playout_cfg(feed: dict[str, Any]) -> dict[str, Any]:
+    raw = feed.get('playout', {})
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        merged: dict[str, Any] = {}
+        for item in raw:
+            if isinstance(item, dict):
+                merged.update(item)
+        return merged
+    return {}
+
+
 def _play_feed_cycle(config: dict[str, Any], feed: dict[str, Any]) -> None:
     feed_id = feed['id']
+    playout_cfg = _feed_playout_cfg(feed)
+    if not playout_cfg.get('routine', True):
+        return
+
     tz = feed.get('timezone', 'UTC')
 
     languages_cfg = feed.get('languages')

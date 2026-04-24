@@ -178,6 +178,11 @@
       "en-CA": {
         "station_id": "audio/static/feeds/sk-saskatoon/en-CA/station_id.wav"
       }
+    },
+    "naads-catchall": {
+      "en-CA": {
+        "station_id": "audio/static/feeds/naads-catchall/en-CA/station_id.wav"
+      }
     }
   },
   "feed_clip_config": {
@@ -187,6 +192,14 @@
         "model": "./piper-tts/en_US-hfc_male-medium.onnx",
         "speaker": 16,
         "text_hash": "8804a4f8cf1c7b3d10f1884a2fd6aed5"
+      }
+    },
+    "naads-catchall": {
+      "en-CA": {
+        "provider": "piper",
+        "model": "./piper-tts/en_US-hfc_male-medium.onnx",
+        "speaker": 16,
+        "text_hash": "6c6e765b96c7c7c03b83ad773e559144"
       }
     }
   }
