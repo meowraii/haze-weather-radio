@@ -52,15 +52,15 @@ _PILOT_PREFIX_FREQ_HZ: Final[float] = 1575.0
 _PILOT_SUFFIX_FREQ_HZ: Final[float] = 2088.0
 _BURST_LEAD_S: Final[float] = 0.100
 
-_AFSK_HIGHPASS_HZ: Final[float] = 750.0
-_AFSK_LOWPASS_HZ: Final[float] = 2200.0
-_SEQUENCE_AMPLITUDE: Final[float] = 0.1
+_AFSK_HIGHPASS_HZ: Final[float] = 90.0
+_AFSK_LOWPASS_HZ: Final[float] = 4000.0
+_SEQUENCE_AMPLITUDE: Final[float] = 0.32
 
 _INTER_BURST_S: Final[float] = 1.0
 _PRE_ATTN_S: Final[float] = 1.0
 _PRE_VOICE_S: Final[float] = 1.0
 _EOM_LEAD_S: Final[float] = 1.0
-_EOM_TAIL_S: Final[float] = 0.8
+_EOM_TAIL_S: Final[float] = 0.8 
 
 _ATTN_DEFAULT_S: Final[float] = 8.0
 
@@ -138,7 +138,9 @@ def _silence(duration_s: float, sample_rate: int) -> np.ndarray:
 def _pilot(duration_s: float, sample_rate: int, freq: float) -> np.ndarray:
     n = int(round(sample_rate * duration_s))
     t = np.linspace(0, duration_s, n, endpoint=False)
-    return np.sin(2 * np.pi * freq * t).astype(np.float32)
+    tone = np.sin(2 * np.pi * freq * t).astype(np.float32)
+    tone = _apply_lowpass(tone, 1500.0, sample_rate)
+    return tone
 
 
 def _apply_fade_in(signal: np.ndarray, fade_duration_s: float, sample_rate: int) -> np.ndarray:
@@ -166,7 +168,9 @@ def _afsk_encode(data: bytes, sample_rate: int) -> np.ndarray:
 
 
 def _preamble(sample_rate: int) -> np.ndarray:
-    return _afsk_encode(bytes([_PREAMBLE_BYTE] * _PREAMBLE_LEN), sample_rate)
+    pream = _afsk_encode(bytes([_PREAMBLE_BYTE] * _PREAMBLE_LEN), sample_rate)
+    pream = _apply_fade_in(pream, 0.0045, sample_rate)
+    return pream
 
 
 def _tone_wxr(duration_s: float, sample_rate: int) -> np.ndarray:
