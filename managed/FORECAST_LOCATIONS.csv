@@ -5475,19 +5475,19 @@ N/A,Kiatak,Kiatak,MetArea,MetArea,AC,NAC
 N/A,Qimusseriarsuaq,Qimusseriarsuaq,MetArea,MetArea,AC,NAC
 N/A,Attu,Attu,MetArea,MetArea,AC,NAC
 N/A,Uiffaq,Uiffaq,MetArea,MetArea,AC,NAC
-011000-012000-013000-014000,Nova Scotia,Nouvelle-Écosse,Services,Services,NS,NS
-015000-016000-017000,New Brunswick,Nouveau-Brunswick,Services,Services,NB,NB
-018000,Prince Edward Island,Île-du-Prince-Édouard,Services,Services,PE,PE
-020000,Newfoundland and Labrador,Terre-Neuve-et-Labrador,Services,Services,NL,NL
-030000,Quebec,Québec,Services,Services,QC,QC
-040000,Ontario,Ontario,Services,Services,ON,ON
-050000,Manitoba,Manitoba,Services,Services,MB,MB
-060000,Saskatchewan,Saskatchewan,Services,Services,SK,SK
-060000,Alberta,Alberta,Services,Services,AB,AB
-080000,British Columbia,Colombie-Britannique,Services,Services,BC,BC
-091000-092000-093000,Yukon,Yukon,Services,Services,YT,YT
-094000-095000-096000,Northwest Territories,Territoires du Nord-Ouest,Services,Services,NT,NT
-097000-098000-099000,Nunavut,Nunavut,Services,Services,NU,NU
+011000-012000-013000-014000,All of Nova Scotia,Tous les Nouvelle-Écosse,Services,Services,NS,NS
+015000-016000-017000,All of New Brunswick,Tous les Nouveau-Brunswick,Services,Services,NB,NB
+018000,All of Prince Edward Island,Tous les Île-du-Prince-Édouard,Services,Services,PE,PE
+020000,All of Newfoundland and Labrador,Tous les Terre-Neuve-et-Labrador,Services,Services,NL,NL
+030000,All of Quebec,Tous les Québec,Services,Services,QC,QC
+040000,All of Ontario,Tous les Ontario,Services,Services,ON,ON
+050000,All of Manitoba,Tous les Manitoba,Services,Services,MB,MB
+060000,All of Saskatchewan,Tous les Saskatchewan,Services,Services,SK,SK
+060000,All of Alberta,Tous les Alberta,Services,Services,AB,AB
+080000,All of British Columbia,Tous les Colombie-Britannique,Services,Services,BC,BC
+091000-092000-093000,All of Yukon,Tous les Yukon,Services,Services,YT,YT
+094000-095000-096000,All of Northwest Territories,Tous les Territoires du Nord-Ouest,Services,Services,NT,NT
+097000-098000-099000,All of Nunavut,Tous les Nunavut,Services,Services,NU,NU
 001000,Pacific Waters,eaux du Pacifique,Services,Services,PC,PC
 002000,Great Lakes,Grands Lacs,Services,Services,GL,GL
 003000,Atlantic Waters,eaux de l'Atlantique,Services,Services,AT,AT

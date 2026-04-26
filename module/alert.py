@@ -683,6 +683,13 @@ def _alert_blocked(alert: CAPAlert, cap_filter: dict[str, Any]) -> tuple[bool, s
     return False, None
 
 
+def _feed_cap_filter(cap_cfg: dict[str, Any]) -> dict[str, Any]:
+    raw_filter = cap_cfg.get('filter')
+    if isinstance(raw_filter, dict):
+        return dict(cast(dict[str, Any], raw_filter))
+    return {}
+
+
 def cap_event_to_same(alert: CAPAlert, event: str) -> str:
     mapping = _load_same_mapping()
 
@@ -1150,7 +1157,6 @@ async def alert_worker(
     def _dispatch_alert(
         alert: CAPAlert,
         feed_alert_key: str,
-        cap_filter: dict[str, Any],
         dedup: AlertDedup,
         source_name: str,
         suppress_audio: bool = False,
@@ -1179,9 +1185,7 @@ async def alert_worker(
             if not cap_cfg.get("enabled", True):
                 continue
 
-            effective_filter = dict(cap_filter)
-            if "use_feed_locations" in cap_cfg:
-                effective_filter["use_feed_locations"] = bool(cap_cfg["use_feed_locations"])
+            effective_filter = _feed_cap_filter(cap_cfg)
 
             covers, cover_reason = _covers_feed_area(alert, feed, effective_filter)
             if not covers:
@@ -1246,13 +1250,11 @@ async def alert_worker(
             window_s=dedup_cfg.get("window_seconds", 300),
             key_fields=dedup_cfg.get("key_fields"),
         )
-        cap_filter = cap_cp_cfg.get("filter", {})
-
         async def on_cap_cp_alert(alert: CAPAlert) -> None:
-            await asyncio.to_thread(_dispatch_alert, alert, 'cap_cp', cap_filter, cap_cp_dedup, 'CAP-CP')
+            await asyncio.to_thread(_dispatch_alert, alert, 'cap_cp', cap_cp_dedup, 'CAP-CP')
 
         async def on_cap_cp_alert_archive(alert: CAPAlert) -> None:
-            await asyncio.to_thread(_dispatch_alert, alert, 'cap_cp', cap_filter, cap_cp_dedup, 'CAP-CP', True)
+            await asyncio.to_thread(_dispatch_alert, alert, 'cap_cp', cap_cp_dedup, 'CAP-CP', True)
 
         naads_sources = cap_cp_cfg.get("sources", [])
         if naads_sources:
@@ -1272,13 +1274,9 @@ async def alert_worker(
             window_s=dedup_cfg.get("window_seconds", 300),
             key_fields=dedup_cfg.get("key_fields"),
         )
-        nws_filter = nws_cfg.get("filter", {"use_feed_locations": True})
-
         async def on_nws_alert(alert: CAPAlert, source_cfg: dict[str, Any]) -> None:
-            source_filter = dict(nws_filter)
-            if 'use_feed_locations' in source_cfg:
-                source_filter['use_feed_locations'] = bool(source_cfg.get('use_feed_locations'))
-            await asyncio.to_thread(_dispatch_alert, alert, 'nws', source_filter, nws_dedup, 'NWS CAP')
+            _ = source_cfg
+            await asyncio.to_thread(_dispatch_alert, alert, 'nws', nws_dedup, 'NWS CAP')
 
         tasks.append(asyncio.create_task(nws_atom_listener(config, on_nws_alert, shutdown), name='nws_cap_listener'))
     else:

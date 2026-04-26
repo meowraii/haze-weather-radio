@@ -22,20 +22,17 @@ CHUNK_DURATION = CHUNK_BYTES / (SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE)
 SILENCE_CHUNK = bytes(CHUNK_BYTES)
 
 _SEGMENT_QUEUE_LIMIT = 12
-_GAP_CHUNKS = max(1, round(1.0 / CHUNK_DURATION))
-_GAP_SILENCE: bytes = b''
 
 OnSegmentStart = Callable[[], Coroutine[Any, Any, None]]
 SegmentLoader = Callable[[], bytes | None]
 SegmentSource = pathlib.Path | bytes | SegmentLoader
 
 
-def _init_gap_silence() -> None:
-    global _GAP_SILENCE
-    _GAP_SILENCE = SILENCE_CHUNK * _GAP_CHUNKS
-
-
-_init_gap_silence()
+def _gap_silence(duration_s: float) -> bytes:
+    if duration_s <= 0.0:
+        return b''
+    chunks = max(1, round(duration_s / CHUNK_DURATION))
+    return SILENCE_CHUNK * chunks
 
 
 class OutputSink(Protocol):
@@ -188,7 +185,7 @@ class AudioPipeline:
     )
 
     def __init__(self) -> None:
-        self._segment_queue: asyncio.Queue[tuple[SegmentSource, OnSegmentStart | None]] = asyncio.Queue(
+        self._segment_queue: asyncio.Queue[tuple[SegmentSource, OnSegmentStart | None, float]] = asyncio.Queue(
             maxsize=_SEGMENT_QUEUE_LIMIT,
         )
         self._alert_queue: asyncio.Queue[bytes] = asyncio.Queue()
@@ -228,8 +225,9 @@ class AudioPipeline:
 
     async def enqueue_segment(
         self, source: SegmentSource, on_start: OnSegmentStart | None = None,
+        gap_after_s: float = 0.0,
     ) -> None:
-        await self._segment_queue.put((source, on_start))
+        await self._segment_queue.put((source, on_start, gap_after_s))
 
     def enqueue_alert(self, pcm: bytes) -> None:
         self._alert_done.clear()
@@ -319,7 +317,7 @@ class AudioPipeline:
                     pass
 
                 try:
-                    segment_source, on_start = self._segment_queue.get_nowait()
+                    segment_source, on_start, gap_after_s = self._segment_queue.get_nowait()
                     self._segment_consumed.set()
                     self._segment_consumed.clear()
                 except asyncio.QueueEmpty:
@@ -364,8 +362,8 @@ class AudioPipeline:
                     continue
 
                 completed = await self._stream_pcm(data)
-                if completed:
-                    await self._stream_pcm(_GAP_SILENCE)
+                if completed and gap_after_s > 0.0:
+                    await self._stream_pcm(_gap_silence(gap_after_s))
                 next_silence_ns = time.monotonic_ns()
         except asyncio.CancelledError:
             return

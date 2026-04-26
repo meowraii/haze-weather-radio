@@ -1550,10 +1550,10 @@ async def _fetch_and_publish_aqhi(
 
 async def fetch_once(config: dict[str, Any]) -> None:
     obs_locs, forecast_locs, climate_locs, aqhi_locs = _parse_locations_config(config)
-    twc_cfg = config.get("sources", {}).get("twc") or {}
-    twc_cfg.setdefault("api_key", (config.get("twc_api_key") or ""))
-    twc_cfg.setdefault("units", config.get("twc_units") or "m")
-    twc_cfg.setdefault("language", config.get("language") or "en-CA")
+    twc_cfg = dict(config.get("sources", {}).get("twc") or {})
+    twc_cfg.setdefault("api_key", "")
+    twc_cfg.setdefault("units", "m")
+    twc_cfg.setdefault("language", "en-CA")
 
     async with aiohttp.ClientSession() as session:
         eccc_ids = {loc.id for loc in obs_locs if loc.source == "eccc"} | {

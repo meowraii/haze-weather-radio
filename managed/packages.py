@@ -565,10 +565,12 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
     _lang = lang or 'en-CA'
     operator: dict[str, Any] = config['operator']
     feed = get_feed_info(config, feed_id)
-    callsign = feed.get('callsign') if feed else None
-    frequency = feed['output']['PiFmAdv'].get('frequency') if feed else None
     if feed is None:
         return "Feed not found."
+
+    callsign = feed.get('callsign')
+    _pifm = (feed.get('output') or {}).get('PiFmAdv') or {}
+    frequency = _pifm.get('frequency_mhz') or _pifm.get('frequency')
 
     desc_block: dict[str, Any] = _d(feed, 'description')
     desc: dict[str, Any] = _d(desc_block, _lang)
@@ -579,6 +581,9 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
     on_air_name = operator.get('on_air_name')
     email = operator.get('email')
     phone = operator.get('phone')
+
+    callsign = str(callsign).strip()
+    callsign = " ".join(callsign)
 
     email_clean = str(email).strip() if email and str(email) != 'None' else None
     email_clean = email_clean.replace('.', ' dot ').replace('@', ' at ') if email_clean else None
@@ -600,7 +605,7 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
             sentences.append(f"Indicatif d'appel {callsign}.")
         elif 'es' in _lang:
             sentences.append(f"Indicativo de llamada {callsign}.")
-    if frequency and feed['output']['PiFmAdv'].get('enabled', False) is True:
+    if frequency and _pifm.get('enabled', False) is True:
         if 'en' in _lang:
             sentences.append(f"Broadcasting on a frequency of {frequency} megahertz.")
         elif 'fr' in _lang:
@@ -1053,14 +1058,14 @@ def alerts_package(
                         pass
 
                 onset_future = onset_dt_eccc is not None and onset_dt_eccc > now
-                if onset_future and expires_dt:
+                if onset_future and onset_dt_eccc and expires_dt:
                     sentences.append(ph['timing_span'].format(
                         onset=_format_datetime_spoken(onset_dt_eccc, lang_short),
                         expires=_format_datetime_spoken(expires_dt, lang_short),
                     ))
                 elif expires_dt:
                     sentences.append(ph['timing_expires'].format(expires=_format_datetime_spoken(expires_dt, lang_short)))
-                elif onset_future:
+                elif onset_future and onset_dt_eccc:
                     sentences.append(ph['timing_onset'].format(onset=_format_datetime_spoken(onset_dt_eccc, lang_short)))
 
                 if confidence and impact:
@@ -1465,9 +1470,9 @@ def climate_summary_package(
         low_min = records.get('low_min') or {}
         if isinstance(high_max, dict) and isinstance(low_min, dict):
             high_value = high_max.get('value')
-            high_year = high_max.get('year')
             low_value = low_min.get('value')
-            low_year = low_min.get('year')
+            high_year = f"{high_max.get('year') or ''}"
+            low_year = f"{low_min.get('year') or ''}"
             temp_extremes_template = ph.get('temp_extremes')
             if (
                 temp_extremes_template

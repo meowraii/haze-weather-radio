@@ -96,7 +96,10 @@ def _setup_logging(config: dict[str, Any], override_level: str | None = None) ->
 
     file_cfg = log_cfg.get('file', {})
     if file_cfg.get('enabled', False):
-        log_path = pathlib.Path(file_cfg['path'])
+        raw_path = file_cfg.get('main_path') or file_cfg.get('path')
+        if not raw_path:
+            raw_path = './logs/haze-weather-radio.log'
+        log_path = pathlib.Path(str(raw_path))
         log_path.parent.mkdir(parents=True, exist_ok=True)
         rotate = file_cfg.get('rotate', {})
         handler = logging.handlers.RotatingFileHandler(

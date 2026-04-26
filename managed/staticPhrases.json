@@ -183,6 +183,16 @@
       "en-CA": {
         "station_id": "audio/static/feeds/naads-catchall/en-CA/station_id.wav"
       }
+    },
+    "sk-0001": {
+      "en-CA": {
+        "station_id": "audio/static/feeds/sk-0001/en-CA/station_id.wav"
+      }
+    },
+    "sk-0002": {
+      "en-CA": {
+        "station_id": "audio/static/feeds/sk-0002/en-CA/station_id.wav"
+      }
     }
   },
   "feed_clip_config": {
@@ -199,7 +209,23 @@
         "provider": "piper",
         "model": "./piper-tts/en_US-hfc_male-medium.onnx",
         "speaker": 16,
-        "text_hash": "6c6e765b96c7c7c03b83ad773e559144"
+        "text_hash": "16f130c0dee83fd817d8a597bd003002"
+      }
+    },
+    "sk-0001": {
+      "en-CA": {
+        "provider": "piper",
+        "model": "./piper-tts/en_US-hfc_male-medium.onnx",
+        "speaker": 16,
+        "text_hash": "abc5ee311fdbfc0a1f0f93f77586483d"
+      }
+    },
+    "sk-0002": {
+      "en-CA": {
+        "provider": "piper",
+        "model": "./piper-tts/en_US-hfc_male-medium.onnx",
+        "speaker": 16,
+        "text_hash": "e17fd9f553d2999c944d7b6931fc88ea"
       }
     }
   }

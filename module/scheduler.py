@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as _dt
 import fnmatch
 import json
 import logging
@@ -11,7 +12,7 @@ import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from managed.events import append_runtime_event, push_alert, set_pending_chime, shutdown_event
+from managed.events import append_runtime_event, enqueue_scheduled_package, push_alert, shutdown_event, store_runtime_alert_entry
 from module.alert import feed_same_codes, purge_expired_alerts
 from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
 from module.same import SAMEHeader, generate_same, resample, to_pcm16
@@ -21,6 +22,52 @@ log = logging.getLogger(__name__)
 
 _CACHE_EXTS = frozenset({'.json', '.txt'})
 _ALL_FILES: frozenset[str] = frozenset()
+_DEFAULT_STATION_ID_SCHEDULE_CFG: dict[str, Any] = {
+    'enabled': True,
+    'minutes': [0, 15, 30, 45],
+}
+
+
+def _feed_playout_cfg(feed: dict[str, Any]) -> dict[str, Any]:
+    raw = feed.get('playout', {})
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        merged: dict[str, Any] = {}
+        for item in raw:
+            if isinstance(item, dict):
+                merged.update(item)
+        return merged
+    return {}
+
+
+def _station_id_schedule_cfg(config: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(_DEFAULT_STATION_ID_SCHEDULE_CFG)
+    raw = config.get('playout', {}).get('station_id_schedule', {})
+    if isinstance(raw, dict):
+        merged.update(raw)
+
+    raw_minutes = merged.get('minutes', _DEFAULT_STATION_ID_SCHEDULE_CFG['minutes'])
+    if isinstance(raw_minutes, str):
+        tokens = [part.strip() for part in raw_minutes.split(',') if part.strip()]
+    elif isinstance(raw_minutes, (list, tuple, set)):
+        tokens = list(raw_minutes)
+    else:
+        tokens = [raw_minutes]
+
+    minutes: list[int] = []
+    for token in tokens:
+        try:
+            minute = int(token)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= minute <= 59 and minute not in minutes:
+            minutes.append(minute)
+
+    return {
+        'enabled': bool(merged.get('enabled', True)),
+        'minutes': minutes or list(_DEFAULT_STATION_ID_SCHEDULE_CFG['minutes']),
+    }
 
 def clean_stale_data(feed: dict[str, Any]) -> int:
     feed_id = feed.get('id', '')
@@ -105,10 +152,13 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
         feed_langs: list[str] = list(feed.get('languages', {}).keys()) or ['en-CA']
 
         voice_pcm_parts: list[bytes] = []
+        overlay_text = ''
         for lang in feed_langs:
             text = _match_lang_key(msg_map, lang)
             if not text:
                 continue
+            if not overlay_text:
+                overlay_text = str(text).strip()
             pcm = synthesize_pcm(config, text, lang=lang)
             if pcm:
                 voice_pcm_parts.append(pcm)
@@ -135,7 +185,38 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
         )
 
         alert_pcm = to_pcm16(resample(full_signal, same_sr, BUS_SR))
-        push_alert(feed_id, 0, alert_pcm, f'test_{event_code}_{int(time.time())}')
+        issued_at = _dt.datetime.now(_dt.timezone.utc)
+        expires_at = issued_at + _dt.timedelta(
+            hours=int(same_expire[:2] or 0),
+            minutes=int(same_expire[2:] or 0),
+        )
+        identifier = f'test_{event_code}_{int(time.time())}'
+        store_runtime_alert_entry(feed_id, identifier, {
+            'identifier': identifier,
+            'feed_id': feed_id,
+            'received_at': issued_at.isoformat(),
+            'display_id': f'MSG{issued_at.strftime("%H%M%S")}',
+            'metadata': {
+                'event': same_event,
+                'effective': issued_at.isoformat(),
+                'onset': issued_at.isoformat(),
+                'expires': expires_at.isoformat(),
+            },
+            'source': {
+                'kind': 'test',
+                'originator': 'EAS',
+                'eventCode': same_event,
+            },
+            'text': {
+                'description': overlay_text,
+                'instruction': '',
+            },
+            'areas': [
+                {'sameCode': location}
+                for location in locations[:31]
+            ],
+        })
+        push_alert(feed_id, 0, alert_pcm, identifier)
         log.info('[%s] Queued %s test: %s', feed_id, event_code, header.encoded())
         fired_any = True
 
@@ -181,6 +262,23 @@ def _run_cleanup(feed: dict[str, Any]) -> None:
     append_runtime_event('cleanup', f'Nightly cleanup: {count} file(s) removed, {expired} expired alert(s) purged for {feed_id}')
 
 
+def _queue_station_ids(feeds: list[dict[str, Any]]) -> None:
+    queued_feeds: list[str] = []
+    for feed in feeds:
+        if not feed.get('enabled', True):
+            continue
+        if not _feed_playout_cfg(feed).get('routine', True):
+            continue
+        feed_id = str(feed.get('id', '')).strip()
+        if not feed_id:
+            continue
+        enqueue_scheduled_package(feed_id, 'station_id')
+        queued_feeds.append(feed_id)
+
+    if queued_feeds:
+        append_runtime_event('station-id', 'Scheduled station identification queued', extra={'feeds': queued_feeds})
+
+
 def scheduler_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]]) -> None:
     same_cfg = config.get('same', {})
     rwt_cfg = same_cfg.get('weeklytest', {})
@@ -212,31 +310,18 @@ def scheduler_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]])
         )
         log.info('Scheduled %s monthly test', event_code)
 
-    chimes_cfg = config.get('playout', {}).get('chimes', {})
-    if chimes_cfg.get('enabled', False):
-        half_cfg = chimes_cfg.get('half_hour', {})
-        if half_cfg.get('enabled', True):
-            scheduler.add_job(
-                set_pending_chime,
-                trigger=CronTrigger(minute=30),
-                args=['half'],
-                id='chime_half',
-                name='Half-hour chime',
-                misfire_grace_time=30,
-            )
-            log.info('Scheduled half-hour chime')
-
-        top_cfg = chimes_cfg.get('top_of_hour', {})
-        if top_cfg.get('enabled', True):
-            scheduler.add_job(
-                set_pending_chime,
-                trigger=CronTrigger(minute=0),
-                args=['top'],
-                id='chime_top',
-                name='Top-of-hour chime',
-                misfire_grace_time=30,
-            )
-            log.info('Scheduled top-of-hour chime')
+    station_id_cfg = _station_id_schedule_cfg(config)
+    if station_id_cfg['enabled'] and station_id_cfg['minutes']:
+        minute_expr = ','.join(str(minute) for minute in station_id_cfg['minutes'])
+        scheduler.add_job(
+            _queue_station_ids,
+            trigger=CronTrigger(minute=minute_expr),
+            args=[feeds],
+            id='station_id_schedule',
+            name='Scheduled station identification',
+            misfire_grace_time=30,
+        )
+        log.info('Scheduled station identification at minute(s): %s', minute_expr)
 
     for feed in feeds:
         feed_id = feed.get('id', 'default')

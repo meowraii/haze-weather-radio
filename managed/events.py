@@ -19,6 +19,10 @@ class PlayableItem:
     lang: str
     voice: str | None = None
     metadata: NowPlayingMetadata | None = None
+    item_id: str = ''
+    group_id: str | None = None
+    gap_after_s: float = 0.0
+    estimated_duration: float | None = None
 
 shutdown_event: threading.Event = threading.Event()
 initial_synthesis_done: threading.Event = threading.Event()
@@ -30,11 +34,15 @@ data_ready: threading.Event = threading.Event()
 tts_queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
 
 _sequences_lock: threading.Lock = threading.Lock()
-_playout_sequences: dict[str, tuple[PlayableItem, ...]] = {}
+_playout_sequences: dict[str, list[PlayableItem]] = {}
 _sequence_versions: dict[str, int] = {}
+_last_played_item_ids: dict[str, str] = {}
 
 _alert_queues_lock: threading.Lock = threading.Lock()
 _alert_queues: dict[str, queue.Queue[tuple[int, bytes, str]]] = {}
+
+_runtime_alert_entries_lock: threading.Lock = threading.Lock()
+_runtime_alert_entries: dict[str, dict[str, dict[str, Any]]] = {}
 
 _runtime_lock: threading.Lock = threading.Lock()
 _runtime_state: dict[str, Any] = {
@@ -63,10 +71,79 @@ def push_alert_all(priority: int, pcm: bytes, identifier: str = '') -> None:
         q.put((priority, pcm, identifier))
 
 
+def store_runtime_alert_entry(feed_id: str, identifier: str, entry: dict[str, Any]) -> None:
+    if not feed_id or not identifier:
+        return
+    with _runtime_alert_entries_lock:
+        feed_entries = _runtime_alert_entries.setdefault(feed_id, {})
+        feed_entries[identifier] = deepcopy(entry)
+
+
+def get_runtime_alert_entries(feed_id: str) -> list[dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    with _runtime_alert_entries_lock:
+        feed_entries = _runtime_alert_entries.get(feed_id, {})
+        expired: list[str] = []
+        active: list[dict[str, Any]] = []
+
+        for identifier, entry in feed_entries.items():
+            expires_raw = ((entry.get('metadata') or {}).get('expires') if isinstance(entry, dict) else None)
+            if expires_raw:
+                try:
+                    expires_at = datetime.fromisoformat(str(expires_raw))
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                    if expires_at < now:
+                        expired.append(identifier)
+                        continue
+                except ValueError:
+                    pass
+            active.append(deepcopy(entry))
+
+        for identifier in expired:
+            feed_entries.pop(identifier, None)
+        if not feed_entries:
+            _runtime_alert_entries.pop(feed_id, None)
+
+    return active
+
+
 def update_playout_sequence(feed_id: str, sequence: list[PlayableItem]) -> None:
     with _sequences_lock:
-        _playout_sequences[feed_id] = tuple(sequence)
+        _playout_sequences[feed_id] = list(sequence)
         _sequence_versions[feed_id] = _sequence_versions.get(feed_id, 0) + 1
+
+
+def append_playout_items(feed_id: str, sequence: list[PlayableItem]) -> None:
+    if not sequence:
+        return
+    with _sequences_lock:
+        pending = _playout_sequences.setdefault(feed_id, [])
+        pending.extend(sequence)
+        _sequence_versions[feed_id] = _sequence_versions.get(feed_id, 0) + 1
+
+
+def pop_next_playout_item(feed_id: str) -> PlayableItem | None:
+    with _sequences_lock:
+        pending = _playout_sequences.get(feed_id)
+        if not pending:
+            return None
+        item = pending.pop(0)
+        _sequence_versions[feed_id] = _sequence_versions.get(feed_id, 0) + 1
+        return item
+
+
+def mark_playout_item_started(feed_id: str, item: PlayableItem) -> None:
+    item_id = item.item_id.strip() if item.item_id else ''
+    if not item_id:
+        return
+    with _sequences_lock:
+        _last_played_item_ids[feed_id] = item_id
+
+
+def get_last_played_item_id(feed_id: str) -> str | None:
+    with _sequences_lock:
+        return _last_played_item_ids.get(feed_id)
 
 
 def get_playout_sequence(feed_id: str) -> list[PlayableItem]:
@@ -145,40 +222,24 @@ def snapshot_runtime() -> dict[str, Any]:
         return deepcopy(_runtime_state)
 
 
-_chime_lock: threading.Lock = threading.Lock()
-_pending_chime_version: int = 0
-_pending_chime_type: str | None = None
-_chime_consumed_versions: dict[str, int] = {}
+_scheduled_package_queues: dict[str, queue.Queue[str]] = {}
+_scheduled_package_queues_lock: threading.Lock = threading.Lock()
 
 
-_chime_feed_queues: dict[str, queue.Queue] = {}
-_chime_queues_lock: threading.Lock = threading.Lock()
-
-
-def register_chime_queue(feed_id: str) -> queue.Queue:
-    with _chime_queues_lock:
-        q: queue.Queue = queue.Queue(maxsize=4)
-        _chime_feed_queues[feed_id] = q
+def register_scheduled_queue(feed_id: str) -> queue.Queue[str]:
+    with _scheduled_package_queues_lock:
+        q: queue.Queue[str] = queue.Queue(maxsize=8)
+        _scheduled_package_queues[feed_id] = q
         return q
 
 
-def set_pending_chime(chime_type: str) -> None:
-    global _pending_chime_version, _pending_chime_type
-    with _chime_lock:
-        _pending_chime_type = chime_type
-        _pending_chime_version += 1
-    with _chime_queues_lock:
-        for q in _chime_feed_queues.values():
-            try:
-                q.put_nowait(chime_type)
-            except queue.Full:
-                pass
+def enqueue_scheduled_package(feed_id: str, pkg_id: str) -> None:
+    with _scheduled_package_queues_lock:
+        q = _scheduled_package_queues.get(feed_id)
+    if q is None:
+        return
+    try:
+        q.put_nowait(pkg_id)
+    except queue.Full:
+        pass
 
-
-def consume_pending_chime(feed_id: str) -> str | None:
-    with _chime_lock:
-        consumed = _chime_consumed_versions.get(feed_id, 0)
-        if consumed >= _pending_chime_version:
-            return None
-        _chime_consumed_versions[feed_id] = _pending_chime_version
-        return _pending_chime_type
