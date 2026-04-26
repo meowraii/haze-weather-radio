@@ -13,13 +13,16 @@ from typing import Any
 
 from managed.events import (
     NowPlayingMetadata,
+    PlayableItem,
     append_runtime_event,
-    get_playout_sequence,
+    mark_playout_item_started,
+    pop_next_playout_item,
     register_alert_queue,
-    register_chime_queue,
+    register_scheduled_queue,
     shutdown_event,
     update_feed_runtime,
 )
+from managed.packages import station_id
 from module.output import (
     AudioDeviceSink, FileSink, FramebufferSink, DriSink, V4L2Sink,
     IcecastSink, PiFmAdvSink, RtmpSink, RtpSink, RtspSink, SrtSink, UdpSink,
@@ -80,6 +83,48 @@ _PKG_LABELS: dict[str, str] = {
     'chime_8': 'Half-Hour Chime',
     'chime_16': 'Top-of-Hour Chime',
 }
+
+
+def _feed_playout_cfg(feed: dict[str, Any]) -> dict[str, Any]:
+    raw = feed.get('playout', {})
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        merged: dict[str, Any] = {}
+        for item in raw:
+            if isinstance(item, dict):
+                merged.update(item)
+        return merged
+    return {}
+
+
+def _package_gap_s(config: dict[str, Any], feed: dict[str, Any]) -> float:
+    default_gap = 0.35
+    playout_cfg = config.get('playout', {})
+    if isinstance(playout_cfg, dict):
+        pacing_cfg = playout_cfg.get('pacing', {})
+        if isinstance(pacing_cfg, dict) and pacing_cfg.get('package_gap_s') is not None:
+            default_gap = float(pacing_cfg.get('package_gap_s') or 0.0)
+        elif playout_cfg.get('package_gap_s') is not None:
+            default_gap = float(playout_cfg.get('package_gap_s') or 0.0)
+
+    feed_playout_cfg = _feed_playout_cfg(feed)
+    if isinstance(feed_playout_cfg.get('pacing'), dict) and feed_playout_cfg['pacing'].get('package_gap_s') is not None:
+        return max(0.0, float(feed_playout_cfg['pacing'].get('package_gap_s') or 0.0))
+    if feed_playout_cfg.get('package_gap_s') is not None:
+        return max(0.0, float(feed_playout_cfg.get('package_gap_s') or 0.0))
+    return max(0.0, default_gap)
+
+
+def _build_scheduled_station_id_item(config: dict[str, Any], feed: dict[str, Any], feed_id: str) -> PlayableItem:
+    lang = _preferred_metadata_language(config, feed)
+    return PlayableItem(
+        pkg_id='station_id',
+        text=station_id(config, feed_id, lang),
+        lang=lang,
+        metadata=NowPlayingMetadata(title=_PKG_LABELS['station_id']),
+        gap_after_s=_package_gap_s(config, feed),
+    )
 
 def _make_segment_callback(
     label: str,
@@ -164,7 +209,7 @@ def _build_chime_pcm(
     chime_steps = 16 if chime_type == 'top' else 8
     chime_key = 'top_of_hour' if chime_type == 'top' else 'half_hour'
     default_seq = (
-        ['chime', 'date_time', 'station_id'] if chime_type == 'top'
+        ['chime', 'date_time'] if chime_type == 'top'
         else ['chime', 'date_time']
     )
     chime_seq: list[str] = chimes_cfg.get(chime_key, {}).get('sequence', default_seq)
@@ -207,7 +252,7 @@ async def _produce_tts(
     on_air_name: str,
     metadata_cb: Any,
     txp_pcm: bytes | None,
-    chime_queue: asyncio.Queue | None = None,
+    scheduled_queue: asyncio.Queue | None = None,
 ) -> None:
     pcm_cache: OrderedDict[tuple[str, str, str | None, str], bytes] = OrderedDict()
 
@@ -234,106 +279,101 @@ async def _produce_tts(
         await pipeline.enqueue_segment(txp_pcm)
 
     segment_consumed = pipeline.segment_consumed_event
-    chimes_enabled = config.get('playout', {}).get('chimes', {}).get('enabled', False)
 
-    async def _drain_chime() -> None:
-        if not chimes_enabled or chime_queue is None:
-            return
+    def _next_scheduled_package() -> str | None:
+        if scheduled_queue is None:
+            return None
+        pkg_id: str | None = None
         while True:
             try:
-                chime_type = chime_queue.get_nowait()
+                pkg_id = scheduled_queue.get_nowait()
             except asyncio.QueueEmpty:
-                return
-            combined_pcm = await asyncio.to_thread(
-                _build_chime_pcm, config, feed, feed_id, chime_type,
-            )
-            if not combined_pcm:
-                log.warning('[%s] Chime %s produced no audio', feed_id, chime_type)
-                continue
-            label = 'Top-of-Hour Chime' if chime_type == 'top' else 'Half-Hour Chime'
-            log.info('[%s] Inserting chime: %s', feed_id, label)
-            pipeline.enqueue_alert(combined_pcm)
+                return pkg_id
 
     while not shutdown.is_set():
         if pipeline.alert_active:
             await pipeline.wait_alert_done()
             continue
 
-        await _drain_chime()
-
-        seq = get_playout_sequence(feed_id)
-        if not seq:
+        scheduled_insert = False
+        scheduled_pkg_id = _next_scheduled_package()
+        if scheduled_pkg_id == 'station_id':
+            item = _build_scheduled_station_id_item(config, feed, feed_id)
+            scheduled_insert = True
+        else:
+            item = pop_next_playout_item(feed_id)
+        if item is None:
             try:
                 await asyncio.wait_for(shutdown.wait(), timeout=0.5)
             except asyncio.TimeoutError:
                 pass
             continue
 
-        for item in seq:
-            if shutdown.is_set():
-                return
+        if shutdown.is_set():
+            return
 
-            await _drain_chime()
+        if pipeline.alert_active:
+            await pipeline.wait_alert_done()
 
+        while pipeline.segments_queued >= _SEGMENT_LOOKAHEAD and not shutdown.is_set():
             if pipeline.alert_active:
-                await pipeline.wait_alert_done()
+                break
+            segment_consumed.clear()
+            try:
+                await asyncio.wait_for(segment_consumed.wait(), timeout=0.25)
+            except asyncio.TimeoutError:
+                pass
 
-            while pipeline.segments_queued >= _SEGMENT_LOOKAHEAD and not shutdown.is_set():
-                if pipeline.alert_active:
-                    break
-                segment_consumed.clear()
-                try:
-                    await asyncio.wait_for(segment_consumed.wait(), timeout=0.25)
-                except asyncio.TimeoutError:
-                    pass
+        if shutdown.is_set():
+            return
 
-            if shutdown.is_set():
-                return
+        if not scheduled_insert:
+            mark_playout_item_started(feed_id, item)
 
-            pkg_id = item.pkg_id
-            label = _PKG_LABELS.get(pkg_id, pkg_id.replace('_', ' ').title())
-            pcm_data: bytes | None = None
-            segment_source: bytes | Any | None = None
-            if pkg_id == 'date_time':
-                try:
-                    tz = zoneinfo.ZoneInfo(feed.get('timezone', 'UTC'))
+        pkg_id = item.pkg_id
+        label = item.metadata.title if item.metadata and item.metadata.title else _PKG_LABELS.get(pkg_id, pkg_id.replace('_', ' ').title())
+        pcm_data: bytes | None = None
+        segment_source: bytes | Any | None = None
+        if pkg_id == 'date_time':
+            try:
+                tz = zoneinfo.ZoneInfo(feed.get('timezone', 'UTC'))
 
-                    def _splice_date_time_live(lang: str = item.lang, timezone_obj: zoneinfo.ZoneInfo = tz) -> bytes | None:
-                        now_local = datetime.datetime.now(timezone_obj)
-                        abbr = now_local.tzname() or 'UTC'
-                        return splice_date_time(config, lang, abbr, now_local)
+                def _splice_date_time_live(lang: str = item.lang, timezone_obj: zoneinfo.ZoneInfo = tz) -> bytes | None:
+                    now_local = datetime.datetime.now(timezone_obj)
+                    abbr = now_local.tzname() or 'UTC'
+                    return splice_date_time(config, lang, abbr, now_local)
 
-                    segment_source = _splice_date_time_live
-                except Exception:
-                    log.debug('[%s] date_time splice failed, falling back to TTS', feed_id, exc_info=True)
-            elif pkg_id == 'station_id':
-                def _splice_station_id_live(lang: str = item.lang) -> bytes | None:
-                    return splice_station_id(feed_id, lang)
+                segment_source = _splice_date_time_live
+            except Exception:
+                log.debug('[%s] date_time splice failed, falling back to TTS', feed_id, exc_info=True)
+        elif pkg_id == 'station_id':
+            def _splice_station_id_live(lang: str = item.lang) -> bytes | None:
+                return splice_station_id(feed_id, lang)
 
-                segment_source = _splice_station_id_live
+            segment_source = _splice_station_id_live
 
-            elif pkg_id in ('chime_8', 'chime_16'):
-                steps = 16 if pkg_id == 'chime_16' else 8
-                segment_source = _CHIME_PCM.get(steps)
+        elif pkg_id in ('chime_8', 'chime_16'):
+            steps = 16 if pkg_id == 'chime_16' else 8
+            segment_source = _CHIME_PCM.get(steps)
 
-            if segment_source is None:
-                cache_key = (pkg_id, item.lang, item.voice, item.text)
-                pcm_data = _cache_get(cache_key)
-                if pcm_data is None:
-                    def _render_pcm(text=item.text, lang=item.lang, voice=item.voice) -> bytes:
-                        return b''.join(synthesize_pcm_stream(config, text, lang, voice))
+        if segment_source is None:
+            cache_key = (pkg_id, item.lang, item.voice, item.text)
+            pcm_data = _cache_get(cache_key)
+            if pcm_data is None:
+                def _render_pcm(text=item.text, lang=item.lang, voice=item.voice) -> bytes:
+                    return b''.join(synthesize_pcm_stream(config, text, lang, voice))
 
-                    pcm_data = await asyncio.to_thread(_render_pcm)
-                    if pcm_data:
-                        pcm_data = _cache_put(cache_key, pcm_data)
-                segment_source = pcm_data
+                pcm_data = await asyncio.to_thread(_render_pcm)
+                if pcm_data:
+                    pcm_data = _cache_put(cache_key, pcm_data)
+            segment_source = pcm_data
 
-            if not segment_source:
-                log.warning('[%s] Empty synthesis for %s', feed_id, pkg_id)
-                continue
+        if not segment_source:
+            log.warning('[%s] Empty synthesis for %s', feed_id, pkg_id)
+            continue
 
-            on_start = _make_segment_callback(label, feed_id, item.metadata, metadata_cb)
-            await pipeline.enqueue_segment(segment_source, on_start)
+        on_start = _make_segment_callback(label, feed_id, item.metadata, metadata_cb)
+        await pipeline.enqueue_segment(segment_source, on_start, gap_after_s=item.gap_after_s)
 
 async def _alert_feeder(
     pipeline: AudioPipeline,
@@ -366,21 +406,25 @@ async def _alert_feeder(
                 pass
 
         if alert_start_cbs:
-            for cb in alert_start_cbs:
-                try:
-                    await cb(identifier)
-                except Exception:
-                    log.debug('[%s] alert_start_cb failed', feed_id, exc_info=True)
+            results = await asyncio.gather(
+                *(cb(identifier) for cb in alert_start_cbs),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    log.debug('[%s] alert_start_cb failed: %s', feed_id, result)
 
         pipeline.enqueue_alert(pcm_data)
         await pipeline.wait_alert_done()
 
         if alert_end_cbs:
-            for cb in alert_end_cbs:
-                try:
-                    await cb()
-                except Exception:
-                    log.debug('[%s] alert_end_cb failed', feed_id, exc_info=True)
+            results = await asyncio.gather(
+                *(cb() for cb in alert_end_cbs),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    log.debug('[%s] alert_end_cb failed: %s', feed_id, result)
 
 def _build_file_path(config: dict[str, Any], feed: dict[str, Any]) -> str:
     file_cfg = config.get('output', {}).get('file', {})
@@ -405,7 +449,7 @@ async def feed_runner(
     config: dict[str, Any],
     feed: dict[str, Any],
     alert_queue: asyncio.PriorityQueue[tuple[int, bytes, str]],
-    chime_queue: asyncio.Queue,
+    scheduled_queue: asyncio.Queue,
     shutdown: asyncio.Event,
 ) -> None:
     pipeline = AudioPipeline()
@@ -522,7 +566,7 @@ async def feed_runner(
         _produce_tts(
             pipeline, shutdown, feed_id, config, feed, on_air_name,
             _update_metadata if metadata_cbs else None, txp_pcm,
-            chime_queue,
+            scheduled_queue,
         ),
         name=f'{feed_id}:tts_producer',
     )
@@ -555,9 +599,9 @@ async def _playout_main(
     shutdown = asyncio.Event()
     watchdog = asyncio.create_task(_watch_shutdown(shutdown))
     alert_queue: asyncio.PriorityQueue[tuple[int, bytes, str]] = asyncio.PriorityQueue()
-    chime_queue: asyncio.Queue = asyncio.Queue()
+    scheduled_queue: asyncio.Queue = asyncio.Queue()
     thread_alert_q = register_alert_queue(feed_id)
-    thread_chime_q = register_chime_queue(feed_id)
+    thread_scheduled_q = register_scheduled_queue(feed_id)
     loop = asyncio.get_running_loop()
 
     _bridge_stop = asyncio.Event()
@@ -570,8 +614,8 @@ async def _playout_main(
             except queue.Empty:
                 pass
             try:
-                chime_type = thread_chime_q.get_nowait()
-                loop.call_soon_threadsafe(chime_queue.put_nowait, chime_type)
+                pkg_id = thread_scheduled_q.get_nowait()
+                loop.call_soon_threadsafe(scheduled_queue.put_nowait, pkg_id)
             except queue.Empty:
                 pass
 
@@ -579,7 +623,7 @@ async def _playout_main(
     bridge.start()
 
     try:
-        await feed_runner(config, feed, alert_queue, chime_queue, shutdown)
+        await feed_runner(config, feed, alert_queue, scheduled_queue, shutdown)
     except BrokenPipeError:
         log.warning('Playout pipe closed for %s', feed_id)
     finally:

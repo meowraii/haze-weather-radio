@@ -11,7 +11,7 @@ import threading
 import time
 import wave
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -27,6 +27,7 @@ from managed.events import (
     snapshot_data_pool,
     snapshot_playout_sequences,
     snapshot_runtime,
+    store_runtime_alert_entry,
     update_runtime_status,
 )
 from managed.packages import air_quality_package
@@ -336,11 +337,14 @@ class WebServer:
         }
 
     def _log_file_for_source(self, source: str) -> pathlib.Path:
-        if source == 'same':
-            return self.root_dir / 'logs' / 'same.log'
         log_cfg = _coerce_mapping(self.config.get('logging', {}))
         file_cfg = _coerce_mapping(log_cfg.get('file', {}))
-        path = file_cfg.get('path') or './logs/haze-weather-radio.log'
+        source_key = {
+            'same': 'same_path',
+            'web': 'web_path',
+            'playout': 'playout_path',
+        }.get(source, 'main_path')
+        path = file_cfg.get(source_key) or file_cfg.get('path') or './logs/haze-weather-radio.log'
         text_path = str(path)
         if text_path.startswith('/'):
             return pathlib.Path(text_path)
@@ -664,8 +668,41 @@ class WebServer:
         alert_pcm = to_pcm16(_resample2(full_signal, same_sr, _BUS_SR))
 
         from managed.events import push_alert
+        issued_at = datetime.now(timezone.utc)
+        duration_minutes_total = hours * 60 + minutes
+        if duration_minutes_total <= 0:
+            duration_minutes_total = 60
+        expires_at = issued_at + timedelta(minutes=duration_minutes_total)
+        identifier = f'manual_{int(time.time())}'
+        display_id = f'MSG{issued_at.strftime("%H%M%S")}'
+
         for fid in target_ids:
-            push_alert(fid, 0, alert_pcm, f'manual_{int(time.time())}')
+            store_runtime_alert_entry(fid, identifier, {
+                'identifier': identifier,
+                'feed_id': fid,
+                'received_at': issued_at.isoformat(),
+                'display_id': display_id,
+                'metadata': {
+                    'event': payload.event.upper()[:3],
+                    'effective': issued_at.isoformat(),
+                    'onset': issued_at.isoformat(),
+                    'expires': expires_at.isoformat(),
+                },
+                'source': {
+                    'kind': 'manual',
+                    'originator': payload.originator.upper()[:3],
+                    'eventCode': payload.event.upper()[:3],
+                },
+                'text': {
+                    'description': payload.voice_message.strip(),
+                    'instruction': '',
+                },
+                'areas': [
+                    {'sameCode': location}
+                    for location in locations[:31]
+                ],
+            })
+            push_alert(fid, 0, alert_pcm, identifier)
 
         encoded = header.encoded
         append_runtime_event('manual-same', f'Manual SAME aired: {encoded} → {", ".join(target_ids)}')
