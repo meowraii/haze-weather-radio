@@ -306,7 +306,10 @@ def _apply_lowpass(signal: np.ndarray, cutoff_hz: float, sample_rate: int) -> np
     normalized_cutoff = cutoff_hz / nyquist
     if normalized_cutoff >= 1.0:
         return signal
-    b, a = sp_signal.butter(5, normalized_cutoff, btype='low')
+    coeffs = sp_signal.butter(5, normalized_cutoff, btype="low", output="ba")
+    if not isinstance(coeffs, tuple) or len(coeffs) != 2:
+        raise RuntimeError("Failed to design lowpass filter coefficients")
+    b, a = coeffs
     return sp_signal.filtfilt(b, a, signal).astype(np.float32)
 
 
@@ -315,7 +318,10 @@ def _apply_highpass(signal: np.ndarray, cutoff_hz: float, sample_rate: int) -> n
     normalized_cutoff = cutoff_hz / nyquist
     if normalized_cutoff <= 0:
         return signal
-    b, a = sp_signal.butter(5, normalized_cutoff, btype='high')
+    coeffs = sp_signal.butter(5, normalized_cutoff, btype="high", output="ba")
+    if not isinstance(coeffs, tuple) or len(coeffs) != 2:
+        raise RuntimeError("Failed to design highpass filter coefficients")
+    b, a = coeffs
     return sp_signal.filtfilt(b, a, signal).astype(np.float32)
 
 
