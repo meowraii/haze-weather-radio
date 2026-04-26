@@ -186,20 +186,20 @@ feeds:
       udp:
         enabled: false
         ip: 0.0.0.0
-        port: 12345
+        port: 8898
         format: mpegts
-        bitrate_kbps: 32 # audio bitrate
-        vcodec: libx265 # video codec for mpegts streaming. leave blank for audio only.
+        bitrate_kbps: 96 # audio bitrate
+        vcodec: # video codec for mpegts streaming. leave blank for audio only.
         acodec: aac # audio codec for mpegts streaming. leave blank for pcm audio.
       
       rtp:
         enabled: false
-        ip: 0.0.0.0
-        port: 12345
+        ip: 172.16.1.37
+        port: 8899
         format: rtp
         bitrate_kbps: 32 # audio bitrate
-        vcodec: libx265 # video codec for rtp streaming. leave blank for audio only.
-        acodec: aac # audio codec for rtp streaming. leave blank for pcm audio.
+        vcodec: # video codec for rtp streaming. leave blank for audio only.
+        acodec: libopus # audio codec for rtp streaming. leave blank for pcm audio.
       
       rtmp:
         enabled: false
@@ -238,9 +238,9 @@ feeds:
         enabled: false
         device_name: null # if null, the default audio output device will be used. otherwise, specify the name of the audio output device to use for playback. this can be found using tools like `aplay -l` on linux or `ffmpeg -hide_banner -list_devices true -f dshow -i dummy` on windows.
 
-      PiFmAdv: # it is unknown if this is actually working as it bottlenecks my raspberry pi model 3b+. maybe someone with a powerful enough raspberry pi can help optimize this and make a pull request?
+      PiFmAdv: # this only works on linux
         bin_root: /home/rai/PiFmAdv/src # root directory of the PiFmAdv binary on your local machine or the remote machine if using ssh.
-        enabled: true # enable this output?
+        enabled: false # enable this output?
         frequency_mhz: 162.450 # frequency to broadcast on in hertz.
         tx_power: 7 # transmission power level from 0 to 7. 0 is the lowest power and 7 is the highest. the actual range will depend on your hardware and antenna setup.
         alternative_frequencies: [] # PiAdvFm accepts this parameter but i dont know how to use it. so ill just pass whatever you put here to the binary.
@@ -259,7 +259,7 @@ feeds:
   
   - id: sk-0002
     callsign: VBP687
-    enabled: true
+    enabled: false
     timezone: America/Regina
 
     playout: [
@@ -439,7 +439,7 @@ cap:
 
 video: # haze can output a video stream to accompany emergency alerts like what youd see on television.
   - feed: naads-catchall # the feed to output the video stream for. if an alert goes out on this feed, the alert crawl or fullscreen alert will be overlaid on the video stream output defined below.
-    enabled: true
+    enabled: false
     width: 1920
     height: 1080
     fps: 29.97

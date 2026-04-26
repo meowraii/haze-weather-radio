@@ -6,10 +6,10 @@ import datetime
 import logging
 import os
 import pathlib
-import select
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -28,6 +28,9 @@ from managed.events import NowPlayingMetadata
 from module.buffer import CHANNELS, SAMPLE_RATE
 
 log = logging.getLogger(__name__)
+
+_IS_WINDOWS = sys.platform == 'win32'
+_IS_LINUX = sys.platform == 'linux'
 
 _STANDARD_STREAM_QUEUE_LIMIT = 24
 _LOW_LATENCY_STREAM_QUEUE_LIMIT = 12
@@ -236,10 +239,6 @@ def _build_video_overlay_inputs(
     *,
     idle: bool = False,
 ) -> tuple[list[str], str]:
-    """Return (extra_ffmpeg_input_args, filter_complex_prefix) for a video overlay.
-
-    Caller appends ``[vout]`` to the returned filter string and maps it.
-    """
     from module.video import _build_drawtext_filter, _coerce_mapping
     import pathlib as _pathlib
 
@@ -367,12 +366,6 @@ def _low_latency_video_args(vcodec: str, fps: float) -> list[str]:
 
 
 class _VideoStreamSink:
-    """Generic ffmpeg-backed sink that accepts PCM on write() and optionally shows an alert overlay.
-
-    Pass a ``cmd_factory(banner_color: str) -> list[str]`` callable so the process can be
-    restarted with a new overlay color when ``on_alert_start`` / ``on_alert_end`` are called.
-    """
-
     bus_queue_limit = 64
     bus_drop_oldest = False
 
@@ -615,7 +608,6 @@ def _build_video_stream_cmd(
     interlace: bool = False,
     output_pix_fmt: str | None = 'yuv420p',
 ) -> list[str]:
-    """Build an ffmpeg command that accepts PCM audio on stdin and streams to output_url."""
     from module.video import _IDLE_BANNER_HEX, _postprocess_video_filter, _to_ffmpeg_color
     effective_color = banner_color or _to_ffmpeg_color(_IDLE_BANNER_HEX)
     has_video = bool(vcodec)
@@ -895,6 +887,8 @@ def FramebufferSink(
     video_cfg: dict[str, Any] | None = None,
     tz_name: str = 'UTC',
 ) -> _VideoStreamSink:
+    if not _IS_LINUX:
+        raise RuntimeError(f'FramebufferSink requires Linux (fbdev); current platform: {sys.platform}')
     path = str(config.get('path', '/dev/fb0'))
     from module.video import _postprocess_video_filter
 
@@ -952,6 +946,8 @@ def DriSink(
     video_cfg: dict[str, Any] | None = None,
     tz_name: str = 'UTC',
 ) -> _VideoStreamSink:
+    if not _IS_LINUX:
+        raise RuntimeError(f'DriSink requires Linux (drm_output); current platform: {sys.platform}')
     path = str(config.get('path', '/dev/dri/card0'))
     from module.video import _postprocess_video_filter
 
@@ -1013,6 +1009,8 @@ def V4L2Sink(
     video_cfg: dict[str, Any] | None = None,
     tz_name: str = 'UTC',
 ) -> _VideoStreamSink:
+    if not _IS_LINUX:
+        raise RuntimeError(f'V4L2Sink requires Linux (v4l2); current platform: {sys.platform}')
     device = str(config.get('device', '/dev/video0'))
     from module.video import _postprocess_video_filter
 
@@ -1109,6 +1107,7 @@ _RADIO_DYNAMICS = (
 
 _PIFMADV_PREFILL_CHUNKS = 10
 _WRITE_STALL_TIMEOUT = 1.0
+_PIFMADV_MIN_RESTART_INTERVAL = 3.0
 
 
 class PiFmAdvSink:
@@ -1125,7 +1124,7 @@ class PiFmAdvSink:
         bin_root: str = config.get('bin_root', '/home/pi/PiFmAdv/src')
         pi_fm_adv_bin: str = f"{bin_root}/pi_fm_adv"
         alt_freqs: list = config.get('alternative_frequencies', [])
-        use_sudo: bool = config.get('use_sudo', True)
+        use_sudo: bool = config.get('use_sudo', True) and not _IS_WINDOWS
         tx_power: int = config.get('tx_power', 4)
         ssh_cfg: dict = config.get('ssh', {})
         self._use_ssh: bool = ssh_cfg.get('enabled', False)
@@ -1201,6 +1200,9 @@ class PiFmAdvSink:
         self._fm: subprocess.Popen | None = None
         self._closed = False
         self._label = f"{freq_mhz} MHz dev=±{dev} Hz bw={bw} Hz"
+        self._use_sudo = use_sudo
+        self._pi_fm_adv_bin = pi_fm_adv_bin
+        self._last_restart_time = 0.0
         self._start()
         log.info('PiFmAdv sink started: %s ssh=%s', self._label, ssh_host if self._use_ssh else 'disabled')
 
@@ -1237,6 +1239,25 @@ class PiFmAdvSink:
                 self._ffmpeg.stdout.close()
             time.sleep(0.2)
 
+    def _local_cleanup(self) -> None:
+        if self._use_ssh or _IS_WINDOWS:
+            return
+        bin_name = pathlib.Path(self._pi_fm_adv_bin).name
+        kill_cmd: list[str] = []
+        if self._use_sudo:
+            kill_cmd = ['sudo', '-n', 'pkill', '-x', bin_name]
+        else:
+            kill_cmd = ['pkill', '-x', bin_name]
+        try:
+            subprocess.run(
+                kill_cmd,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            time.sleep(0.75)
+        except Exception:
+            pass
+
     def _kill(self) -> None:
         for proc in (self._ffmpeg, self._fm):
             if proc is None:
@@ -1255,9 +1276,15 @@ class PiFmAdvSink:
         self._fm = None
 
     def _restart(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_restart_time
+        if elapsed < _PIFMADV_MIN_RESTART_INTERVAL:
+            time.sleep(_PIFMADV_MIN_RESTART_INTERVAL - elapsed)
         self._kill()
+        self._local_cleanup()
         time.sleep(0.1)
         self._start()
+        self._last_restart_time = time.monotonic()
 
     def _subprocesses_alive(self) -> bool:
         if self._ffmpeg is not None and self._ffmpeg.poll() is not None:
@@ -1272,32 +1299,44 @@ class PiFmAdvSink:
         if self._closed or self._ffmpeg is None or self._ffmpeg.stdin is None or not pcm:
             return
         if not self._subprocesses_alive():
+            if self._closed:
+                return
             log.warning('PiFmAdv: dead subprocess detected on %s, restarting', self._label)
             await asyncio.to_thread(self._restart)
             raise RuntimeError('PiFmAdv: subprocess died; restarted')
-        ffmpeg = self._ffmpeg
-        stdin = ffmpeg.stdin
+        stdin = self._ffmpeg.stdin
         if stdin is None:
             return
         try:
-            fd = stdin.fileno()
-        except Exception:
-            return
-        _, writable, _ = await asyncio.to_thread(select.select, [], [fd], [], _WRITE_STALL_TIMEOUT)
-        if not writable:
+            await asyncio.wait_for(
+                asyncio.to_thread(stdin.write, pcm),
+                timeout=_WRITE_STALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            if self._closed:
+                return
             log.warning('PiFmAdv: write stall on %s, restarting', self._label)
             await asyncio.to_thread(self._restart)
             raise RuntimeError('PiFmAdv: write stall; restarted')
-        try:
-            await asyncio.to_thread(stdin.write, pcm)
         except BrokenPipeError as exc:
+            if self._closed:
+                return
             log.warning('PiFmAdv: broken pipe on %s, restarting', self._label)
             await asyncio.to_thread(self._restart)
             raise RuntimeError('PiFmAdv pipe broken') from exc
         except OSError as exc:
+            if self._closed:
+                return
             log.warning('PiFmAdv: OS error on %s, restarting: %s', self._label, exc)
             await asyncio.to_thread(self._restart)
             raise RuntimeError(f'PiFmAdv OS error: {exc}') from exc
+        except RuntimeError as exc:
+            exc_str = str(exc).lower()
+            if 'cannot schedule new futures after shutdown' in exc_str or 'event loop is closed' in exc_str:
+                return
+            log.error('PiFmAdv: unexpected write error on %s: %s', self._label, exc)
+            self._closed = True
+            raise RuntimeError(f'PiFmAdv write error: {exc}') from exc
         except Exception as exc:
             log.error('PiFmAdv: unexpected write error on %s: %s', self._label, exc)
             self._closed = True
