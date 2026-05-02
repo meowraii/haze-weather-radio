@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import datetime as _dt
 import fnmatch
-import json
 import logging
 import pathlib
 import time
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from managed.events import append_runtime_event, enqueue_scheduled_package, push_alert, shutdown_event, store_runtime_alert_entry
+from module.alert_templates import load_alert_templates
+from module.events import append_runtime_event, enqueue_scheduled_package, push_alert, shutdown_event, store_runtime_alert_entry
 from module.alert import feed_same_codes, purge_expired_alerts
 from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
-from module.same import SAMEHeader, generate_same, resample, to_pcm16
+from module.same import SAMEHeader, generate_same, resample, resolve_flavor, to_pcm16
 from module.tts import synthesize_pcm
 
 log = logging.getLogger(__name__)
@@ -25,6 +25,11 @@ _ALL_FILES: frozenset[str] = frozenset()
 _DEFAULT_STATION_ID_SCHEDULE_CFG: dict[str, Any] = {
     'enabled': True,
     'minutes': [0, 15, 30, 45],
+}
+
+_DEFAULT_DATE_TIME_SCHEDULE_CFG: dict[str, Any] = {
+    'enabled': True,
+    'minutes': [5, 15, 25, 35, 45, 55],
 }
 
 
@@ -69,6 +74,35 @@ def _station_id_schedule_cfg(config: dict[str, Any]) -> dict[str, Any]:
         'minutes': minutes or list(_DEFAULT_STATION_ID_SCHEDULE_CFG['minutes']),
     }
 
+
+def _date_time_schedule_cfg(config: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(_DEFAULT_DATE_TIME_SCHEDULE_CFG)
+    raw = config.get('playout', {}).get('date_time_schedule', {})
+    if isinstance(raw, dict):
+        merged.update(raw)
+
+    raw_minutes = merged.get('minutes', _DEFAULT_DATE_TIME_SCHEDULE_CFG['minutes'])
+    if isinstance(raw_minutes, str):
+        tokens = [part.strip() for part in raw_minutes.split(',') if part.strip()]
+    elif isinstance(raw_minutes, (list, tuple, set)):
+        tokens = list(raw_minutes)
+    else:
+        tokens = [raw_minutes]
+
+    minutes: list[int] = []
+    for token in tokens:
+        try:
+            minute = int(token)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= minute <= 59 and minute not in minutes:
+            minutes.append(minute)
+
+    return {
+        'enabled': bool(merged.get('enabled', True)),
+        'minutes': minutes or list(_DEFAULT_DATE_TIME_SCHEDULE_CFG['minutes']),
+    }
+
 def clean_stale_data(feed: dict[str, Any]) -> int:
     feed_id = feed.get('id', '')
     audio_root = pathlib.Path('audio')
@@ -99,18 +133,7 @@ def clean_stale_data(feed: dict[str, Any]) -> int:
 
 
 def _load_test_templates() -> dict[str, Any]:
-    path = pathlib.Path('managed') / 'sameTemplate.json'
-    if not path.exists():
-        path = pathlib.Path('managed') / 'sameTest.json'
-    with open(path, encoding='utf-8') as f:
-        data = json.load(f)
-    if isinstance(data, list):
-        merged: dict[str, Any] = {}
-        for item in data:
-            if isinstance(item, dict):
-                merged.update(item)
-        return merged
-    return data if isinstance(data, dict) else {}
+    return cast(dict[str, Any], load_alert_templates())
 
 
 def _match_lang_key(msg: dict[str, Any], lang: str) -> str | None:
@@ -131,16 +154,25 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
     templates = _load_test_templates()
     template = templates.get(event_code)
     if not template:
-        log.error('No sameTest.json template found for event code: %s', event_code)
+        log.error('No alertTemplates.xml template found for event code: %s', event_code)
         return False
 
     msg_map: dict[str, Any] = template.get('msg', {})
     same_expire: str = str(template.get('sameExpire', '0015'))
     same_event: str = str(template.get('sameEvent', event_code))
     same_cfg = config.get('same', {})
-    callsign: str = str(same_cfg.get('sender', 'HAZE0000'))
-    same_sr: int = int(same_cfg.get('sample_rate_hz', 22050))
-    tone_type: str = str(same_cfg.get('default_attention_tone', 'WXR'))
+    same_block = template.get('same', {}) if isinstance(template.get('same'), dict) else {}
+    callsign: str = str(same_block.get('sender_id') or same_cfg.get('sender', 'HAZE0000'))
+    flavor = same_cfg.get('flavor') or None
+    same_sr = resolve_flavor(flavor).sample_rate
+    content_block = same_block.get('content', {}) if isinstance(same_block.get('content'), dict) else {}
+    tone_value = str(content_block.get('attention_tone') or same_cfg.get('default_attention_tone', 'WXR')).upper()
+    tone_type: str | None = None if tone_value == 'NONE' else tone_value
+    template_locations = [
+        str(location.get('id', '')).strip()
+        for location in cast(list[Any], same_block.get('locations', []))
+        if isinstance(location, dict) and str(location.get('id', '')).strip()
+    ]
 
     fired_any = False
     for feed in feeds:
@@ -148,7 +180,7 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
             continue
 
         feed_id: str = feed.get('id', 'default')
-        locations = feed_same_codes(feed) or ['000000']
+        locations = template_locations or feed_same_codes(feed) or ['000000']
         feed_langs: list[str] = list(feed.get('languages', {}).keys()) or ['en-CA']
 
         voice_pcm_parts: list[bytes] = []
@@ -171,17 +203,17 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
         header = SAMEHeader(
             originator='EAS',
             event=same_event,
-            locations=locations[:31],
+            locations=tuple(locations[:31]),
             duration=same_expire,
             callsign=callsign,
         )
 
         full_signal = generate_same(
             header=header,
-            tone_type=tone_type,
+            tone_type=cast(Any, tone_type),
             audio_msg_array=voice_array,
-            sample_rate=same_sr,
             attn_duration_s=8.0,
+            flavor=flavor,
         )
 
         alert_pcm = to_pcm16(resample(full_signal, same_sr, BUS_SR))
@@ -217,7 +249,7 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
             ],
         })
         push_alert(feed_id, 0, alert_pcm, identifier)
-        log.info('[%s] Queued %s test: %s', feed_id, event_code, header.encoded())
+        log.info('[%s] Queued %s test: %s', feed_id, event_code, header.encoded)
         fired_any = True
 
     if fired_any:
@@ -279,6 +311,23 @@ def _queue_station_ids(feeds: list[dict[str, Any]]) -> None:
         append_runtime_event('station-id', 'Scheduled station identification queued', extra={'feeds': queued_feeds})
 
 
+def _queue_date_times(feeds: list[dict[str, Any]]) -> None:
+    queued_feeds: list[str] = []
+    for feed in feeds:
+        if not feed.get('enabled', True):
+            continue
+        if not _feed_playout_cfg(feed).get('routine', True):
+            continue
+        feed_id = str(feed.get('id', '')).strip()
+        if not feed_id:
+            continue
+        enqueue_scheduled_package(feed_id, 'date_time')
+        queued_feeds.append(feed_id)
+
+    if queued_feeds:
+        append_runtime_event('date-time', 'Scheduled date and time package queued', extra={'feeds': queued_feeds})
+
+
 def scheduler_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]]) -> None:
     same_cfg = config.get('same', {})
     rwt_cfg = same_cfg.get('weeklytest', {})
@@ -322,6 +371,19 @@ def scheduler_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]])
             misfire_grace_time=30,
         )
         log.info('Scheduled station identification at minute(s): %s', minute_expr)
+
+    date_time_cfg = _date_time_schedule_cfg(config)
+    if date_time_cfg['enabled'] and date_time_cfg['minutes']:
+        minute_expr = ','.join(str(minute) for minute in date_time_cfg['minutes'])
+        scheduler.add_job(
+            _queue_date_times,
+            trigger=CronTrigger(minute=minute_expr),
+            args=[feeds],
+            id='date_time_schedule',
+            name='Scheduled date and time',
+            misfire_grace_time=30,
+        )
+        log.info('Scheduled date and time at minute(s): %s', minute_expr)
 
     for feed in feeds:
         feed_id = feed.get('id', 'default')

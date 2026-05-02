@@ -26,6 +26,48 @@ def _scalar(field: Any) -> Any:
 def get_feed_info(config: dict[str, Any], feed_id: str) -> Optional[dict[str, Any]]:
     return next((feed for feed in config['feeds'] if feed['id'] == feed_id), None)
 
+@dataclass
+class Package_Config:
+    feed_id: str
+    package_type: str
+    lang: Optional[str] = None
+    weather_data: Optional[dict[str, Any]] = None
+
+    ttl: ClassVar[dict[str, float]] = {
+        'date_time': 24.0,
+        'current_conditions': 2700.0,
+        'forecast': 7200.0,
+        'air_quality': 3600.0,
+        'climate_summary': 86400.0,
+        'eccc_discussion': 10800.0,
+        'geophysical_alert': 10800.0,
+    }
+
+    per_package: ClassVar[dict[str, dict[str, Any]]] = { # config overrides for specific packages; omit a package to allow all languages
+        'eccc_discussion': {
+            'lang': ['en-CA'],
+        },
+        'forecast': {
+            'use_voice': 'female', # male or female. if specified in the config for each language.
+        },
+        'climate_summary': {
+            'use_voice': 'female',
+        },
+        'station_id': {
+            'use_voice': 'female',
+        },
+        'air_quality': {
+            'use_voice': 'female',
+        },
+        'date_time': {
+            'use_voice': 'female',
+        },
+        'geophysical_alert': {
+            'lang': ['en-CA'],
+            'use_voice': 'female', # male or female. if specified in the config for each language.
+        },
+    }
+
 
 _DT_PREFIXES: dict[str, dict[str, str]] = {
     'en-CA': {
@@ -168,23 +210,80 @@ def _reformat_times_in_text(text: str) -> str:
     text = _TIME_RE.sub(_replace_ampm, text)
     return _ZULU_TIME_RE.sub(_replace_zulu, text)
 
-_CC_SOURCE: dict[str, dict[str, str]] = {
+_ICAO_ISSUER: dict[str, dict[str, str]] = {
     'en': {
-        "eccc": "Environment Canada",
-        "nws": "the National Weather Service",
-        "weatherdotcom": "Weather Dot Com",
+        'C':  'Environment and Climate Change Canada',
+        'K':  'the National Weather Service',
+        'P':  'the National Weather Service',
+        'T':  'the National Weather Service',
+        'E':  'the Met Office',
+        'L':  'the regional meteorological authority',
+        'EG': 'the Met Office',
+        'EI': 'Met Éireann',
+        'BI': 'the Icelandic Meteorological Office',
+        'EN': 'the Norwegian Meteorological Institute',
+        'ES': 'AEMET',
+        'EF': 'the Finnish Meteorological Institute',
+        'ED': 'Deutscher Wetterdienst',
+        'LF': 'Météo-France',
+        'LI': "the Italian Air Force Meteorological Service",
+        'LK': 'the Czech Hydrometeorological Institute',
+        'LO': 'the Central Institute for Meteorology and Geodynamics',
+        'LP': 'the Portuguese Institute for Sea and Atmosphere',
+        'LZ': 'the Slovak Hydrometeorological Institute',
+        'Y':  'the Australian Bureau of Meteorology',
+        'N':  'the Pacific weather authority',
+        'U':  'Roshydromet',
+        'Z':  'the China Meteorological Administration',
+        'RK': 'the Korea Meteorological Administration',
+        'RJ': 'the Japan Meteorological Agency',
+        'VT': 'the Thai Meteorological Department',
+        'SA': 'the South African Weather Service',
+        'FB': 'the South African Weather Service',
     },
     'fr': {
-        "eccc": "Environnement Canada",
-        "nws": "le Service météorologique national",
-        "weatherdotcom": "Weather Dot Com",
+        'C':  'Environnement et Changement climatique Canada',
+        'K':  'le Service météorologique national',
+        'P':  'le Service météorologique national',
+        'T':  'le Service météorologique national',
+        'E':  'le Met Office',
+        'L':  "l'autorité météorologique régionale",
+        'EI': 'Met Éireann',
+        'EN': "l'Institut météorologique de Norvège",
+        'ES': "l'AEMET",
+        'EF': "l'Institut météorologique finlandais",
+        'ED': 'le Deutscher Wetterdienst',
+        'LF': 'Météo-France',
+        'Y':  'le Bureau de météorologie australien',
+        'U':  'Roshydromet',
+        'Z':  "l'Administration météorologique de Chine",
     },
     'es': {
-        "eccc": "Environment Canada",
-        "nws": "el Servicio Meteorológico Nacional",
-        "weatherdotcom": "Weather Dot Com",
+        'C':  'Environment and Climate Change Canada',
+        'K':  'el Servicio Meteorológico Nacional',
+        'P':  'el Servicio Meteorológico Nacional',
+        'T':  'el Servicio Meteorológico Nacional',
+        'E':  'la Oficina Meteorológica',
+        'L':  'la autoridad meteorológica regional',
+        'ES': 'la AEMET',
+        'LF': 'Météo-France',
+        'Y':  'la Oficina de Meteorología de Australia',
+        'U':  'Roshydromet',
+        'Z':  'la Administración Meteorológica de China',
     },
 }
+
+
+def _issuer_from_icao(icao: str | None, lang_short: str) -> str | None:
+    if not icao:
+        return None
+    upper = icao.strip().upper()
+    table = _ICAO_ISSUER.get(lang_short) or _ICAO_ISSUER['en']
+    for length in (3, 2, 1):
+        prefix = upper[:length]
+        if prefix in table:
+            return table[prefix]
+    return None
 
 _CC_PH: dict[str, dict[str, str]] = {
     'en': {
@@ -369,6 +468,23 @@ _AE_PH: dict[str, dict[str, str]] = {
         'sunrise_tomorrow': "El sol saldrá a las {time} mañana.",
     },
 }
+_CC_SOURCE: dict[str, dict[str, str]] = {
+    'en': {
+        'eccc': 'Environment and Climate Change Canada',
+        'noaa': 'the National Oceanic and Atmospheric Administration',
+        'nws': 'the National Weather Service',
+    },
+    'fr': {
+        'eccc': 'Environnement et Changement climatique Canada',
+        'noaa': "la National Oceanic and Atmospheric Administration",
+        'nws': "le National Weather Service",
+    },
+    'es': {
+        'eccc': 'Medio Ambiente y Cambio Climático Canadá',
+        'noaa': 'la Administración Nacional Oceánica y Atmosférica',
+        'nws': 'el Servicio Meteorológico Nacional',
+    },
+}
 _AQI_PH: dict[str, dict[str, str]] = {
     'en': {
         'opener_twc': "The global air quality report for {name}, powered by Copernicus Atmosphere Monitoring Service Information {copyyear} and provided by The Weather Channel. Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus Information or Data it contains",
@@ -504,38 +620,6 @@ def _flush_discussion(para_lines: list[str]) -> str:
     sentences = _DISCUSSION_SENTENCE_SPLIT_RE.split(joined)
     return ' '.join(_titlecase_sentence(s) for s in sentences)
 
-@dataclass
-class Package_Config:
-    feed_id: str
-    package_type: str
-    lang: Optional[str] = None
-    weather_data: Optional[dict[str, Any]] = None
-
-    ttl: ClassVar[dict[str, float]] = {
-        'date_time': 24.0,
-        'current_conditions': 2700.0,
-        'forecast': 7200.0,
-        'air_quality': 3600.0,
-        'climate_summary': 86400.0,
-        'eccc_discussion': 10800.0,
-        'geophysical_alert': 10800.0,
-    }
-
-    per_package: ClassVar[dict[str, dict[str, Any]]] = { # config overrides for specific packages; omit a package to allow all languages
-        'eccc_discussion': {
-            'lang': ['en-CA'],
-        },
-        'forecast': {
-            'use_voice': 'female', # male or female. if specified in the config for each language.
-        },
-        'climate_summary': {
-            'use_voice': 'female',
-        },
-        'geophysical_alert': {
-            'lang': ['en-CA'],
-            'use_voice': 'female', # male or female. if specified in the config for each language.
-        },
-    }
 
 
 def date_time_package(tz: str, lang: Optional[str] = "en-CA") -> str:
@@ -561,6 +645,70 @@ def date_time_package(tz: str, lang: Optional[str] = "en-CA") -> str:
         )
     ])
 
+def _spoken_operator_field(field: Any) -> str | None:
+    if field is None:
+        return None
+    if isinstance(field, (str, int, float)):
+        v = str(field).strip()
+        return v or None
+    if isinstance(field, list):
+        merged: dict[str, Any] = {}
+        for item in field:
+            if isinstance(item, dict):
+                merged.update(item)
+        for key in ('pronunciation', 'text'):
+            v = merged.get(key)
+            if v is not None:
+                s = str(v).strip()
+                if s:
+                    return s
+    if isinstance(field, dict):
+        for key in ('pronunciation', 'text'):
+            v = field.get(key)
+            if v is not None:
+                s = str(v).strip()
+                if s:
+                    return s
+    return str(field).strip() or None
+
+
+def _spoken_phone(phone_field: Any) -> str | None:
+    if phone_field is None:
+        return None
+    if isinstance(phone_field, (str, int)):
+        digits = re.sub(r'\D', '', str(phone_field))
+        return ' '.join(digits) if digits else None
+    if isinstance(phone_field, list):
+        chunks: list[str] = []
+        for item in phone_field:
+            if isinstance(item, dict):
+                for val in item.values():
+                    digits = re.sub(r'\D', '', str(val))
+                    if digits:
+                        chunks.append(' '.join(digits))
+        return ', '.join(chunks) if chunks else None
+    return None
+
+
+def _spoken_email(email_field: Any) -> str | None:
+    if email_field is None:
+        return None
+    if isinstance(email_field, str):
+        v = email_field.strip()
+        return v.replace('.', ' dot ').replace('@', ' at ') or None
+    if isinstance(email_field, list):
+        merged: dict[str, Any] = {}
+        for item in email_field:
+            if isinstance(item, dict):
+                merged.update(item)
+        addr = _spoken_operator_field(merged.get('address'))
+        domain = _spoken_operator_field(merged.get('domain'))
+        if addr and domain:
+            return f'{addr} at {domain}'
+        return addr or domain
+    return None
+
+
 def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-CA") -> str:
     _lang = lang or 'en-CA'
     operator: dict[str, Any] = config['operator']
@@ -568,28 +716,29 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
     if feed is None:
         return "Feed not found."
 
-    callsign = feed.get('callsign')
-    _pifm = (feed.get('output') or {}).get('PiFmAdv') or {}
-    frequency = _pifm.get('frequency_mhz') or _pifm.get('frequency')
+    transmitters: list[dict[str, Any]] = feed.get('transmitter_metadata') or []
+    pifm: dict[str, Any] = (feed.get('output') or {}).get('PiFmAdv') or {}
+    transmitter_site = pifm.get('transmitter_site')
+    if transmitter_site:
+        matched_tx = next((t for t in transmitters if t.get('site_name') == transmitter_site), None)
+    else:
+        matched_tx = next((t for t in transmitters if t.get('relationship') == 'primary'), None) or (transmitters[0] if transmitters else None)
+
+    callsign = matched_tx.get('callsign') if matched_tx else feed.get('callsign')
+    frequency = matched_tx.get('frequency_mhz') if matched_tx else (pifm.get('frequency_mhz') or pifm.get('frequency'))
+    site_name = matched_tx.get('site_name') if matched_tx else None
 
     desc_block: dict[str, Any] = _d(feed, 'description')
     desc: dict[str, Any] = _d(desc_block, _lang)
 
+    on_air_name = _spoken_operator_field(operator.get('on_air_name'))
+    operator_name = _spoken_operator_field(operator.get('operator_name'))
+    email_spoken = _spoken_email(operator.get('email'))
+    phone_spoken = _spoken_phone(operator.get('phone'))
+
+    callsign_spoken = ' '.join(str(callsign).strip()) if callsign else None
+
     sentences: list[str] = []
-
-    operator_name = operator.get('operator_name')
-    on_air_name = operator.get('on_air_name')
-    email = operator.get('email')
-    phone = operator.get('phone')
-
-    callsign = str(callsign).strip()
-    callsign = " ".join(callsign)
-
-    email_clean = str(email).strip() if email and str(email) != 'None' else None
-    email_clean = email_clean.replace('.', ' dot ').replace('@', ' at ') if email_clean else None
-
-    phone_clean = str(phone).strip() if phone and str(phone) != 'None' else None
-    phone_clean = re.sub(r'\D', ' ', phone_clean) if phone_clean else None
 
     if on_air_name:
         if 'en' in _lang:
@@ -598,20 +747,62 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
             sentences.append(f"Vous écoutez {on_air_name}.")
         elif 'es' in _lang:
             sentences.append(f"Está escuchando {on_air_name}.")
-    if callsign:
+
+    if callsign_spoken:
         if 'en' in _lang:
-            sentences.append(f"Callsign {callsign}.")
+            sentences.append(f"Callsign {callsign_spoken}.")
         elif 'fr' in _lang:
-            sentences.append(f"Indicatif d'appel {callsign}.")
+            sentences.append(f"Indicatif d'appel {callsign_spoken}.")
         elif 'es' in _lang:
-            sentences.append(f"Indicativo de llamada {callsign}.")
-    if frequency and _pifm.get('enabled', False) is True:
+            sentences.append(f"Indicativo de llamada {callsign_spoken}.")
+
+    pifm_enabled = pifm.get('enabled', False) is True
+    if pifm_enabled and frequency:
+        location = site_name or feed.get('name') or feed_id
         if 'en' in _lang:
-            sentences.append(f"Broadcasting on a frequency of {frequency} megahertz.")
+            sentences.append(f"Broadcasting from {location} on a frequency of {frequency} megahertz.")
         elif 'fr' in _lang:
-            sentences.append(f"Diffusion sur une fréquence de {frequency} mégahertz.")
+            sentences.append(f"Diffusion depuis {location} sur une fréquence de {frequency} mégahertz.")
         elif 'es' in _lang:
-            sentences.append(f"Transmitiendo en una frecuencia de {frequency} megahercios.")
+            sentences.append(f"Transmitiendo desde {location} en una frecuencia de {frequency} megahercios.")
+    elif site_name:
+        if 'en' in _lang:
+            sentences.append(f"Serving {site_name}.")
+        elif 'fr' in _lang:
+            sentences.append(f"Au service de {site_name}.")
+        elif 'es' in _lang:
+            sentences.append(f"Sirviendo a {site_name}.")
+
+    secondaries = [
+        t for t in transmitters
+        if t.get('relationship') in ('secondary', 'repeater')
+        and t is not matched_tx
+    ]
+    if pifm_enabled and secondaries:
+        for idx, tx in enumerate(secondaries):
+            tx_loc = tx.get('site_name') or ''
+            tx_freq = tx.get('frequency_mhz')
+            if not tx_loc and not tx_freq:
+                continue
+            is_last = idx == len(secondaries) - 1
+            if tx_freq:
+                if 'en' in _lang:
+                    prefix = "And also" if is_last and len(secondaries) > 1 else "And"
+                    sentences.append(f"{prefix} repeating from {tx_loc} on a frequency of {tx_freq} megahertz." if tx_loc else f"{prefix} repeating on {tx_freq} megahertz.")
+                elif 'fr' in _lang:
+                    prefix = "Et aussi" if is_last and len(secondaries) > 1 else "Et"
+                    sentences.append(f"{prefix} en relais depuis {tx_loc} sur {tx_freq} mégahertz." if tx_loc else f"{prefix} en relais sur {tx_freq} mégahertz.")
+                elif 'es' in _lang:
+                    prefix = "Y también" if is_last and len(secondaries) > 1 else "Y"
+                    sentences.append(f"{prefix} repitiendo desde {tx_loc} en {tx_freq} megahercios." if tx_loc else f"{prefix} repitiendo en {tx_freq} megahercios.")
+            elif tx_loc:
+                if 'en' in _lang:
+                    sentences.append(f"And repeating from {tx_loc}.")
+                elif 'fr' in _lang:
+                    sentences.append(f"Et en relais depuis {tx_loc}.")
+                elif 'es' in _lang:
+                    sentences.append(f"Y repitiendo desde {tx_loc}.")
+
     if operator_name:
         if 'en' in _lang:
             sentences.append(f"This service is operated by {operator_name}.")
@@ -627,28 +818,28 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
             sentences.append(str(text))
         if suffix:
             sentences.append(str(suffix))
-    
-    if email_clean and phone_clean:
+
+    if email_spoken and phone_spoken:
         if 'en' in _lang:
-            sentences.append(f"You can contact us by email at {email_clean}, or by phone at {phone_clean}.")
+            sentences.append(f"You can contact us by email at {email_spoken}, or by phone at {phone_spoken}.")
         elif 'fr' in _lang:
-            sentences.append(f"Vous pouvez nous contacter par email à {email_clean}, ou par téléphone au {phone_clean}.")
+            sentences.append(f"Vous pouvez nous contacter par email à {email_spoken}, ou par téléphone au {phone_spoken}.")
         elif 'es' in _lang:
-            sentences.append(f"Puede contactarnos por correo electrónico a {email_clean}, o por teléfono al {phone_clean}.")
-    elif email_clean and not phone_clean:
+            sentences.append(f"Puede contactarnos por correo electrónico a {email_spoken}, o por teléfono al {phone_spoken}.")
+    elif email_spoken:
         if 'en' in _lang:
-            sentences.append(f"You can contact us by email at {email_clean}.")
+            sentences.append(f"You can contact us by email at {email_spoken}.")
         elif 'fr' in _lang:
-            sentences.append(f"Vous pouvez nous contacter par email à {email_clean}.")
+            sentences.append(f"Vous pouvez nous contacter par email à {email_spoken}.")
         elif 'es' in _lang:
-            sentences.append(f"Puede contactarnos por correo electrónico a {email_clean}.")
-    elif phone_clean and not email_clean:
+            sentences.append(f"Puede contactarnos por correo electrónico a {email_spoken}.")
+    elif phone_spoken:
         if 'en' in _lang:
-            sentences.append(f"You can contact us by phone at {phone_clean}.")
+            sentences.append(f"You can contact us by phone at {phone_spoken}.")
         elif 'fr' in _lang:
-            sentences.append(f"Vous pouvez nous contacter par téléphone au {phone_clean}.")
+            sentences.append(f"Vous pouvez nous contacter par téléphone au {phone_spoken}.")
         elif 'es' in _lang:
-            sentences.append(f"Puede contactarnos por teléfono al {phone_clean}.")
+            sentences.append(f"Puede contactarnos por teléfono al {phone_spoken}.")
 
     return " ".join(sentences)
 
@@ -731,7 +922,7 @@ _ALERT_VERBS: dict[str, dict[str, str]] = {
 _AN_PREFIXES = ('a', 'e', 'i', 'o', 'u')
 
 _FORECAST_LOC_DB: dict[str, tuple[str, str]] | None = None
-_FORECAST_LOC_CSV = pathlib.Path(__file__).parent / 'FORECAST_LOCATIONS.csv'
+_FORECAST_LOC_CSV = pathlib.Path(__file__).parent.parent / 'managed' / 'csv' / 'FORECAST_LOCATIONS.csv'
 
 
 def _load_forecast_loc_db() -> dict[str, tuple[str, str]]:
@@ -1157,11 +1348,18 @@ def current_conditions_package(
         cond_text = None
 
     opener_text: Optional[str] = None
-    _src_key = weather_data.get('source') if isinstance(weather_data, dict) else None
+    _icao_id = weather_data.get('station_id') if isinstance(weather_data, dict) else None
     _obs_at = weather_data.get('observed_at') if isinstance(weather_data, dict) else None
-    if _src_key and _obs_at:
-        _source_map = _CC_SOURCE.get(lang_short, _CC_SOURCE['en'])
-        _source_name = _source_map.get(str(_src_key), str(_src_key).upper())
+    if _obs_at:
+        _issuer = _issuer_from_icao(_icao_id, lang_short)
+        if not _issuer:
+            _src_key = weather_data.get('source') if isinstance(weather_data, dict) else None
+            _fallback_map: dict[str, str] = {
+                'eccc': 'Environment and Climate Change Canada' if lang_short == 'en' else ('Environnement et Changement climatique Canada' if lang_short == 'fr' else 'Environment and Climate Change Canada'),
+                'nws': 'the National Weather Service' if lang_short == 'en' else ('le Service météorologique national' if lang_short == 'fr' else 'el Servicio Meteorológico Nacional'),
+                'twc': 'Weather Dot Com',
+            }
+            _issuer = _fallback_map.get(str(_src_key or ''), str(_src_key or '').upper()) or None
         try:
             _dt = datetime.datetime.fromisoformat(str(_obs_at).replace('Z', '+00:00'))
             local_tz = datetime.datetime.now().astimezone().tzinfo or ZoneInfo('UTC')
@@ -1169,7 +1367,10 @@ def current_conditions_package(
             _time_str = _format_time_spoken(_dt_local)
         except ValueError:
             _time_str = _reformat_times_in_text(str(_obs_at))
-        opener_text = ph['opener'].format(source=_source_name, time=_time_str)
+        if _issuer:
+            opener_text = ph['opener'].format(source=_issuer, time=_time_str)
+        else:
+            opener_text = ph['opener_no_source'].format(time=_time_str) if 'opener_no_source' in ph else ph['opener'].format(source='', time=_time_str).strip()
 
     sentences: list[str] = []
     if opener_text and not secondary:
@@ -1266,7 +1467,7 @@ def forecast_package(
     elif name_block:
         forecast_name = str(name_block)
 
-    loc_name = location_name or forecast_name or fx['station']
+    loc_name = _spoken_forecast_location_name(location_name or forecast_name or fx['station'], lang_short)
 
     forecasts = forecast_data.get('forecast', [])
     if not forecasts:
@@ -1302,6 +1503,29 @@ def forecast_package(
             sentences.append(f"{period_name}. {clean}.")
 
     return " ".join(sentences)
+
+
+def _spoken_forecast_location_name(value: Optional[str], lang_short: str) -> str:
+    clean = ' '.join(str(value or '').split())
+    if not clean:
+        return ''
+
+    parts = [part.strip(' ,.') for part in re.split(r'\s+-\s+', clean) if part.strip(' ,.')]
+    if len(parts) < 2:
+        return clean
+
+    conjunction = 'et' if lang_short == 'fr' else 'and'
+    return _join_spoken_list(parts, conjunction)
+
+
+def _join_spoken_list(parts: list[str], conjunction: str) -> str:
+    if not parts:
+        return ''
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f'{parts[0]} {conjunction} {parts[1]}'
+    return f"{', '.join(parts[:-1])}, {conjunction} {parts[-1]}"
 
 
 def _format_month_day(month: int | None, day: int | None, lang_short: str) -> str:

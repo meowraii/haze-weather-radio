@@ -6,7 +6,8 @@
     <meta name="description" content="Haze Weather Radio control and monitoring panel">
     <title>Haze Weather Radio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
@@ -17,7 +18,7 @@
                 <div class="brand-mark"></div>
                 <div>
                     <p class="brand-name">Haze WXR</p>
-                    <p class="brand-sub">Operations Panel</p>
+                    <p class="brand-sub">Station Control</p>
                 </div>
             </div>
 
@@ -55,6 +56,10 @@
 
             <nav class="sidebar-section" aria-label="Tools">
                 <p class="sidebar-label">Tools</p>
+                <a class="sidebar-link" href="/wx">
+                    <i data-lucide="cloud-sun" width="15" height="15"></i>
+                    WX On-Demand
+                </a>
                 <a class="sidebar-link" href="/editor">
                     <i data-lucide="pencil-line" width="15" height="15"></i>
                     File Editor
@@ -105,36 +110,80 @@
         <div class="main-wrap">
             <header class="topbar">
                 <div class="topbar-inner">
-                    <div>
-                        <h1 id="heroTitle">Haze Weather Radio</h1>
-                        <p id="heroSubtitle">Waiting for server response.</p>
+                    <div class="topbar-title">
+                        <p class="topbar-eyebrow">Station Control</p>
+                        <h1>Operations Panel</h1>
+                        <p>Live playout status, manual tools, and runtime diagnostics.</p>
                     </div>
-                    <div id="summaryCards" class="metric-strip"></div>
                 </div>
             </header>
 
             <main class="dashboard">
 
+                <section class="section-block" id="summary">
+                    <div class="section-hd">
+                        <span>Station Summary</span>
+                        <span class="section-hd-sub">Live feed counts, manual actions, and the main routes through the panel.</span>
+                    </div>
+                    <div class="section-body overview-grid">
+                        <div class="overview-main">
+                            <div class="overview-hero">
+                                <p class="overview-label">Current State</p>
+                                <h2 id="heroTitle">Haze Weather Radio</h2>
+                                <p id="heroSubtitle">Waiting for server response.</p>
+                            </div>
+                            <div id="summaryCards" class="summary-grid"></div>
+                        </div>
+                        <aside class="overview-side">
+                            <div class="overview-actions">
+                                <button id="rwtButton" type="button" class="btn-action" title="Send Required Weekly Test to all enabled feeds">
+                                    <i data-lucide="clock" width="13" height="13"></i>
+                                    Send RWT
+                                </button>
+                                <a class="btn-action btn-link" href="/same">
+                                    <i data-lucide="radio-tower" width="13" height="13"></i>
+                                    Manual SAME
+                                </a>
+                                <a class="btn-action btn-link" href="/wx">
+                                    <i data-lucide="cloud-sun" width="13" height="13"></i>
+                                    WX Builder
+                                </a>
+                                <a class="btn-action btn-link" href="/editor">
+                                    <i data-lucide="file-pen-line" width="13" height="13"></i>
+                                    Open Editor
+                                </a>
+                            </div>
+                            <div class="overview-note">
+                                <p class="overview-note-label">Panel Flow</p>
+                                <p>Watch feed state first, use the manual tools when you need to inject or test audio, and keep the logs and configuration panels below for diagnosis.</p>
+                            </div>
+                        </aside>
+                    </div>
+                </section>
+
+                <div class="ops-grid">
+
                 <section class="section-block" id="feeds">
                     <div class="section-hd">
                         <span>Broadcast Feeds</span>
-                        <span class="section-hd-sub">Active playlist, alert queue depth, and output status per feed.</span>
-                        <div class="section-hd-actions">
-                            <button id="rwtButton" type="button" class="btn-action" title="Send Required Weekly Test to all enabled feeds">
-                                <i data-lucide="clock" width="13" height="13"></i>
-                                Send RWT
-                            </button>
-                        </div>
+                        <span class="section-hd-sub">Live playout, queue depth, output routing, and recent alert activity per feed.</span>
                     </div>
                     <div class="section-body">
                         <div class="feed-grid" id="feedsGrid"></div>
                     </div>
                 </section>
 
+                <div class="ops-stack">
                 <section class="section-block" id="wx-demand">
                     <div class="section-hd">
                         <span>WX On-Demand</span>
-                        <span class="section-hd-sub">Generate and stream audio packages on the fly for any feed.</span>
+                        <span class="section-hd-sub">Build and audition a quick package run for any feed.</span>
+                        <div class="section-hd-actions">
+                            <a class="btn-action btn-link" href="/wx">
+                                <i data-lucide="arrow-up-right" width="13" height="13"></i>
+                                Full Page
+                            </a>
+                        </div>
                     </div>
                     <div class="section-body">
                         <div class="wx-form">
@@ -189,11 +238,16 @@
                 </section>
 
                 <section class="section-block" id="events">
-                    <div class="section-hd"><span>Runtime Events</span></div>
+                    <div class="section-hd">
+                        <span>Runtime Events</span>
+                        <span class="section-hd-sub">Recent internal events, task results, and feed-specific notices.</span>
+                    </div>
                     <div class="section-body pad-none">
                         <div class="event-list" id="eventsList"></div>
                     </div>
                 </section>
+                </div>
+                </div>
 
                 <div class="two-col" id="logs">
                     <section class="section-block" style="margin-top:0">
@@ -210,7 +264,7 @@
                     </section>
 
                     <section class="section-block" id="datapool" style="margin-top:0">
-                        <div class="section-hd"><span>Shared Weather State</span></div>
+                        <div class="section-hd"><span>Weather Data Pool</span></div>
                         <div class="section-body pad-none">
                             <pre class="code-view" id="datapoolView">No data loaded.</pre>
                         </div>
@@ -218,7 +272,7 @@
                 </div>
 
                 <section class="section-block" id="config">
-                    <div class="section-hd"><span>Runtime Configuration</span></div>
+                    <div class="section-hd"><span>Loaded Configuration</span></div>
                     <div class="section-body pad-none">
                         <pre class="code-view" id="configView">No configuration loaded.</pre>
                     </div>
@@ -244,6 +298,6 @@
     </div>
 
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="/assets/index.js" defer></script>
+    <script type="module" src="/assets/js/index.js"></script>
 </body>
 </html>

@@ -1,6 +1,7 @@
+from .config import load_config
 from .data import data_thread_worker, iter_locations, AirQualityLocation
 from .playlist import playlist_thread_worker
-from .tts import synthesize, synthesize_pcm, load_config, generate_package
+from .tts import synthesize, synthesize_pcm, generate_package
 
 __all__ = [
     'load_config',

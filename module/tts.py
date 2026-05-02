@@ -20,18 +20,10 @@ from typing import Any, Generator, Optional, Protocol, cast
 from urllib.parse import unquote, urlparse
 
 import numpy as np
-import yaml
+
+from .config import load_config
 
 log = logging.getLogger(__name__)
-
-def load_config(config_path: str | None = None) -> dict[str, Any]:
-    selected_path = config_path or os.environ.get('CONFIG_PATH')
-    if selected_path:
-        config_file = pathlib.Path(selected_path)
-    else:
-        config_file = pathlib.Path(__file__).parent.parent / 'config.yaml'
-    with open(config_file, encoding='utf-8') as f:
-        return yaml.safe_load(f)
 
 
 _MODULE_CONFIG = load_config()
@@ -96,7 +88,7 @@ def generate_package(
     package_type: str,
     weather_data: Optional[dict[str, Any]] = None,
 ) -> str:
-    from managed.packages import climate_summary_package, current_conditions_package, date_time_package, station_id
+    from module.packages import climate_summary_package, current_conditions_package, date_time_package, station_id
 
     feed = next((f for f in config.get('feeds', []) if f['id'] == feed_id), None)
     lang = feed.get('language', 'en-CA') if feed else 'en-CA'
@@ -167,6 +159,9 @@ def _preload_rocm_libs() -> bool:
         return True
     try:
         import torch
+        if torch.__file__ is None:
+            log.debug('torch.__file__ is None; skipping ROCm lib preload')
+            return False
         torch_lib_dir = pathlib.Path(torch.__file__).parent / 'lib'
     except ImportError:
         log.debug('torch not available; skipping ROCm lib preload')
@@ -204,7 +199,7 @@ def _preload_rocm_libs() -> bool:
     _rocm_libs_preloaded = True
     return loaded_any
 
-from managed.events import shutdown_event, tts_queue
+from module.events import shutdown_event, tts_queue
 
 
 _FILE_URI_RE = re.compile(r'^file://', re.IGNORECASE)
@@ -218,12 +213,46 @@ _TTS_AUDIO_FILTERS = (
 )
 
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
+_PCM_EDGE_FADE_MS = 8
+
+
+def smooth_pcm_edges(pcm_s16le: bytes, fade_ms: int = _PCM_EDGE_FADE_MS) -> bytes:
+    if not pcm_s16le:
+        return b''
+
+    samples = np.frombuffer(pcm_s16le, dtype=np.int16)
+    if samples.size == 0:
+        return b''
+
+    channel_count = max(int(CHANNELS), 1)
+    frame_count = samples.size // channel_count
+    if frame_count <= 1:
+        return pcm_s16le
+
+    usable_samples = frame_count * channel_count
+    fade_frames = min(max(int(round(SAMPLE_RATE * fade_ms / 1000.0)), 0), frame_count // 2)
+    if fade_frames == 0:
+        return pcm_s16le
+
+    shaped = samples[:usable_samples].astype(np.float32).reshape(frame_count, channel_count)
+    fade_in = np.linspace(0.0, 1.0, fade_frames, endpoint=True, dtype=np.float32)[:, None]
+    fade_out = np.linspace(1.0, 0.0, fade_frames, endpoint=True, dtype=np.float32)[:, None]
+    shaped[:fade_frames] *= fade_in
+    shaped[-fade_frames:] *= fade_out
+    output = np.clip(shaped.reshape(-1), -32768, 32767).astype(np.int16).tobytes()
+    if usable_samples == samples.size:
+        return output
+    return output + samples[usable_samples:].tobytes()
 
 
 def _resample_pcm(pcm_s16le: bytes, from_sr: int) -> bytes:
+    if not pcm_s16le or from_sr <= 0:
+        return pcm_s16le
     if from_sr == SAMPLE_RATE:
         return pcm_s16le
     samples = np.frombuffer(pcm_s16le, dtype=np.int16).astype(np.float32)
+    if samples.size == 0:
+        return b''
     target_len = int(round(len(samples) * SAMPLE_RATE / from_sr))
     resampled = np.interp(
         np.linspace(0, len(samples) - 1, target_len),
@@ -251,7 +280,7 @@ def _to_system_pcm(wav_bytes: bytes) -> bytes | None:
     try:
         raw, src_sr = _wav_to_pcm_s16le(wav_bytes)
         system_pcm = _resample_pcm(raw, src_sr)
-        return _normalize_pcm(system_pcm) or system_pcm
+        return _normalize_pcm(system_pcm) or smooth_pcm_edges(system_pcm)
     except Exception as e:
         log.error("WAV decode failed: %s", e)
         return None
@@ -266,7 +295,7 @@ def _decode_file_pcm(file_path: pathlib.Path) -> bytes | None:
              'pipe:1'],
             capture_output=True, check=True,
         )
-        return proc.stdout if proc.stdout else None
+        return smooth_pcm_edges(proc.stdout) if proc.stdout else None
     except Exception as e:
         log.warning('TTS normalization failed for %s, retrying without filters: %s', file_path.name, e)
         try:
@@ -276,7 +305,7 @@ def _decode_file_pcm(file_path: pathlib.Path) -> bytes | None:
                  'pipe:1'],
                 capture_output=True, check=True,
             )
-            return proc.stdout if proc.stdout else None
+            return smooth_pcm_edges(proc.stdout) if proc.stdout else None
         except Exception as exc:
             log.error("Failed to decode %s: %s", file_path.name, exc)
             return None
@@ -297,9 +326,9 @@ def _normalize_pcm(pcm_s16le: bytes) -> bytes | None:
             capture_output=True,
             check=True,
         )
-        return proc.stdout if proc.stdout else None
+        return smooth_pcm_edges(proc.stdout) if proc.stdout else None
     except Exception:
-        return pcm_s16le
+        return smooth_pcm_edges(pcm_s16le)
 
 
 def _transcode(src: pathlib.Path, dst: pathlib.Path) -> bool:
@@ -530,6 +559,89 @@ def _provide_piper_pcm(text: str, ctx: dict) -> bytes | None:
     return b''.join(chunks) if chunks else None
 
 
+def _resolve_pyttsx3_voice_value(ctx: dict) -> str | None:
+    tts_cfg = ctx.get('config', {}).get('tts', {})
+    lang = ctx.get('lang')
+
+    lang_backend = (
+        tts_cfg.get('lang', {}).get(lang, {})
+        .get('backend', {}).get('pyttsx3', {})
+    ) if lang is not None else {}
+
+    voice_type = ctx.get('voice') if ctx.get('voice') in ('male', 'female') else 'male'
+    if isinstance(lang_backend, dict):
+        v_cfg = lang_backend.get(voice_type)
+        if isinstance(v_cfg, dict) and v_cfg.get('voice'):
+            return v_cfg.get('voice')
+
+        if isinstance(lang_backend.get('voice'), str):
+            return lang_backend.get('voice')
+
+    global_pyttsx3 = tts_cfg.get('pyttsx3', {})
+    if isinstance(global_pyttsx3, dict) and global_pyttsx3.get('voice'):
+        return global_pyttsx3.get('voice')
+    return None
+
+
+def _select_and_set_pyttsx3_voice(engine: Any, desired: str) -> str | None:
+    if not desired:
+        return None
+    try:
+        voices = engine.getProperty('voices') or []
+    except Exception:
+        return None
+
+    desired_norm = str(desired).strip().lower()
+
+    for v in voices:
+        vid = getattr(v, 'id', '')
+        if vid and str(vid) == desired:
+            try:
+                engine.setProperty('voice', vid)
+                return vid
+            except Exception:
+                pass
+
+    for v in voices:
+        name = getattr(v, 'name', '')
+        if name and name.lower() == desired_norm:
+            try:
+                engine.setProperty('voice', getattr(v, 'id', name))
+                return getattr(v, 'id', name)
+            except Exception:
+                pass
+
+    for v in voices:
+        name = getattr(v, 'name', '')
+        if name and desired_norm in name.lower():
+            try:
+                engine.setProperty('voice', getattr(v, 'id', name))
+                return getattr(v, 'id', name)
+            except Exception:
+                pass
+
+    for v in voices:
+        langs = getattr(v, 'languages', None)
+        if not langs:
+            continue
+        for item in langs:
+            try:
+                if isinstance(item, bytes):
+                    token = item.decode('utf-8', errors='ignore').lower()
+                else:
+                    token = str(item).lower()
+            except Exception:
+                continue
+            if desired_norm in token or desired_norm == token:
+                try:
+                    engine.setProperty('voice', getattr(v, 'id', getattr(v, 'name', '')))
+                    return getattr(v, 'id', getattr(v, 'name', ''))
+                except Exception:
+                    pass
+
+    return None
+
+
 def _provide_pyttsx3_pcm(text: str, ctx: dict) -> bytes | None:
     if pyttsx3 is None:
         return None
@@ -540,6 +652,16 @@ def _provide_pyttsx3_pcm(text: str, ctx: dict) -> bytes | None:
     tmp_file = None
     try:
         engine = pyttsx3.init()
+
+        try:
+            desired = _resolve_pyttsx3_voice_value(ctx)
+            if desired:
+                _select_and_set_pyttsx3_voice(engine, desired)
+
+            if cfg.get('voice'):
+                _select_and_set_pyttsx3_voice(engine, cfg.get('voice'))
+        except Exception:
+            pass
         if cfg.get('rate'):
             engine.setProperty('rate', cfg['rate'])
         if cfg.get('volume'):
@@ -735,6 +857,15 @@ def _provide_pyttsx3(text: str, ctx: dict, out: pathlib.Path) -> bool:
     raw_tmp = out.with_suffix('.bin.wav')
     try:
         engine = pyttsx3.init()
+
+        try:
+            desired = _resolve_pyttsx3_voice_value(ctx)
+            if desired:
+                _select_and_set_pyttsx3_voice(engine, desired)
+            if cfg.get('voice'):
+                _select_and_set_pyttsx3_voice(engine, cfg.get('voice'))
+        except Exception:
+            pass
         if cfg.get('rate'): engine.setProperty('rate', cfg['rate'])
         if cfg.get('volume'): engine.setProperty('volume', cfg['volume'])
 

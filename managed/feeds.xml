@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feeds>
+
+  <feed id="sk-0001" enabled="true" timezone="America/Regina">
+
+    <playout routine="true" same="true"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="true">
+          <blocklist>
+            <severity>Minor</severity>
+            <severity>Unknown</severity>
+            <certainty>Unknown</certainty>
+            <certainty>Past</certainty>
+            <naads_event>fog</naads_event>
+            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
+          </blocklist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <languages>
+      <lang code="en-CA" interval="0"/>
+      <!-- <lang code="fr-CA" interval="0"/> -->
+    </languages>
+
+    <description>
+      <lang code="en-CA"
+            text="This is an automated broadcast, servicing the city of Saskatoon with the latest weather alerts and forecasts originating from Environment Canada."
+            suffix="This service is not affiliated with Environment Canada."/>
+      <lang code="fr-CA"
+            text="Ceci est une diffusion automatisée desservant la ville de Saskatoon avec les dernières alertes météorologiques et prévisions provenant d'Environnement Canada."
+            suffix="Ce service n'est pas affilié à Environnement Canada."/>
+    </description>
+
+    <!--
+      id:              Environment Canada City Page ID, NWS County/Zone code, or IATA station ID.
+      forecast_region: CLC paired with City Page code (ECCC), or NWS zone+county. Wildcards supported.
+      source:          eccc | nws | twc
+      name_override:   Override when the source API omits the location name.
+    -->
+    <locations>
+      <coverage>
+        <region id="065100" source="eccc" derive_forecast="sk-40"/>
+        <region id="065400" source="eccc" derive_forecast="sk-1"/>
+        <region id="065500" source="eccc" derive_forecast="sk-37">
+          <subregion id="065522"/>
+          <subregion id="065521"/>
+        </region>
+      </coverage>
+
+      <observationLocations>
+        <location id="sk-40" source="eccc"/>
+        <location id="CPUN" source="twc"/>
+        <location id="sk-49" source="eccc"/>
+        <location id="CPOX" source="nws" name_override="Saskatoon Remote Climate Station"/>
+      </observationLocations>
+
+      <airQualityLocations>
+        <location id="HAHJJ" source="eccc"/>
+      </airQualityLocations>
+
+      <climateLocations>
+        <location id="VSSK40V" source="eccc"/>
+      </climateLocations>
+
+    </locations>
+
+    <transmitter_metadata> <!-- mostly for identification. -->
+        <transmitter>
+            <site_name>Saskatoon</site_name>
+            <callsign>XLF322</callsign>
+            <relationship>primary</relationship> <!-- primary | secondary/repeater | unknown -->
+            <frequency_mhz>162.450</frequency_mhz>
+        </transmitter>
+    </transmitter_metadata>
+
+    <output>
+      <stream enabled="false">
+        <type>icecast</type>
+        <host>icecast.almora.tv</host>
+        <port>8443</port>
+        <username>source</username>
+        <password>aluser</password>
+        <ssl>false</ssl>
+        <format>opus</format>
+        <bitrate_kbps>32</bitrate_kbps>
+      </stream>
+
+      <udp enabled="false">
+        <ip>127.0.0.1</ip>
+        <port>8898</port>
+        <format>mpegts</format>
+        <bitrate_kbps>96</bitrate_kbps>
+        <acodec>aac</acodec>
+      </udp>
+
+      <rtp enabled="false">
+        <ip>127.0.0.1</ip>
+        <port>8899</port>
+        <format>rtp</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
+      </rtp>
+
+      <rtmp enabled="false">
+        <url>rtmp://localhost/live/stream</url>
+        <format>flv</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <vcodec>libx264</vcodec>
+        <acodec>aac</acodec>
+      </rtmp>
+
+      <srt enabled="false">
+        <url>srt://localhost:12345</url>
+        <format>mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <vcodec>libx265</vcodec>
+        <acodec>aac</acodec>
+      </srt>
+
+      <rtsp enabled="false">
+        <url>rtsp://localhost:8554/stream</url>
+        <format>rtsp</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <vcodec>libx264</vcodec>
+        <acodec>aac</acodec>
+      </rtsp>
+
+      <webrtc enabled="false">
+        <port>8765</port>
+        <format>opus</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <vcodec>libx264</vcodec>
+        <acodec>aac</acodec>
+      </webrtc>
+
+      <audio_device enabled="false"/>
+
+      <!-- https://github.com/miegl/PiFmAdv -->
+      <!-- frequency_mhz derived from transmitter_metadata[site_name=Saskatoon] -->
+      <PiFmAdv enabled="true" transmitter_site="Saskatoon">
+        <bin_root>/home/rai/PiFmAdv/src</bin_root>
+        <tx_power>7</tx_power>
+        <bandwidth_hz>12500</bandwidth_hz>
+        <deviation_hz>5000</deviation_hz>
+        <ssh enabled="true">
+          <ffmpeg_bin>ffmpeg</ffmpeg_bin>
+          <ssh_bin>ssh</ssh_bin>
+          <host>172.16.1.37</host>
+          <port>22</port>
+          <username>rai</username>
+          <public_key_path>~/.ssh/almora</public_key_path>
+        </ssh>
+      </PiFmAdv>
+
+    </output>
+
+  </feed>
+
+
+
+
+
+
+  <feed id="sk-0002" callsign="VBP687" enabled="false" timezone="America/Regina">
+
+    <playout priority="true" routine="true" same="true" chimes="true"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="true">
+          <blocklist>
+            <severity>Minor</severity>
+            <severity>Unknown</severity>
+            <certainty>Unknown</certainty>
+            <certainty>Past</certainty>
+            <naads_event>fog</naads_event>
+            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
+          </blocklist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <languages>
+      <lang code="en-CA" interval="0"/>
+    </languages>
+
+    <description>
+      <lang code="en-CA"
+            text="This broadcast provides service to the Lake Diefenbaker area, including the communities of Elbow, Outlook, and Lucky Lake."
+            suffix="This service is not affiliated with Environment Canada"/>
+    </description>
+
+    <locations>
+      <coverage>
+        <region id="065500" source="eccc" derive_forecast="sk-18">
+          <subregion id="065524"/>
+        </region>
+        <region id="065500" source="eccc" derive_forecast="sk-37">
+          <subregion id="065522"/>
+          <subregion id="06552*"/>
+        </region>
+        <region id="062200" source="eccc" derive_forecast="sk-24">
+          <subregion id="065526"/>
+          <subregion id="06221*"/>
+        </region>
+      </coverage>
+
+      <observationLocations>
+        <location id="sk-18" source="eccc"/>
+        <location id="sk-37" source="eccc"/>
+        <location id="sk-14" source="eccc"/>
+      </observationLocations>
+    </locations>
+
+    <output>
+
+      <stream enabled="true">
+        <type>icecast</type>
+        <host>icecast.almora.tv</host>
+        <port>8443</port>
+        <username>source</username>
+        <password>aluser</password>
+        <ssl>false</ssl>
+        <format>opus</format>
+        <bitrate_kbps>32</bitrate_kbps>
+      </stream>
+
+    </output>
+
+  </feed>
+
+
+
+
+
+
+  <feed id="naads-catchall" callsign="SSPWXR" enabled="false" timezone="America/Regina">
+
+    <playout routine="false" same="true"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <!-- use_feed_locations="false": accept all CAP-CP alerts regardless of location -->
+        <filter use_feed_locations="false"/>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <description>
+      <lang code="en-CA" text="EMERGENCY ALERT CHANNEL FOR METEOCHANNEL."/>
+    </description>
+
+    <locations>
+      <coverage>
+        <!-- all supported keys: region, SAME, province/state, zone, county
+        only SAME, province/state, and counties support alert only coverage, so derive_forecast is ignored on those keys.
+        -->
+
+        <province abbr="SK" /> <!-- automatically matches all 06* SAME codes found in the FORECAST_LOCATIONS.csv file. or NWS_ZONE_COUNTY_CORRELATION if state-->
+        <province abbr="MB" />
+        <province abbr="AB" />
+        <state abbr="ND" />
+        <state abbr="MT" />
+      </coverage>
+    </locations>
+
+    <output>
+
+      <stream enabled="true">
+        <type>icecast</type>
+        <host>icecast.almora.tv</host>
+        <port>8443</port>
+        <username>source</username>
+        <password>aluser</password>
+        <ssl>false</ssl>
+        <format>vp9</format>
+        <bitrate_kbps>32</bitrate_kbps>
+      </stream>
+
+      <udp enabled="true">
+        <ip>127.0.0.1</ip>
+        <port>8898</port>
+        <format>mpegts</format>
+        <bitrate_kbps>64</bitrate_kbps>
+        <vrate_kbps>4000</vrate_kbps>
+        <vcodec>h264_amf</vcodec>
+        <acodec>ac3</acodec>
+      </udp>
+
+      <rtp enabled="false">
+        <ip>127.0.0.1</ip>
+        <port>8899</port>
+        <format>rtp_mpegts</format>
+        <bitrate_kbps>96</bitrate_kbps>
+        <vrate_kbps>4000</vrate_kbps>
+        <vcodec>h264_amf</vcodec>
+        <acodec>ac3</acodec>
+      </rtp>
+
+      <framebuffer enabled="false">
+        <path>/dev/fb0</path>
+      </framebuffer>
+
+      <dri enabled="false">
+        <path>/dev/dri/card0</path>
+      </dri>
+
+      <v4l2 enabled="false">
+        <device>/dev/video0</device>
+      </v4l2>
+
+      <audio_device enabled="false"/>
+      <PiFmAdv enabled="false"/>
+
+    </output>
+
+  </feed>
+
+</feeds>

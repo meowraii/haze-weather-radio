@@ -4,6 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>File Editor — Haze Weather Radio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
@@ -14,7 +17,7 @@
                 <div class="brand-mark"></div>
                 <div>
                     <p class="brand-name">Haze WXR</p>
-                    <p class="brand-sub">File Editor</p>
+                    <p class="brand-sub">Managed Files</p>
                 </div>
             </div>
 
@@ -27,6 +30,10 @@
                 <a class="sidebar-link active" href="/editor">
                     <i data-lucide="pencil-line" width="15" height="15"></i>
                     File Editor
+                </a>
+                <a class="sidebar-link" href="/wx">
+                    <i data-lucide="cloud-sun" width="15" height="15"></i>
+                    WX On-Demand
                 </a>
                 <a class="sidebar-link" href="/same">
                     <i data-lucide="radio-tower" width="15" height="15"></i>
@@ -48,6 +55,10 @@
                     <i data-lucide="file-text" width="15" height="15"></i>
                     packages.py
                 </a>
+                <a class="sidebar-link" href="#" data-file="alertTemplates.xml" id="nav-alerttemplates">
+                    <i data-lucide="file-text" width="15" height="15"></i>
+                    alertTemplates.xml
+                </a>
             </div>
 
             <div class="sidebar-footer">
@@ -60,9 +71,12 @@
 
         <div class="main-wrap">
             <header class="topbar">
-                <div class="topbar-title">
-                    <h1 id="editorTitle">Select a file to edit</h1>
-                    <p id="editorSubtitle">Changes are written directly to disk. Backend must be restarted to apply most changes.</p>
+                <div class="topbar-inner">
+                    <div class="topbar-title">
+                        <p class="topbar-eyebrow">Managed Files</p>
+                        <h1 id="editorTitle">Select a file to edit</h1>
+                        <p id="editorSubtitle">Changes are written directly to disk. Restart the backend when a change affects runtime startup or package definitions.</p>
+                    </div>
                 </div>
             </header>
 
@@ -70,9 +84,9 @@
                 <section class="section-block">
                     <div class="section-hd">
                         <span id="sectionFilename">No file loaded</span>
-                        <div style="display:flex;gap:6px;align-items:center;">
-                            <button id="loadBtn" type="button" class="hd-select" style="min-height:24px;padding:2px 10px;cursor:pointer;border-radius:4px;font-size:0.78rem;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;width:auto;white-space:nowrap;" disabled>Load</button>
-                            <button id="saveBtn" type="button" class="hd-select" style="min-height:24px;padding:2px 10px;cursor:pointer;border-radius:4px;font-size:0.78rem;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;width:auto;white-space:nowrap;" disabled>Save</button>
+                        <div class="section-hd-actions">
+                            <button id="loadBtn" type="button" class="btn-action" disabled>Load</button>
+                            <button id="saveBtn" type="button" class="btn-action" disabled>Save</button>
                         </div>
                     </div>
                     <div class="section-body">
@@ -87,6 +101,6 @@
     </div>
 
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="/assets/editor.js" defer></script>
+    <script type="module" src="/assets/js/editor.js"></script>
 </body>
 </html>

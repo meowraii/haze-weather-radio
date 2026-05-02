@@ -14,23 +14,24 @@ import yaml
 os.environ.setdefault('OMP_NUM_THREADS', '2')
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '2')
 
-from managed.events import (
+from module.events import (
     append_runtime_event,
+    data_ready,
     initial_synthesis_done,
     read_data_pool,
     shutdown_event,
     update_runtime_status,
 )
 from module.alert import alert_worker, purge_expired_alerts
+from module.config import load_config
 from module.data import data_thread_worker, fetch_once
 from module.playlist import playlist_thread_worker
 from module.playout import playout_thread_worker
-from module.same import generate_same, to_wav
 from module.scheduler import clean_stale_data, scheduler_thread_worker
 from module.static_phrases import init_static_phrases
-from module.tts import generate_package, get_available_pyttsx3_voices, load_config, synthesize, synthesize_pcm
+from module.tts import generate_package, get_available_pyttsx3_voices, synthesize, synthesize_pcm
 from module.webserve import start_web_server
-from managed.packages import (
+from module.packages import (
     alerts_package,
     climate_summary_package,
     current_conditions_package,
@@ -55,14 +56,6 @@ _DEFAULT_PACKAGE_TYPES = [
     'user_bulletin',
     'alerts',
 ]
-
-def _check_static_audio(config: dict[str, Any]) -> None:
-    static_root = pathlib.Path(config.get('static', 'audio'))
-    static_root.mkdir(parents=True, exist_ok=True)
-    same_eom_path = static_root / 'same_eom.wav'
-    if not same_eom_path.exists():
-        logging.info('Generating SAME EOM cache: %s', same_eom_path)
-        same_eom_path.write_bytes(to_wav(generate_same()))
 
 
 def _naads_thread_worker(config: dict[str, Any], feeds: list[dict[str, Any]]) -> None:
@@ -258,13 +251,14 @@ def _run_gen_tts(config: dict[str, Any], selector: str | None) -> int:
 def main(config: dict[str, Any], log_level: str | None = None) -> None:
     _setup_logging(config, log_level)
     log = logging.getLogger('haze')
+    data_ready.clear()
+    initial_synthesis_done.clear()
     update_runtime_status({
         'started_at': datetime.datetime.now(datetime.UTC).isoformat(),
         'shutdown_requested': False,
     })
     append_runtime_event('startup', 'Haze Weather Radio starting')
     log.info('Haze Weather Radio starting')
-    _check_static_audio(config)
 
     feeds = _enabled_feeds(config)
 
@@ -279,21 +273,24 @@ def main(config: dict[str, Any], log_level: str | None = None) -> None:
     log.info('Initializing static phrase cache...')
     init_static_phrases(config, feeds)
 
-    infra: list[threading.Thread] = [
-        _thread(_naads_thread_worker, config, feeds, name='naads'),
-    ]
+    log.info('Performing initial data fetch...')
+    asyncio.run(fetch_once(config))
+
+    infra: list[threading.Thread] = []
     web_thread = start_web_server(config, feeds)
     if web_thread is not None:
         infra.append(web_thread)
-    for t in infra:
-        t.start()
+        web_thread.start()
 
     data: list[threading.Thread] = [
-        _thread(data_thread_worker, config, name='data'),
+        _thread(data_thread_worker, config, False, name='data'),
         _thread(playlist_thread_worker, config, name='playlist'),
     ]
     for t in data:
         t.start()
+
+    log.info('Waiting for initial audio synthesis...')
+    initial_synthesis_done.wait()
 
     playout: list[threading.Thread] = [
         _thread(playout_thread_worker, config, feed, name=f'playout:{feed["id"]}')
@@ -302,8 +299,10 @@ def main(config: dict[str, Any], log_level: str | None = None) -> None:
     for t in playout:
         t.start()
 
-    log.info('Waiting for initial data fetch and audio synthesis...')
-    initial_synthesis_done.wait()
+    naads_thread = _thread(_naads_thread_worker, config, feeds, name='naads')
+    infra.append(naads_thread)
+    naads_thread.start()
+
     log.info('All systems nominal. Playout active for %d feed(s).', len(feeds))
 
     scheduler = _thread(scheduler_thread_worker, config, feeds, name='scheduler')

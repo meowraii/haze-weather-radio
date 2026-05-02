@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 
-from managed.events import data_ready, shutdown_event, update_data_pool
+from module.events import data_ready, shutdown_event, update_data_pool
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ _ECCC_CLIMATE_DAILY_URL = "https://api.weather.gc.ca/collections/climate-daily/i
 _ECCC_DATA_DIR = os.path.join("data", "eccc")
 _NWS_DATA_DIR = os.path.join("data", "nws")
 _TWC_DATA_DIR = os.path.join("data", "weatherdotcom")
-_ECCC_FORECAST_REGIONS = os.path.join("managed", "FORECAST_LOCATIONS.csv")
+_ECCC_FORECAST_REGIONS = os.path.join("managed", "csv", "FORECAST_LOCATIONS.csv")
 
 _CARDINAL_DIRS = (
     "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
@@ -230,6 +230,8 @@ def _parse_locations_config(
         if not isinstance(feed, dict):
             continue
         feed_id = (feed.get("id") or "").strip()
+        playout = feed.get("playout") if isinstance(feed.get("playout"), dict) else {}
+        routine_enabled = bool(playout.get("routine", True))
         for block in feed.get("locations", []):
             if not isinstance(block, dict):
                 continue
@@ -263,6 +265,9 @@ def _parse_locations_config(
                     name_en=name_en,
                     name_fr=name_fr,
                 ))
+
+            if not routine_enabled:
+                continue
 
             for entry in block.get("airQualityLocations", []):
                 if not isinstance(entry, dict):
@@ -1412,6 +1417,7 @@ async def _fetch_and_publish_conditions(
         log.warning("Unsupported source '%s' for observation location %s", loc.source, loc.id)
         return
 
+    wx_dict['station_id'] = loc.id
     await asyncio.to_thread(_write_json, _conditions_cache_path(loc.source, loc.id), wx_dict)
 
     update_data_pool(f"{loc.feed_id}:{loc.id}", wx_dict, notify=False)
@@ -1662,7 +1668,7 @@ async def fetch_once(config: dict[str, Any]) -> None:
     data_ready.set()
 
 
-async def data_worker(config: dict[str, Any]) -> None:
+async def data_worker(config: dict[str, Any], initial_fetch: bool = True) -> None:
     poll_interval: int = (
         config.get("network", {})
         .get("requests", {})
@@ -1672,17 +1678,21 @@ async def data_worker(config: dict[str, Any]) -> None:
     loop = asyncio.get_event_loop()
     stop = loop.run_in_executor(None, shutdown_event.wait)
 
-    while not shutdown_event.is_set():
+    if initial_fetch and not shutdown_event.is_set():
         await fetch_once(config)
+
+    while not shutdown_event.is_set():
         try:
             await asyncio.wait_for(asyncio.shield(stop), timeout=poll_interval)
             break
         except asyncio.TimeoutError:
-            pass
+            if shutdown_event.is_set():
+                break
+            await fetch_once(config)
 
 
-def data_thread_worker(config: dict[str, Any]) -> None:
-    asyncio.run(data_worker(config))
+def data_thread_worker(config: dict[str, Any], initial_fetch: bool = True) -> None:
+    asyncio.run(data_worker(config, initial_fetch=initial_fetch))
 
 
 def _write_json(path: str, data: dict[str, Any]) -> None:

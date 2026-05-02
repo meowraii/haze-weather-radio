@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from managed.events import (
+from module.events import (
     append_runtime_event,
     read_data_pool,
     snapshot_alert_queues,
@@ -30,7 +30,8 @@ from managed.events import (
     store_runtime_alert_entry,
     update_runtime_status,
 )
-from managed.packages import air_quality_package
+from module.alert_templates import load_alert_templates, merge_alert_templates, write_alert_templates
+from module.packages import air_quality_package
 from module.alert import feed_same_codes
 from module.scheduler import fire_test as _fire_test
 
@@ -47,6 +48,7 @@ class FileWriteRequest(BaseModel):
 
 class SAMAirRequest(BaseModel):
     feed_id: str = ''
+    feed_ids: list[str] = []
     originator: str = 'WXR'
     event: str = 'CEM'
     locations: list[str] = []
@@ -108,7 +110,7 @@ class WXGenerateRequest(BaseModel):
     format:    str             = 'raw'
 
 
-_MANAGED_ALLOWLIST: frozenset[str] = frozenset({'userbulletins.json', 'dictionary.json', 'packages.py', 'sameTemplate.json', 'sameTest.json', 'sameMapping.json'})
+_MANAGED_ALLOWLIST: frozenset[str] = frozenset({'userbulletins.json', 'dictionary.json', 'packages.py', 'sameMapping.json', 'alertTemplates.xml'})
 
 _WX_SOURCES: frozenset[str] = frozenset({'eccc', 'nws', 'twc'})
 
@@ -443,6 +445,12 @@ class WebServer:
             methods=['GET'],
             dependencies=[Depends(self._require_auth)],
         )
+        self.app.add_api_route(
+            f'{api_base}/same/location-names',
+            self.same_location_names,
+            methods=['GET'],
+            dependencies=[Depends(self._require_auth)],
+        )
         wx_base = self._wx_base()
         self.app.add_api_route(wx_base,                   self.wx_root,     methods=['GET'])
         self.app.add_api_route(f'{wx_base}/generate',     self.wx_generate, methods=['POST'])
@@ -523,6 +531,13 @@ class WebServer:
                 json.loads(payload.content)
             except json.JSONDecodeError as exc:
                 raise HTTPException(status_code=400, detail=f'Invalid JSON: {exc}') from exc
+        elif filename.endswith('.xml'):
+            import xml.etree.ElementTree as ET
+
+            try:
+                ET.fromstring(payload.content)
+            except ET.ParseError as exc:
+                raise HTTPException(status_code=400, detail=f'Invalid XML: {exc}') from exc
         path.write_text(payload.content, encoding='utf-8')
         append_runtime_event('editor', f'Managed file saved via web panel: {filename}')
         return {'ok': True, 'filename': filename}
@@ -533,14 +548,24 @@ class WebServer:
             same_mapping = json.load(f)
             return same_mapping.get('eas', {})
 
+    async def same_location_names(self) -> dict[str, str]:
+        import csv
+        path = self.root_dir / 'managed' / 'csv' / 'FORECAST_LOCATIONS.csv'
+        names: dict[str, str] = {}
+        try:
+            with open(path, encoding='utf-8', newline='') as f:
+                reader = csv.reader(f)
+                next(reader, None)
+                next(reader, None)
+                for row in reader:
+                    if len(row) >= 2 and row[0].strip() and row[0].strip() not in names:
+                        names[row[0].strip()] = row[1].strip()
+        except Exception:
+            pass
+        return names
+
     async def same_templates_get(self) -> dict[str, Any]:
-        path = self.root_dir / 'managed' / 'sameTemplate.json'
-        if not path.exists():
-            path = self.root_dir / 'managed' / 'sameTest.json'
-        if not path.exists():
-            return {}
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
+        return load_alert_templates(self.root_dir / 'managed' / 'alertTemplates.xml')
 
     async def same_templates_put(self, payload: FileWriteRequest) -> dict[str, Any]:
         try:
@@ -549,14 +574,20 @@ class WebServer:
             raise HTTPException(status_code=400, detail=f'Invalid JSON: {exc}') from exc
         if not isinstance(data, dict):
             raise HTTPException(status_code=400, detail='Templates must be a JSON object')
-        path = self.root_dir / 'managed' / 'sameTemplate.json'
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+        path = self.root_dir / 'managed' / 'alertTemplates.xml'
+        existing = load_alert_templates(path)
+        merged = merge_alert_templates(existing, data)
+        write_alert_templates(merged, path)
         append_runtime_event('editor', 'SAME templates saved via web panel')
         return {'ok': True}
 
     async def upload_audio(self, file: UploadFile = File(...)) -> dict[str, Any]:
         import subprocess
-        same_sr: int = int(self.config.get('same', {}).get('sample_rate_hz', 22050))
+        from module.same import resolve_flavor
+
+        same_cfg = self.config.get('same', {})
+        flavor = same_cfg.get('flavor') or None
+        same_sr = resolve_flavor(flavor).sample_rate
         upload_dir = self.root_dir / 'audio' / '_uploads'
         upload_dir.mkdir(parents=True, exist_ok=True)
         safe_stem = secrets.token_hex(10)
@@ -600,15 +631,23 @@ class WebServer:
 
     async def same_air(self, payload: SAMAirRequest) -> dict[str, Any]:
         import os
-        from module.same import SAMEHeader, generate_same, to_pcm16
+        from module.same import SAMEHeader, generate_same, resolve_flavor, resample as _resample, to_pcm16
 
         feeds_cfg = self.config.get('feeds', [])
-        callsign = self.config.get('same', {}).get('sender', 'HAZE0000')
+        same_cfg = self.config.get('same', {})
+        callsign = same_cfg.get('sender', 'HAZE0000')
+        flavor = same_cfg.get('flavor') or None
+        same_sr = resolve_flavor(flavor).sample_rate
 
         if payload.air_on_all_feeds:
             target_ids = [f.get('id', 'default') for f in feeds_cfg if f.get('enabled', True)]
             if not target_ids:
                 raise HTTPException(status_code=400, detail='No enabled feeds configured')
+        elif payload.feed_ids:
+            enabled_ids = {f.get('id') for f in feeds_cfg if f.get('enabled', True)}
+            target_ids = [fid for fid in payload.feed_ids if fid in enabled_ids]
+            if not target_ids:
+                raise HTTPException(status_code=400, detail='None of the specified feeds are enabled')
         else:
             fid = payload.feed_id or (feeds_cfg[0].get('id', 'default') if feeds_cfg else 'default')
             target_ids = [fid]
@@ -622,7 +661,7 @@ class WebServer:
         header = SAMEHeader(
             originator=payload.originator.upper()[:3],
             event=payload.event.upper()[:3],
-            locations=locations[:31],
+            locations=tuple(locations[:31]),
             duration=duration_code,
             callsign=callsign,
         )
@@ -643,31 +682,27 @@ class WebServer:
         elif payload.voice_message.strip():
             from module.tts import synthesize_pcm
             from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
-            from module.same import resample as _resample
             import numpy as np
             pcm = synthesize_pcm(self.config, payload.voice_message.strip())
             if pcm:
                 samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32767.0
                 if CHANNELS == 2:
                     samples = samples.reshape(-1, 2).mean(axis=1)
-                same_sr_v = int(self.config.get('same', {}).get('sample_rate_hz', 22050))
-                voice_array = _resample(samples, BUS_SR, same_sr_v)
+                voice_array = _resample(samples, BUS_SR, same_sr)
 
-        same_sr: int = int(self.config.get('same', {}).get('sample_rate_hz', 22050))
         full_signal = generate_same(
             header=header,
-            tone_type=tone,
+            tone_type=cast(Any, tone),
             audio_msg_path=voice_path,
             audio_msg_array=voice_array,
-            sample_rate=same_sr,
             attn_duration_s=8.0,
+            flavor=flavor,
         )
 
         from module.buffer import SAMPLE_RATE as _BUS_SR
-        from module.same import resample as _resample2
-        alert_pcm = to_pcm16(_resample2(full_signal, same_sr, _BUS_SR))
+        alert_pcm = to_pcm16(_resample(full_signal, same_sr, _BUS_SR))
 
-        from managed.events import push_alert
+        from module.events import push_alert
         issued_at = datetime.now(timezone.utc)
         duration_minutes_total = hours * 60 + minutes
         if duration_minutes_total <= 0:
@@ -716,7 +751,7 @@ class WebServer:
 
     async def wx_generate(self, payload: WXGenerateRequest) -> StreamingResponse:
         from module.tts import synthesize_pcm_stream
-        from managed.packages import (
+        from module.packages import (
             alerts_package, climate_summary_package, current_conditions_package, air_quality_package,
             date_time_package, eccc_discussion_package, forecast_package,
             geophysical_alert_package, station_id, user_bulletin_package,

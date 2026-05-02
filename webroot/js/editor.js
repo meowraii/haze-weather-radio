@@ -1,5 +1,5 @@
-const API_BASE = '/api/v1';
-const TOKEN_KEY = 'haze.panel.token';
+import { apiGet, apiPut, token } from './lib/api.js';
+import { initTheme } from './lib/theme.js';
 
 const editorTitle = document.getElementById('editorTitle');
 const editorSubtitle = document.getElementById('editorSubtitle');
@@ -9,35 +9,12 @@ const emptyState = document.getElementById('emptyState');
 const statusBanner = document.getElementById('statusBanner');
 const loadBtn = document.getElementById('loadBtn');
 const saveBtn = document.getElementById('saveBtn');
-const themeToggle = document.getElementById('themeToggle');
-const themeLabel = document.getElementById('themeLabel');
 
-let token = localStorage.getItem(TOKEN_KEY) || '';
 let currentFile = null;
 
-const SUN_ICON = `<i data-lucide="sun" width="13" height="13"></i>`;
-const MOON_ICON = `<i data-lucide="moon" width="13" height="13"></i>`;
+initTheme(document.getElementById('themeToggle'));
+window.lucide?.createIcons();
 
-function applyTheme(theme) {
-	document.documentElement.dataset.theme = theme;
-	localStorage.setItem('haze.theme', theme);
-	const isDark = theme === 'dark';
-	themeToggle.innerHTML = (isDark ? SUN_ICON : MOON_ICON) + `<span id="themeLabel">${isDark ? 'Light mode' : 'Dark mode'}</span>`;
-	lucide.createIcons({ nodes: [themeToggle] });
-}
-
-(function initTheme() {
-	const saved = localStorage.getItem('haze.theme');
-	if (saved) applyTheme(saved);
-})();
-lucide.createIcons();
-
-themeToggle.addEventListener('click', () => {
-	const current = document.documentElement.dataset.theme;
-	const isDark = current === 'dark' ||
-		(current === undefined && window.matchMedia('(prefers-color-scheme: dark)').matches);
-	applyTheme(isDark ? 'light' : 'dark');
-});
 
 function showStatus(message, type) {
 	statusBanner.textContent = message;
@@ -49,36 +26,6 @@ function clearStatus() {
 	statusBanner.textContent = '';
 }
 
-async function apiGet(path) {
-	const headers = new Headers();
-	if (token) headers.set('Authorization', `Bearer ${token}`);
-	const response = await fetch(`${API_BASE}${path}`, { headers });
-	if (response.status === 401) {
-		window.location.href = '/';
-		throw new Error('Not authenticated');
-	}
-	if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-	return response.json();
-}
-
-async function apiPut(path, body) {
-	const headers = new Headers({ 'Content-Type': 'application/json' });
-	if (token) headers.set('Authorization', `Bearer ${token}`);
-	const response = await fetch(`${API_BASE}${path}`, {
-		method: 'PUT',
-		headers,
-		body: JSON.stringify(body),
-	});
-	if (response.status === 401) {
-		window.location.href = '/';
-		throw new Error('Not authenticated');
-	}
-	if (!response.ok) {
-		const err = await response.json().catch(() => ({ detail: 'Unknown error' }));
-		throw new Error(err.detail || `Request failed: ${response.status}`);
-	}
-	return response.json();
-}
 
 async function loadFile(filename) {
 	clearStatus();
@@ -147,6 +94,6 @@ editorArea.addEventListener('keydown', (event) => {
 	}
 });
 
-if (!token) {
+if (!token.get()) {
 	window.location.href = '/';
 }

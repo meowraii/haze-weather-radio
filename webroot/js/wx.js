@@ -1,5 +1,7 @@
-const TOKEN_KEY = 'haze.panel.token';
-const THEME_KEY = 'haze.theme';
+import { token } from './lib/api.js';
+import { initTheme } from './lib/theme.js';
+import { pcmToWav } from './lib/audio.js';
+
 
 const PACKAGE_DESCRIPTIONS = {
     date_time: 'Current date and time announcement for the selected feed timezone.',
@@ -34,8 +36,7 @@ const FORMAT_INFO = {
 
 const TEXT_FORMATS = new Set(['json', 'xml', 'ssml', 'html', 'markdown', 'latex']);
 const DEFAULT_PACKAGES = ['date_time', 'current_conditions', 'forecast'];
-const SUN_ICON = '<i data-lucide="sun" width="13" height="13"></i>';
-const MOON_ICON = '<i data-lucide="moon" width="13" height="13"></i>';
+
 
 const state = {
     apiBase: detectApiBase(),
@@ -89,29 +90,6 @@ function detectApiBase() {
     return base;
 }
 
-function applyTheme(theme) {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem(THEME_KEY, theme);
-    const isDark = theme === 'dark';
-    themeToggle.innerHTML = isDark ? SUN_ICON : MOON_ICON;
-    themeLabel.textContent = isDark ? 'Light mode' : 'Dark mode';
-    if (window.lucide) {
-        lucide.createIcons({ nodes: [themeToggle] });
-    }
-}
-
-function initializeTheme() {
-    const saved = localStorage.getItem(THEME_KEY);
-    if (saved) {
-        applyTheme(saved);
-    } else {
-        themeLabel.textContent = 'Dark mode';
-    }
-    themeToggle.addEventListener('click', () => {
-        const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-        applyTheme(nextTheme);
-    });
-}
 
 function splitLocations(value) {
     return String(value || '')
@@ -268,32 +246,6 @@ function renderResponseError(message) {
     responseMeta.innerHTML = `<article class="wx-panel-response-card is-empty"><p>${message}</p></article>`;
 }
 
-function pcmToWav(pcm, sampleRate, channels) {
-    const dataLength = pcm.byteLength;
-    const buffer = new ArrayBuffer(44 + dataLength);
-    const view = new DataView(buffer);
-    const writeString = (offset, value) => {
-        for (let index = 0; index < value.length; index += 1) {
-            view.setUint8(offset + index, value.charCodeAt(index));
-        }
-    };
-
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + dataLength, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, channels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * channels * 2, true);
-    view.setUint16(32, channels * 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, 'data');
-    view.setUint32(40, dataLength, true);
-    new Uint8Array(buffer).set(pcm, 44);
-    return buffer;
-}
 
 async function readError(response) {
     const contentType = response.headers.get('Content-Type') || '';
@@ -311,9 +263,9 @@ async function readError(response) {
 
 function buildHeaders() {
     const headers = new Headers({ 'Content-Type': 'application/json' });
-    const token = localStorage.getItem(TOKEN_KEY) || '';
-    if (token) {
-        headers.set('Authorization', `Bearer ${token}`);
+    const t = token.get();
+    if (t) {
+        headers.set('Authorization', `Bearer ${t}`);
     }
     return headers;
 }
@@ -444,7 +396,7 @@ async function boot() {
     if (window.lucide) {
         lucide.createIcons();
     }
-    initializeTheme();
+    initTheme(themeToggle);
     populateFormatTable();
     bindEvents();
 

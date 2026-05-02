@@ -8,7 +8,7 @@ import pathlib
 import re
 from typing import Any
 
-from managed.events import (
+from module.events import (
     NowPlayingMetadata,
     PlayableItem,
     append_playout_items,
@@ -21,7 +21,7 @@ from managed.events import (
     shutdown_event,
     update_playout_sequence,
 )
-from managed.packages import (
+from module.packages import (
     Package_Config,
     air_quality_package,
     alerts_package,
@@ -66,6 +66,11 @@ _DEFAULT_PACING_CFG: dict[str, float] = {
 _DEFAULT_STATION_ID_SCHEDULE_CFG: dict[str, Any] = {
     'enabled': True,
     'minutes': [0, 15, 30, 45],
+}
+
+_DEFAULT_DATE_TIME_SCHEDULE_CFG: dict[str, Any] = {
+    'enabled': True,
+    'minutes': [5, 15, 25, 35, 45, 55],
 }
 
 _PACKAGE_METADATA_LABELS: dict[str, str] = {
@@ -258,7 +263,7 @@ def _playlist_order(config: dict[str, Any]) -> list[str]:
             pkg_id = next((key for key in entry if key != 'ttl'), None)
             if pkg_id:
                 order.append(pkg_id)
-    return order
+    return [pkg_id for pkg_id in order if pkg_id != 'date_time']
 
 
 def _station_id_schedule_cfg(config: dict[str, Any]) -> dict[str, Any]:
@@ -287,6 +292,35 @@ def _station_id_schedule_cfg(config: dict[str, Any]) -> dict[str, Any]:
     return {
         'enabled': bool(merged.get('enabled', True)),
         'minutes': minutes or list(_DEFAULT_STATION_ID_SCHEDULE_CFG['minutes']),
+    }
+
+
+def _date_time_schedule_cfg(config: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(_DEFAULT_DATE_TIME_SCHEDULE_CFG)
+    raw = config.get('playout', {}).get('date_time_schedule', {})
+    if isinstance(raw, dict):
+        merged.update(raw)
+
+    raw_minutes = merged.get('minutes', _DEFAULT_DATE_TIME_SCHEDULE_CFG['minutes'])
+    if isinstance(raw_minutes, str):
+        tokens = [part.strip() for part in raw_minutes.split(',') if part.strip()]
+    elif isinstance(raw_minutes, (list, tuple, set)):
+        tokens = list(raw_minutes)
+    else:
+        tokens = [raw_minutes]
+
+    minutes: list[int] = []
+    for token in tokens:
+        try:
+            minute = int(token)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= minute <= 59 and minute not in minutes:
+            minutes.append(minute)
+
+    return {
+        'enabled': bool(merged.get('enabled', True)),
+        'minutes': minutes or list(_DEFAULT_DATE_TIME_SCHEDULE_CFG['minutes']),
     }
 
 
@@ -358,6 +392,10 @@ def _seconds_until_next_boundary(config: dict[str, Any]) -> float | None:
     if station_id_cfg['enabled']:
         minutes.update(station_id_cfg['minutes'])
 
+    date_time_cfg = _date_time_schedule_cfg(config)
+    if date_time_cfg['enabled']:
+        minutes.update(date_time_cfg['minutes'])
+
     if not minutes:
         return None
 
@@ -399,7 +437,7 @@ def _build_chime_items(config: dict[str, Any], feed: dict[str, Any], chime_type:
     chime_key = 'top_of_hour' if chime_type == 'top' else 'half_hour'
     chime_steps = 16 if chime_type == 'top' else 8
     chime_pkg_id = f'chime_{chime_steps}'
-    default_seq = ['chime', 'date_time']
+    default_seq = ['chime']
     chime_seq: list[str] = chimes_cfg.get(chime_key, {}).get('sequence', default_seq)
 
     languages_cfg = feed.get('languages')
@@ -570,18 +608,6 @@ def _build_cycle_items(config: dict[str, Any], feed: dict[str, Any]) -> list[Pla
             group_id = f'{lang}:{pkg_id}'
 
             if pkg_id == 'date_time':
-                text = date_time_package(timezone_name, lang)
-                sequence.extend(
-                    _make_text_items(
-                        pkg_id,
-                        text,
-                        lang,
-                        group_id,
-                        _metadata_title(pkg_id, feed_name, feed_name),
-                        group_id,
-                        package_gap_s=package_gap_s,
-                    )
-                )
                 continue
 
             if pkg_id == 'station_id':
@@ -780,12 +806,21 @@ def _refill_feed_queue(config: dict[str, Any], feed: dict[str, Any], *, force: b
 
 def playlist_thread_worker(config: dict[str, Any]) -> None:
     feeds = [feed for feed in config.get('feeds', []) if feed.get('enabled', True)]
+    if not feeds:
+        initial_synthesis_done.set()
+        return
+
+    awaiting_initial_refresh = True
     first_cycle = True
 
     while not shutdown_event.is_set():
-        refreshed = data_ready.wait(timeout=1.0)
+        timeout = 0.25 if awaiting_initial_refresh else 1.0
+        refreshed = data_ready.wait(timeout=timeout)
+        if awaiting_initial_refresh and not refreshed:
+            continue
         if refreshed:
             data_ready.clear()
+            awaiting_initial_refresh = False
 
         for feed in feeds:
             if shutdown_event.is_set():
@@ -795,6 +830,6 @@ def playlist_thread_worker(config: dict[str, Any]) -> None:
             except Exception:
                 log.exception('Playlist refill failed for feed %s', feed.get('id', '?'))
 
-        if first_cycle:
+        if first_cycle and not awaiting_initial_refresh:
             initial_synthesis_done.set()
             first_cycle = False

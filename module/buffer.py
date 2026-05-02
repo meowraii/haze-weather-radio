@@ -6,7 +6,7 @@ import pathlib
 import time
 from typing import Any, Callable, Coroutine, Protocol
 
-from .tts import load_config
+from .config import load_config
 
 log = logging.getLogger(__name__)
 
@@ -178,6 +178,92 @@ class _BufferedSink:
         await self._sink.close()
 
 
+class _EscalatingBufferedSink(_BufferedSink):
+    """Buffered sink that triggers pipeline shutdown on write failures.
+
+    This wrapper behaves like `_BufferedSink` but if the underlying sink
+    raises an exception while handling a chunk, the pipeline's shutdown
+    event is set so the playout loop will exit and supervisory logic can
+    restart the feed/thread.
+    """
+
+    def __init__(
+        self,
+        sink: OutputSink,
+        name: str,
+        queue_limit: int,
+        drop_oldest: bool,
+        clocked: bool,
+        prefill_chunks: int,
+        fill_silence: bool,
+        pipeline: 'AudioPipeline',
+    ) -> None:
+        super().__init__(sink, name, queue_limit, drop_oldest, clocked, prefill_chunks, fill_silence)
+        self._pipeline = pipeline
+
+    async def _run(self) -> None:
+        if self._clocked:
+            await self._run_clocked()
+            return
+
+        while True:
+            chunk = await self._queue.get()
+            if chunk is None:
+                return
+            try:
+                await self._sink.write(chunk)
+            except Exception as exc:
+                log.error('Sink %s write failed: %s', self._name, exc)
+                try:
+                    self._pipeline._shutdown.set()
+                except Exception:
+                    pass
+                raise
+
+    async def _run_clocked(self) -> None:
+        chunk_ns = int(CHUNK_DURATION * 1_000_000_000)
+        next_ns = time.monotonic_ns()
+        prefilled = self._prefill_chunks == 0
+
+        while True:
+            if not prefilled:
+                if self._closed and self._queue.empty():
+                    return
+                if self._queue.qsize() < self._prefill_chunks:
+                    await asyncio.sleep(CHUNK_DURATION / 2)
+                    continue
+                prefilled = True
+                next_ns = time.monotonic_ns()
+
+            try:
+                chunk = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                if not self._fill_silence:
+                    await asyncio.sleep(CHUNK_DURATION / 2)
+                    continue
+                chunk = SILENCE_CHUNK
+
+            if chunk is None:
+                return
+
+            try:
+                await self._sink.write(chunk)
+            except Exception as exc:
+                log.error('Sink %s write failed: %s', self._name, exc)
+                try:
+                    self._pipeline._shutdown.set()
+                except Exception:
+                    pass
+                raise
+
+            next_ns += chunk_ns
+            sleep_ns = next_ns - time.monotonic_ns()
+            if sleep_ns > 0:
+                await asyncio.sleep(sleep_ns / 1_000_000_000)
+            elif sleep_ns < -chunk_ns * 8:
+                next_ns = time.monotonic_ns()
+
+
 class AudioPipeline:
     __slots__ = (
         '_segment_queue', '_alert_queue', '_alert_active', '_alert_done',
@@ -199,16 +285,29 @@ class AudioPipeline:
 
     def attach_sink(self, sink: OutputSink, name: str = '') -> None:
         queue_limit = int(getattr(sink, 'bus_queue_limit', 0) or 0)
+        escalate = bool(getattr(sink, 'bus_escalate_on_failure', False))
         if queue_limit > 0:
-            sink = _BufferedSink(
-                sink,
-                name,
-                queue_limit,
-                bool(getattr(sink, 'bus_drop_oldest', True)),
-                bool(getattr(sink, 'bus_clocked', False)),
-                int(getattr(sink, 'bus_prefill_chunks', 0) or 0),
-                bool(getattr(sink, 'bus_fill_silence', False)),
-            )
+            if escalate:
+                sink = _EscalatingBufferedSink(
+                    sink,
+                    name,
+                    queue_limit,
+                    bool(getattr(sink, 'bus_drop_oldest', True)),
+                    bool(getattr(sink, 'bus_clocked', False)),
+                    int(getattr(sink, 'bus_prefill_chunks', 0) or 0),
+                    bool(getattr(sink, 'bus_fill_silence', False)),
+                    pipeline=self,
+                )
+            else:
+                sink = _BufferedSink(
+                    sink,
+                    name,
+                    queue_limit,
+                    bool(getattr(sink, 'bus_drop_oldest', True)),
+                    bool(getattr(sink, 'bus_clocked', False)),
+                    int(getattr(sink, 'bus_prefill_chunks', 0) or 0),
+                    bool(getattr(sink, 'bus_fill_silence', False)),
+                )
         self._sinks.append((sink, name))
 
     @property
