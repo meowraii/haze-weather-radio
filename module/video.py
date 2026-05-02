@@ -16,7 +16,7 @@ import textwrap as _textwrap
 import zoneinfo as _zoneinfo
 from typing import Any
 
-from managed.events import get_runtime_alert_entries, shutdown_event
+from module.events import get_runtime_alert_entries, shutdown_event
 from module.buffer import CHANNELS, SAMPLE_RATE
 
 log = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ _HEADLINE_TRAIL_RE = re.compile(
 _SOREM_PREFIX = 'layer:sorem'
 _ECCC_PREFIX = 'layer:ec-msc'
 _SAME_MAPPING_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'sameMapping.json'
-_FORECAST_LOCATIONS_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'FORECAST_LOCATIONS.csv'
+_FORECAST_LOCATIONS_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'csv' / 'FORECAST_LOCATIONS.csv'
 
 _ORIGINATOR_LABELS: dict[str, str] = {
     'EAS': 'An EAS Participant',
@@ -510,6 +510,8 @@ def _build_drawtext_filter(
     width: int,
     height: int,
     style: dict[str, Any],
+    *,
+    reload_text: bool = False,
 ) -> str:
     fmt = str(style.get('format', 'crawl'))
 
@@ -525,6 +527,7 @@ def _build_drawtext_filter(
     opacity = float(style.get('opacity', 0.9))
     shadow_cfg = _coerce_mapping(style.get('text_shadow', {}))
     stroke_cfg = _coerce_mapping(style.get('text_stroke', {}))
+    reload_args = ['reload=1'] if reload_text else []
 
     def _shadow_params() -> list[str]:
         if not shadow_cfg.get('enabled'):
@@ -554,7 +557,7 @@ def _build_drawtext_filter(
 
         dt_opts = [
             f'textfile={text_file_value}',
-            'reload=1',
+            *reload_args,
             f'font={font}',
             f'fontsize={font_size}',
             f'fontcolor={font_color}',
@@ -580,7 +583,7 @@ def _build_drawtext_filter(
 
     dt_opts = [
         f'textfile={text_file_value}',
-        'reload=1',
+        *reload_args,
         f'font={font}',
         f'fontsize={font_size}',
         f'fontcolor={font_color}',
@@ -622,6 +625,9 @@ def _postprocess_video_filter(
 class VideoIcecastSink:
     bus_queue_limit = 24
     bus_drop_oldest = True
+    bus_clocked = True
+    bus_prefill_chunks = 2
+    bus_fill_silence = True
 
     def __init__(self, feed: dict[str, Any], video_cfg: dict[str, Any], stream_cfg: dict[str, Any]) -> None:
         self._feed = feed
@@ -629,6 +635,7 @@ class VideoIcecastSink:
         self._video_cfg = video_cfg
         self._stream_cfg = stream_cfg
         self._closed = False
+        self._ssl: bool = bool(stream_cfg.get('ssl', False))
         self._tz_name: str = str(feed.get('timezone', 'UTC'))
 
         self._width: int = int(video_cfg.get('width', 1920))
@@ -650,6 +657,7 @@ class VideoIcecastSink:
 
         self._proc_lock = threading.Lock()
         self._proc: subprocess.Popen[bytes] | None = None
+        self._rebuilding = False
 
         self._current_color: str = _to_ffmpeg_color(_IDLE_BANNER_HEX)
         self._last_text: str = ''
@@ -666,6 +674,13 @@ class VideoIcecastSink:
         mount = cfg.get('mount') or f'/{self._feed_id}'
         return f'icecast://{user}:{pw}@{host}:{port}{mount}'
 
+    def _write_proc(self, pcm: bytes) -> None:
+        with self._proc_lock:
+            proc = self._proc
+            if proc is None or proc.stdin is None or proc.poll() is not None:
+                raise BrokenPipeError('video icecast ffmpeg stdin unavailable')
+            proc.stdin.write(pcm)
+
     def _build_cmd(self) -> list[str]:
         fps_str = str(self._fps)
         interlace = bool(self._style.get('interlace', False))
@@ -678,7 +693,13 @@ class VideoIcecastSink:
             video_input = ['-f', 'lavfi', '-i', f'color=c=black:size={self._width}x{self._height}:r={fps_str}']
             src_filter = '[1:v]null'
 
-        overlay = _build_drawtext_filter(self._text_file, self._current_color, self._width, self._height, self._style)
+        overlay = _build_drawtext_filter(
+            self._text_file,
+            self._current_color,
+            self._width,
+            self._height,
+            self._style,
+        )
         filter_complex = f'{_postprocess_video_filter(f"{src_filter},{overlay}", interlace=interlace)}[vout]'
 
         return [
@@ -700,11 +721,11 @@ class VideoIcecastSink:
             '-ar', str(SAMPLE_RATE),
             '-ac', str(CHANNELS),
             '-c:v', self._v_codec,
-            '-tune', 'zerolatency',
             '-pix_fmt', 'yuv420p',
             *_video_codec_args(self._v_codec),
             '-g', '30',
             '-b:v', '400k',
+            *(['-tls', '1'] if self._ssl else []),
             '-content_type', self._content_type,
             '-f', self._container,
             self._icecast_url(),
@@ -715,15 +736,62 @@ class VideoIcecastSink:
         with self._proc_lock:
             self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
+    def _rebuild_proc(self, banner_color: str) -> None:
+        self._rebuilding = True
+        try:
+            with self._proc_lock:
+                old = self._proc
+                try:
+                    if old and old.stdin:
+                        old.stdin.close()
+                except Exception:
+                    pass
+                if old:
+                    try:
+                        old.terminate()
+                    except Exception:
+                        pass
+                    try:
+                        old.wait(timeout=1.0)
+                    except Exception:
+                        try:
+                            old.kill()
+                            old.wait(timeout=1.0)
+                        except Exception:
+                            pass
+                self._current_color = banner_color
+                self._proc = subprocess.Popen(self._build_cmd(), stdin=subprocess.PIPE)
+        finally:
+            self._rebuilding = False
+
+    async def _recover_from_disconnect(self, reason: Exception) -> None:
+        if self._closed:
+            return
+        log.warning('[%s] Video Icecast sink disconnected (%s), reconnecting in %.1fs', self._feed_id, reason, _RECONNECT_DELAY_S)
+        await asyncio.sleep(_RECONNECT_DELAY_S)
+        if self._closed:
+            return
+        await asyncio.to_thread(self._rebuild_proc, self._current_color)
+
     async def _pcm_writer(self) -> None:
         while not self._closed:
             pcm = await self._pcm_queue.get()
             try:
-                with self._proc_lock:
-                    if self._proc and self._proc.stdin:
-                        self._proc.stdin.write(pcm)
-            except Exception:
-                pass
+                await asyncio.to_thread(self._write_proc, pcm)
+            except RuntimeError as exc:
+                if 'cannot schedule new futures after shutdown' in str(exc).lower():
+                    return
+                if self._rebuilding:
+                    continue
+                await self._recover_from_disconnect(exc)
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                if self._rebuilding:
+                    continue
+                await self._recover_from_disconnect(exc)
+            except Exception as exc:
+                if self._rebuilding:
+                    continue
+                await self._recover_from_disconnect(exc)
 
     async def on_alert_start(self, identifier: str) -> None:
         if self._closed:
@@ -746,7 +814,7 @@ class VideoIcecastSink:
                 pass
 
         new_color = _pick_severity_color([entry], self._style)
-        self._current_color = new_color
+        await asyncio.to_thread(self._rebuild_proc, new_color)
 
     async def on_alert_end(self) -> None:
         if self._closed:
@@ -757,6 +825,9 @@ class VideoIcecastSink:
             self._text_file.write_text('', encoding='utf-8')
         except Exception:
             pass
+
+        idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
+        await asyncio.to_thread(self._rebuild_proc, idle_color)
 
     async def write(self, pcm: bytes) -> None:
         if self._closed or not pcm:

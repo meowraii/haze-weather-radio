@@ -247,7 +247,7 @@ def _init_lang_clips(config: dict[str, Any], cache: dict[str, Any], lang: str, c
 
 
 def _init_feed_clips(config: dict[str, Any], cache: dict[str, Any], feed: dict[str, Any], lang: str) -> None:
-    from managed.packages import station_id as gen_station_id
+    from module.packages import station_id as gen_station_id
 
     feed_id = feed.get('id', '')
     text = gen_station_id(config, feed_id, lang)

@@ -1,5 +1,7 @@
-const API_BASE = '/api/v1';
-const TOKEN_KEY = 'haze.panel.token';
+import { token, API_BASE } from './lib/api.js';
+import { initTheme } from './lib/theme.js';
+import { pcmToWav } from './lib/audio.js';
+
 
 const authOverlay = document.getElementById('authOverlay');
 const authStatus = document.getElementById('authStatus');
@@ -20,32 +22,13 @@ const logSourceSelect = document.getElementById('logSourceSelect');
 const refreshButton = document.getElementById('refreshButton');
 const logoutButton = document.getElementById('logoutButton');
 const themeToggle = document.getElementById('themeToggle');
-const themeLabel = document.getElementById('themeLabel');
 const loginForm = document.getElementById('loginForm');
 const passwordInput = document.getElementById('passwordInput');
 
-let token = localStorage.getItem(TOKEN_KEY) || '';
 let healthState = { auth_required: true };
 
-const SUN_ICON = `<i data-lucide="sun" width="13" height="13"></i>`;
-const MOON_ICON = `<i data-lucide="moon" width="13" height="13"></i>`;
-
-function applyTheme(theme) {
-	document.documentElement.dataset.theme = theme;
-	localStorage.setItem('haze.theme', theme);
-	const isDark = theme === 'dark';
-	themeToggle.innerHTML = isDark ? SUN_ICON : MOON_ICON;
-	themeToggle.title = isDark ? 'Switch to light mode' : 'Switch to dark mode';
-	lucide.createIcons({ nodes: [themeToggle] });
-}
-
-(function initTheme() {
-	const saved = localStorage.getItem('haze.theme');
-	if (saved) {
-		applyTheme(saved);
-	}
-})();
-lucide.createIcons();
+initTheme(themeToggle);
+window.lucide?.createIcons();
 
 function setCodeBlock(element, value) {
 	element.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
@@ -64,8 +47,9 @@ function setHealthState(ok, text) {
 
 async function api(path, options = {}) {
 	const headers = new Headers(options.headers || {});
-	if (token) {
-		headers.set('Authorization', `Bearer ${token}`);
+	const t = token.get();
+	if (t) {
+		headers.set('Authorization', `Bearer ${t}`);
 	}
 	if (!headers.has('Content-Type') && options.body) {
 		headers.set('Content-Type', 'application/json');
@@ -73,8 +57,7 @@ async function api(path, options = {}) {
 
 	const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
 	if (response.status === 401) {
-		token = '';
-		localStorage.removeItem(TOKEN_KEY);
+		token.clear();
 		setAuthState(false);
 		throw new Error('Authentication required');
 	}
@@ -92,8 +75,8 @@ async function loadHealth() {
 			setAuthState(true);
 			authStatus.textContent = 'Authentication disabled. Panel is in read-only open mode.';
 		} else {
-			setAuthState(Boolean(token));
-			authStatus.textContent = token ? 'Stored session found. Loading dashboard.' : 'Authentication is required for this panel.';
+			setAuthState(Boolean(token.get()));
+			authStatus.textContent = token.get() ? 'Stored session found. Loading dashboard.' : 'Authentication is required for this panel.';
 		}
 	} catch (error) {
 		setHealthState(false, 'API unavailable');
@@ -119,10 +102,10 @@ function renderSummary(summary) {
 	const totalQueue = (summary.feeds || []).reduce((n, f) => n + (f.alert_queue_depth || 0), 0);
 
 	const cards = [
-		['Feeds', `${enabled}/${total}`],
-		['Queue', totalQueue],
-		['Keys', summary.data_pool_key_count],
-		['Up', formatUptime(summary.uptime_seconds)],
+		['Feeds online', `${enabled}/${total}`],
+		['Alert queue', totalQueue],
+		['Weather keys', summary.data_pool_key_count],
+		['Uptime', formatUptime(summary.uptime_seconds)],
 	];
 
 	summaryCards.innerHTML = cards.map(([label, value]) => `
@@ -322,7 +305,8 @@ async function refreshDashboard() {
 
 		try {
 			const headers = new Headers({ 'Content-Type': 'application/json' });
-			if (token) headers.set('Authorization', `Bearer ${token}`);
+			const t = token.get();
+			if (t) headers.set('Authorization', `Bearer ${t}`);
 
 			const resp = await fetch(`${API_BASE}/wx/generate`, {
 				method: 'POST',
@@ -394,29 +378,6 @@ async function refreshDashboard() {
 	});
 })();
 
-function pcmToWav(pcmBytes, sampleRate, numChannels) {
-	const byteRate = sampleRate * numChannels * 2;
-	const blockAlign = numChannels * 2;
-	const dataLen = pcmBytes.byteLength;
-	const buf = new ArrayBuffer(44 + dataLen);
-	const dv = new DataView(buf);
-	const writeStr = (offset, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(offset + i, s.charCodeAt(i)); };
-	writeStr(0, 'RIFF');
-	dv.setUint32(4, 36 + dataLen, true);
-	writeStr(8, 'WAVE');
-	writeStr(12, 'fmt ');
-	dv.setUint32(16, 16, true);
-	dv.setUint16(20, 1, true);
-	dv.setUint16(22, numChannels, true);
-	dv.setUint32(24, sampleRate, true);
-	dv.setUint32(28, byteRate, true);
-	dv.setUint16(32, blockAlign, true);
-	dv.setUint16(34, 16, true);
-	writeStr(36, 'data');
-	dv.setUint32(40, dataLen, true);
-	new Uint8Array(buf).set(pcmBytes, 44);
-	return buf;
-}
 
 async function login(password) {
 	const response = await fetch(`${API_BASE}/auth/login`, {
@@ -430,17 +391,15 @@ async function login(password) {
 	}
 
 	const payload = await response.json();
-	token = payload.token || '';
-	if (token) {
-		localStorage.setItem(TOKEN_KEY, token);
-	}
+	const t = payload.token || '';
+	if (t) token.set(t);
 	setAuthState(true);
 }
 
 async function boot() {
 	try {
 		await loadHealth();
-		if (healthState.auth_required === false || token) {
+		if (healthState.auth_required === false || token.get()) {
 			await refreshDashboard();
 		}
 	} catch (error) {
@@ -472,8 +431,7 @@ refreshButton.addEventListener('click', async () => {
 });
 
 logoutButton.addEventListener('click', () => {
-	token = '';
-	localStorage.removeItem(TOKEN_KEY);
+	token.clear();
 	setAuthState(false);
 	authStatus.textContent = 'Logged out.';
 });
@@ -494,12 +452,6 @@ rwtButton.addEventListener('click', async () => {
 	}
 });
 
-themeToggle.addEventListener('click', () => {
-	const current = document.documentElement.dataset.theme;
-	const isDark = current === 'dark' ||
-		(current === undefined && window.matchMedia('(prefers-color-scheme: dark)').matches);
-	applyTheme(isDark ? 'light' : 'dark');
-});
 
 logSourceSelect.addEventListener('change', async () => {
 	try {
@@ -533,7 +485,7 @@ boot().then(() => {
 setInterval(async () => {
 	try {
 		await loadHealth();
-		if (healthState.auth_required === false || token) {
+		if (healthState.auth_required === false || token.get()) {
 			await refreshDashboard();
 		}
 	} catch (error) {

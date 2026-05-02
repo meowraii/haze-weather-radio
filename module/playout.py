@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import OrderedDict
 import datetime
 import logging
@@ -11,7 +12,7 @@ import threading
 import zoneinfo
 from typing import Any
 
-from managed.events import (
+from module.events import (
     NowPlayingMetadata,
     PlayableItem,
     append_runtime_event,
@@ -22,16 +23,16 @@ from managed.events import (
     shutdown_event,
     update_feed_runtime,
 )
-from managed.packages import station_id
+from module.packages import date_time_package, station_id
 from module.output import (
     AudioDeviceSink, FileSink, FramebufferSink, DriSink, V4L2Sink,
     IcecastSink, PiFmAdvSink, RtmpSink, RtpSink, RtspSink, SrtSink, UdpSink,
 )
 from module.video import VideoIcecastSink, _VIDEO_FORMATS
 from module.buffer import CHANNELS, SAMPLE_RATE, AudioPipeline, OnSegmentStart
-from module.same import SAMEHeader, generate_same, resample, to_pcm16
+from module.same import SAMEHeader, generate_same, resample, resolve_flavor, to_pcm16
 from module.alert import feed_same_codes
-from module.tts import synthesize_pcm_stream
+from module.tts import smooth_pcm_edges, synthesize_pcm_stream
 from module.static_phrases import splice_date_time, splice_station_id
 
 log = logging.getLogger(__name__)
@@ -126,6 +127,18 @@ def _build_scheduled_station_id_item(config: dict[str, Any], feed: dict[str, Any
         gap_after_s=_package_gap_s(config, feed),
     )
 
+
+def _build_scheduled_date_time_item(config: dict[str, Any], feed: dict[str, Any]) -> PlayableItem:
+    lang = _preferred_metadata_language(config, feed)
+    timezone_name = str(feed.get('timezone', 'UTC'))
+    return PlayableItem(
+        pkg_id='date_time',
+        text=date_time_package(timezone_name, lang),
+        lang=lang,
+        metadata=NowPlayingMetadata(title=_PKG_LABELS['date_time']),
+        gap_after_s=_package_gap_s(config, feed),
+    )
+
 def _make_segment_callback(
     label: str,
     feed_id: str,
@@ -178,18 +191,19 @@ def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
     same_cfg = config.get('same', {})
     if not same_cfg.get('send_txp_on_startup', False):
         return None
+    flavor = same_cfg.get('flavor') or None
+    same_sr = resolve_flavor(flavor).sample_rate
 
     locations = feed_same_codes(feed) or ['000000']
     data = SAMEHeader(
         originator="WXR",
         event="TXP",
-        locations=locations,
+        locations=tuple(locations),
         duration="0010",
         callsign=same_cfg.get('callsign', 'TESTCALL'),
     )
 
-    same_sr = same_cfg.get('sample_rate_hz', 22050)
-    message = generate_same(header=data, tone_type="EGG_TIMER", sample_rate=same_sr)
+    message = generate_same(header=data, tone_type="EGG_TIMER", flavor=flavor)
     return to_pcm16(resample(message, same_sr, SAMPLE_RATE))
 
 def _build_chime_pcm(
@@ -208,10 +222,7 @@ def _build_chime_pcm(
     tz_name = feed.get('timezone', 'UTC')
     chime_steps = 16 if chime_type == 'top' else 8
     chime_key = 'top_of_hour' if chime_type == 'top' else 'half_hour'
-    default_seq = (
-        ['chime', 'date_time'] if chime_type == 'top'
-        else ['chime', 'date_time']
-    )
+    default_seq = ['chime']
     chime_seq: list[str] = chimes_cfg.get(chime_key, {}).get('sequence', default_seq)
 
     try:
@@ -300,6 +311,9 @@ async def _produce_tts(
         if scheduled_pkg_id == 'station_id':
             item = _build_scheduled_station_id_item(config, feed, feed_id)
             scheduled_insert = True
+        elif scheduled_pkg_id == 'date_time':
+            item = _build_scheduled_date_time_item(config, feed)
+            scheduled_insert = True
         else:
             item = pop_next_playout_item(feed_id)
         if item is None:
@@ -334,6 +348,7 @@ async def _produce_tts(
         label = item.metadata.title if item.metadata and item.metadata.title else _PKG_LABELS.get(pkg_id, pkg_id.replace('_', ' ').title())
         pcm_data: bytes | None = None
         segment_source: bytes | Any | None = None
+        smooth_static_source = False
         if pkg_id == 'date_time':
             try:
                 tz = zoneinfo.ZoneInfo(feed.get('timezone', 'UTC'))
@@ -344,6 +359,7 @@ async def _produce_tts(
                     return splice_date_time(config, lang, abbr, now_local)
 
                 segment_source = _splice_date_time_live
+                smooth_static_source = True
             except Exception:
                 log.debug('[%s] date_time splice failed, falling back to TTS', feed_id, exc_info=True)
         elif pkg_id == 'station_id':
@@ -351,10 +367,12 @@ async def _produce_tts(
                 return splice_station_id(feed_id, lang)
 
             segment_source = _splice_station_id_live
+            smooth_static_source = True
 
         elif pkg_id in ('chime_8', 'chime_16'):
             steps = 16 if pkg_id == 'chime_16' else 8
             segment_source = _CHIME_PCM.get(steps)
+            smooth_static_source = True
 
         if segment_source is None:
             cache_key = (pkg_id, item.lang, item.voice, item.text)
@@ -367,6 +385,19 @@ async def _produce_tts(
                 if pcm_data:
                     pcm_data = _cache_put(cache_key, pcm_data)
             segment_source = pcm_data
+        elif smooth_static_source:
+            if isinstance(segment_source, bytes):
+                segment_source = smooth_pcm_edges(segment_source)
+            elif callable(segment_source):
+                raw_source = segment_source
+
+                def _smoothed_segment_source(source=raw_source) -> bytes | None:
+                    data = source()
+                    if not data:
+                        return data
+                    return smooth_pcm_edges(data)
+
+                segment_source = _smoothed_segment_source
 
         if not segment_source:
             log.warning('[%s] Empty synthesis for %s', feed_id, pkg_id)
@@ -634,4 +665,16 @@ def playout_thread_worker(
     config: dict[str, Any],
     feed: dict[str, Any],
 ) -> None:
-    asyncio.run(_playout_main(config, feed))
+    feed_id = feed.get('id', '')
+    backoff = 1.0
+    max_backoff = 60.0
+    while not shutdown_event.is_set():
+        try:
+            asyncio.run(_playout_main(config, feed))
+            break
+        except Exception:
+            log.exception('Playout for %s exited unexpectedly; restarting in %.1fs', feed_id, backoff)
+            if shutdown_event.is_set():
+                break
+            time.sleep(backoff)
+            backoff = min(backoff * 2.0, max_backoff)

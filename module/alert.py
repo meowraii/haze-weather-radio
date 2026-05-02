@@ -217,8 +217,8 @@ def purge_expired_alerts() -> int:
     return total_removed
 
 
-from managed.events import append_runtime_event, push_alert, update_feed_runtime
-from managed.packages import (
+from module.events import append_runtime_event, push_alert, update_feed_runtime
+from module.packages import (
     _AL_PH,
     _clean_alert_text,
     _format_datetime_spoken,
@@ -230,7 +230,7 @@ from module.cap_specific.naads_tcp import CAPAlert, CAPInfo, naad_listener
 from module.cap_specific.naadsatom_http import naad_archive_fetch
 from module.cap_specific.nwsatom_http import nws_atom_listener
 from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
-from module.same import SAMEHeader, generate_same, resample, to_pcm16
+from module.same import SAMEHeader, generate_same, resample, resolve_flavor, to_pcm16
 from module.tts import synthesize_pcm
 
 log = logging.getLogger(__name__)
@@ -269,6 +269,12 @@ _SEVERITY_PRIORITY: dict[str, int] = {
 _INFORMATIONAL_PRIORITY = 9
 
 _MANAGED = pathlib.Path(__file__).parent.parent / "managed"
+_CSV_DIR = _MANAGED / "csv"
+
+_FORECAST_LOCATIONS_PATH = _CSV_DIR / "FORECAST_LOCATIONS.csv"
+_CAP_CP_GEOCODES_PATH = _CSV_DIR / "CAP-CP_Geocodes.csv"
+_CLC_BASE_ZONE_PATH = _CSV_DIR / "CLC_Base_Zone.csv"
+_NWS_ZONE_COUNTY_CORRELATION_PATH = _CSV_DIR / "NWS_ZONE_COUNTY_CORRELATION.csv"
 
 _geocode_db: dict[str, tuple[str, str]] | None = None
 _forecast_db: dict[str, str] | None = None
@@ -281,11 +287,71 @@ _SPATIAL_RADIUS_FACTOR = 2.0
 _SPATIAL_MIN_RADIUS_KM = 15.0
 
 
+def _split_coverage_values(raw_value: str) -> list[str]:
+    return [part.strip() for part in raw_value.split(',') if part.strip()]
+
+
+@functools.lru_cache(maxsize=1)
+def _load_forecast_coverage_db() -> dict[str, set[str]]:
+    db: dict[str, set[str]] = {}
+    try:
+        with open(_FORECAST_LOCATIONS_PATH, newline='', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            next(reader, None)
+            header = next(reader, None)
+            if header is None:
+                return db
+            normalized = [c.strip().upper() for c in header]
+            code_idx = normalized.index('CODE')
+            province_indices = [
+                idx for idx, column in enumerate(normalized)
+                if 'PROVINCE' in column or 'WATERBODY' in column
+            ]
+            for row in reader:
+                if len(row) <= code_idx:
+                    continue
+                code = row[code_idx].strip().strip('"')
+                if not code:
+                    continue
+                values: set[str] = set()
+                for idx in province_indices:
+                    if len(row) <= idx:
+                        continue
+                    values.update(value.upper() for value in _split_coverage_values(row[idx].strip().strip('"')))
+                for value in values:
+                    db.setdefault(value, set()).add(code)
+    except (OSError, csv.Error) as e:
+        log.error("Failed to load forecast coverage DB: %s", e)
+    return db
+
+
+@functools.lru_cache(maxsize=1)
+def _load_nws_zone_county_db() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    zones: dict[str, set[str]] = {}
+    counties: dict[str, set[str]] = {}
+    try:
+        with open(_NWS_ZONE_COUNTY_CORRELATION_PATH, newline='', encoding='utf-8') as f:
+            reader = csv.reader(f, delimiter='|')
+            for row in reader:
+                if len(row) < 8:
+                    continue
+                state = row[0].strip().upper()
+                zone_code = row[4].strip().upper()
+                county_code = row[6].strip().upper().zfill(6)
+                if state and zone_code:
+                    zones.setdefault(state, set()).add(zone_code)
+                if state and county_code:
+                    counties.setdefault(state, set()).add(county_code)
+    except (OSError, csv.Error) as e:
+        log.error("Failed to load NWS zone/county DB: %s", e)
+    return zones, counties
+
+
 @functools.lru_cache(maxsize=1)
 def _load_clc_spatial_db() -> dict[str, tuple[float, float, float]]:
     db: dict[str, tuple[float, float, float]] = {}
     try:
-        with open(_MANAGED / "CLC_Base_Zone.csv", newline="", encoding="utf-8") as f:
+        with open(_CLC_BASE_ZONE_PATH, newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
             h = [c.strip().upper() for c in next(reader)]
             clc_idx, lat_idx, lon_idx, area_idx = h.index("CLC"), h.index("LAT_DD"), h.index("LON_DD"), h.index("AREA_KM2")
@@ -308,7 +374,7 @@ def _load_clc_spatial_db() -> dict[str, tuple[float, float, float]]:
 def _load_geocode_spatial_db() -> dict[str, tuple[float, float]]:
     db: dict[str, tuple[float, float]] = {}
     try:
-        with open(_MANAGED / "CAP-CP_Geocodes.csv", newline="", encoding="utf-8") as f:
+        with open(_CAP_CP_GEOCODES_PATH, newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
             h = [c.strip().upper() for c in next(reader)]
             geo_idx, lat_idx, lon_idx = h.index("CAPCPGCODE"), h.index("LAT_DD"), h.index("LON_DD")
@@ -380,7 +446,7 @@ def _load_forecast_db() -> dict[str, str]:
         return _forecast_db
     db: dict[str, str] = {}
     try:
-        with (_MANAGED / "CLC_Base_Zone.csv").open(newline="", encoding="utf-8") as f:
+        with _CLC_BASE_ZONE_PATH.open(newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
             header = [c.strip().upper() for c in next(reader, [])]
             clc_idx = header.index("CLC")
@@ -396,6 +462,16 @@ def _load_forecast_db() -> dict[str, str]:
     _forecast_db = db
     log.debug("Loaded %d CLC entries from CLC_Base_Zone.csv", len(db))
     return db
+
+
+def _matches_feed_alert_code(pattern: str, raw_geocodes: set[str]) -> bool:
+    pattern = pattern.strip()
+    if not pattern:
+        return False
+    if pattern.endswith('*'):
+        prefix = pattern[:-1]
+        return any(code.startswith(prefix) for code in raw_geocodes)
+    return pattern in raw_geocodes
 
 
 def _geocodes_cover_clc(geocodes: tuple[str, ...] | list[str], clc_code: str) -> bool:
@@ -476,55 +552,105 @@ def _normalize_strings(values: Any) -> list[str]:
 
 def feed_same_codes(feed: dict[str, Any]) -> list[str]:
     db = _load_forecast_db()
+    province_db = _load_forecast_coverage_db()
+    nws_zone_db, nws_county_db = _load_nws_zone_county_db()
     codes: list[str] = []
     seen: set[str] = set()
+
+    def _expand_codes(raw_value: str) -> list[str]:
+        if not raw_value:
+            return []
+        normalized: list[str] = []
+        for part in _split_coverage_values(raw_value):
+            if '-' in part:
+                left, right = part.split('-', 1)
+                if left.replace('*', '').isdigit() and right.replace('*', '').isdigit():
+                    part = right
+            normalized.append(part)
+        return normalized
+
+    def _loc_text(loc: dict[str, Any], *keys: str) -> str:
+        for key in keys:
+            value = str(loc.get(key) or '').strip()
+            if value:
+                return value
+        return ''
 
     def _raw_codes(loc: dict[str, Any]) -> list[str]:
         explicit_same = str(loc.get('same') or '').strip()
         if explicit_same:
-            return [part.strip() for part in explicit_same.split(',') if part.strip()]
+            return _expand_codes(explicit_same)
 
-        raw = str(loc.get('forecast_region') or '').strip()
+        coverage_type = str(loc.get('coverage_type') or loc.get('kind') or loc.get('type') or '').strip().lower()
+        coverage_key = _loc_text(loc, 'abbr', 'code', 'id', 'zone', 'county', 'same')
+        if coverage_type == 'province':
+            return sorted(province_db.get(coverage_key.upper(), set())) or ([coverage_key] if coverage_key else [])
+        if coverage_type == 'state':
+            zone_codes = nws_zone_db.get(coverage_key.upper(), set())
+            county_codes = nws_county_db.get(coverage_key.upper(), set())
+            return sorted(zone_codes | county_codes) or ([coverage_key] if coverage_key else [])
+        if coverage_type == 'zone':
+            return sorted(nws_zone_db.get(coverage_key.upper(), set())) or ([coverage_key] if coverage_key else [])
+        if coverage_type == 'county':
+            return sorted(nws_county_db.get(coverage_key.upper(), set())) or ([coverage_key] if coverage_key else [])
+
+        raw = str(loc.get('id') or loc.get('forecast_region') or '').strip()
         if not raw:
             return []
         if '-' in raw:
             left, right = raw.split('-', 1)
             if left.replace('*', '').isdigit() and right.replace('*', '').isdigit():
                 raw = right
-        return [part.strip() for part in raw.split(',') if part.strip()]
+        return _expand_codes(raw)
 
-    for block in feed.get("locations", []):
+    def _append_target(target: str) -> None:
+        if not target:
+            return
+
+        if '-' in target:
+            left, right = target.split('-', 1)
+            if left.replace('*', '').isdigit() and right.replace('*', '').isdigit():
+                target = right
+
+        if target.endswith('*') and target[:-1].isdigit():
+            prefix = target[:-1]
+        elif target.isdigit():
+            prefix = target.rstrip('0')
+        else:
+            prefix = ''
+
+        if prefix:
+            for code in sorted(db):
+                if code.startswith(prefix) and code not in seen:
+                    seen.add(code)
+                    codes.append(code)
+            return
+
+        if target not in seen:
+            seen.add(target)
+            codes.append(target)
+
+    def _append_loc(loc: dict[str, Any]) -> None:
+        for target in _raw_codes(loc):
+            _append_target(target)
+    coverage = feed.get('coverage')
+    if isinstance(coverage, list) and coverage:
+        for region in coverage:
+            if not isinstance(region, dict):
+                continue
+            _append_loc(region)
+            for subregion in region.get('subregions', []):
+                if isinstance(subregion, dict):
+                    _append_loc(subregion)
+        return codes
+
+    for block in feed.get('locations', []):
         if not isinstance(block, dict):
             continue
-        for loc in block.get("forecastLocations", []):
-            if not isinstance(loc, dict):
-                continue
-            for target in _raw_codes(loc):
-                if target.endswith("*") and target[:-1].isdigit():
-                    prefix = target[:-1]
-                    for code in sorted(db):
-                        if code.startswith(prefix) and code not in seen:
-                            seen.add(code)
-                            codes.append(code)
-                    continue
-                if target and target not in seen:
-                    seen.add(target)
-                    codes.append(target)
+        for loc in block.get('forecastLocations', []):
+            if isinstance(loc, dict):
+                _append_loc(loc)
     return codes
-
-
-def _event_key(value: str) -> str:
-    return _EVENT_NORMALIZE_RE.sub('', value.lower())
-
-
-def _matches_feed_alert_code(pattern: str, alert_codes: set[str]) -> bool:
-    if not pattern:
-        return False
-    if pattern.endswith('*'):
-        prefix = pattern[:-1]
-        return any(code.startswith(prefix) for code in alert_codes)
-    return pattern in alert_codes
-
 
 def _matching_feed_codes(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
     feed_codes = feed_same_codes(feed)
@@ -815,25 +941,7 @@ def _resolve_cap_areas(
                     seen_clcs.add(code)
                     alert_clcs.append(code)
 
-    feed_patterns: list[str] = []
-    for block in feed.get('locations', []):
-        if not isinstance(block, dict):
-            continue
-        for loc in block.get('forecastLocations', []):
-            if not isinstance(loc, dict):
-                continue
-            explicit = str(loc.get('same') or '').strip()
-            if explicit:
-                feed_patterns.extend(p.strip() for p in explicit.split(',') if p.strip())
-            else:
-                raw_fc = str(loc.get('forecast_region') or '').strip()
-                if not raw_fc:
-                    continue
-                if '-' in raw_fc:
-                    left, right = raw_fc.split('-', 1)
-                    if left.replace('*', '').isdigit() and right.replace('*', '').isdigit():
-                        raw_fc = right
-                feed_patterns.extend(p.strip() for p in raw_fc.split(',') if p.strip())
+    feed_patterns = feed_same_codes(feed)
 
     if not feed_patterns:
         return []
@@ -994,7 +1102,8 @@ def _generate_alert_audio(
     feed_id = feed['id']
     same_cfg = config.get('same', {})
     callsign = str(same_cfg.get('sender', 'HAZE0000'))
-    same_sr = int(same_cfg.get('sample_rate_hz', 22050))
+    flavor = same_cfg.get('flavor') or None
+    same_sr = resolve_flavor(flavor).sample_rate
 
     playout_cfg = _feed_playout_cfg(feed)
     include_same = playout_cfg.get('same', True)
@@ -1036,17 +1145,17 @@ def _generate_alert_audio(
     header = SAMEHeader(
         originator=originator,
         event=same_event,
-        locations=locations,
+        locations=tuple(locations),
         duration=duration,
         callsign=callsign,
     )
 
     full_signal = generate_same(
         header=header,
-        tone_type=tone_type,
+        tone_type=cast(Any, tone_type),
         audio_msg_array=voice_array,
-        sample_rate=same_sr,
         attn_duration_s=8.0,
+        flavor=flavor,
     )
 
     alert_pcm = to_pcm16(resample(full_signal, same_sr, BUS_SR))

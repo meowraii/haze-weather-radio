@@ -3,6 +3,18 @@ from __future__ import annotations
 from typing import Any
 
 
+def _playout_routine_enabled(feed: dict[str, Any]) -> bool:
+    playout = feed.get('playout')
+    if isinstance(playout, dict) and 'routine' in playout:
+        return bool(playout.get('routine', True))
+    return True
+
+
+def coverage_regions(feed: dict[str, Any]) -> list[dict[str, Any]]:
+    regions = feed.get('coverage')
+    return [region for region in regions if isinstance(region, dict)] if isinstance(regions, list) else []
+
+
 def observation_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
     locations: list[dict[str, Any]] = []
     for block in feed.get('locations', []):
@@ -15,6 +27,28 @@ def observation_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def forecast_locations(feed: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _playout_routine_enabled(feed):
+        return []
+
+    coverage = coverage_regions(feed)
+    if coverage:
+        locations: list[dict[str, Any]] = []
+        for region in coverage:
+            forecast_id = str(region.get('derive_forecast') or '').strip() or str(region.get('id') or '').strip()
+            if str(region.get('coverage_type') or 'region').strip().lower() != 'region':
+                continue
+            if not forecast_id:
+                continue
+            location: dict[str, Any] = {'id': forecast_id}
+            if (source := region.get('source')):
+                location['source'] = source
+            if (region_id := str(region.get('id') or '').strip()):
+                location['forecast_region'] = region_id
+            if (name_override := region.get('name_override')):
+                location['name_override'] = name_override
+            locations.append(location)
+        return locations
+
     locations: list[dict[str, Any]] = []
     for block in feed.get('locations', []):
         if not isinstance(block, dict):

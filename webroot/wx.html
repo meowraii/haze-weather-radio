@@ -6,7 +6,8 @@
     <meta name="description" content="WX On-Demand request builder and API reference for Haze Weather Radio">
     <title>WX On-Demand — Haze Weather Radio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body class="wx-panel-page">
@@ -17,7 +18,7 @@
                 <div class="brand-mark"></div>
                 <div>
                     <p class="brand-name">Haze WXR</p>
-                    <p class="brand-sub">WX On-Demand</p>
+                    <p class="brand-sub">Manual Weather</p>
                 </div>
             </div>
 
@@ -66,7 +67,8 @@
         <div class="main-wrap">
             <header class="topbar">
                 <div class="topbar-inner">
-                    <div>
+                    <div class="topbar-title">
+                        <p class="topbar-eyebrow">Manual Weather</p>
                         <h1>WX On-Demand</h1>
                         <p>Generate weather audio or text packages from configured locations with optional source filtering.</p>
                     </div>
@@ -342,6 +344,6 @@
     </div>
 
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="/assets/wx.js" defer></script>
+    <script type="module" src="/assets/js/wx.js"></script>
 </body>
 </html>

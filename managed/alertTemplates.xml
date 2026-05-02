@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<templates>
+    <template>
+        <name>Weekly Test</name>
+        <description>Test alert that repeats every week</description>
+        <automated>
+            <enabled>true</enabled>
+            <allow_postpone>true</allow_postpone>
+            <timing>
+                <timezone />
+                <day_of_week>mon</day_of_week>
+                <weeks>
+                    <week enabled="true" event_override="RMT">0</week>
+                    <week enabled="true">1</week>
+                    <week enabled="true">2</week>
+                    <week enabled="true">3</week>
+                </weeks>
+                <hour>12</hour>
+                <minute>0</minute>
+                <second>0</second>
+            </timing>
+        </automated>
+        <same>
+            <enabled>true</enabled> <!-- send this alert with SAME. if not, only interrupt the feed with the attention_tone and content -->
+            <event>RWT</event>
+            <locations />
+            <duration hr="0" min="15" />
+            <sender_id />
+        </same>
+        <content attention_tone="">
+            <lang code="en">
+                <text>
+                    The preceding signal was a test of the weather radio alarm system. During particularly dangerous situations, specially built receivers will be automatically activated to warn of the impending hazard. Tests of this system are normally activated by the operator of this radio network. Required Weekly Tests are normally sent each Wednesday at noon, with the Required Monthly Test sent on the first Wednesday of the month. This concludes this test of the weather radio alarm system.
+                </text>
+                <file /> <!-- system path to audio file. can be any format. if both text and audio are provided, the text will be reserved for video if applicable and the file will be broadcast. -->
+            </lang>
+        </content>
+    </template>
+    <template>
+        <name>practice demo warning that conveniently targets my ex girlfriend's R.M. (for testing)</name>
+        <description>i dont want my radio to go off</description>
+        <automated>
+            <enabled>false</enabled>
+        </automated>
+        <same>
+            <enabled>true</enabled> <!-- send this alert with SAME. if not, only interrupt the feed with the attention_tone and content -->
+            <event>DMO</event>
+            <locations>
+                <location id="065453" source="eccc" />
+            </locations>
+            <duration hr="0" min="05" />
+            <sender_id />
+        </same>
+        <content attention_tone="NONE" />
+    </template>
+</templates>

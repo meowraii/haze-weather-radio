@@ -24,7 +24,7 @@ try:
 except Exception:
     sd = None
 
-from managed.events import NowPlayingMetadata
+from module.events import NowPlayingMetadata
 from module.buffer import CHANNELS, SAMPLE_RATE
 
 log = logging.getLogger(__name__)
@@ -36,22 +36,52 @@ _STANDARD_STREAM_QUEUE_LIMIT = 24
 _LOW_LATENCY_STREAM_QUEUE_LIMIT = 12
 _LOW_LATENCY_STREAM_PREFILL_CHUNKS = 2
 
+_VIDEO_CODEC_FALLBACKS: dict[str, tuple[str, ...]] = {
+    'h264_amf': ('libx264', 'mpeg2video'),
+    'h264_nvenc': ('libx264', 'mpeg2video'),
+    'h264_qsv': ('libx264', 'mpeg2video'),
+    'h264_vaapi': ('libx264', 'mpeg2video'),
+    'hevc_amf': ('libx265', 'libx264', 'mpeg2video'),
+    'hevc_nvenc': ('libx265', 'libx264', 'mpeg2video'),
+    'hevc_qsv': ('libx265', 'libx264', 'mpeg2video'),
+    'hevc_vaapi': ('libx265', 'libx264', 'mpeg2video'),
+}
+
+_FFMPEG_VIDEO_ENCODERS: set[str] | None = None
+_FFMPEG_VIDEO_ENCODER_USABILITY: dict[str, bool] = {}
+
 _CODEC_MAP: dict[str, tuple[str, str, str]] = {
     'opus': ('libopus',    'audio/ogg',  'ogg'),
-    'flac':  ('flac',       'audio/flac', 'flac'),
+    'flac': ('flac',       'audio/flac', 'flac'),
     'ogg':  ('libvorbis',  'audio/ogg',  'ogg'),
     'mp3':  ('libmp3lame', 'audio/mpeg', 'mp3'),
     'aac':  ('aac',        'audio/aac',  'adts'),
 }
 
 _STREAM_DYNAMICS = (
-    'highpass=f=90,'
-    'equalizer=f=120:t=q:w=1.2:g=4,'
-    'equalizer=f=600:t=q:w=1.5:g=-4,'
-    'equalizer=f=2500:t=q:w=0.6:g=2,'
-    'lowpass=f=9500,'
-    'acompressor=threshold=-15dB:ratio=4:attack=5:release=120:makeup=6dB,'
+    'highpass=f=110,'
+    'equalizer=f=140:t=q:w=1.0:g=2.5,'
+    'equalizer=f=220:t=q:w=1.0:g=2.0,'
+    'equalizer=f=350:t=q:w=1.2:g=1.2,'
+    'equalizer=f=500:t=q:w=1.4:g=-2.5,'
+    'equalizer=f=900:t=q:w=1.6:g=-1.5,'
+    'equalizer=f=2400:t=q:w=0.8:g=1.5,'
+    'lowpass=f=3400,'
+    'acompressor=threshold=-18dB:ratio=6:attack=8:release=140:makeup=2dB,'
+    'alimiter=limit=0.90,'
 )
+
+_RADIO_DYNAMICS = (
+    _STREAM_DYNAMICS
+    + 'lowpass=f=2800,'
+    + 'volume=2.8,'
+)
+
+_PIFMADV_PREFILL_CHUNKS = 10
+_PIFMADV_WRITE_STALL_TIMEOUT = 1.0
+_PIFMADV_MIN_RESTART_INTERVAL = 3.0
+_PIFMADV_MAX_RESTART_BACKOFF = 30.0
+_PIFMADV_INITIAL_RESTART_DELAY = 1.0
 
 
 class IcecastSink:
@@ -129,7 +159,7 @@ class IcecastSink:
 
     def _write_proc(self, pcm: bytes) -> None:
         with self._proc_lock:
-            if self._proc.stdin is None:
+            if self._proc.stdin is None or self._proc.poll() is not None:
                 raise BrokenPipeError('icecast ffmpeg stdin unavailable')
             self._proc.stdin.write(pcm)
 
@@ -138,9 +168,7 @@ class IcecastSink:
         delay = min(self._reconnect_delay, self._max_reconnect_delay)
         log.warning(
             'Icecast write failed (%s, attempt %d), reconnecting in %.1fs',
-            reason,
-            self._consecutive_failures,
-            delay,
+            reason, self._consecutive_failures, delay,
         )
         await asyncio.sleep(delay)
         self._reconnect_delay = min(self._reconnect_delay * 1.5, self._max_reconnect_delay)
@@ -151,8 +179,7 @@ class IcecastSink:
             if self._consecutive_failures >= 10:
                 log.error(
                     'Icecast reconnect failed after %d attempts: %s — stream disabled',
-                    self._consecutive_failures,
-                    exc,
+                    self._consecutive_failures, exc,
                 )
                 self._closed = True
             else:
@@ -279,10 +306,17 @@ def _build_video_overlay_inputs(
 
     if idle:
         if show_idle_details:
-            overlay = _build_drawtext_filter(text_file, banner_color, width, height, style)
+            overlay = _build_drawtext_filter(
+                text_file,
+                banner_color,
+                width,
+                height,
+                style,
+                reload_text=True,
+            )
             return extra_args, f'{scale_src},{overlay}'
         return extra_args, scale_src
-    overlay = _build_drawtext_filter(text_file, banner_color, width, height, style)
+    overlay = _build_drawtext_filter(text_file, banner_color, width, height, style, reload_text=False)
     return extra_args, f'{scale_src},{overlay}'
 
 
@@ -363,6 +397,103 @@ def _low_latency_video_args(vcodec: str, fps: float) -> list[str]:
             '-auto-alt-ref', '0',
         ]
     return []
+
+
+def _available_ffmpeg_video_encoders() -> set[str]:
+    global _FFMPEG_VIDEO_ENCODERS
+    if _FFMPEG_VIDEO_ENCODERS is not None:
+        return _FFMPEG_VIDEO_ENCODERS
+
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-hide_banner', '-encoders'],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=8,
+        )
+    except Exception as exc:
+        log.warning('Unable to query ffmpeg encoders: %s', exc)
+        _FFMPEG_VIDEO_ENCODERS = set()
+        return _FFMPEG_VIDEO_ENCODERS
+
+    encoders: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or len(parts[0]) != 6 or parts[0][0].upper() != 'V':
+            continue
+        encoders.add(parts[1].strip().lower())
+
+    _FFMPEG_VIDEO_ENCODERS = encoders
+    return _FFMPEG_VIDEO_ENCODERS
+
+
+def _can_use_video_encoder(codec: str) -> bool:
+    normalized = str(codec or '').strip().lower()
+    if not normalized:
+        return False
+    if normalized in _FFMPEG_VIDEO_ENCODER_USABILITY:
+        return _FFMPEG_VIDEO_ENCODER_USABILITY[normalized]
+
+    available = _available_ffmpeg_video_encoders()
+    if normalized not in available:
+        _FFMPEG_VIDEO_ENCODER_USABILITY[normalized] = False
+        return False
+
+    try:
+        probe = subprocess.run(
+            [
+                'ffmpeg',
+                '-hide_banner',
+                '-loglevel', 'error',
+                '-f', 'lavfi',
+                '-i', 'color=c=black:s=16x16:r=1',
+                '-frames:v', '1',
+                '-an',
+                '-c:v', normalized,
+                '-f', 'null',
+                '-',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception as exc:
+        log.warning('Unable to probe ffmpeg video encoder %s: %s', normalized, exc)
+        _FFMPEG_VIDEO_ENCODER_USABILITY[normalized] = False
+        return False
+
+    usable = probe.returncode == 0
+    if not usable:
+        reason = (probe.stderr or probe.stdout or '').strip().splitlines()
+        detail = reason[-1] if reason else 'unknown ffmpeg error'
+        log.warning('ffmpeg video encoder %s failed runtime probe: %s', normalized, detail)
+    _FFMPEG_VIDEO_ENCODER_USABILITY[normalized] = usable
+    return usable
+
+
+def _resolve_video_codec(feed_id: str, sink_label: str, vcodec: str) -> str:
+    requested = str(vcodec or '').strip()
+    if not requested:
+        return requested
+
+    normalized = requested.lower()
+    if _can_use_video_encoder(normalized):
+        return requested
+
+    for fallback in _VIDEO_CODEC_FALLBACKS.get(normalized, ()):
+        if _can_use_video_encoder(fallback):
+            log.warning(
+                '[%s] %s: video codec %s unavailable, falling back to %s',
+                feed_id,
+                sink_label,
+                requested,
+                fallback,
+            )
+            return fallback
+
+    return requested
 
 
 class _VideoStreamSink:
@@ -469,7 +600,7 @@ class _VideoStreamSink:
     def _write_proc(self, pcm: bytes) -> None:
         with self._proc_lock:
             proc = self._proc
-            if proc.stdin is None:
+            if proc.stdin is None or proc.poll() is not None:
                 raise BrokenPipeError('ffmpeg stdin unavailable')
             proc.stdin.write(pcm)
 
@@ -678,6 +809,80 @@ def _make_video_text_file(feed_id: str, label: str) -> 'pathlib.Path':
     return tf
 
 
+def _make_stream_sink(
+    feed_id: str,
+    video_cfg: dict[str, Any] | None,
+    tz_name: str,
+    sink_label: str,
+    audio_br: int,
+    video_br: int,
+    vcodec: str,
+    acodec: str,
+    container: str,
+    url: str,
+    width: int,
+    height: int,
+    fps: float,
+    interlace: bool,
+    tf_label: str,
+    queue_limit: int,
+    low_latency: bool = False,
+    clocked: bool = True,
+    prefill_chunks: int = _LOW_LATENCY_STREAM_PREFILL_CHUNKS,
+    fill_silence: bool = True,
+    extra_output_args: list[str] | None = None,
+) -> '_VideoStreamSink':
+    from module.video import _to_ffmpeg_color, _IDLE_BANNER_HEX
+    idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
+    resolved_vcodec = _resolve_video_codec(feed_id, sink_label, vcodec)
+    tf = _make_video_text_file(feed_id, tf_label) if resolved_vcodec and video_cfg else None
+
+    shared_cmd_kwargs: dict[str, Any] = dict(
+        feed_id=feed_id,
+        audio_bitrate_kbps=audio_br,
+        video_bitrate_kbps=video_br,
+        vcodec=resolved_vcodec,
+        acodec=acodec,
+        container=container,
+        output_url=url,
+        extra_audio_inputs=[],
+        video_cfg=video_cfg,
+        width=width,
+        height=height,
+        fps=fps,
+        text_file=tf,
+        interlace=interlace,
+        low_latency=low_latency,
+        extra_output_args=extra_output_args,
+    )
+
+    def build(color: str) -> list[str]:
+        return _build_video_stream_cmd(**shared_cmd_kwargs, banner_color=color, idle=False)
+
+    idle_factory = None
+    if tf and video_cfg:
+        def build_idle() -> list[str]:
+            return _build_video_stream_cmd(**shared_cmd_kwargs, banner_color=idle_color, idle=True)
+        idle_factory = build_idle
+
+    return _VideoStreamSink(
+        feed_id,
+        build,
+        tf,
+        idle_color,
+        sink_label,
+        video_cfg,
+        tz_name=tz_name,
+        queue_limit=queue_limit,
+        drop_oldest=True,
+        idle_factory=idle_factory,
+        frame_width=width,
+        clocked=clocked,
+        prefill_chunks=prefill_chunks,
+        fill_silence=fill_silence,
+    )
+
+
 def UdpSink(
     config: dict[str, Any],
     feed_id: str,
@@ -686,43 +891,25 @@ def UdpSink(
 ) -> _VideoStreamSink:
     ip = config.get('ip', '127.0.0.1')
     port = int(config.get('port', 8899))
-    fmt = str(config.get('format', 'mpegts'))
-    audio_br = int(config.get('bitrate_kbps', 32))
-    video_br = int(config.get('vrate_kbps', 1000))
-    vcodec = str(config.get('vcodec') or '')
-    acodec = str(config.get('acodec') or 'aac')
     width, height, fps, interlace = _resolve_video_output_params(config, video_cfg)
-    url = f'udp://{ip}:{port}?pkt_size=1316&buffer_size=65536'
-
-    from module.video import _to_ffmpeg_color, _IDLE_BANNER_HEX
-    idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
-    tf = _make_video_text_file(feed_id, 'udp') if vcodec and video_cfg else None
-
-    def build(color: str) -> list[str]:
-        return _build_video_stream_cmd(
-            feed_id, audio_br, video_br, vcodec, acodec, fmt, url, [], video_cfg,
-            width, height, fps, text_file=tf, banner_color=color, low_latency=True, interlace=interlace,
-        )
-    idle_factory = None
-    if tf and video_cfg:
-        def build_idle_udp() -> list[str]:
-            return _build_video_stream_cmd(
-                feed_id, audio_br, video_br, vcodec, acodec, fmt, url, [], video_cfg,
-                width, height, fps, text_file=tf, banner_color=idle_color, idle=True, low_latency=True, interlace=interlace,
-            )
-        idle_factory = build_idle_udp
-    return _VideoStreamSink(
-        feed_id,
-        build,
-        tf,
-        idle_color,
-        f'UDP({ip}:{port})',
-        video_cfg,
+    return _make_stream_sink(
+        feed_id=feed_id,
+        video_cfg=video_cfg,
         tz_name=tz_name,
+        sink_label=f'UDP({ip}:{port})',
+        audio_br=int(config.get('bitrate_kbps', 32)),
+        video_br=int(config.get('vrate_kbps', 1000)),
+        vcodec=str(config.get('vcodec') or ''),
+        acodec=str(config.get('acodec') or 'aac'),
+        container=str(config.get('format', 'mpegts')),
+        url=f'udp://{ip}:{port}?pkt_size=1316&buffer_size=65536',
+        width=width,
+        height=height,
+        fps=fps,
+        interlace=interlace,
+        tf_label='udp',
         queue_limit=_LOW_LATENCY_STREAM_QUEUE_LIMIT,
-        drop_oldest=True,
-        idle_factory=idle_factory,
-        frame_width=width,
+        low_latency=True,
         clocked=True,
         prefill_chunks=_LOW_LATENCY_STREAM_PREFILL_CHUNKS,
     )
@@ -736,43 +923,25 @@ def RtpSink(
 ) -> _VideoStreamSink:
     ip = config.get('ip', '127.0.0.1')
     port = int(config.get('port', 8899))
-    fmt = str(config.get('format', 'rtp_mpegts'))
-    audio_br = int(config.get('bitrate_kbps', 32))
-    video_br = int(config.get('vrate_kbps', 1000))
-    vcodec = str(config.get('vcodec') or '')
-    acodec = str(config.get('acodec') or 'aac')
     width, height, fps, interlace = _resolve_video_output_params(config, video_cfg)
-    url = f'rtp://{ip}:{port}?pkt_size=1316&buffer_size=65536'
-
-    from module.video import _to_ffmpeg_color, _IDLE_BANNER_HEX
-    idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
-    tf = _make_video_text_file(feed_id, 'rtp') if vcodec and video_cfg else None
-
-    def build(color: str) -> list[str]:
-        return _build_video_stream_cmd(
-            feed_id, audio_br, video_br, vcodec, acodec, fmt, url, [], video_cfg,
-            width, height, fps, text_file=tf, banner_color=color, low_latency=True, interlace=interlace,
-        )
-    idle_factory = None
-    if tf and video_cfg:
-        def build_idle_rtp() -> list[str]:
-            return _build_video_stream_cmd(
-                feed_id, audio_br, video_br, vcodec, acodec, fmt, url, [], video_cfg,
-                width, height, fps, text_file=tf, banner_color=idle_color, idle=True, low_latency=True, interlace=interlace,
-            )
-        idle_factory = build_idle_rtp
-    return _VideoStreamSink(
-        feed_id,
-        build,
-        tf,
-        idle_color,
-        f'RTP({ip}:{port})',
-        video_cfg,
+    return _make_stream_sink(
+        feed_id=feed_id,
+        video_cfg=video_cfg,
         tz_name=tz_name,
+        sink_label=f'RTP({ip}:{port})',
+        audio_br=int(config.get('bitrate_kbps', 32)),
+        video_br=int(config.get('vrate_kbps', 1000)),
+        vcodec=str(config.get('vcodec') or ''),
+        acodec=str(config.get('acodec') or 'aac'),
+        container=str(config.get('format', 'rtp_mpegts')),
+        url=f'rtp://{ip}:{port}?pkt_size=1316&buffer_size=65536',
+        width=width,
+        height=height,
+        fps=fps,
+        interlace=interlace,
+        tf_label='rtp',
         queue_limit=_LOW_LATENCY_STREAM_QUEUE_LIMIT,
-        drop_oldest=True,
-        idle_factory=idle_factory,
-        frame_width=width,
+        low_latency=True,
         clocked=True,
         prefill_chunks=_LOW_LATENCY_STREAM_PREFILL_CHUNKS,
     )
@@ -784,31 +953,25 @@ def RtmpSink(
     video_cfg: dict[str, Any] | None = None,
     tz_name: str = 'UTC',
 ) -> _VideoStreamSink:
-    url = str(config.get('url', 'rtmp://localhost/live/stream'))
-    audio_br = int(config.get('bitrate_kbps', 32))
-    video_br = int(config.get('vrate_kbps', 1000))
-    vcodec = str(config.get('vcodec') or '')
-    acodec = str(config.get('acodec') or 'aac')
     width, height, fps, interlace = _resolve_video_output_params(config, video_cfg)
-
-    from module.video import _to_ffmpeg_color, _IDLE_BANNER_HEX
-    idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
-    tf = _make_video_text_file(feed_id, 'rtmp') if vcodec and video_cfg else None
-
-    def build(color: str) -> list[str]:
-        return _build_video_stream_cmd(
-            feed_id, audio_br, video_br, vcodec, acodec, 'flv', url, [], video_cfg,
-            width, height, fps, text_file=tf, banner_color=color, interlace=interlace,
-        )
-    idle_factory = None
-    if tf and video_cfg:
-        def build_idle_rtmp() -> list[str]:
-            return _build_video_stream_cmd(
-                feed_id, audio_br, video_br, vcodec, acodec, 'flv', url, [], video_cfg,
-                width, height, fps, text_file=tf, banner_color=idle_color, idle=True, interlace=interlace,
-            )
-        idle_factory = build_idle_rtmp
-    return _VideoStreamSink(feed_id, build, tf, idle_color, f'RTMP({url})', video_cfg, tz_name=tz_name, queue_limit=_STANDARD_STREAM_QUEUE_LIMIT, drop_oldest=True, idle_factory=idle_factory, frame_width=width)
+    return _make_stream_sink(
+        feed_id=feed_id,
+        video_cfg=video_cfg,
+        tz_name=tz_name,
+        sink_label=f'RTMP({config.get("url", "")})',
+        audio_br=int(config.get('bitrate_kbps', 32)),
+        video_br=int(config.get('vrate_kbps', 1000)),
+        vcodec=str(config.get('vcodec') or ''),
+        acodec=str(config.get('acodec') or 'aac'),
+        container='flv',
+        url=str(config.get('url', 'rtmp://localhost/live/stream')),
+        width=width,
+        height=height,
+        fps=fps,
+        interlace=interlace,
+        tf_label='rtmp',
+        queue_limit=_STANDARD_STREAM_QUEUE_LIMIT,
+    )
 
 
 def SrtSink(
@@ -817,32 +980,25 @@ def SrtSink(
     video_cfg: dict[str, Any] | None = None,
     tz_name: str = 'UTC',
 ) -> _VideoStreamSink:
-    url = str(config.get('url', 'srt://localhost:12345'))
-    fmt = str(config.get('format', 'mpegts'))
-    audio_br = int(config.get('bitrate_kbps', 32))
-    video_br = int(config.get('vrate_kbps', 1000))
-    vcodec = str(config.get('vcodec') or '')
-    acodec = str(config.get('acodec') or 'aac')
     width, height, fps, interlace = _resolve_video_output_params(config, video_cfg)
-
-    from module.video import _to_ffmpeg_color, _IDLE_BANNER_HEX
-    idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
-    tf = _make_video_text_file(feed_id, 'srt') if vcodec and video_cfg else None
-
-    def build(color: str) -> list[str]:
-        return _build_video_stream_cmd(
-            feed_id, audio_br, video_br, vcodec, acodec, fmt, url, [], video_cfg,
-            width, height, fps, text_file=tf, banner_color=color, interlace=interlace,
-        )
-    idle_factory = None
-    if tf and video_cfg:
-        def build_idle_srt() -> list[str]:
-            return _build_video_stream_cmd(
-                feed_id, audio_br, video_br, vcodec, acodec, fmt, url, [], video_cfg,
-                width, height, fps, text_file=tf, banner_color=idle_color, idle=True, interlace=interlace,
-            )
-        idle_factory = build_idle_srt
-    return _VideoStreamSink(feed_id, build, tf, idle_color, f'SRT({url})', video_cfg, tz_name=tz_name, queue_limit=_STANDARD_STREAM_QUEUE_LIMIT, drop_oldest=True, idle_factory=idle_factory, frame_width=width)
+    return _make_stream_sink(
+        feed_id=feed_id,
+        video_cfg=video_cfg,
+        tz_name=tz_name,
+        sink_label=f'SRT({config.get("url", "")})',
+        audio_br=int(config.get('bitrate_kbps', 32)),
+        video_br=int(config.get('vrate_kbps', 1000)),
+        vcodec=str(config.get('vcodec') or ''),
+        acodec=str(config.get('acodec') or 'aac'),
+        container=str(config.get('format', 'mpegts')),
+        url=str(config.get('url', 'srt://localhost:12345')),
+        width=width,
+        height=height,
+        fps=fps,
+        interlace=interlace,
+        tf_label='srt',
+        queue_limit=_STANDARD_STREAM_QUEUE_LIMIT,
+    )
 
 
 def RtspSink(
@@ -851,34 +1007,26 @@ def RtspSink(
     video_cfg: dict[str, Any] | None = None,
     tz_name: str = 'UTC',
 ) -> _VideoStreamSink:
-    url = str(config.get('url', 'rtsp://localhost:8554/stream'))
-    fmt = str(config.get('format', 'rtsp'))
-    audio_br = int(config.get('bitrate_kbps', 32))
-    video_br = int(config.get('vrate_kbps', 1000))
-    vcodec = str(config.get('vcodec') or '')
-    acodec = str(config.get('acodec') or 'aac')
     width, height, fps, interlace = _resolve_video_output_params(config, video_cfg)
-
-    from module.video import _to_ffmpeg_color, _IDLE_BANNER_HEX
-    idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
-    tf = _make_video_text_file(feed_id, 'rtsp') if vcodec and video_cfg else None
-
-    def build(color: str) -> list[str]:
-        return _build_video_stream_cmd(
-            feed_id, audio_br, video_br, vcodec, acodec, fmt, url, [], video_cfg,
-            width, height, fps, text_file=tf, banner_color=color,
-            extra_output_args=['-rtsp_transport', 'tcp'], interlace=interlace,
-        )
-    idle_factory = None
-    if tf and video_cfg:
-        def build_idle_rtsp() -> list[str]:
-            return _build_video_stream_cmd(
-                feed_id, audio_br, video_br, vcodec, acodec, fmt, url, [], video_cfg,
-                width, height, fps, text_file=tf, banner_color=idle_color, idle=True,
-                extra_output_args=['-rtsp_transport', 'tcp'], interlace=interlace,
-            )
-        idle_factory = build_idle_rtsp
-    return _VideoStreamSink(feed_id, build, tf, idle_color, f'RTSP({url})', video_cfg, tz_name=tz_name, queue_limit=_STANDARD_STREAM_QUEUE_LIMIT, drop_oldest=True, idle_factory=idle_factory, frame_width=width)
+    return _make_stream_sink(
+        feed_id=feed_id,
+        video_cfg=video_cfg,
+        tz_name=tz_name,
+        sink_label=f'RTSP({config.get("url", "")})',
+        audio_br=int(config.get('bitrate_kbps', 32)),
+        video_br=int(config.get('vrate_kbps', 1000)),
+        vcodec=str(config.get('vcodec') or ''),
+        acodec=str(config.get('acodec') or 'aac'),
+        container=str(config.get('format', 'rtsp')),
+        url=str(config.get('url', 'rtsp://localhost:8554/stream')),
+        width=width,
+        height=height,
+        fps=fps,
+        interlace=interlace,
+        tf_label='rtsp',
+        queue_limit=_STANDARD_STREAM_QUEUE_LIMIT,
+        extra_output_args=['-rtsp_transport', 'tcp'],
+    )
 
 
 def FramebufferSink(
@@ -899,9 +1047,9 @@ def FramebufferSink(
     idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
     tf = _make_video_text_file(feed_id, 'fb') if video_cfg else None
 
-    def build(color: str) -> list[str]:
+    def _fb_cmd(color: str, idle: bool) -> list[str]:
         if video_cfg and tf:
-            vi, fc = _build_video_overlay_inputs(video_cfg, width, height, fps, tf, color)
+            vi, fc = _build_video_overlay_inputs(video_cfg, width, height, fps, tf, color, idle=idle)
             filter_args = [
                 '-filter_complex',
                 f'{_postprocess_video_filter(fc, interlace=interlace, output_pix_fmt="bgr0")}[vout]',
@@ -922,22 +1070,14 @@ def FramebufferSink(
             '-r', fps_str,
             '-f', 'fbdev', path,
         ]
-    idle_factory = None
-    if video_cfg and tf:
-        def build_idle_fb() -> list[str]:
-            vi, fc = _build_video_overlay_inputs(video_cfg, width, height, fps, tf, idle_color, idle=True)
-            return [
-                'ffmpeg', '-loglevel', 'warning',
-                '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-                '-i', 'pipe:0',
-                *vi,
-                '-filter_complex', f'{_postprocess_video_filter(fc, interlace=interlace, output_pix_fmt="bgr0")}[vout]',
-                '-map', '[vout]',
-                '-r', fps_str,
-                '-f', 'fbdev', path,
-            ]
-        idle_factory = build_idle_fb
-    return _VideoStreamSink(feed_id, build, tf, idle_color, f'Framebuffer({path})', video_cfg, queue_limit=_STANDARD_STREAM_QUEUE_LIMIT, drop_oldest=True, tz_name=tz_name, idle_factory=idle_factory, frame_width=width)
+
+    idle_factory = (lambda: _fb_cmd(idle_color, True)) if (video_cfg and tf) else None
+    return _VideoStreamSink(
+        feed_id, lambda color: _fb_cmd(color, False), tf, idle_color,
+        f'Framebuffer({path})', video_cfg,
+        queue_limit=_STANDARD_STREAM_QUEUE_LIMIT, drop_oldest=True,
+        tz_name=tz_name, idle_factory=idle_factory, frame_width=width,
+    )
 
 
 def DriSink(
@@ -958,9 +1098,9 @@ def DriSink(
     idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
     tf = _make_video_text_file(feed_id, 'dri') if video_cfg else None
 
-    def build(color: str) -> list[str]:
+    def _dri_cmd(color: str, idle: bool) -> list[str]:
         if video_cfg and tf:
-            vi, fc = _build_video_overlay_inputs(video_cfg, width, height, fps, tf, color)
+            vi, fc = _build_video_overlay_inputs(video_cfg, width, height, fps, tf, color, idle=idle)
             filter_args = [
                 '-filter_complex',
                 f'{_postprocess_video_filter(fc, interlace=interlace, output_pix_fmt="yuv420p")}[vout]',
@@ -983,24 +1123,14 @@ def DriSink(
             '-device', path,
             '-',
         ]
-    idle_factory = None
-    if video_cfg and tf:
-        def build_idle_dri() -> list[str]:
-            vi, fc = _build_video_overlay_inputs(video_cfg, width, height, fps, tf, idle_color, idle=True)
-            return [
-                'ffmpeg', '-loglevel', 'warning',
-                '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-                '-i', 'pipe:0',
-                *vi,
-                '-filter_complex', f'{_postprocess_video_filter(fc, interlace=interlace, output_pix_fmt="yuv420p")}[vout]',
-                '-map', '[vout]',
-                '-r', fps_str,
-                '-f', 'drm_output',
-                '-device', path,
-                '-',
-            ]
-        idle_factory = build_idle_dri
-    return _VideoStreamSink(feed_id, build, tf, idle_color, f'DRI({path})', video_cfg, queue_limit=_STANDARD_STREAM_QUEUE_LIMIT, drop_oldest=True, tz_name=tz_name, idle_factory=idle_factory, frame_width=width)
+
+    idle_factory = (lambda: _dri_cmd(idle_color, True)) if (video_cfg and tf) else None
+    return _VideoStreamSink(
+        feed_id, lambda color: _dri_cmd(color, False), tf, idle_color,
+        f'DRI({path})', video_cfg,
+        queue_limit=_STANDARD_STREAM_QUEUE_LIMIT, drop_oldest=True,
+        tz_name=tz_name, idle_factory=idle_factory, frame_width=width,
+    )
 
 
 def V4L2Sink(
@@ -1021,9 +1151,9 @@ def V4L2Sink(
     idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
     tf = _make_video_text_file(feed_id, 'v4l2') if video_cfg else None
 
-    def build(color: str) -> list[str]:
+    def _v4l2_cmd(color: str, idle: bool) -> list[str]:
         if video_cfg and tf:
-            vi, fc = _build_video_overlay_inputs(video_cfg, width, height, fps, tf, color)
+            vi, fc = _build_video_overlay_inputs(video_cfg, width, height, fps, tf, color, idle=idle)
             filter_args = [
                 '-filter_complex',
                 f'{_postprocess_video_filter(fc, interlace=interlace, output_pix_fmt="yuv420p")}[vout]',
@@ -1044,22 +1174,14 @@ def V4L2Sink(
             '-r', fps_str,
             '-f', 'v4l2', device,
         ]
-    idle_factory = None
-    if video_cfg and tf:
-        def build_idle_v4l2() -> list[str]:
-            vi, fc = _build_video_overlay_inputs(video_cfg, width, height, fps, tf, idle_color, idle=True)
-            return [
-                'ffmpeg', '-loglevel', 'warning',
-                '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-                '-i', 'pipe:0',
-                *vi,
-                '-filter_complex', f'{_postprocess_video_filter(fc, interlace=interlace, output_pix_fmt="yuv420p")}[vout]',
-                '-map', '[vout]',
-                '-r', fps_str,
-                '-f', 'v4l2', device,
-            ]
-        idle_factory = build_idle_v4l2
-    return _VideoStreamSink(feed_id, build, tf, idle_color, f'V4L2({device})', video_cfg, queue_limit=_STANDARD_STREAM_QUEUE_LIMIT, drop_oldest=True, tz_name=tz_name, idle_factory=idle_factory, frame_width=width)
+
+    idle_factory = (lambda: _v4l2_cmd(idle_color, True)) if (video_cfg and tf) else None
+    return _VideoStreamSink(
+        feed_id, lambda color: _v4l2_cmd(color, False), tf, idle_color,
+        f'V4L2({device})', video_cfg,
+        queue_limit=_STANDARD_STREAM_QUEUE_LIMIT, drop_oldest=True,
+        tz_name=tz_name, idle_factory=idle_factory, frame_width=width,
+    )
 
 
 class AudioDeviceSink:
@@ -1097,25 +1219,13 @@ class FileSink:
         self._f.close()
 
 
-_RADIO_DYNAMICS = (
-    _STREAM_DYNAMICS +
-    'lowpass=f=2800,'
-    'highpass=f=120,'
-    'lowpass=f=3000,'
-    'volume=2,'
-)
-
-_PIFMADV_PREFILL_CHUNKS = 10
-_WRITE_STALL_TIMEOUT = 1.0
-_PIFMADV_MIN_RESTART_INTERVAL = 3.0
-
-
 class PiFmAdvSink:
     bus_queue_limit = 48
     bus_drop_oldest = False
     bus_clocked = True
     bus_prefill_chunks = _PIFMADV_PREFILL_CHUNKS
     bus_fill_silence = True
+    bus_escalate_on_failure = True
 
     def __init__(self, config: dict[str, Any]) -> None:
         freq_mhz: str = str(config['frequency_mhz'])
@@ -1160,6 +1270,9 @@ class PiFmAdvSink:
                 '-p', str(ssh_port),
                 '-l', ssh_user,
                 '-o', 'BatchMode=yes',
+                '-o', 'ConnectTimeout=10',
+                '-o', 'ServerAliveInterval=5',
+                '-o', 'ServerAliveCountMax=3',
                 ssh_host,
             ]
             sudo = 'sudo -n ' if use_sudo else ''
@@ -1181,7 +1294,7 @@ class PiFmAdvSink:
                 '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
                 '-i', 'pipe:0',
                 '-af', _RADIO_DYNAMICS,
-                '-c:a', 'libopus', '-b:a', f'32k', '-application', 'audio',
+                '-c:a', 'libopus', '-b:a', '32k', '-application', 'audio',
                 '-f', 'rtp_mpegts',
                 f'rtp://{ssh_host}:{udp_port}?pkt_size=1316',
             ]
@@ -1191,28 +1304,33 @@ class PiFmAdvSink:
                 ffmpeg_bin, '-loglevel', 'warning',
                 '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
                 '-i', 'pipe:0',
-                '-ac', str(CHANNELS), '-ar', str(SAMPLE_RATE),
                 '-af', _RADIO_DYNAMICS,
                 '-f', 'wav', 'pipe:1',
             ]
 
         self._ffmpeg: subprocess.Popen | None = None
         self._fm: subprocess.Popen | None = None
+        self._proc_lock = threading.Lock()
         self._closed = False
         self._label = f"{freq_mhz} MHz dev=±{dev} Hz bw={bw} Hz"
         self._use_sudo = use_sudo
         self._pi_fm_adv_bin = pi_fm_adv_bin
         self._last_restart_time = 0.0
+        self._consecutive_failures = 0
+        self._restart_delay = _PIFMADV_INITIAL_RESTART_DELAY
         self._start()
         log.info('PiFmAdv sink started: %s ssh=%s', self._label, ssh_host if self._use_ssh else 'disabled')
 
     def _start(self) -> None:
         if self._cleanup_cmd:
-            subprocess.run(
-                self._cleanup_cmd,
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=15,
-            )
+            try:
+                subprocess.run(
+                    self._cleanup_cmd,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=15,
+                )
+            except Exception:
+                pass
         if self._use_ssh:
             self._fm = subprocess.Popen(
                 self._fm_cmd,
@@ -1243,23 +1361,24 @@ class PiFmAdvSink:
         if self._use_ssh or _IS_WINDOWS:
             return
         bin_name = pathlib.Path(self._pi_fm_adv_bin).name
-        kill_cmd: list[str] = []
-        if self._use_sudo:
-            kill_cmd = ['sudo', '-n', 'pkill', '-x', bin_name]
-        else:
-            kill_cmd = ['pkill', '-x', bin_name]
+        kill_cmd = ['sudo', '-n', 'pkill', '-x', bin_name] if self._use_sudo else ['pkill', '-x', bin_name]
         try:
             subprocess.run(
                 kill_cmd,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=5,
             )
-            time.sleep(0.75)
+            time.sleep(0.5)
         except Exception:
             pass
 
     def _kill(self) -> None:
-        for proc in (self._ffmpeg, self._fm):
+        with self._proc_lock:
+            ffmpeg, fm = self._ffmpeg, self._fm
+            self._ffmpeg = None
+            self._fm = None
+
+        for proc in (ffmpeg, fm):
             if proc is None:
                 continue
             try:
@@ -1268,12 +1387,13 @@ class PiFmAdvSink:
             except OSError:
                 pass
             try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait(timeout=5)
+                proc.wait()
             except Exception:
                 pass
-        self._ffmpeg = None
-        self._fm = None
 
     def _restart(self) -> None:
         now = time.monotonic()
@@ -1287,64 +1407,91 @@ class PiFmAdvSink:
         self._last_restart_time = time.monotonic()
 
     def _subprocesses_alive(self) -> bool:
-        if self._ffmpeg is not None and self._ffmpeg.poll() is not None:
-            log.warning('PiFmAdv: ffmpeg exited (rc=%s) on %s', self._ffmpeg.returncode, self._label)
+        with self._proc_lock:
+            ffmpeg, fm = self._ffmpeg, self._fm
+        if ffmpeg is not None and ffmpeg.poll() is not None:
+            log.warning('PiFmAdv: ffmpeg exited (rc=%s) on %s', ffmpeg.returncode, self._label)
             return False
-        if self._fm is not None and self._fm.poll() is not None:
-            log.warning('PiFmAdv: fm process exited (rc=%s) on %s', self._fm.returncode, self._label)
+        if fm is not None and fm.poll() is not None:
+            log.warning('PiFmAdv: fm process exited (rc=%s) on %s', fm.returncode, self._label)
             return False
         return True
 
-    async def write(self, pcm: bytes) -> None:
-        if self._closed or self._ffmpeg is None or self._ffmpeg.stdin is None or not pcm:
+    def _write_stdin(self, pcm: bytes) -> None:
+        with self._proc_lock:
+            ffmpeg = self._ffmpeg
+        if ffmpeg is None or ffmpeg.stdin is None or ffmpeg.poll() is not None:
+            raise BrokenPipeError('PiFmAdv: ffmpeg stdin unavailable')
+        ffmpeg.stdin.write(pcm)
+
+    async def _handle_write_failure(self, exc: Exception, reason: str) -> None:
+        if self._closed:
             return
+        self._consecutive_failures += 1
+        delay = min(self._restart_delay, _PIFMADV_MAX_RESTART_BACKOFF)
+        log.warning(
+            'PiFmAdv: %s on %s (attempt %d): %s — restarting in %.1fs',
+            reason, self._label, self._consecutive_failures, exc, delay,
+        )
+        await asyncio.sleep(delay)
+        self._restart_delay = min(self._restart_delay * 2.0, _PIFMADV_MAX_RESTART_BACKOFF)
+        try:
+            await asyncio.to_thread(self._restart)
+        except RuntimeError as restart_exc:
+            exc_str = str(restart_exc).lower()
+            if 'cannot schedule new futures after shutdown' in exc_str or 'event loop is closed' in exc_str:
+                return
+            log.error('PiFmAdv: restart failed on %s: %s', self._label, restart_exc)
+        except Exception as restart_exc:
+            log.error('PiFmAdv: restart failed on %s: %s', self._label, restart_exc)
+
+    async def write(self, pcm: bytes) -> None:
+        if self._closed or not pcm:
+            return
+
+        with self._proc_lock:
+            ffmpeg = self._ffmpeg
+
+        if ffmpeg is None or ffmpeg.stdin is None:
+            await self._handle_write_failure(
+                RuntimeError('ffmpeg stdin unavailable'), 'missing subprocess state'
+            )
+            return
+
         if not self._subprocesses_alive():
             if self._closed:
                 return
-            log.warning('PiFmAdv: dead subprocess detected on %s, restarting', self._label)
-            await asyncio.to_thread(self._restart)
-            raise RuntimeError('PiFmAdv: subprocess died; restarted')
-        stdin = self._ffmpeg.stdin
-        if stdin is None:
+            await self._handle_write_failure(
+                RuntimeError('subprocess exited'), 'dead subprocess detected'
+            )
             return
+
         try:
             await asyncio.wait_for(
-                asyncio.to_thread(stdin.write, pcm),
-                timeout=_WRITE_STALL_TIMEOUT,
+                asyncio.to_thread(self._write_stdin, pcm),
+                timeout=_PIFMADV_WRITE_STALL_TIMEOUT,
             )
-        except asyncio.TimeoutError:
-            if self._closed:
-                return
-            log.warning('PiFmAdv: write stall on %s, restarting', self._label)
-            await asyncio.to_thread(self._restart)
-            raise RuntimeError('PiFmAdv: write stall; restarted')
-        except BrokenPipeError as exc:
-            if self._closed:
-                return
-            log.warning('PiFmAdv: broken pipe on %s, restarting', self._label)
-            await asyncio.to_thread(self._restart)
-            raise RuntimeError('PiFmAdv pipe broken') from exc
-        except OSError as exc:
-            if self._closed:
-                return
-            log.warning('PiFmAdv: OS error on %s, restarting: %s', self._label, exc)
-            await asyncio.to_thread(self._restart)
-            raise RuntimeError(f'PiFmAdv OS error: {exc}') from exc
+            self._consecutive_failures = 0
+            self._restart_delay = _PIFMADV_INITIAL_RESTART_DELAY
+        except asyncio.TimeoutError as exc:
+            await self._handle_write_failure(exc, 'write stall')
+        except (BrokenPipeError, OSError) as exc:
+            await self._handle_write_failure(exc, 'broken pipe / OS error')
         except RuntimeError as exc:
             exc_str = str(exc).lower()
             if 'cannot schedule new futures after shutdown' in exc_str or 'event loop is closed' in exc_str:
                 return
-            log.error('PiFmAdv: unexpected write error on %s: %s', self._label, exc)
+            log.error('PiFmAdv: fatal write error on %s: %s', self._label, exc)
             self._closed = True
-            raise RuntimeError(f'PiFmAdv write error: {exc}') from exc
+            raise
         except Exception as exc:
             log.error('PiFmAdv: unexpected write error on %s: %s', self._label, exc)
             self._closed = True
             raise RuntimeError(f'PiFmAdv write error: {exc}') from exc
 
     async def close(self) -> None:
-        if self._ffmpeg is None and self._fm is None:
+        if self._closed and self._ffmpeg is None and self._fm is None:
             return
         self._closed = True
         await asyncio.to_thread(self._kill)
-        log.info('PiFmAdv sink closed')
+        log.info('PiFmAdv sink closed: %s', self._label)

@@ -23,39 +23,54 @@ playout:
     enabled: true
     minutes: [0, 15, 30, 45]
 
+  date_time_schedule:
+    enabled: true
+    minutes: [5, 15, 25, 35, 45, 55]
+
   chimes:
     enabled: true
     half_hour:
       enabled: true
-      # sequence: [chime, date_time]
+      # sequence: [chime]
     top_of_hour:
       enabled: true
-      # sequence: [chime, date_time]
+      # sequence: [chime]
 
   playlist_order:
     - alerts
-    - date_time
     - current_conditions
     - air_quality
     - forecast
-    - date_time
     - climate_summary
     # - eccc_discussion
-    - date_time
     - geophysical_alert
     - user_bulletin
 
 operator:
-  on_air_name: "Betteradio Canada"
-  operator_name: "meow raii"
-  email: "meow rye @mist w x .com"
-  phone: "6 3 9 - 8 7 2 - 9 0 8 8 "
-
-sources:
-  twc:
-    api_key: "e1f10a1e78da46f5b10a1e78da96f525"
-    units: m
-    language: en-CA
+  on_air_name: [
+    text: "Canada RadioMET",
+    pronunciation: "all hazards, canada radio met"
+  ]
+  operator_name: [
+    text: "@meowraii",
+    pronunciation: "meow rai"
+  ]
+  email: [
+    address: [
+      text: "meowraii",
+      pronunciation: "meow rai"
+    ],
+    domain: [
+      text: "mistwx.com",
+      pronunciation: "mist wx dot com"
+    ]
+  ]
+  phone: [
+    country_code: 1,
+    area_code: 639,
+    office_code: 872,
+    subscriber_number: 9088,
+  ]
 
 wx_on_demand: # haze can accept a POST request from external applications with a location code, request packages, and other parameters to generate on demand packages for that location which is then returned to the requester. if the location code matches one of the feed's locations, it will re-use the data and TTS audio files that it has already generated for that location to create the requested package.
 
@@ -85,331 +100,7 @@ webpanel:
     password: HackMeMommy!12# # change this lol. it needs to be at least 8 characters long, contain at least: three uppercase letters, four lowercase letters, two numbers, and two special characters.
     # blank to autogenerate a random one time password on startup and print it in the logs.
 
-feeds:
-  - id: sk-0001
-    callsign: XLF322
-    enabled: true
-    timezone: America/Regina # none for local system
-
-    playout:
-      routine: true
-      same: true
-
-    alerts:
-      cap_cp:
-        enabled: true
-        filter:
-          use_feed_locations: true
-          blocklist:
-            severity: ["Minor", "Unknown"] # block alerts with these severities. valid values are Extreme, Severe, Moderate, Minor, and Unknown.
-            certainty: ["Unknown", "Past"] # block alerts with these certainties. valid values are Immediate, Expected, Future, Past, and Unknown.
-            naads_events: ["fog"] # block alerts with these NAADS event codes.
-            urgency: []
-            status: []
-            scope: []
-            other: # custom parameters that are not part of the standard CAP-CP schema but can be included in the alert's parameters. like how Environment Canada alerts have layer-specific parameters that include things like SAME event and location codes for weather radio, or the severity colour code.
-              - value_name: "layer:EC-MSC-SMC:1.0:Alert_Type"
-                value: "advisory"
-      nws_cap:
-        enabled: false
-
-    languages: # a list of languages that the feed can broadcast in. it is ordered by preference, with the first language being the first to broadcast, then switching to the next language in the list after a predefined interval or when there are no more items to broadcast in the current language. this allows for multilingual broadcasts without needing separate feeds for each language.
-      en-CA:
-        interval: 0 # number of consecutive times to broadcast in this language before switching to the next language in the list. if it is 0, 1, or undefined, it will broadcast all items in this language once before switching to the next language.
-      #fr-CA:
-      #  interval: 0
-
-    description: # for station identification.
-      en-CA:
-        text: "This is an automated broadcast, servicing the city of Saskatoon with the latest weather alerts and forecasts originating from Environment Canada."
-        suffix: "This service is not affiliated with Environment Canada."
-
-      fr-CA:
-        text: "Ceci est une diffusion automatisée desservant la ville de Saskatoon avec les dernières alertes météorologiques et prévisions provenant d'Environnement Canada."
-        suffix: "Ce service n'est pas affilié à Environnement Canada."
-    
-    locations: # first one is the primary service location, used for SAME headers and other location-based features. additional locations can be added for broader coverage. required test and service-wide alerts will include all SAME location codes from all locations in the feed.
-
-    # ID: Either an Environment Canada City Page ID, a National Weather Service County/Zone code, or an IATA (METAR) station ID for both NWS and TWC.
-
-    # FORECAST_REGION: Either a Canadian Location Code (CLC) for ECCC paired with a City Page code. Or a NWS zone code paired with a county code. forecast_region is required for alert matching, but ECCC/NWS data depend on the id.
-
-    # SOURCE: Use ECCC's City Page product, or use the National Weather Service API. if using ECCC, the id must be an Environment Canada City Page ID. if using NWS or TWC, the id must be an IATA (METAR) station ID.
-
-    # NAME_OVERRIDE: sometimes, a given source wont provide a location name within the API response. such as the NWS API (because it is designed for American locations and not Canadian ones), or the weather.com/TWC API (because location names are provided in a different endpoint that this app does not currently integrate with). in these cases, you can provide a name override here to specify the location name to use for this location for this feed. if not provided, it will default to the station ID. which is not ideal. like DirecTV Local On The 8s type ideal.
-
-      - observationLocations:
-        - id: sk-40 # Saskatoon
-          source: eccc
-        - id: sk-1 # Rosthern
-          source: eccc
-        - id: sk-6 # Humboldt
-          source: eccc
-        - id: CWIW # Watrous
-          source: twc
-
-      - forecastLocations:
-        - id: sk-40 # Saskatoon
-          forecast_region: "065100"
-          source: eccc
-        - id: sk-1
-          forecast_region: "065400-06543*" # can use wild card to match multiple subregions within the same region. in this case, it would include the R.M.s of 065431 to 065436.
-          source: eccc
-        - id: sk-49
-          forecast_region: "065500-065521" # can include a subregion code to target a specific region only for weather alerts.
-          source: eccc
-
-      - airQualityLocations:
-        - id: HAHJJ
-          source: eccc
-          
-      - climateLocations:
-        # ID: Environment Canada virtual climate station id for LTCE daily records.
-        # CITYPAGE_ID: optional explicit WXO/citypage id used to pull regional normals. if omitted, haze derives it from the climate id when they share the same base code, for example VSSK40V -> sk-40.
-        - id: VSSK40V
-          source: eccc
-          # citypage_id: sk-40
-
-    output: # multiple outputs can be configured
-      stream:
-        enabled: true
-        type: icecast
-        mount: # blank will use /{feed_id}
-        host: icecast.almora.tv
-        port: 8443
-        username: source
-        password: aluser
-        ssl: false
-        format: opus
-        bitrate_kbps: 32 # audio bitrate
-      
-      udp:
-        enabled: false
-        ip: 0.0.0.0
-        port: 8898
-        format: mpegts
-        bitrate_kbps: 96 # audio bitrate
-        vcodec: # video codec for mpegts streaming. leave blank for audio only.
-        acodec: aac # audio codec for mpegts streaming. leave blank for pcm audio.
-      
-      rtp:
-        enabled: false
-        ip: 172.16.1.37
-        port: 8899
-        format: rtp
-        bitrate_kbps: 32 # audio bitrate
-        vcodec: # video codec for rtp streaming. leave blank for audio only.
-        acodec: libopus # audio codec for rtp streaming. leave blank for pcm audio.
-      
-      rtmp:
-        enabled: false
-        url: rtmp://localhost/live/stream
-        format: flv
-        bitrate_kbps: 32 # audio bitrate
-        vcodec: libx264 # video codec for rtmp streaming. leave blank for audio only.
-        acodec: aac # audio codec for rtmp streaming. leave blank for pcm audio.
-      
-      srt:
-        enabled: false
-        url: srt://localhost:12345
-        format: mpegts
-        bitrate_kbps: 32 # audio bitrate
-        vcodec: libx265 # video codec for srt streaming. leave blank for audio only.
-        acodec: aac # audio codec for srt streaming. leave blank for pcm audio.
-      
-      rtsp:
-        enabled: false
-        url: rtsp://localhost:8554/stream
-        format: rtsp
-        bitrate_kbps: 32 # audio bitrate
-        vcodec: libx264 # video codec for rtsp streaming. leave blank for audio only.
-        acodec: aac # audio codec for rtsp streaming. leave blank for pcm audio.
-      
-      webrtc:
-        enabled: false
-        port: 8765
-        format: opus
-        bitrate_kbps: 32 # audio bitrate
-        vcodec: libx264 # video codec for webrtc streaming. leave blank for audio only.
-        acodec: aac # audio codec for webrtc streaming. leave blank for pcm audio.
-
-
-      audio_device:
-        enabled: false
-        device_name: null # if null, the default audio output device will be used. otherwise, specify the name of the audio output device to use for playback. this can be found using tools like `aplay -l` on linux or `ffmpeg -hide_banner -list_devices true -f dshow -i dummy` on windows.
-
-      PiFmAdv: # this only works on linux
-        bin_root: /home/rai/PiFmAdv/src # root directory of the PiFmAdv binary on your local machine or the remote machine if using ssh.
-        enabled: false # enable this output?
-        frequency_mhz: 162.450 # frequency to broadcast on in hertz.
-        tx_power: 7 # transmission power level from 0 to 7. 0 is the lowest power and 7 is the highest. the actual range will depend on your hardware and antenna setup.
-        alternative_frequencies: [] # PiAdvFm accepts this parameter but i dont know how to use it. so ill just pass whatever you put here to the binary.
-        bandwidth_hz: 12500 # bandwidth of the actual transmitted signal
-        deviation_hz: 5000 # frequency deviation for fm modulation.
-        ssh: # i have this wonderful idea where i can have the audio generated on a more powerful machine and then use ssh to run the PiFmAdv binary on the raspberry pi
-        #      and stream raw pcm to it 
-          enabled: true # if false, the PiFmAdv binary will be run locally on the same machine as this app. if true, the binary will be run on a remote machine over ssh.
-          ffmpeg_bin: ffmpeg # path to ffmpeg binary on this machine (local). if it is in the PATH, then just the name of the binary is fine.
-          ssh_bin: ssh
-          host: 172.16.1.37
-          port: 22
-          username: rai
-          password:
-          public_key_path: ~/.ssh/almora
-  
-  - id: sk-0002
-    callsign: VBP687
-    enabled: false
-    timezone: America/Regina
-
-    playout: [
-      priority: true, # priority queue is used for alerts and chimes.
-      routine: true, # routine queue is used for playout of regular packages like forecasts and current conditions.
-      same: true,
-      chimes: true,
-      packages: [], # enable or disable packages regardless of global settings. none for default. asterisk for all packages.
-    ]
-
-    alerts:
-      cap_cp:
-        enabled: true
-        filter:
-          use_feed_locations: true
-          blocklist:
-            severity: ["Minor", "Unknown"]
-            certainty: ["Unknown", "Past"]
-            naads_events: ["fog"]
-            urgency: []
-            status: []
-            scope: []
-            other:
-              - value_name: "layer:EC-MSC-SMC:1.0:Alert_Type"
-                value: "advisory"
-      nws_cap:
-        enabled: false
-    
-    languages:
-      en-CA:
-        interval: 0
-    
-    description: # for station identification.
-      en-CA:
-        text: "This broadcast provides service to the Lake Diefenbaker area, including the communities of Elbow, Outlook, and Lucky Lake."
-        suffix: "This service is not affiliated with Environment Canada"
-    
-    locations:
-      - observationLocations:
-        - id: sk-18 # Elbow
-          source: eccc
-        - id: sk-37 # Outlook
-          source: eccc
-        - id: sk-14 # Lucky Lake
-          source: eccc
-          
-      - forecastLocations:
-        - id: sk-18 # Elbow
-          forecast_region: "065500-065524"
-          source: eccc
-        - id: sk-37 # Outlook
-          forecast_region: "065500-065522-06552*"
-          source: eccc
-        - id: sk-24 # Moose Jaw
-          forecast_region: "062200-065526-06221*"
-          source: eccc
-
-    output: # multiple outputs can be configured
-      stream:
-        enabled: true
-        type: icecast
-        mount: # blank will use /{feed_id}
-        host: icecast.almora.tv
-        port: 8443
-        username: source
-        password: aluser
-        ssl: false
-        format: opus
-        bitrate_kbps: 32 # audio bitrate
-
-  - id: naads-catchall # this feed is supposed to have no actual content of its own, but broadcasts all naads alerts.
-    # haze can also act as a standalone CAP alert aggregator/EAS encoder to be fed into a broadcast chain just like any regular hardware SAGE DIGITAL ENDEC or DASDEC would do.
-    callsign: SSPWXR
-    enabled: false
-    timezone: America/Regina
-
-    playout:
-      routine: false
-      same: true
-
-    alerts:
-      cap_cp:
-        enabled: true
-        filter:
-          use_feed_locations: false # accept all CAP-CP alerts regardless of feed locations or blocklists, since this feed is a catchall.
-      nws_cap:
-        enabled: false
-    
-    description: # for station identification.
-      en-CA:
-        text: "EMERGENCY ALERT CHANNEL FOR METEOCHANNEL."
-
-    locations:
-      - forecastLocations:
-        - forecast_region: "06*" # stub forecast location entry to enable all feed locations
-        - forecast_region: "07*"
-        - forecast_region: "05*"
-        - forecast_region: "08*"
-    
-    output: # multiple outputs can be configured, none for only audio file generation without playout, streaming, or broadcasting. if multiple outputs are enabled, the same audio will be sent to all of them simultaneously.
-      stream:
-        enabled: false
-        type: icecast
-        mount: # blank will use /{feed_id}
-        host: icecast.almora.tv
-        port: 8443
-        username: source
-        password: aluser
-        ssl: false
-        format: vp9
-        bitrate_kbps: 32
-      
-      udp:
-        enabled: true
-        ip: 127.0.0.1
-        port: 8898
-        format: mpegts
-        bitrate_kbps: 64 # audio bitrate
-        vrate_kbps: 2000 # video bitrate for mpegts streaming. ignored if vcodec is blank.
-        vcodec: mpeg2video # video codec for mpegts streaming. leave blank for audio only.
-        acodec: ac3 # audio codec for mpegts streaming. leave blank for pcm audio.
-      
-      framebuffer:
-        enabled: false
-        path: /dev/fb0 # output directly to a linux framebuffer device. JUST LIKE THE DASDEC.
-      
-      dri:
-        enabled: false
-        path: /dev/dri/card0
-      
-      v4l2:
-        enabled: false
-        device: /dev/video0 # output to a v4l2 loopback device for use with software like OBS or Zoom. not really sure what the use case for this is but hey its an option now.
-      
-      rtp:
-        enabled: false
-        ip: 127.0.0.1
-        port: 8899
-        format: rtp_mpegts
-        bitrate_kbps: 96 # audio bitrate
-        vrate_kbps: 2000 # video bitrate for rtp streaming. ignored if vcodec is blank.
-        vcodec: mpeg2video # video codec for rtp streaming. leave blank for audio only.
-        acodec: aac # audio codec for rtp streaming. leave blank for pcm audio.
-
-      audio_device:
-        enabled: false
-        device_name: null
-
-      PiFmAdv:
-        enabled: false
+feeds_file: ./managed/feeds.xml
 
 cap:
   cap_cp:
@@ -439,7 +130,7 @@ cap:
 
 video: # haze can output a video stream to accompany emergency alerts like what youd see on television.
   - feed: naads-catchall # the feed to output the video stream for. if an alert goes out on this feed, the alert crawl or fullscreen alert will be overlaid on the video stream output defined below.
-    enabled: false
+    enabled: true
     width: 1920
     height: 1080
     fps: 29.97
@@ -556,19 +247,29 @@ network:
   requests:
     poll_interval_seconds: 2700
     read_timeout_seconds: 15
-
 tts:
-  default_backend: piper
+  default_backend: pyttsx3
   piper:
     acceleration: auto # auto, cpu, cuda, or rocm. auto prefers CUDA when the active onnxruntime build exposes CUDAExecutionProvider.
+
+  pyttsx3:
+    enabled: true
+    voice: "VE_American_English_Tom_22kHz"
+    rate: 195
+    volume: 1.0
 
   lang:
     en-CA:
       backend:
+        pyttsx3:
+          #male:
+          #  voice: "VE_American_English_Tom_22kHz"
+          #  volume: 1.0
+          #  rate: 195
         piper:
           male:
             model: ./piper-tts/en_US-hfc_male-medium.onnx
-            speaker: 16 # 0 for default speaker, or the index of the speaker in the model if it contains multiple speakers.
+            speaker: 1
             config: ./piper-tts/en_US-hfc_male-medium.onnx.json
           female:
             model: ./piper-tts/en_US-lessac-medium.onnx
@@ -582,12 +283,6 @@ tts:
             speaker: 1
             config: ./piper-tts/fr_FR-upmc-medium.onnx.json
           female: None
-
-  pyttsx3:
-    enabled: true
-    voice: english
-    rate: 180
-    volume: 1.0
 
   fallback_order:
     - piper

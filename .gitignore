@@ -8,3 +8,4 @@ audio/static
 piper-tts/*
 logs/*
 twc.yaml
+.env
