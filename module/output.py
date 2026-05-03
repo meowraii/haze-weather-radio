@@ -59,6 +59,7 @@ _CODEC_MAP: dict[str, tuple[str, str, str]] = {
 }
 
 _STREAM_DYNAMICS = (
+    'volume=0.65,'
     'highpass=f=110,'
     'equalizer=f=140:t=q:w=1.0:g=2.5,'
     'equalizer=f=220:t=q:w=1.0:g=2.0,'
@@ -68,13 +69,13 @@ _STREAM_DYNAMICS = (
     'equalizer=f=2400:t=q:w=0.8:g=1.5,'
     'lowpass=f=3400,'
     'acompressor=threshold=-18dB:ratio=6:attack=8:release=140:makeup=2dB,'
-    'alimiter=limit=0.90,'
+    'alimiter=limit=0.80,'
 )
 
 _RADIO_DYNAMICS = (
     _STREAM_DYNAMICS
     + 'lowpass=f=2800,'
-    + 'volume=2.8,'
+    + 'volume=2.95,'
 )
 
 _PIFMADV_PREFILL_CHUNKS = 10
@@ -1318,6 +1319,7 @@ class PiFmAdvSink:
         self._last_restart_time = 0.0
         self._consecutive_failures = 0
         self._restart_delay = _PIFMADV_INITIAL_RESTART_DELAY
+        self._restarting: bool = False
         self._start()
         log.info('PiFmAdv sink started: %s ssh=%s', self._label, ssh_host if self._use_ssh else 'disabled')
 
@@ -1339,15 +1341,23 @@ class PiFmAdvSink:
             time.sleep(0.5)
             self._ffmpeg = subprocess.Popen(
                 self._ffmpeg_cmd,
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                 bufsize=0,
             )
+            threading.Thread(
+                target=self._drain_stderr, args=(self._ffmpeg,),
+                daemon=True, name=f'pifm-stderr:{self._label}',
+            ).start()
         else:
             self._ffmpeg = subprocess.Popen(
                 self._ffmpeg_cmd,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 bufsize=0,
             )
+            threading.Thread(
+                target=self._drain_stderr, args=(self._ffmpeg,),
+                daemon=True, name=f'pifm-stderr:{self._label}',
+            ).start()
             self._fm = subprocess.Popen(
                 self._fm_cmd,
                 stdin=self._ffmpeg.stdout,
@@ -1356,6 +1366,23 @@ class PiFmAdvSink:
             if self._ffmpeg.stdout is not None:
                 self._ffmpeg.stdout.close()
             time.sleep(0.2)
+
+    _FFMPEG_DEBUG_PATTERNS = ('clipping', 'Past duration', 'DTS', 'PTS')
+
+    def _drain_stderr(self, proc: subprocess.Popen) -> None:
+        if proc.stderr is None:
+            return
+        try:
+            for raw in proc.stderr:
+                line = raw.decode(errors='replace').rstrip()
+                if not line:
+                    continue
+                if any(p in line for p in self._FFMPEG_DEBUG_PATTERNS):
+                    log.debug('PiFmAdv [ffmpeg %s]: %s', self._label, line)
+                else:
+                    log.warning('PiFmAdv [ffmpeg %s]: %s', self._label, line)
+        except Exception:
+            pass
 
     def _local_cleanup(self) -> None:
         if self._use_ssh or _IS_WINDOWS:
@@ -1422,21 +1449,26 @@ class PiFmAdvSink:
             ffmpeg = self._ffmpeg
         if ffmpeg is None or ffmpeg.stdin is None or ffmpeg.poll() is not None:
             raise BrokenPipeError('PiFmAdv: ffmpeg stdin unavailable')
-        ffmpeg.stdin.write(pcm)
+        stdin = ffmpeg.stdin
+        stdin.write(pcm)
 
     async def _handle_write_failure(self, exc: Exception, reason: str) -> None:
-        if self._closed:
+        if self._closed or self._restarting:
             return
+        self._restarting = True
         self._consecutive_failures += 1
         delay = min(self._restart_delay, _PIFMADV_MAX_RESTART_BACKOFF)
         log.warning(
             'PiFmAdv: %s on %s (attempt %d): %s — restarting in %.1fs',
             reason, self._label, self._consecutive_failures, exc, delay,
         )
-        await asyncio.sleep(delay)
-        self._restart_delay = min(self._restart_delay * 2.0, _PIFMADV_MAX_RESTART_BACKOFF)
         try:
+            await asyncio.sleep(delay)
+            if self._closed:
+                return
+            self._restart_delay = min(self._restart_delay * 2.0, _PIFMADV_MAX_RESTART_BACKOFF)
             await asyncio.to_thread(self._restart)
+            log.info('PiFmAdv: restart complete on %s', self._label)
         except RuntimeError as restart_exc:
             exc_str = str(restart_exc).lower()
             if 'cannot schedule new futures after shutdown' in exc_str or 'event loop is closed' in exc_str:
@@ -1444,9 +1476,11 @@ class PiFmAdvSink:
             log.error('PiFmAdv: restart failed on %s: %s', self._label, restart_exc)
         except Exception as restart_exc:
             log.error('PiFmAdv: restart failed on %s: %s', self._label, restart_exc)
+        finally:
+            self._restarting = False
 
     async def write(self, pcm: bytes) -> None:
-        if self._closed or not pcm:
+        if self._closed or not pcm or self._restarting:
             return
 
         with self._proc_lock:
