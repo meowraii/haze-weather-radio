@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import logging
 import pathlib
 import wave
 from datetime import datetime
 from typing import Any
+import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
 from module.buffer import CHANNELS, SAMPLE_RATE
+from module.packages import Package_Config
 from module.tts import synthesize_pcm
 
 log = logging.getLogger(__name__)
 
 _CACHE_PATH = pathlib.Path('managed') / 'staticPhrases.json'
 _STATIC_ROOT = pathlib.Path('audio') / 'static'
+_READERS_PATH = pathlib.Path('managed') / 'configs' / 'readers.xml'
 
 _HOURS_EN: dict[int, str] = {
     1: 'one', 2: 'two', 3: 'three', 4: 'four', 5: 'five',
@@ -116,6 +120,135 @@ _LANG_CATALOGS: dict[str, dict[str, str]] = {
 
 _cache: dict[str, Any] = {}
 _date_clip_cache: dict[tuple[str, str], bytes] = {}
+_readers_cache: dict[str, dict[str, Any]] | None = None
+
+
+def _readers() -> dict[str, dict[str, Any]]:
+    global _readers_cache
+    if _readers_cache is not None:
+        return _readers_cache
+
+    readers: dict[str, dict[str, Any]] = {}
+    if not _READERS_PATH.exists():
+        _readers_cache = readers
+        return readers
+
+    try:
+        root = ET.parse(_READERS_PATH).getroot()
+    except Exception as exc:
+        log.warning('Failed to parse readers config %s: %s', _READERS_PATH, exc)
+        _readers_cache = readers
+        return readers
+
+    for reader_el in root.findall('reader'):
+        reader_id = str(reader_el.get('id') or '').strip()
+        if not reader_id:
+            continue
+        provider = str(reader_el.get('provider') or 'piper').strip().lower() or 'piper'
+        gender = str((reader_el.findtext('gender') or 'male')).strip().lower() or 'male'
+        language = str((reader_el.findtext('language') or '')).strip()
+        path = str((reader_el.findtext('path') or '')).strip()
+        if not path:
+            continue
+        readers[reader_id] = {
+            'id': reader_id,
+            'provider': provider,
+            'gender': 'female' if gender == 'female' else 'male',
+            'language': language,
+            'path': path,
+        }
+
+    _readers_cache = readers
+    return readers
+
+
+def _resolve_piper_reader_path(base_path: str) -> tuple[str, str | None]:
+    candidate = pathlib.Path(base_path)
+    model_candidates: list[pathlib.Path]
+
+    if candidate.suffix.lower() == '.onnx':
+        model_candidates = [candidate]
+    else:
+        model_candidates = [
+            candidate,
+            pathlib.Path(f'{base_path}.onnx'),
+            pathlib.Path('piper-tts') / f'{base_path}.onnx',
+            pathlib.Path('voices') / f'{base_path}.onnx',
+        ]
+
+    model_path: pathlib.Path = model_candidates[-1]
+    for item in model_candidates:
+        if item.exists():
+            model_path = item
+            break
+
+    config_candidates = [
+        model_path.with_suffix(model_path.suffix + '.json') if model_path.suffix else pathlib.Path(f'{model_path}.json'),
+        model_path.with_suffix('.onnx.json') if model_path.suffix != '.onnx' else model_path.with_suffix('.onnx.json'),
+        model_path.with_suffix('.json'),
+    ]
+    config_path: str | None = None
+    for cfg_path in config_candidates:
+        if cfg_path.exists():
+            config_path = str(cfg_path)
+            break
+
+    return str(model_path), config_path
+
+
+def _reader_for_package(pkg_id: str, lang: str) -> dict[str, Any] | None:
+    Package_Config.ensure_loaded()
+    profile = Package_Config.get_profile(pkg_id)
+    reader_id = str(profile.get('reader_id') or '').strip()
+    if not reader_id:
+        default_profile = Package_Config.get_profile('defaults')
+        reader_id = str(default_profile.get('reader_id') or '').strip()
+    if not reader_id:
+        return None
+
+    reader = _readers().get(reader_id)
+    if not reader:
+        log.warning('Reader id %s not found in %s', reader_id, _READERS_PATH)
+        return None
+
+    reader_lang = str(reader.get('language') or '').strip().lower()
+    if reader_lang and not lang.lower().startswith(reader_lang):
+        log.warning('Reader %s language %s does not match phrase language %s', reader_id, reader_lang, lang)
+    return reader
+
+
+def _reader_tts_config(config: dict[str, Any], lang: str, reader: dict[str, Any] | None) -> dict[str, Any]:
+    if not reader:
+        return config
+
+    cfg = copy.deepcopy(config)
+    tts_cfg = cfg.setdefault('tts', {})
+    lang_cfg = tts_cfg.setdefault('lang', {}).setdefault(lang, {}).setdefault('backend', {})
+    provider = str(reader.get('provider') or 'piper').strip().lower()
+    gender = str(reader.get('gender') or 'male').strip().lower()
+    voice_slot = 'female' if gender == 'female' else 'male'
+    reader_path = str(reader.get('path') or '').strip()
+
+    if provider == 'pyttsx3':
+        pyttsx3_cfg = tts_cfg.setdefault('pyttsx3', {})
+        pyttsx3_cfg['enabled'] = True
+        if reader_path:
+            pyttsx3_cfg['voice'] = reader_path
+            backend = lang_cfg.setdefault('pyttsx3', {})
+            backend[voice_slot] = {'voice': reader_path}
+        tts_cfg['fallback_order'] = ['pyttsx3']
+        return cfg
+
+    model_path, model_cfg = _resolve_piper_reader_path(reader_path)
+    piper_backend = lang_cfg.setdefault('piper', {})
+    slot_cfg = dict(piper_backend.get(voice_slot) or {})
+    slot_cfg['model'] = model_path
+    if model_cfg:
+        slot_cfg['config'] = model_cfg
+    slot_cfg.setdefault('speaker', 0)
+    piper_backend[voice_slot] = slot_cfg
+    tts_cfg['fallback_order'] = ['piper']
+    return cfg
 
 
 def _clip_path(lang: str, key: str) -> pathlib.Path:
@@ -194,17 +327,32 @@ def _save_cache(data: dict[str, Any]) -> None:
         json.dump(data, f, indent=2)
 
 
-def _tts_fingerprint(config: dict[str, Any], lang: str) -> dict[str, Any]:
-    tts_cfg = config.get('tts', {})
+def _tts_fingerprint(config: dict[str, Any], lang: str, reader: dict[str, Any] | None) -> dict[str, Any]:
+    effective_cfg = _reader_tts_config(config, lang, reader)
+    tts_cfg = effective_cfg.get('tts', {})
     provider = str((tts_cfg.get('fallback_order') or ['piper'])[0])
     backend_cfg = tts_cfg.get('lang', {}).get(lang, {}).get('backend', {}).get(provider, {})
-    voice_cfg = backend_cfg.get('male') or {}
+
+    if provider == 'pyttsx3':
+        pyttsx3_cfg = tts_cfg.get('pyttsx3', {}) if isinstance(tts_cfg.get('pyttsx3'), dict) else {}
+        voice = str(pyttsx3_cfg.get('voice', ''))
+        return {
+            'provider': provider,
+            'voice': voice,
+            'reader_id': str((reader or {}).get('id', '')),
+        }
+
+    voice_slot = 'female' if str((reader or {}).get('gender') or 'male').strip().lower() == 'female' else 'male'
+    voice_cfg = backend_cfg.get(voice_slot) or backend_cfg.get('male') or {}
     if not isinstance(voice_cfg, dict):
         voice_cfg = {}
     return {
         'provider': provider,
         'model': str(voice_cfg.get('model', '')),
+        'config': str(voice_cfg.get('config', '')),
         'speaker': int(voice_cfg.get('speaker') or 0),
+        'reader_id': str((reader or {}).get('id', '')),
+        'voice_slot': voice_slot,
     }
 
 
@@ -216,7 +364,9 @@ def _langs_for_feed(feed: dict[str, Any]) -> list[str]:
 
 
 def _init_lang_clips(config: dict[str, Any], cache: dict[str, Any], lang: str, catalog: dict[str, str]) -> None:
-    fingerprint = _tts_fingerprint(config, lang)
+    reader = _reader_for_package('date_time', lang)
+    synth_cfg = _reader_tts_config(config, lang, reader)
+    fingerprint = _tts_fingerprint(config, lang, reader)
     cached_fingerprint = cache['tts_config'].get(lang, {})
     force_rebuild = cached_fingerprint != fingerprint
 
@@ -232,7 +382,7 @@ def _init_lang_clips(config: dict[str, Any], cache: dict[str, Any], lang: str, c
         lang_clips[key] = str(path)
 
         if force_rebuild or not path.exists():
-            pcm = synthesize_pcm(config, text, lang=lang)
+            pcm = synthesize_pcm(synth_cfg, text, lang=lang, voice=reader.get('gender') if reader else None)
             if pcm:
                 _write_pcm_as_wav(path, pcm)
                 synthesized += 1
@@ -250,9 +400,11 @@ def _init_feed_clips(config: dict[str, Any], cache: dict[str, Any], feed: dict[s
     from module.packages import station_id as gen_station_id
 
     feed_id = feed.get('id', '')
+    reader = _reader_for_package('station_id', lang)
+    synth_cfg = _reader_tts_config(config, lang, reader)
     text = gen_station_id(config, feed_id, lang)
     text_hash = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
-    fingerprint = {**_tts_fingerprint(config, lang), 'text_hash': text_hash}
+    fingerprint = {**_tts_fingerprint(config, lang, reader), 'text_hash': text_hash}
 
     cached = cache.get('feed_clip_config', {}).get(feed_id, {}).get(lang, {})
     sid_path = _STATIC_ROOT / 'feeds' / feed_id / lang / 'station_id.wav'
@@ -264,7 +416,7 @@ def _init_feed_clips(config: dict[str, Any], cache: dict[str, Any], feed: dict[s
     if cached != fingerprint or not sid_path.exists():
         if cached != fingerprint:
             log.info('Station ID config/text changed for %s [%s] — rebuilding', feed_id, lang)
-        pcm = synthesize_pcm(config, text, lang=lang)
+        pcm = synthesize_pcm(synth_cfg, text, lang=lang, voice=reader.get('gender') if reader else None)
         if pcm:
             _write_pcm_as_wav(sid_path, pcm)
             feed_clip_cfg[lang] = fingerprint

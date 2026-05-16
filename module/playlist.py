@@ -260,7 +260,7 @@ def _playlist_order(config: dict[str, Any]) -> list[str]:
             order.append(entry)
             continue
         if isinstance(entry, dict):
-            pkg_id = next((key for key in entry if key != 'ttl'), None)
+            pkg_id = next(iter(entry.keys()), None)
             if pkg_id:
                 order.append(pkg_id)
     return [pkg_id for pkg_id in order if pkg_id != 'date_time']
@@ -325,16 +325,11 @@ def _date_time_schedule_cfg(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pkg_voice(pkg_id: str) -> str | None:
-    pkg_cfg = Package_Config.per_package.get(pkg_id, {})
-    voice = pkg_cfg.get('use_voice')
-    if isinstance(voice, str) and voice:
-        return voice
-    return None
+    return Package_Config.get_voice(pkg_id)
 
 
 def _pkg_allowed_in_lang(pkg_id: str, lang: str) -> bool:
-    allowed_langs = Package_Config.per_package.get(pkg_id, {}).get('lang')
-    return allowed_langs is None or lang in allowed_langs
+    return Package_Config.is_lang_allowed(pkg_id, lang)
 
 
 def _estimate_duration(text: str) -> float:

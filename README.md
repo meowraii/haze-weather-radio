@@ -1,6 +1,6 @@
 # haze-weather-radio
 ## Unified, Modern, and Open Platform for emergency communications and weather broadcasting
-A full-stack Python project that generates, manages, and broadcasts weather radio systems and broadcast emergency alert systems. It currently supports Environment Canada data feeds for weather information, and supports Pelmorex NAADS CAP-CP, and NWS ATOM feeds for weather alerts. It uses Piper-TTS for text-to-speech generation, and can broadcast either audio or video streams with alert overlays to local network interfaces, Icecast servers, or directly to on-air broadcasting hardware. For experimentation, Haze also has the ability to remotely or locally control a PiFmAdv instance on a Raspberry Pi for direct on-air FM/Weather Band broadcasting. The project is designed with modularity and extensibility in mind, allowing for easy integration of additional data sources, TTS engines, and output methods in the future.
+A full-stack Python project that generates, manages, and broadcasts weather radio systems and broadcast emergency alert systems. It currently supports Environment Canada data feeds for weather information, and supports Pelmorex NAADS CAP-CP, and NWS ATOM feeds for weather alerts. It uses Piper-TTS for text-to-speech generation, and can broadcast either audio or video streams with alert overlays to local network interfaces, Icecast servers, or directly to on-air broadcasting hardware. The project is designed with modularity and extensibility in mind, allowing for easy integration of additional data sources, TTS engines, and output methods in the future.
 
 # Why
 On March 16, 2026, Environment Canada shut down their Weatheradio Canada service, which provided weather radio broadcasts across the country. In response to this, I decided to create Haze Weather Radio as a replacement for the service, using publicly available data feeds and open-source tools. My goal is to provide a free and accessible weather radio service for Canadians, and to keep the spirit of Weatheradio Canada alive in a new and modernized form. As well as emphasize the importance of redundancy, accessibility, and reliability in public safety communications, and to demonstrate how technology can be used to fill gaps in public services when they arise.
@@ -16,7 +16,7 @@ I, the developer of Haze Weather Radio, disclaim any responsibility for misuse o
 - API via FastAPI, with a web interface for monitoring, and alert origination and management.
 - Support for multiple languages and localization.
 - In-app support for English, French, and Spanish, with the ability to add more languages via configuration.
-- Support for multiple output methods including Icecast streaming, local audio playback, and on-air broadcasting via PiFmAdv.
+- Support for multiple output methods including Icecast streaming, local audio playback, and network video/audio sinks (UDP/RTP/RTMP/SRT/RTSP).
 - Integration with official CAP feeds such as NAADS (Alert Ready/NPAS) for real-time weather alerts.
 - The Weather On-Demand interface allows applications to generate custom audio packages for specific locations and conditions on demand. (e.g. An IVR system that provides weather updates for a caller's location, or a smart home device that announces weather forecasts in the morning.)
 - Weather data from ECCC, TWC, and NWS APIs.

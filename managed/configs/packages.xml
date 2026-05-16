@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Packages version="1">
+  <defaults>
+    <enabled>true</enabled>
+    <reader_id>000</reader_id>
+  </defaults>
+
+  <package id="date_time" enabled="true">
+    <voice>female</voice>
+  </package>
+
+  <package id="station_id" enabled="true">
+    <voice>female</voice>
+  </package>
+
+  <package id="current_conditions" enabled="true" />
+
+  <package id="forecast" enabled="true">
+    <voice>female</voice>
+  </package>
+
+  <package id="air_quality" enabled="true">
+    <voice>female</voice>
+  </package>
+
+  <package id="climate_summary" enabled="true">
+    <voice>female</voice>
+  </package>
+
+  <package id="eccc_discussion" enabled="true">
+    <languages>
+      <lang>en-CA</lang>
+    </languages>
+  </package>
+
+  <package id="geophysical_alert" enabled="true">
+    <voice>female</voice>
+    <languages>
+      <lang>en-CA</lang>
+    </languages>
+  </package>
+
+  <package id="alerts" enabled="true" />
+
+  <package id="user_bulletin" enabled="true" />
+</Packages>
