@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 import wave
+import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from typing import Any, Generator, Optional, Protocol, cast
 from urllib.parse import unquote, urlparse
@@ -32,9 +33,11 @@ CHANNELS = _MODULE_CONFIG.get('playout', {}).get('channels', 1)
 BYTES_PER_SAMPLE = 2
 
 _DICT_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'dictionary.json'
+_READERS_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'configs' / 'readers.xml'
 _DICT_MB_RE = re.compile(r'(\d+)\s+MB\b')
 _loaded_dictionary: dict[str, dict[str, str]] | None = None
 _compiled_dictionary: dict[str, list[tuple[re.Pattern[str], str]]] = {}
+_readers_cache: list[dict[str, str]] | None = None
 
 
 def _load_dictionary() -> dict[str, dict[str, str]]:
@@ -390,6 +393,111 @@ def _normalize_piper_acceleration(value: Any) -> str:
     return aliases.get(normalized, normalized)
 
 
+def _load_readers() -> list[dict[str, str]]:
+    global _readers_cache
+    if _readers_cache is not None:
+        return _readers_cache
+
+    readers: list[dict[str, str]] = []
+    if not _READERS_PATH.exists():
+        _readers_cache = readers
+        return readers
+
+    try:
+        root = ET.parse(_READERS_PATH).getroot()
+    except Exception as exc:
+        log.warning('Failed to parse readers config %s: %s', _READERS_PATH, exc)
+        _readers_cache = readers
+        return readers
+
+    for reader_el in root.findall('reader'):
+        provider = str(reader_el.get('provider') or '').strip().lower()
+        if provider != 'piper':
+            continue
+        language = str(reader_el.findtext('language') or '').strip().lower().replace('_', '-')
+        gender = str(reader_el.findtext('gender') or 'male').strip().lower()
+        path = str(reader_el.findtext('path') or '').strip()
+        if not path:
+            continue
+        readers.append({
+            'provider': provider,
+            'language': language,
+            'gender': 'female' if gender == 'female' else 'male',
+            'path': path,
+        })
+
+    _readers_cache = readers
+    return readers
+
+
+def _resolve_reader_model(path_value: str) -> tuple[str, str | None]:
+    base = pathlib.Path(path_value)
+    if base.suffix.lower() == '.onnx':
+        model_candidates = [base, pathlib.Path('voices') / base.name, pathlib.Path('piper-tts') / base.name]
+    else:
+        model_candidates = [
+            base,
+            pathlib.Path(f'{path_value}.onnx'),
+            pathlib.Path('voices') / f'{path_value}.onnx',
+            pathlib.Path('piper-tts') / f'{path_value}.onnx',
+        ]
+
+    model_path = ''
+    for candidate in model_candidates:
+        if candidate.exists():
+            model_path = str(candidate)
+            break
+
+    if not model_path:
+        fallback = pathlib.Path('voices') / f'{path_value}.onnx'
+        model_path = str(fallback)
+
+    model_file = pathlib.Path(model_path)
+    cfg_candidates = [
+        pathlib.Path(f'{model_path}.json'),
+        model_file.with_suffix('.onnx.json'),
+        model_file.with_suffix('.json'),
+    ]
+    cfg_path: str | None = None
+    for cfg in cfg_candidates:
+        if cfg.exists():
+            cfg_path = str(cfg)
+            break
+
+    return model_path, cfg_path
+
+
+def _reader_piper_cfg(lang: str, voice: str | None) -> dict[str, Any] | None:
+    readers = _load_readers()
+    if not readers:
+        return None
+
+    normalized_lang = str(lang or '').strip().lower().replace('_', '-')
+    lang_prefix = normalized_lang.split('-', 1)[0]
+    desired_gender = str(voice or 'male').strip().lower()
+    desired_gender = 'female' if desired_gender == 'female' else 'male'
+
+    exact_lang = [r for r in readers if r['language'] == normalized_lang]
+    prefix_lang = [r for r in readers if r['language'] and r['language'].split('-', 1)[0] == lang_prefix]
+    unspecified_lang = [r for r in readers if not r['language']]
+
+    search_groups = [exact_lang, prefix_lang, unspecified_lang, readers]
+    for group in search_groups:
+        if not group:
+            continue
+        gender_match = [r for r in group if r.get('gender') == desired_gender]
+        selected = gender_match[0] if gender_match else group[0]
+        model_path, config_path = _resolve_reader_model(str(selected['path']))
+        if not pathlib.Path(model_path).exists():
+            continue
+        result: dict[str, Any] = {'model': model_path, 'speaker': 0}
+        if config_path:
+            result['config'] = config_path
+        return result
+
+    return None
+
+
 def _resolve_piper_runtime(config: dict[str, Any]) -> tuple[bool, str]:
     requested = _normalize_piper_acceleration(config.get('tts', {}).get('piper', {}).get('acceleration'))
     available = list(ort.get_available_providers()) if ort is not None else []
@@ -484,9 +592,9 @@ def _resolve_piper_config(ctx: dict) -> dict | None:
     v_cfg = lang_map.get(voice_type)
     if not isinstance(v_cfg, dict):
         v_cfg = lang_map.get('male') if isinstance(lang_map.get('male'), dict) else lang_map.get('female')
-    if not isinstance(v_cfg, dict) or not v_cfg.get('model'):
-        return None
-    return v_cfg
+    if isinstance(v_cfg, dict) and v_cfg.get('model'):
+        return v_cfg
+    return _reader_piper_cfg(str(ctx.get('lang') or 'en-CA'), ctx.get('voice'))
 
 
 def _piper_spec(ctx: dict, v_cfg: dict) -> Any:

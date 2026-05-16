@@ -26,7 +26,7 @@ from module.events import (
 from module.packages import date_time_package, station_id
 from module.output import (
     AudioDeviceSink, FileSink, FramebufferSink, DriSink, V4L2Sink,
-    IcecastSink, PiFmAdvSink, RtmpSink, RtpSink, RtspSink, SrtSink, UdpSink,
+    IcecastSink, RtmpSink, RtpSink, RtspSink, SrtSink, UdpSink,
 )
 from module.video import VideoIcecastSink, _VIDEO_FORMATS
 from module.buffer import CHANNELS, SAMPLE_RATE, AudioPipeline, OnSegmentStart
@@ -502,14 +502,14 @@ async def feed_runner(
         'started_at': datetime.datetime.now(datetime.UTC).isoformat(),
     })
 
-    if output_cfg.get('stream', {}).get('enabled'):
+    stream_cfg_raw = output_cfg.get('stream')
+    if isinstance(stream_cfg_raw, dict) and stream_cfg_raw.get('enabled'):
         try:
-            raw_stream_cfg = output_cfg['stream']
-            stream_fmt = str(raw_stream_cfg.get('format', 'opus'))
+            stream_fmt = str(stream_cfg_raw.get('format', 'opus'))
             if stream_fmt in _VIDEO_FORMATS:
                 video_cfg = _find_video_cfg(config, feed_id)
                 if video_cfg:
-                    vsink = VideoIcecastSink(feed, video_cfg, raw_stream_cfg)
+                    vsink = VideoIcecastSink(feed, video_cfg, stream_cfg_raw)
                     pipeline.attach_sink(vsink, name=f'{feed_id}:video')
                     alert_start_cbs.append(vsink.on_alert_start)
                     alert_end_cbs.append(vsink.on_alert_end)
@@ -520,7 +520,7 @@ async def feed_runner(
                     )
             else:
                 stream_cfg = {
-                    **raw_stream_cfg,
+                    **stream_cfg_raw,
                     'feed_id': feed_id,
                     'stream_name': stream_identity,
                     'stream_description': stream_description,
@@ -535,27 +535,22 @@ async def feed_runner(
         except Exception:
             log.exception('Failed to start stream sink for %s', feed_id)
 
-    if output_cfg.get('audio_device', {}).get('enabled'):
+    audio_device_cfg = output_cfg.get('audio_device')
+    if isinstance(audio_device_cfg, dict) and audio_device_cfg.get('enabled'):
         try:
-            sink = AudioDeviceSink(output_cfg['audio_device'].get('name'))
+            sink = AudioDeviceSink(audio_device_cfg.get('name'))
             pipeline.attach_sink(sink, name=f'{feed_id}:audio_device')
         except Exception:
             log.exception('Failed to start audio device sink for %s', feed_id)
 
-    if output_cfg.get('file', {}).get('enabled'):
+    file_sink_cfg = output_cfg.get('file')
+    if isinstance(file_sink_cfg, dict) and file_sink_cfg.get('enabled'):
         try:
             path = _build_file_path(config, feed)
             sink = FileSink(path)
             pipeline.attach_sink(sink, name=f'{feed_id}:file')
         except Exception:
             log.exception('Failed to start file sink for %s', feed_id)
-
-    if output_cfg.get('PiFmAdv', {}).get('enabled'):
-        try:
-            sink = PiFmAdvSink(output_cfg['PiFmAdv'])
-            pipeline.attach_sink(sink, name=f'{feed_id}:PiFmAdv')
-        except Exception:
-            log.exception('Failed to start PiFmAdv sink for %s', feed_id)
 
     _video_cfg = _find_video_cfg(config, feed_id)
     _feed_tz = str(feed.get('timezone', 'UTC'))
@@ -571,7 +566,7 @@ async def feed_runner(
         ('v4l2',      lambda cfg: V4L2Sink(cfg, feed_id, _video_cfg, _feed_tz),      'V4L2'),
     ):
         _sink_cfg = output_cfg.get(_sink_key, {})
-        if not (_sink_cfg and _sink_cfg.get('enabled')):
+        if not (isinstance(_sink_cfg, dict) and _sink_cfg.get('enabled')):
             continue
         try:
             sink = _factory(_sink_cfg)

@@ -6,7 +6,7 @@ from typing import Any
 import xml.etree.ElementTree as ET
 
 
-DEFAULT_ALERT_TEMPLATES_PATH = pathlib.Path('managed') / 'alertTemplates.xml'
+DEFAULT_ALERT_TEMPLATES_PATH = pathlib.Path('managed') / 'configs' / 'alertTemplates.xml'
 
 
 def _text(node: ET.Element | None) -> str:

@@ -1,4 +1,4 @@
-version: 2026.3.25
+version: 26.06.16
 
 logging:
   level: INFO
@@ -100,7 +100,7 @@ webpanel:
     password: HackMeMommy!12# # change this lol. it needs to be at least 8 characters long, contain at least: three uppercase letters, four lowercase letters, two numbers, and two special characters.
     # blank to autogenerate a random one time password on startup and print it in the logs.
 
-feeds_file: ./managed/feeds.xml
+feeds_file: ./managed/configs/feeds.xml
 
 cap:
   cap_cp:
@@ -242,48 +242,3 @@ same:
   alert_ready_on_NAADS_BIP: true # use the NPAS attention tone for NAADS CAP-CP alerts if they are marked for BI (Broadcast Immediate) on Alert Ready.
 
   send_txp_on_startup: false # whether to send a Transmitter Primary On SAME message on startup. there is no audio message or attention tone associated with this message.
-
-network:
-  requests:
-    poll_interval_seconds: 2700
-    read_timeout_seconds: 15
-tts:
-  default_backend: pyttsx3
-  piper:
-    acceleration: auto # auto, cpu, cuda, or rocm. auto prefers CUDA when the active onnxruntime build exposes CUDAExecutionProvider.
-
-  pyttsx3:
-    enabled: true
-    voice: "VE_American_English_Tom_22kHz"
-    rate: 195
-    volume: 1.0
-
-  lang:
-    en-CA:
-      backend:
-        pyttsx3:
-          #male:
-          #  voice: "VE_American_English_Tom_22kHz"
-          #  volume: 1.0
-          #  rate: 195
-        piper:
-          male:
-            model: ./piper-tts/en_US-hfc_male-medium.onnx
-            speaker: 1
-            config: ./piper-tts/en_US-hfc_male-medium.onnx.json
-          female:
-            model: ./piper-tts/en_US-lessac-medium.onnx
-            speaker: 0
-            config: ./piper-tts/en_US-lessac-medium.onnx.json
-    fr-CA:
-      backend:
-        piper:
-          male:
-            model: ./piper-tts/fr_FR-upmc-medium.onnx
-            speaker: 1
-            config: ./piper-tts/fr_FR-upmc-medium.onnx.json
-          female: None
-
-  fallback_order:
-    - piper
-    - pyttsx3

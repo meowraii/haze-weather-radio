@@ -1,0 +1,12 @@
+<Readers>
+    <reader id="000" provider="piper">
+        <gender>male</gender> <!-- i am the genderman. collect my pronouns. -->
+        <language>en-CA</language>
+        <path>en_US-hfc_male-medium</path> <!-- if piper, this is the name for the onnx model in the voices folder. .json and .onnx files will automatically be discovered. if pyttsx3, this is the voice name as is on your system. -->
+    </reader>
+    <reader id="001" provider="piper">
+        <gender>female</gender>
+        <language>en-CA</language>
+        <path>en_US-lessac-low</path>
+    </reader>
+</Readers>

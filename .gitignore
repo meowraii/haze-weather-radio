@@ -5,7 +5,7 @@ data/alertsRegistry.json
 __pycache__/
 audio/_uploads
 audio/static
-piper-tts/*
+voices/*
 logs/*
 twc.yaml
 .env

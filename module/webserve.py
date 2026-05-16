@@ -275,7 +275,7 @@ class WebServer:
     def _feed_output_modes(self, feed: dict[str, Any]) -> list[str]:
         output_cfg = feed.get('output', {})
         enabled: list[str] = []
-        for key in ('stream', 'audio_device', 'file', 'PiFmAdv'):
+        for key in ('stream', 'audio_device', 'file', 'udp', 'rtp', 'rtmp', 'srt', 'rtsp', 'webrtc', 'framebuffer', 'dri', 'v4l2'):
             if _coerce_mapping(output_cfg.get(key, {})).get('enabled'):
                 enabled.append(key)
         return enabled
@@ -351,6 +351,11 @@ class WebServer:
         if text_path.startswith('/'):
             return pathlib.Path(text_path)
         return (self.root_dir / text_path).resolve()
+
+    def _managed_file_path(self, filename: str) -> pathlib.Path:
+        if filename.endswith('.xml'):
+            return self.root_dir / 'managed' / 'configs' / filename
+        return self.root_dir / 'managed' / filename
 
     def _register_routes(self) -> None:
         api_base = self._api_base()
@@ -517,7 +522,7 @@ class WebServer:
     async def managed_read(self, filename: str) -> dict[str, Any]:
         if filename not in _MANAGED_ALLOWLIST:
             raise HTTPException(status_code=404, detail='File not available')
-        path = self.root_dir / 'managed' / filename
+        path = self._managed_file_path(filename)
         if not path.exists():
             raise HTTPException(status_code=404, detail='File not found')
         return {'filename': filename, 'content': path.read_text(encoding='utf-8')}
@@ -525,7 +530,7 @@ class WebServer:
     async def managed_write(self, filename: str, payload: FileWriteRequest) -> dict[str, Any]:
         if filename not in _MANAGED_ALLOWLIST:
             raise HTTPException(status_code=404, detail='File not available')
-        path = self.root_dir / 'managed' / filename
+        path = self._managed_file_path(filename)
         if filename.endswith('.json'):
             try:
                 json.loads(payload.content)
@@ -565,7 +570,7 @@ class WebServer:
         return names
 
     async def same_templates_get(self) -> dict[str, Any]:
-        return load_alert_templates(self.root_dir / 'managed' / 'alertTemplates.xml')
+        return load_alert_templates(self.root_dir / 'managed' / 'configs' / 'alertTemplates.xml')
 
     async def same_templates_put(self, payload: FileWriteRequest) -> dict[str, Any]:
         try:
@@ -574,7 +579,7 @@ class WebServer:
             raise HTTPException(status_code=400, detail=f'Invalid JSON: {exc}') from exc
         if not isinstance(data, dict):
             raise HTTPException(status_code=400, detail='Templates must be a JSON object')
-        path = self.root_dir / 'managed' / 'alertTemplates.xml'
+        path = self.root_dir / 'managed' / 'configs' / 'alertTemplates.xml'
         existing = load_alert_templates(path)
         merged = merge_alert_templates(existing, data)
         write_alert_templates(merged, path)

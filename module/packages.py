@@ -1,10 +1,15 @@
 from dataclasses import dataclass
 import datetime
+import logging
 import os
 import pathlib
 import re
 from typing import Any, ClassVar, Optional, cast
+import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+log = logging.getLogger(__name__)
 
 
 def _d(src: dict[str, Any], key: str) -> dict[str, Any]:
@@ -33,22 +38,12 @@ class Package_Config:
     lang: Optional[str] = None
     weather_data: Optional[dict[str, Any]] = None
 
-    ttl: ClassVar[dict[str, float]] = {
-        'date_time': 24.0,
-        'current_conditions': 2700.0,
-        'forecast': 7200.0,
-        'air_quality': 3600.0,
-        'climate_summary': 86400.0,
-        'eccc_discussion': 10800.0,
-        'geophysical_alert': 10800.0,
-    }
-
-    per_package: ClassVar[dict[str, dict[str, Any]]] = { # config overrides for specific packages; omit a package to allow all languages
+    _default_per_package: ClassVar[dict[str, dict[str, Any]]] = {
         'eccc_discussion': {
             'lang': ['en-CA'],
         },
         'forecast': {
-            'use_voice': 'female', # male or female. if specified in the config for each language.
+            'use_voice': 'female',
         },
         'climate_summary': {
             'use_voice': 'female',
@@ -64,9 +59,174 @@ class Package_Config:
         },
         'geophysical_alert': {
             'lang': ['en-CA'],
-            'use_voice': 'female', # male or female. if specified in the config for each language.
+            'use_voice': 'female',
         },
     }
+
+    per_package: ClassVar[dict[str, dict[str, Any]]] = {
+        key: dict(value) for key, value in _default_per_package.items()
+    }
+    package_profiles: ClassVar[dict[str, dict[str, Any]]] = {}
+    _loaded: ClassVar[bool] = False
+    _packages_path: ClassVar[pathlib.Path] = pathlib.Path(__file__).parent.parent / 'managed' / 'configs' / 'packages.xml'
+
+    @classmethod
+    def _to_bool(cls, raw: str | None, default: bool = False) -> bool:
+        if raw is None:
+            return default
+        return raw.strip().lower() in ('true', 'yes', '1', 'on')
+
+    @classmethod
+    def _as_text(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @classmethod
+    def _parse_languages(cls, element: ET.Element) -> list[str]:
+        langs = [
+            text for text in
+            (cls._as_text(lang_el.text) for lang_el in element.findall('lang'))
+            if text
+        ]
+        if langs:
+            return langs
+        text = cls._as_text(element.text)
+        if not text:
+            return []
+        return [part for part in (segment.strip() for segment in text.split(',')) if part]
+
+    @classmethod
+    def _parse_options(cls, element: ET.Element) -> dict[str, Any]:
+        options: dict[str, Any] = {}
+        for opt_el in element.findall('option'):
+            key = cls._as_text(opt_el.get('key') or opt_el.get('name'))
+            if not key:
+                continue
+            val = cls._as_text(opt_el.text)
+            if val is not None:
+                options[key] = val
+        return options
+
+    @classmethod
+    def _parse_profile(cls, element: ET.Element) -> dict[str, Any]:
+        profile: dict[str, Any] = {}
+        if 'enabled' in element.attrib:
+            profile['enabled'] = cls._to_bool(element.get('enabled'), True)
+
+        for child in element:
+            tag = child.tag.lower()
+            text = cls._as_text(child.text)
+            if tag in ('voice', 'use_voice'):
+                if text:
+                    profile['use_voice'] = text
+                continue
+            if tag in ('languages', 'lang'):
+                langs = cls._parse_languages(child)
+                if langs:
+                    profile['lang'] = langs
+                continue
+            if tag == 'options':
+                options = cls._parse_options(child)
+                if options:
+                    profile['options'] = options
+                continue
+            if not list(child):
+                if text is not None:
+                    profile[child.tag] = text
+                continue
+
+            nested: dict[str, Any] = {}
+            for nested_child in child:
+                nested_text = cls._as_text(nested_child.text)
+                if nested_text is not None:
+                    nested[nested_child.tag] = nested_text
+            if nested:
+                profile[child.tag] = nested
+
+        return profile
+
+    @classmethod
+    def _default_state(cls) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        per_package = {key: dict(value) for key, value in cls._default_per_package.items()}
+        profiles: dict[str, dict[str, Any]] = {}
+        return per_package, profiles
+
+    @classmethod
+    def reload(cls) -> None:
+        per_package, profiles = cls._default_state()
+
+        if not cls._packages_path.exists():
+            cls.per_package = per_package
+            cls.package_profiles = profiles
+            cls._loaded = True
+            return
+
+        try:
+            root = ET.parse(cls._packages_path).getroot()
+        except Exception as exc:
+            log.warning('Failed to parse packages config %s: %s', cls._packages_path, exc)
+            cls.per_package = per_package
+            cls.package_profiles = profiles
+            cls._loaded = True
+            return
+
+        defaults_el = root.find('defaults') or root.find('Defaults')
+        default_profile = cls._parse_profile(defaults_el) if defaults_el is not None else {}
+
+        for package_el in root.findall('package'):
+            pkg_id = cls._as_text(package_el.get('id'))
+            if not pkg_id:
+                continue
+            merged_profile = dict(default_profile)
+            merged_profile.update(cls._parse_profile(package_el))
+            profiles[pkg_id] = merged_profile
+
+            pkg_cfg = dict(per_package.get(pkg_id, {}))
+            voice = cls._as_text(merged_profile.get('use_voice'))
+            if voice:
+                pkg_cfg['use_voice'] = voice
+
+            langs = merged_profile.get('lang')
+            if isinstance(langs, list):
+                normalized_langs = [lang for lang in (cls._as_text(item) for item in langs) if lang]
+                if normalized_langs:
+                    pkg_cfg['lang'] = normalized_langs
+                elif 'lang' in pkg_cfg:
+                    del pkg_cfg['lang']
+
+            if pkg_cfg:
+                per_package[pkg_id] = pkg_cfg
+
+        cls.per_package = per_package
+        cls.package_profiles = profiles
+        cls._loaded = True
+
+    @classmethod
+    def ensure_loaded(cls) -> None:
+        if not cls._loaded:
+            cls.reload()
+
+    @classmethod
+    def get_profile(cls, pkg_id: str) -> dict[str, Any]:
+        cls.ensure_loaded()
+        return dict(cls.package_profiles.get(pkg_id, {}))
+
+    @classmethod
+    def get_voice(cls, pkg_id: str) -> str | None:
+        cls.ensure_loaded()
+        pkg_cfg = cls.per_package.get(pkg_id, {})
+        voice = pkg_cfg.get('use_voice')
+        if isinstance(voice, str) and voice:
+            return voice
+        return None
+
+    @classmethod
+    def is_lang_allowed(cls, pkg_id: str, lang: str) -> bool:
+        cls.ensure_loaded()
+        allowed_langs = cls.per_package.get(pkg_id, {}).get('lang')
+        return allowed_langs is None or lang in allowed_langs
 
 
 _DT_PREFIXES: dict[str, dict[str, str]] = {
@@ -717,15 +877,10 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
         return "Feed not found."
 
     transmitters: list[dict[str, Any]] = feed.get('transmitter_metadata') or []
-    pifm: dict[str, Any] = (feed.get('output') or {}).get('PiFmAdv') or {}
-    transmitter_site = pifm.get('transmitter_site')
-    if transmitter_site:
-        matched_tx = next((t for t in transmitters if t.get('site_name') == transmitter_site), None)
-    else:
-        matched_tx = next((t for t in transmitters if t.get('relationship') == 'primary'), None) or (transmitters[0] if transmitters else None)
+    matched_tx = next((t for t in transmitters if t.get('relationship') == 'primary'), None) or (transmitters[0] if transmitters else None)
 
     callsign = matched_tx.get('callsign') if matched_tx else feed.get('callsign')
-    frequency = matched_tx.get('frequency_mhz') if matched_tx else (pifm.get('frequency_mhz') or pifm.get('frequency'))
+    frequency = matched_tx.get('frequency_mhz') if matched_tx else None
     site_name = matched_tx.get('site_name') if matched_tx else None
 
     desc_block: dict[str, Any] = _d(feed, 'description')
@@ -756,8 +911,7 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
         elif 'es' in _lang:
             sentences.append(f"Indicativo de llamada {callsign_spoken}.")
 
-    pifm_enabled = pifm.get('enabled', False) is True
-    if pifm_enabled and frequency:
+    if frequency:
         location = site_name or feed.get('name') or feed_id
         if 'en' in _lang:
             sentences.append(f"Broadcasting from {location} on a frequency of {frequency} megahertz.")
@@ -778,7 +932,7 @@ def station_id(config: dict[str, Any], feed_id: str, lang: Optional[str] = "en-C
         if t.get('relationship') in ('secondary', 'repeater')
         and t is not matched_tx
     ]
-    if pifm_enabled and secondaries:
+    if secondaries:
         for idx, tx in enumerate(secondaries):
             tx_loc = tx.get('site_name') or ''
             tx_freq = tx.get('frequency_mhz')

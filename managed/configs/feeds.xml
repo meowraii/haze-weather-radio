@@ -73,7 +73,7 @@
             <site_name>Saskatoon</site_name>
             <callsign>XLF322</callsign>
             <relationship>primary</relationship> <!-- primary | secondary/repeater | unknown -->
-            <frequency_mhz>162.450</frequency_mhz>
+            <frequency_mhz>162.550</frequency_mhz>
         </transmitter>
     </transmitter_metadata>
 
@@ -89,7 +89,7 @@
         <bitrate_kbps>32</bitrate_kbps>
       </stream>
 
-      <udp enabled="false">
+      <udp enabled="true">
         <ip>127.0.0.1</ip>
         <port>8898</port>
         <format>mpegts</format>
@@ -97,8 +97,8 @@
         <acodec>aac</acodec>
       </udp>
 
-      <rtp enabled="false">
-        <ip>127.0.0.1</ip>
+      <rtp enabled="true">
+        <ip>172.16.1.37</ip>
         <port>8899</port>
         <format>rtp</format>
         <bitrate_kbps>32</bitrate_kbps>
@@ -139,31 +139,9 @@
 
       <audio_device enabled="false"/>
 
-      <!-- https://github.com/miegl/PiFmAdv -->
-      <!-- frequency_mhz derived from transmitter_metadata[site_name=Saskatoon] -->
-      <PiFmAdv enabled="true" transmitter_site="Saskatoon">
-        <bin_root>/home/rai/PiFmAdv/src</bin_root>
-        <tx_power>7</tx_power>
-        <bandwidth_hz>12500</bandwidth_hz>
-        <deviation_hz>5000</deviation_hz>
-        <ssh enabled="true">
-          <ffmpeg_bin>ffmpeg</ffmpeg_bin>
-          <ssh_bin>ssh</ssh_bin>
-          <host>172.16.1.37</host>
-          <port>22</port>
-          <username>rai</username>
-          <public_key_path>~/.ssh/almora</public_key_path>
-        </ssh>
-      </PiFmAdv>
-
     </output>
 
   </feed>
-
-
-
-
-
 
   <feed id="sk-0002" callsign="VBP687" enabled="false" timezone="America/Regina">
 
@@ -233,11 +211,6 @@
     </output>
 
   </feed>
-
-
-
-
-
 
   <feed id="naads-catchall" callsign="SSPWXR" enabled="false" timezone="America/Regina">
 
@@ -315,7 +288,6 @@
       </v4l2>
 
       <audio_device enabled="false"/>
-      <PiFmAdv enabled="false"/>
 
     </output>
 

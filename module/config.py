@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 log = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_FILE = 'config.yaml'
-_DEFAULT_FEEDS_FILE = 'managed/feeds.xml'
+_DEFAULT_FEEDS_FILE = 'managed/configs/feeds.xml'
 
 
 def _resolve_config_file(config_path: str | None = None) -> pathlib.Path:
@@ -268,37 +268,6 @@ def _parse_feed_el(el: ET.Element) -> dict[str, Any]:
             ot_el = output_el.find(ot)
             if ot_el is not None:
                 output[ot] = _parse_output_sink(ot_el)
-        pifm_el = output_el.find('PiFmAdv')
-        if pifm_el is not None:
-            pifm: dict[str, Any] = {}
-            if (en := pifm_el.get('enabled')) is not None:
-                pifm['enabled'] = _coerce_bool(en)
-            transmitter_site = pifm_el.get('transmitter_site')
-            if transmitter_site:
-                pifm['transmitter_site'] = transmitter_site
-            for child in pifm_el:
-                if child.tag == 'ssh':
-                    continue
-                raw = (child.text or '').strip()
-                if child.tag in ('tx_power', 'bandwidth_hz', 'deviation_hz'):
-                    pifm[child.tag] = _coerce_int(raw) if raw else None
-                else:
-                    pifm[child.tag] = raw if raw else None
-            if transmitter_site and transmitters:
-                matched = next((t for t in transmitters if t.get('site_name') == transmitter_site), None)
-                if matched and (freq := matched.get('frequency_mhz')) is not None:
-                    pifm['frequency_mhz'] = freq
-            pifm['alternative_frequencies'] = []
-            ssh_el = pifm_el.find('ssh')
-            if ssh_el is not None:
-                ssh: dict[str, Any] = {}
-                if (en := ssh_el.get('enabled')) is not None:
-                    ssh['enabled'] = _coerce_bool(en)
-                for child in ssh_el:
-                    raw = (child.text or '').strip()
-                    ssh[child.tag] = _coerce_int(raw) if child.tag == 'port' else (raw if raw else None)
-                pifm['ssh'] = ssh
-            output['PiFmAdv'] = pifm
         feed['output'] = output
 
     return feed
