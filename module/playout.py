@@ -476,6 +476,65 @@ def _find_video_cfg(config: dict[str, Any], feed_id: str) -> dict[str, Any] | No
     return None
 
 
+def _coerce_display_text(value: Any) -> str:
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ('text', 'name', 'value'):
+            if key in value:
+                resolved = _coerce_display_text(value.get(key))
+                if resolved:
+                    return resolved
+        for nested in value.values():
+            resolved = _coerce_display_text(nested)
+            if resolved:
+                return resolved
+        return ''
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            resolved = _coerce_display_text(item)
+            if resolved:
+                return resolved
+        return ''
+    return str(value).strip()
+
+
+def _mpegts_program_metadata(feed: dict[str, Any], feed_id: str, on_air_name: str, operator_name: str) -> dict[str, str]:
+    tx_meta = feed.get('transmitter_metadata')
+    tx_primary: dict[str, Any] = {}
+    if isinstance(tx_meta, list) and tx_meta:
+        tx_primary = next((t for t in tx_meta if isinstance(t, dict) and t.get('relationship') == 'primary'), {})
+        if not tx_primary:
+            tx_primary = next((t for t in tx_meta if isinstance(t, dict)), {})
+
+    callsign = str(tx_primary.get('callsign') or feed.get('callsign') or '').strip()
+    site_name = str(tx_primary.get('site_name') or feed.get('name') or feed_id).strip()
+    frequency = tx_primary.get('frequency_mhz')
+
+    service_provider = operator_name or 'Haze Weather Radio'
+    station_name = ' '.join(part for part in (callsign, site_name) if part).strip() or site_name
+    tx_data = f'{on_air_name} ({station_name})' if on_air_name else station_name
+
+    metadata: dict[str, str] = {
+        'title': tx_data,
+        'artist': on_air_name or service_provider,
+        'album': station_name,
+        'genre': 'Weather Radio',
+        'comment': f'Feed {feed_id}',
+        'service_provider': service_provider,
+        'service_name': tx_data,
+        'tx_data': tx_data,
+        'haze_feed_id': feed_id,
+        'haze_callsign': callsign,
+        'haze_site_name': site_name,
+    }
+    if frequency is not None:
+        metadata['haze_tx_frequency_mhz'] = str(frequency)
+    return {k: v for k, v in metadata.items() if str(v).strip()}
+
+
 async def feed_runner(
     config: dict[str, Any],
     feed: dict[str, Any],
@@ -487,8 +546,8 @@ async def feed_runner(
     feed_id = feed['id']
     output_cfg = feed.get('output', {})
     operator = config.get('operator', {})
-    on_air_name: str = operator.get('on_air_name') or operator.get('name') or feed.get('name', feed_id)
-    operator_name: str = str(operator.get('operator_name') or operator.get('name') or '').strip()
+    on_air_name: str = _coerce_display_text(operator.get('on_air_name')) or _coerce_display_text(operator.get('name')) or _coerce_display_text(feed.get('name')) or feed_id
+    operator_name: str = _coerce_display_text(operator.get('operator_name')) or _coerce_display_text(operator.get('name'))
     stream_identity = f'{on_air_name} ({feed_id})' if on_air_name else feed_id
     metadata_lang = _preferred_metadata_language(config, feed)
     stream_description = _feed_stream_description(feed, metadata_lang)
@@ -554,6 +613,7 @@ async def feed_runner(
 
     _video_cfg = _find_video_cfg(config, feed_id)
     _feed_tz = str(feed.get('timezone', 'UTC'))
+    _program_metadata = _mpegts_program_metadata(feed, feed_id, on_air_name, operator_name)
 
     for _sink_key, _factory, _label in (
         ('udp',       lambda cfg: UdpSink(cfg, feed_id, _video_cfg, _feed_tz),       'UDP'),
@@ -569,7 +629,11 @@ async def feed_runner(
         if not (isinstance(_sink_cfg, dict) and _sink_cfg.get('enabled')):
             continue
         try:
-            sink = _factory(_sink_cfg)
+            _resolved_format = str(_sink_cfg.get('format') or ('rtp_mpegts' if _sink_key == 'rtp' else 'mpegts')).strip().lower()
+            _cfg_for_sink = dict(_sink_cfg)
+            if _resolved_format in {'mpegts', 'rtp_mpegts'}:
+                _cfg_for_sink['stream_metadata'] = _program_metadata
+            sink = _factory(_cfg_for_sink)
             pipeline.attach_sink(sink, name=f'{feed_id}:{_sink_key}')
             if hasattr(sink, 'on_alert_start'):
                 alert_start_cbs.append(sink.on_alert_start)
