@@ -90,17 +90,17 @@
       </stream>
 
       <udp enabled="true">
-        <ip>127.0.0.1</ip>
+        <ip>172.16.1.37</ip>
         <port>8898</port>
         <format>mpegts</format>
-        <bitrate_kbps>96</bitrate_kbps>
-        <acodec>aac</acodec>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
       </udp>
 
-      <rtp enabled="true">
+      <rtp enabled="false">
         <ip>172.16.1.37</ip>
         <port>8899</port>
-        <format>rtp</format>
+        <format>rtp_mpegts</format>
         <bitrate_kbps>32</bitrate_kbps>
         <acodec>libopus</acodec>
       </rtp>

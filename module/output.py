@@ -725,6 +725,7 @@ def _build_video_stream_cmd(
     low_latency: bool = False,
     interlace: bool = False,
     output_pix_fmt: str | None = 'yuv420p',
+    stream_metadata: dict[str, Any] | None = None,
 ) -> list[str]:
     from module.video import _IDLE_BANNER_HEX, _postprocess_video_filter, _to_ffmpeg_color
     effective_color = banner_color or _to_ffmpeg_color(_IDLE_BANNER_HEX)
@@ -773,6 +774,16 @@ def _build_video_stream_cmd(
     if low_latency:
         output_args = ['-flush_packets', '1', '-muxdelay', '0', '-muxpreload', '0', *output_args]
 
+    metadata_args: list[str] = []
+    if isinstance(stream_metadata, dict):
+        for key, value in stream_metadata.items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            metadata_args.extend(['-metadata', f'{key}={text}'])
+
     return [
         'ffmpeg', '-loglevel', 'warning',
         '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
@@ -782,6 +793,7 @@ def _build_video_stream_cmd(
         *filter_args,
         *a_codec_args,
         *v_codec_args,
+        *metadata_args,
         *output_args,
         '-f', container,
         output_url,
@@ -818,6 +830,7 @@ def _make_stream_sink(
     prefill_chunks: int = _LOW_LATENCY_STREAM_PREFILL_CHUNKS,
     fill_silence: bool = True,
     extra_output_args: list[str] | None = None,
+    stream_metadata: dict[str, Any] | None = None,
 ) -> '_VideoStreamSink':
     from module.video import _to_ffmpeg_color, _IDLE_BANNER_HEX
     idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
@@ -841,6 +854,7 @@ def _make_stream_sink(
         interlace=interlace,
         low_latency=low_latency,
         extra_output_args=extra_output_args,
+        stream_metadata=stream_metadata,
     )
 
     def build(color: str) -> list[str]:
@@ -899,6 +913,7 @@ def UdpSink(
         low_latency=True,
         clocked=True,
         prefill_chunks=_LOW_LATENCY_STREAM_PREFILL_CHUNKS,
+        stream_metadata=config.get('stream_metadata') if isinstance(config.get('stream_metadata'), dict) else None,
     )
 
 
@@ -931,6 +946,7 @@ def RtpSink(
         low_latency=True,
         clocked=True,
         prefill_chunks=_LOW_LATENCY_STREAM_PREFILL_CHUNKS,
+        stream_metadata=config.get('stream_metadata') if isinstance(config.get('stream_metadata'), dict) else None,
     )
 
 
@@ -958,6 +974,7 @@ def RtmpSink(
         interlace=interlace,
         tf_label='rtmp',
         queue_limit=_STANDARD_STREAM_QUEUE_LIMIT,
+        stream_metadata=config.get('stream_metadata') if isinstance(config.get('stream_metadata'), dict) else None,
     )
 
 
@@ -985,6 +1002,7 @@ def SrtSink(
         interlace=interlace,
         tf_label='srt',
         queue_limit=_STANDARD_STREAM_QUEUE_LIMIT,
+        stream_metadata=config.get('stream_metadata') if isinstance(config.get('stream_metadata'), dict) else None,
     )
 
 
@@ -1013,6 +1031,7 @@ def RtspSink(
         tf_label='rtsp',
         queue_limit=_STANDARD_STREAM_QUEUE_LIMIT,
         extra_output_args=['-rtsp_transport', 'tcp'],
+        stream_metadata=config.get('stream_metadata') if isinstance(config.get('stream_metadata'), dict) else None,
     )
 
 
