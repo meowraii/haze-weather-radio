@@ -435,6 +435,22 @@ class AudioPipeline:
             except Exception:
                 continue
 
+    def _drop_sink_backlog(self) -> None:
+        total_dropped = 0
+        for sink, name in self._sinks:
+            drop_pending = getattr(sink, 'drop_pending', None)
+            if not callable(drop_pending):
+                continue
+            try:
+                dropped = int(drop_pending() or 0)
+            except Exception:
+                continue
+            if dropped > 0:
+                total_dropped += dropped
+                log.debug('Sink %s backlog drop: %d chunk(s)', name, dropped)
+        if total_dropped > 0:
+            log.info('Alert preemption dropped %d pending sink chunk(s)', total_dropped)
+
     async def _playout_loop(self) -> None:
         chunk_ns = int(CHUNK_DURATION * 1_000_000_000)
         next_silence_ns = time.monotonic_ns()
@@ -444,6 +460,7 @@ class AudioPipeline:
                     alert_pcm = self._alert_queue.get_nowait()
                     self._alert_active.set()
                     self._set_sink_alert_mode(True)
+                    self._drop_sink_backlog()
                     try:
                         await self._stream_pcm(alert_pcm, interruptible=False)
                     finally:

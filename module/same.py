@@ -55,7 +55,7 @@ _SEGMENT_FADE_S: Final[float] = 0.003
 
 _AFSK_HIGHPASS_HZ: Final[float] = 90.0
 _AFSK_LOWPASS_HZ: Final[float] = 4000.0
-_SEQUENCE_AMPLITUDE: Final[float] = 0.75
+_SEQUENCE_AMPLITUDE: Final[float] = 0.80
 
 _INTER_BURST_S: Final[float] = 1.0
 _PRE_ATTN_S: Final[float] = 1.0

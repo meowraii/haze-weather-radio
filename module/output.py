@@ -31,8 +31,8 @@ log = logging.getLogger(__name__)
 _IS_LINUX = sys.platform == 'linux'
 
 _STANDARD_STREAM_QUEUE_LIMIT = 48
-_LOW_LATENCY_STREAM_QUEUE_LIMIT = 24
-_LOW_LATENCY_STREAM_PREFILL_CHUNKS = 4
+_LOW_LATENCY_STREAM_QUEUE_LIMIT = 64
+_LOW_LATENCY_STREAM_PREFILL_CHUNKS = 8
 
 _VIDEO_CODEC_FALLBACKS: dict[str, tuple[str, ...]] = {
     'h264_amf': ('libx264', 'mpeg2video'),
@@ -303,7 +303,7 @@ def _build_video_overlay_inputs(
             )
             return extra_args, f'{scale_src},{overlay}'
         return extra_args, scale_src
-    overlay = _build_drawtext_filter(text_file, banner_color, width, height, style, reload_text=False)
+    overlay = _build_drawtext_filter(text_file, banner_color, width, height, style, reload_text=True)
     return extra_args, f'{scale_src},{overlay}'
 
 
@@ -499,7 +499,6 @@ class _VideoStreamSink:
         tz_name: str = 'UTC',
         queue_limit: int = _STANDARD_STREAM_QUEUE_LIMIT,
         drop_oldest: bool = False,
-        idle_factory: 'Callable[[], list[str]] | None' = None,
         frame_width: int | None = None,
         clocked: bool = False,
         prefill_chunks: int = 0,
@@ -507,7 +506,6 @@ class _VideoStreamSink:
     ) -> None:
         self._feed_id = feed_id
         self._cmd_factory = cmd_factory
-        self._idle_factory = idle_factory
         self._text_file = text_file
         self._current_color = initial_color
         self._label = label
@@ -520,8 +518,7 @@ class _VideoStreamSink:
         self.bus_clocked = clocked
         self.bus_prefill_chunks = max(0, int(prefill_chunks))
         self.bus_fill_silence = fill_silence
-        self._mode = 'idle' if idle_factory else 'alert'
-        self._suspend_writes = False
+        self._mode = 'idle'
         self._idle_details_cfg = _resolve_idle_details_cfg(video_cfg)
         self._idle_details_enabled = bool(self._idle_details_cfg.get('enabled', False))
         self._idle_details_refresh_s = max(0.5, float(self._idle_details_cfg.get('refresh_seconds', 1.0) or 1.0))
@@ -536,8 +533,6 @@ class _VideoStreamSink:
         log.info('[%s] %s started', feed_id, label)
 
     def _build_cmd(self, banner_color: str) -> list[str]:
-        if self._mode == 'idle' and self._idle_factory is not None:
-            return self._idle_factory()
         return self._cmd_factory(banner_color)
 
     def _build_idle_details_text(self) -> str:
@@ -619,14 +614,7 @@ class _VideoStreamSink:
         )
         previous_mode = self._mode
         self._mode = 'alert'
-        if previous_mode != 'alert' or new_color != self._current_color:
-            self._suspend_writes = True
-            try:
-                await asyncio.to_thread(self._rebuild_proc, new_color)
-            finally:
-                self._suspend_writes = False
-        else:
-            self._current_color = new_color
+        self._current_color = new_color
         log.info('[%s] %s: alert start — overlay updated (color=%s)', self._feed_id, self._label, new_color)
 
     async def on_alert_end(self) -> None:
@@ -645,20 +633,11 @@ class _VideoStreamSink:
         from module.video import _to_ffmpeg_color, _IDLE_BANNER_HEX
         self._mode = 'idle'
         idle_color = _to_ffmpeg_color(_IDLE_BANNER_HEX)
-        if previous_mode != 'idle' and self._idle_factory is not None:
-            self._suspend_writes = True
-            try:
-                await asyncio.to_thread(self._rebuild_proc, idle_color)
-            finally:
-                self._suspend_writes = False
-        else:
-            self._current_color = idle_color
+        self._current_color = idle_color
         log.info('[%s] %s: alert end — overlay cleared', self._feed_id, self._label)
 
     async def write(self, pcm: bytes) -> None:
         if self._closed or not pcm:
-            return
-        if self._suspend_writes:
             return
         if self._mode == 'idle':
             try:
@@ -826,7 +805,7 @@ def _make_stream_sink(
     tf_label: str,
     queue_limit: int,
     low_latency: bool = False,
-    clocked: bool = True,
+    clocked: bool = False,
     prefill_chunks: int = _LOW_LATENCY_STREAM_PREFILL_CHUNKS,
     fill_silence: bool = True,
     extra_output_args: list[str] | None = None,
@@ -860,12 +839,6 @@ def _make_stream_sink(
     def build(color: str) -> list[str]:
         return _build_video_stream_cmd(**shared_cmd_kwargs, banner_color=color, idle=False)
 
-    idle_factory = None
-    if tf and video_cfg:
-        def build_idle() -> list[str]:
-            return _build_video_stream_cmd(**shared_cmd_kwargs, banner_color=idle_color, idle=True)
-        idle_factory = build_idle
-
     return _VideoStreamSink(
         feed_id,
         build,
@@ -875,8 +848,7 @@ def _make_stream_sink(
         video_cfg,
         tz_name=tz_name,
         queue_limit=queue_limit,
-        drop_oldest=True,
-        idle_factory=idle_factory,
+        drop_oldest=False,
         frame_width=width,
         clocked=clocked,
         prefill_chunks=prefill_chunks,
@@ -911,7 +883,7 @@ def UdpSink(
         tf_label='udp',
         queue_limit=_LOW_LATENCY_STREAM_QUEUE_LIMIT,
         low_latency=True,
-        clocked=True,
+        clocked=False,
         prefill_chunks=_LOW_LATENCY_STREAM_PREFILL_CHUNKS,
         stream_metadata=config.get('stream_metadata') if isinstance(config.get('stream_metadata'), dict) else None,
     )
@@ -944,7 +916,7 @@ def RtpSink(
         tf_label='rtp',
         queue_limit=_LOW_LATENCY_STREAM_QUEUE_LIMIT,
         low_latency=True,
-        clocked=True,
+        clocked=False,
         prefill_chunks=_LOW_LATENCY_STREAM_PREFILL_CHUNKS,
         stream_metadata=config.get('stream_metadata') if isinstance(config.get('stream_metadata'), dict) else None,
     )
