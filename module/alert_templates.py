@@ -68,6 +68,20 @@ def _parse_langs(parent: ET.Element | None) -> dict[str, str]:
     return langs
 
 
+def _parse_lang_files(parent: ET.Element | None) -> dict[str, str]:
+    if parent is None:
+        return {}
+    files: dict[str, str] = {}
+    for lang_el in parent.findall('lang'):
+        code = lang_el.get('code', '').strip()
+        if not code:
+            continue
+        file_text = _optional_text(lang_el.find('file'))
+        if file_text is not None:
+            files[code] = file_text
+    return files
+
+
 def _parse_weeks(parent: ET.Element | None) -> list[dict[str, Any]]:
     if parent is None:
         return []
@@ -110,6 +124,7 @@ def _parse_template(template_el: ET.Element) -> dict[str, Any]:
     duration_minutes = _int_attr(duration_el.get('min') if duration_el is not None else None, 15)
     same_event = _text(same_el.find('event') if same_el is not None else None)
     same: dict[str, Any] = {
+        'enabled': _bool_attr(same_el.findtext('enabled') if same_el is not None else None, True),
         'event': same_event,
         'locations': _parse_locations(same_el.find('locations') if same_el is not None else None),
         'duration': {
@@ -122,6 +137,10 @@ def _parse_template(template_el: ET.Element) -> dict[str, Any]:
             'lang': _parse_langs(content_el),
         },
     }
+    if content_el is not None:
+        lang_files = _parse_lang_files(content_el)
+        if lang_files:
+            same['content']['file'] = lang_files
 
     template_key = same_event or name or template_el.get('id', '').strip()
     template: dict[str, Any] = {
@@ -133,6 +152,8 @@ def _parse_template(template_el: ET.Element) -> dict[str, Any]:
         'sameExpire': f'{duration_hours:02d}{duration_minutes:02d}',
         'msg': same['content']['lang'],
     }
+    if 'file' in same['content']:
+        template['files'] = same['content']['file']
     if template_key:
         template['_key'] = template_key
     return template
@@ -166,7 +187,19 @@ def _set_text(parent: ET.Element, tag: str, value: Any, attrs: dict[str, str] | 
 def _write_langs(parent: ET.Element, langs: dict[str, str]) -> None:
     for code, text in langs.items():
         lang_el = ET.SubElement(parent, 'lang', {'code': str(code)})
+        if isinstance(text, dict):
+            _set_text(lang_el, 'text', text.get('text', ''))
+            _set_text(lang_el, 'file', text.get('file', ''))
+            continue
         _set_text(lang_el, 'text', text)
+
+
+def _write_lang_files(parent: ET.Element, files: dict[str, str]) -> None:
+    for code, path in files.items():
+        lang_el = next((el for el in parent.findall('lang') if el.get('code') == str(code)), None)
+        if lang_el is None:
+            lang_el = ET.SubElement(parent, 'lang', {'code': str(code)})
+        _set_text(lang_el, 'file', path)
 
 
 def _write_weeks(parent: ET.Element, weeks: Iterable[dict[str, Any]]) -> None:
@@ -218,6 +251,7 @@ def write_alert_templates(templates: dict[str, dict[str, Any]], path: pathlib.Pa
 
         same = template.get('same') if isinstance(template.get('same'), dict) else {}
         same_el = ET.SubElement(template_el, 'same')
+        _set_text(same_el, 'enabled', 'true' if bool(same.get('enabled', True)) else 'false')
         same_event = str(template.get('sameEvent') or same.get('event') or template_key).strip()
         _set_text(same_el, 'event', same_event)
 
@@ -263,6 +297,10 @@ def write_alert_templates(templates: dict[str, dict[str, Any]], path: pathlib.Pa
         elif isinstance(template.get('msg'), dict):
             _write_langs(content_el, template['msg'])
 
+        files = template.get('files') if isinstance(template.get('files'), dict) else {}
+        if files:
+            _write_lang_files(content_el, files)
+
     ET.indent(root, space='    ')
     template_path.parent.mkdir(parents=True, exist_ok=True)
     ET.ElementTree(root).write(template_path, encoding='utf-8', xml_declaration=True)
@@ -278,7 +316,7 @@ def merge_alert_templates(existing: dict[str, dict[str, Any]], updates: dict[str
             continue
         current = merged.get(key, {})
         next_template = current.copy() if isinstance(current, dict) else {}
-        for field in ('name', 'description', 'automated', 'same', 'sameEvent', 'sameExpire', 'msg'):
+        for field in ('name', 'description', 'automated', 'same', 'sameEvent', 'sameExpire', 'msg', 'files'):
             if field in template:
                 next_template[field] = template[field]
         if 'sameEvent' not in next_template:

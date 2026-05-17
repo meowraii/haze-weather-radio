@@ -36,10 +36,68 @@ let customLocEntries    = [];
 let audioMode           = 'tts';
 let uploadedFilePath    = '';
 let selectedFile        = null;
+let generatedPreviewPath = '';
+let generatedPreviewUrl   = '';
+let generatedPreviewReady = false;
+let generatedDraftSig     = '';
 let airConfirmPending   = false;
 let airConfirmTimer     = null;
 const recentBroadcasts  = [];
 let templateData        = {};
+
+function cloneData(value) {
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+}
+
+function makeEmptyTemplate(code) {
+    return {
+        name: code,
+        description: '',
+        automated: {
+            enabled: false,
+            allow_postpone: false,
+            timing: { timezone: '', day_of_week: '', weeks: [], hour: 0, minute: 0, second: 0 },
+        },
+        same: {
+            enabled: true,
+            event: code,
+            locations: [],
+            duration: { hr: 0, min: 15 },
+            sender_id: '',
+            content: {
+                attention_tone: '',
+                lang: { 'en-CA': '' },
+                file: { 'en-CA': '' },
+            },
+        },
+        sameEvent: code,
+        sameExpire: '0015',
+        msg: { 'en-CA': '' },
+        files: { 'en-CA': '' },
+    };
+}
+
+function invalidateGeneratedPreview() {
+    generatedPreviewPath = '';
+    generatedPreviewUrl = '';
+    generatedPreviewReady = false;
+}
+
+function buildAlertSignature() {
+    return JSON.stringify({
+        orig: origSelect?.value || 'EAS',
+        event: eventSelect?.value || 'DMO',
+        locs: getAllSelectedCodes(),
+        hours: durationHours?.value || '0',
+        minutes: durationMins?.value || '0',
+        tone: selectedTone,
+        audioMode,
+        voice: voiceInput?.value || '',
+        file: audioMode === 'file' ? (uploadedFilePath || selectedFile?.name || '') : '',
+        feeds: [...selectedFeedIds].sort(),
+    });
+}
 
 function buildLayout() {
     document.getElementById('sameMain').innerHTML = `
@@ -59,89 +117,91 @@ function buildLayout() {
             </div>
         </section>
 
-        <section class="section-block">
-            <div class="section-hd">
-                <i data-lucide="settings-2" width="14" height="14" class="sp-hd-icon"></i>
-                <span>Alert Configuration</span>
-            </div>
-            <div class="section-body">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="origSelect">Originator</label>
-                        <select id="origSelect">
-                            ${ORIGINATORS.map((o) => `<option value="${o.value}">${o.label}</option>`).join('')}
-                        </select>
+        <div class="same-top-grid">
+            <section class="section-block">
+                <div class="section-hd">
+                    <i data-lucide="settings-2" width="14" height="14" class="sp-hd-icon"></i>
+                    <span>Alert Configuration</span>
+                </div>
+                <div class="section-body">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="origSelect">Originator</label>
+                            <select id="origSelect">
+                                ${ORIGINATORS.map((o) => `<option value="${o.value}">${o.label}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="eventSelect">Event</label>
+                            <select id="eventSelect"></select>
+                            <p id="eventNameHint" class="sp-hint-accent sp-hidden"></p>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="eventSelect">Event</label>
-                        <select id="eventSelect"></select>
-                        <p id="eventNameHint" class="sp-hint-accent sp-hidden"></p>
+                    <div class="form-row sp-row-mt">
+                        <div class="form-group">
+                            <label for="durationHours">Hours</label>
+                            <input id="durationHours" type="number" min="0" max="99" value="1">
+                        </div>
+                        <div class="form-group">
+                            <label for="durationMinutes">Minutes</label>
+                            <input id="durationMinutes" type="number" min="0" max="59" value="0">
+                        </div>
+                    </div>
+                    <div class="sp-tone-row">
+                        <p class="sp-sublabel sp-tone-label">Attention Tone</p>
+                        <div class="sp-tone-carousel" id="toneCarousel">
+                            ${TONES.map((t, i) => `
+                            <button type="button" class="sp-tone-btn${i === 0 ? ' active' : ''}" data-tone="${t.code}">
+                                <span class="sp-tone-code">${t.code}</span>
+                                <span class="sp-tone-desc">${t.desc}</span>
+                            </button>`).join('')}
+                        </div>
                     </div>
                 </div>
-                <div class="form-row sp-row-mt">
-                    <div class="form-group">
-                        <label for="durationHours">Hours</label>
-                        <input id="durationHours" type="number" min="0" max="99" value="1">
-                    </div>
-                    <div class="form-group">
-                        <label for="durationMinutes">Minutes</label>
-                        <input id="durationMinutes" type="number" min="0" max="59" value="0">
-                    </div>
-                </div>
-                <div class="sp-tone-row">
-                    <p class="sp-sublabel sp-tone-label">Attention Tone</p>
-                    <div class="sp-tone-carousel" id="toneCarousel">
-                        ${TONES.map((t, i) => `
-                        <button type="button" class="sp-tone-btn${i === 0 ? ' active' : ''}" data-tone="${t.code}">
-                            <span class="sp-tone-code">${t.code}</span>
-                            <span class="sp-tone-desc">${t.desc}</span>
-                        </button>`).join('')}
-                    </div>
-                </div>
-            </div>
-        </section>
+            </section>
 
-        <section class="section-block">
-            <div class="section-hd">
-                <i data-lucide="radio" width="14" height="14" class="sp-hd-icon"></i>
-                <span>Feeds &amp; Locations</span>
-            </div>
-            <div class="sp-feeds-locs-grid">
-                <div class="sp-feeds-col">
-                    <div class="sp-col-hd">
-                        <span class="sp-sublabel">Target Feeds</span>
-                        <div class="sp-col-actions">
-                            <button id="feedSelectAll"   type="button" class="btn-action">All</button>
-                            <button id="feedSelectNone"  type="button" class="btn-action">None</button>
-                            <button id="feedSelectFirst" type="button" class="btn-action">First</button>
+            <section class="section-block">
+                <div class="section-hd">
+                    <i data-lucide="radio" width="14" height="14" class="sp-hd-icon"></i>
+                    <span>Feeds &amp; Locations</span>
+                </div>
+                <div class="sp-feeds-locs-grid">
+                    <div class="sp-feeds-col">
+                        <div class="sp-col-hd">
+                            <span class="sp-sublabel">Target Feeds</span>
+                            <div class="sp-col-actions">
+                                <button id="feedSelectAll"   type="button" class="btn-action">All</button>
+                                <button id="feedSelectNone"  type="button" class="btn-action">None</button>
+                                <button id="feedSelectFirst" type="button" class="btn-action">First</button>
+                            </div>
+                        </div>
+                        <div id="feedPicker" class="sp-check-picker">
+                            <p class="sp-picker-empty">Loading feeds…</p>
                         </div>
                     </div>
-                    <div id="feedPicker" class="sp-check-picker">
-                        <p class="sp-picker-empty">Loading feeds…</p>
-                    </div>
-                </div>
-                <div class="sp-locs-col">
-                    <div class="sp-col-hd">
-                        <span class="sp-sublabel">Locations</span>
-                        <div class="sp-col-actions">
-                            <button id="locSelectAll"    type="button" class="btn-action">All</button>
-                            <button id="locSelectNone"   type="button" class="btn-action">None</button>
-                            <button id="locAddCustomBtn" type="button" class="btn-action">+ Custom</button>
+                    <div class="sp-locs-col">
+                        <div class="sp-col-hd">
+                            <span class="sp-sublabel">Locations</span>
+                            <div class="sp-col-actions">
+                                <button id="locSelectAll"    type="button" class="btn-action">All</button>
+                                <button id="locSelectNone"   type="button" class="btn-action">None</button>
+                                <button id="locAddCustomBtn" type="button" class="btn-action">+ Custom</button>
+                            </div>
+                        </div>
+                        <div id="locPicker" class="sp-check-picker">
+                            <p class="sp-picker-empty">Select a feed to load locations.</p>
+                        </div>
+                        <div id="customLocRow" class="sp-custom-loc-row sp-hidden">
+                            <input id="customLocInput" class="input-field sp-custom-loc-input" type="text"
+                                placeholder="6-digit CLC" maxlength="6" pattern="\\d{6}">
+                            <input id="customLocNameInput" class="input-field sp-custom-loc-name" type="text"
+                                placeholder="Label">
+                            <button id="customLocAdd" type="button" class="btn-action">Add</button>
                         </div>
                     </div>
-                    <div id="locPicker" class="sp-check-picker">
-                        <p class="sp-picker-empty">Select a feed to load locations.</p>
-                    </div>
-                    <div id="customLocRow" class="sp-custom-loc-row sp-hidden">
-                        <input id="customLocInput" class="input-field sp-custom-loc-input" type="text"
-                            placeholder="6-digit CLC" maxlength="6" pattern="\\d{6}">
-                        <input id="customLocNameInput" class="input-field sp-custom-loc-name" type="text"
-                            placeholder="Label">
-                        <button id="customLocAdd" type="button" class="btn-action">Add</button>
-                    </div>
                 </div>
-            </div>
-        </section>
+            </section>
+        </div>
 
         <section class="section-block">
             <div class="section-hd">
@@ -218,24 +278,6 @@ function buildLayout() {
                 </div>
             </div>
         </section>
-
-        <section class="section-block">
-            <div class="section-hd">
-                <i data-lucide="book-open" width="14" height="14" class="sp-hd-icon"></i>
-                <span>SAME Event Code Reference</span>
-            </div>
-            <div class="section-body sp-ref-body">
-                <table class="sp-ref-table">
-                    <thead>
-                        <tr>
-                            <th class="sp-ref-th">Code</th>
-                            <th class="sp-ref-th">Description</th>
-                        </tr>
-                    </thead>
-                    <tbody id="eventTableBody"></tbody>
-                </table>
-            </div>
-        </section>
     `;
 
     document.getElementById('sameRail').innerHTML = `
@@ -263,7 +305,11 @@ function buildLayout() {
             </div>
             <div class="sp-rail-section sp-rail-air">
                 <p id="statusBanner" class="status-banner sp-status-banner"></p>
-                <button id="airBtn" type="button" class="btn-danger sp-air-btn">Air Now</button>
+                <div class="sp-rail-actions">
+                    <button id="previewBtn" type="button" class="btn-action">Preview</button>
+                    <button id="airBtn" type="button" class="btn-danger sp-air-btn">Air Now</button>
+                </div>
+                <audio id="previewAudio" class="sp-preview-player sp-hidden" controls></audio>
             </div>
         </div>
     `;
@@ -302,7 +348,9 @@ const railLocList        = document.getElementById('railLocList');
 const railTtsSection     = document.getElementById('railTtsSection');
 const railTtsText        = document.getElementById('railTtsText');
 const statusBanner       = document.getElementById('statusBanner');
+const previewBtn         = document.getElementById('previewBtn');
 const airBtn             = document.getElementById('airBtn');
+const previewAudio       = document.getElementById('previewAudio');
 const capXmlInput        = document.getElementById('capXmlInput');
 const capStatus          = document.getElementById('capStatus');
 const templateList       = document.getElementById('templateList');
@@ -310,7 +358,6 @@ const templateStatus     = document.getElementById('templateStatus');
 const templateAddBtn     = document.getElementById('templateAddBtn');
 const templateSaveBtn    = document.getElementById('templateSaveBtn');
 const recentList         = document.getElementById('recentList');
-const eventTableBody     = document.getElementById('eventTableBody');
 
 initTheme(document.getElementById('themeToggle'));
 
@@ -322,6 +369,28 @@ function showStatus(msg, type) {
 function clearStatus() {
     statusBanner.textContent = '';
     statusBanner.className = 'status-banner sp-status-banner';
+}
+
+function getEventCatalog() {
+    const eas = sameMapping.eas || {};
+    const naadsToEas = sameMapping.naadsToEas || {};
+    const reverseNaads = new Map();
+    Object.entries(naadsToEas).forEach(([naads, easCode]) => {
+        if (!reverseNaads.has(easCode)) reverseNaads.set(easCode, naads);
+    });
+    return Object.entries(eas)
+        .map(([code, description]) => ({
+            code,
+            description,
+            naads: reverseNaads.get(code) || '',
+        }))
+        .sort((a, b) => a.code.localeCompare(b.code));
+}
+
+function eventLabelFor(code) {
+    const entry = (sameMapping.eas || {})[code] || '';
+    const naads = getEventCatalog().find((item) => item.code === code)?.naads || '';
+    return `${code} - ${entry || code}${naads ? ` - ${naads}` : ''}`;
 }
 
 function buildPreview() {
@@ -341,6 +410,11 @@ function buildPreview() {
 }
 
 function updatePreview() {
+    const signature = buildAlertSignature();
+    if (generatedDraftSig && generatedDraftSig !== signature) {
+        invalidateGeneratedPreview();
+    }
+    generatedDraftSig = signature;
     headerPreview.textContent = buildPreview();
     updateEventHint();
     updateRailLocations();
@@ -349,10 +423,12 @@ function updatePreview() {
 }
 
 function updateEventHint() {
-    const entry  = sameMapping[eventSelect.value];
-    const hasText = Boolean(entry?.easText);
+    const entry = (sameMapping.eas || {})[eventSelect.value];
+    const naads = getEventCatalog().find((item) => item.code === eventSelect.value)?.naads || '';
+    const hintText = [entry || '', naads ? `NAADS: ${naads}` : ''].filter(Boolean).join(' • ');
+    const hasText = Boolean(hintText);
     eventNameHint.classList.toggle('sp-hidden', !hasText);
-    eventNameHint.textContent = hasText ? entry.easText : '';
+    eventNameHint.textContent = hintText;
 }
 
 toneCarousel.addEventListener('click', (e) => {
@@ -366,26 +442,12 @@ toneCarousel.addEventListener('click', (e) => {
 });
 
 function populateEventSelect() {
-    const options = Object.entries(sameMapping)
-        .map(([code, entry]) => ({ code, label: entry.easText || code }))
-        .sort((a, b) => a.code.localeCompare(b.code));
+    const options = getEventCatalog();
     eventSelect.innerHTML = options
-        .map(({ code, label }) => `<option value="${code}">${code} — ${label}</option>`)
+        .map(({ code, description, naads }) => `<option value="${code}">${code} - ${description || code}${naads ? ` - ${naads}` : ''}</option>`)
         .join('');
     eventSelect.value = 'DMO';
     updateEventHint();
-}
-
-function populateEventTable() {
-    const rows = Object.entries(sameMapping)
-        .map(([code, entry]) => ({ code, label: entry.easText || code }))
-        .sort((a, b) => a.code.localeCompare(b.code));
-    eventTableBody.innerHTML = rows
-        .map(({ code, label }) => `<tr>
-            <td class="sp-ref-td sp-ref-code">${code}</td>
-            <td class="sp-ref-td">${label}</td>
-        </tr>`)
-        .join('');
 }
 
 [origSelect, eventSelect, durationHours, durationMins].forEach((el) => {
@@ -556,7 +618,7 @@ function generateTtsText() {
     };
     const issuer    = ORIGINATOR_LABELS[origSelect.value] ?? 'An EAS Participant';
     const code      = eventSelect.value || 'DMO';
-    const eventName = sameMapping[code]?.easText || code;
+    const eventName = (sameMapping.eas || {})[code] || code;
     const codes       = getAllSelectedCodes();
     const allNamesMap = new Map([...getCodesForSelectedFeeds()]);
     for (const { code: c, name } of customLocEntries) allNamesMap.set(c, name);
@@ -612,6 +674,76 @@ capXmlInput.addEventListener('change', () => {
     reader.readAsText(file);
 });
 
+function getCurrentAudioFilePath() {
+    if (generatedPreviewReady && generatedPreviewPath) return generatedPreviewPath;
+    if (audioMode !== 'file') return '';
+    return uploadedFilePath || '';
+}
+
+function buildAirPayload() {
+    const feedIds = [...selectedFeedIds];
+    const allEnabled = allFeedsData.filter((f) => f.enabled !== false).map((f) => f.id);
+    const isAll = feedIds.length === allEnabled.length && allEnabled.every((id) => feedIds.includes(id));
+    return {
+        originator:       origSelect.value,
+        event:            eventSelect.value,
+        locations:        getAllSelectedCodes(),
+        duration_hours:   parseInt(durationHours.value, 10) || 0,
+        duration_minutes: parseInt(durationMins.value, 10) || 0,
+        tone_type:        selectedTone,
+        voice_message:    audioMode === 'tts'  ? voiceInput.value.trim() : '',
+        audio_file_path:  generatedPreviewReady && generatedPreviewPath
+            ? generatedPreviewPath
+            : (audioMode === 'file' ? getCurrentAudioFilePath() : ''),
+        air_on_all_feeds: isAll,
+        feed_ids:         isAll ? [] : feedIds,
+        feed_id:          feedIds[0] || '',
+    };
+}
+
+async function generatePreviewAudio() {
+    if (!getAllSelectedCodes().length) {
+        showStatus('Select at least one location code.', 'err');
+        return null;
+    }
+    const button = previewBtn;
+    const previousLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Previewing…';
+    try {
+        const result = await apiPost('/same/generate', buildAirPayload());
+        generatedPreviewPath = result.path || '';
+        generatedPreviewUrl = result.download_url || '';
+        const sessionToken = token.get();
+        if (generatedPreviewUrl && sessionToken) {
+            const separator = generatedPreviewUrl.includes('?') ? '&' : '?';
+            generatedPreviewUrl = `${generatedPreviewUrl}${separator}token=${encodeURIComponent(sessionToken)}`;
+        }
+        generatedPreviewReady = true;
+        generatedDraftSig = buildAlertSignature();
+        if (generatedPreviewUrl) {
+            previewAudio.src = generatedPreviewUrl;
+            previewAudio.classList.remove('sp-hidden');
+        }
+        if (generatedPreviewUrl) {
+            try {
+                await previewAudio.play();
+            } catch {
+                // autoplay can be blocked; the user can still hit play
+            }
+            showStatus(`Preview ready: ${result.header}`, 'ok');
+        }
+        headerPreview.textContent = result.header;
+        return result;
+    } catch (err) {
+        showStatus(`Generation failed: ${err.message}`, 'err');
+        return null;
+    } finally {
+        button.disabled = false;
+        button.textContent = previousLabel;
+    }
+}
+
 function parseCapXml(xmlText) {
     const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
     const ns  = 'urn:oasis:names:tc:emergency:cap:1.2';
@@ -643,10 +775,8 @@ function parseCapXml(xmlText) {
 
     if (event) {
         const upper = event.toUpperCase();
-        const match = Object.entries(sameMapping)
-            .find(([, e]) => (e.easText || '').toUpperCase() === upper);
-        if (match) eventSelect.value = match[0];
-        else if (sameMapping[upper]) eventSelect.value = upper;
+        const match = getEventCatalog().find((entry) => entry.description.toUpperCase() === upper || entry.code === upper);
+        if (match) eventSelect.value = match.code;
     }
 
     if (expires && sent) {
@@ -664,6 +794,7 @@ function parseCapXml(xmlText) {
 function handleFileSelect(file) {
     selectedFile     = file;
     uploadedFilePath = '';
+    invalidateGeneratedPreview();
     uploadArea.classList.add('has-file');
     uploadPromptEl.classList.add('sp-hidden');
     uploadFilenameEl.textContent = `Selected: ${file.name}`;
@@ -683,6 +814,7 @@ async function uploadFile() {
         fd.append('file', selectedFile);
         const result      = await apiPostForm('/same/upload-audio', fd);
         uploadedFilePath  = result.path;
+        invalidateGeneratedPreview();
         uploadStatusEl.textContent = `Ready \u2014 encoded to ${result.sample_rate} Hz PCM WAV`;
         uploadBtn.textContent = 'Re-upload';
     } catch (err) {
@@ -697,6 +829,7 @@ async function uploadFile() {
 function clearUpload() {
     selectedFile     = null;
     uploadedFilePath = '';
+    invalidateGeneratedPreview();
     audioFile.value  = '';
     uploadArea.classList.remove('has-file');
     uploadPromptEl.classList.remove('sp-hidden');
@@ -706,6 +839,19 @@ function clearUpload() {
     uploadStatusEl.textContent = '';
     uploadBtn.textContent = 'Upload & Encode';
 }
+
+uploadArea.tabIndex = 0;
+uploadArea.setAttribute('role', 'button');
+uploadArea.setAttribute('aria-label', 'Choose an audio or video file to upload');
+uploadArea.addEventListener('click', (event) => {
+    if (event.target.closest('button, input, textarea, select, a')) return;
+    audioFile.click();
+});
+uploadArea.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    audioFile.click();
+});
 
 audioFile.addEventListener('change', () => {
     if (audioFile.files[0]) handleFileSelect(audioFile.files[0]);
@@ -744,31 +890,15 @@ function startAirConfirm() {
 async function doAir() {
     const codes = getAllSelectedCodes();
     if (!codes.length) { showStatus('Select at least one location code.', 'err'); return; }
-    if (audioMode === 'file' && !uploadedFilePath) {
+    if (audioMode === 'file' && !getCurrentAudioFilePath()) {
         showStatus('Upload and encode the audio file before airing.', 'err');
         return;
     }
     clearStatus();
     airBtn.disabled    = true;
     airBtn.textContent = 'Transmitting\u2026';
-    const feedIds    = [...selectedFeedIds];
-    const allEnabled = allFeedsData.filter((f) => f.enabled !== false).map((f) => f.id);
-    const isAll      = feedIds.length === allEnabled.length && allEnabled.every((id) => feedIds.includes(id));
-    const payload = {
-        originator:       origSelect.value,
-        event:            eventSelect.value,
-        locations:        codes,
-        duration_hours:   parseInt(durationHours.value, 10) || 0,
-        duration_minutes: parseInt(durationMins.value,  10) || 0,
-        tone_type:        selectedTone,
-        voice_message:    audioMode === 'tts'  ? voiceInput.value.trim() : '',
-        audio_file_path:  audioMode === 'file' ? uploadedFilePath : '',
-        air_on_all_feeds: isAll,
-        feed_ids:         isAll ? [] : feedIds,
-        feed_id:          feedIds[0] || '',
-    };
     try {
-        const result   = await apiPost('/same/air', payload);
+        const result   = await apiPost('/same/air', buildAirPayload());
         const feedLabel = (result.feeds_aired || [result.feed_id]).join(', ');
         showStatus(`Broadcast queued on ${feedLabel}: ${result.header}`, 'ok');
         headerPreview.textContent = result.header;
@@ -785,6 +915,8 @@ airBtn.addEventListener('click', () => {
     if (airConfirmPending) { resetAirButton(); doAir(); }
     else { startAirConfirm(); }
 });
+
+previewBtn.addEventListener('click', () => generatePreviewAudio());
 
 function addRecentBroadcast(result) {
     recentBroadcasts.unshift({ ...result, ts: new Date().toLocaleTimeString() });
@@ -818,7 +950,10 @@ function renderTemplates() {
         return;
     }
     templateList.innerHTML = Object.entries(templateData).map(([code, tpl]) => {
-        const msgs    = tpl.msg || {};
+        const same = tpl.same || {};
+        const content = same.content || {};
+        const msgs = tpl.msg || content.lang || {};
+        const files = tpl.files || content.file || {};
         const langRows = Object.entries(msgs).map(([lang, text]) => `
             <div class="template-lang-row" data-code="${code}" data-lang="${lang}">
                 <div class="form-row sp-tpl-lang-row">
@@ -830,6 +965,10 @@ function renderTemplates() {
                         <label>Message text</label>
                         <textarea class="tpl-lang-text" rows="3">${text}</textarea>
                     </div>
+                    <div class="form-group sp-tpl-lang-file-group">
+                        <label>Audio file</label>
+                        <input type="text" class="tpl-lang-file" value="${files[lang] || ''}" placeholder="audio/_uploads/example.wav">
+                    </div>
                     <button type="button" class="btn-ghost tpl-remove-lang sp-tpl-lang-remove"
                         data-code="${code}" data-lang="${lang}">&#x2715;</button>
                 </div>
@@ -838,18 +977,50 @@ function renderTemplates() {
             <div class="section-block sp-tpl-block" data-template-code="${code}">
                 <div class="section-hd sp-tpl-hd">
                     <input type="text" class="tpl-code-input sp-tpl-code-input" value="${code}" placeholder="RWT">
-                    <div class="sp-tpl-meta-pair">
-                        <label class="sp-tpl-meta-label">Expire</label>
-                        <input type="text" class="tpl-expire sp-tpl-meta-input" value="${tpl.sameExpire || '0015'}">
-                    </div>
-                    <div class="sp-tpl-meta-pair">
-                        <label class="sp-tpl-meta-label">SAME event</label>
-                        <input type="text" class="tpl-event sp-tpl-meta-input" value="${tpl.sameEvent || code}">
-                    </div>
                     <div class="section-hd-actions">
                         <button type="button" class="btn-action tpl-fire-btn" data-code="${code}">&#9654; Send Now</button>
                         <button type="button" class="btn-ghost tpl-add-lang" data-code="${code}">+ Language</button>
                         <button type="button" class="btn-ghost tpl-remove-tpl sp-tpl-remove-btn" data-code="${code}">Remove</button>
+                    </div>
+                </div>
+                <div class="sp-template-head-grid">
+                    <div class="sp-tpl-field-group">
+                        <label class="sp-tpl-field-label">Template Name</label>
+                        <input type="text" class="sp-tpl-text-input tpl-name" value="${tpl.name || code}">
+                    </div>
+                    <div class="sp-tpl-field-group">
+                        <label class="sp-tpl-field-label">Description</label>
+                        <input type="text" class="sp-tpl-text-input tpl-description" value="${tpl.description || ''}">
+                    </div>
+                </div>
+                <div class="sp-tpl-meta-stack">
+                    <label class="sp-tpl-checkbox-row">
+                        <input type="checkbox" class="tpl-same-enabled" ${same.enabled !== false ? 'checked' : ''}>
+                        <span class="sp-tpl-field-label">Enable SAME</span>
+                    </label>
+                    <label class="sp-tpl-checkbox-row">
+                        <input type="checkbox" class="tpl-auto-enabled" ${tpl.automated?.enabled ? 'checked' : ''}>
+                        <span class="sp-tpl-field-label">Automated</span>
+                    </label>
+                </div>
+                <div class="sp-tpl-meta-stack">
+                    <div class="sp-tpl-field-group">
+                        <label class="sp-tpl-field-label">SAME event</label>
+                        <input type="text" class="sp-tpl-text-input tpl-event" value="${tpl.sameEvent || same.event || code}">
+                    </div>
+                    <div class="sp-tpl-field-group">
+                        <label class="sp-tpl-field-label">Expire</label>
+                        <input type="text" class="sp-tpl-text-input tpl-expire" value="${tpl.sameExpire || '0015'}">
+                    </div>
+                </div>
+                <div class="sp-tpl-meta-stack">
+                    <div class="sp-tpl-field-group">
+                        <label class="sp-tpl-field-label">Sender ID</label>
+                        <input type="text" class="sp-tpl-text-input tpl-sender" value="${same.sender_id || ''}">
+                    </div>
+                    <div class="sp-tpl-field-group">
+                        <label class="sp-tpl-field-label">Attention Tone</label>
+                        <input type="text" class="sp-tpl-text-input tpl-tone" value="${content.attention_tone || ''}">
                     </div>
                 </div>
                 <div class="section-body sp-tpl-lang-body">
@@ -893,20 +1064,56 @@ function renderTemplates() {
 }
 
 function collectTemplateData() {
-    const updated = {};
+    const updated = cloneData(templateData);
     templateList.querySelectorAll('[data-template-code]').forEach((block) => {
         const origCode = block.dataset.templateCode;
         const code = (block.querySelector('.tpl-code-input')?.value || origCode).trim().toUpperCase();
         if (!code) return;
-        const expire = block.querySelector('.tpl-expire')?.value.trim() || '0015';
+        const base = cloneData(updated[origCode] || makeEmptyTemplate(code));
+        const expire = block.querySelector('.tpl-expire')?.value.trim() || base.sameExpire || '0015';
         const event  = block.querySelector('.tpl-event')?.value.trim().toUpperCase() || code;
         const msg    = {};
+        const files  = {};
         block.querySelectorAll('.template-lang-row').forEach((row) => {
             const langKey = row.querySelector('.tpl-lang-key')?.value.trim() || '';
             const text    = row.querySelector('.tpl-lang-text')?.value || '';
-            if (langKey) msg[langKey] = text;
+            const file    = row.querySelector('.tpl-lang-file')?.value || '';
+            if (langKey) {
+                msg[langKey] = text;
+                files[langKey] = file;
+            }
         });
-        updated[code] = { sameExpire: expire, sameEvent: event, msg };
+        delete updated[origCode];
+        updated[code] = {
+            ...base,
+            name: block.querySelector('.tpl-name')?.value.trim() || base.name || code,
+            description: block.querySelector('.tpl-description')?.value.trim() || base.description || '',
+            automated: {
+                ...(base.automated || {}),
+                enabled: Boolean(block.querySelector('.tpl-auto-enabled')?.checked),
+            },
+            same: {
+                ...(base.same || {}),
+                enabled: Boolean(block.querySelector('.tpl-same-enabled')?.checked),
+                event,
+                sender_id: block.querySelector('.tpl-sender')?.value.trim() || '',
+                duration: {
+                    ...((base.same || {}).duration || {}),
+                    hr: Math.max(0, Math.min(parseInt(expire.slice(0, 2), 10) || 0, 99)),
+                    min: Math.max(0, Math.min(parseInt(expire.slice(2), 10) || 15, 59)),
+                },
+                content: {
+                    ...((base.same || {}).content || {}),
+                    attention_tone: block.querySelector('.tpl-tone')?.value.trim() || '',
+                    lang: msg,
+                    file: files,
+                },
+            },
+            sameEvent: event,
+            sameExpire: expire,
+            msg,
+            files,
+        };
     });
     return updated;
 }
@@ -938,7 +1145,7 @@ async function saveTemplates() {
 
 templateAddBtn.addEventListener('click', () => {
     const code = `CUSTOM${Object.keys(templateData).length + 1}`;
-    templateData[code] = { sameExpire: '0015', sameEvent: code, msg: { 'en*': '' } };
+    templateData[code] = makeEmptyTemplate(code);
     renderTemplates();
 });
 templateSaveBtn.addEventListener('click', saveTemplates);
@@ -972,7 +1179,6 @@ if (!token.get()) {
         loadTemplates(),
     ]).then(() => {
         populateEventSelect();
-        populateEventTable();
         updatePreview();
         clearStatus();
         window.lucide?.createIcons();

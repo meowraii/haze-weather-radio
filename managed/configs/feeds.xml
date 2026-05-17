@@ -36,10 +36,28 @@
     </description>
 
     <!--
+      glossary of location identifiers:
+
+      The data provider in the parentheses denotes which APIs of said providers can be used with the location identifier.
+      For example, the citypage ID can be used to pull data from the ECCC API, but not the NWS or TWC APIs.
+
+      citypage: ECCC ID for the city page weather product. ex: SK-40 for Saskatoon. (ECCC)
+      nws_zone: NWS County/Zone code for the forecast zone. ex: GAZ033 for north Fulton County, GA. (NWS)
+      nws_county: NWS County code for the forecast county. ex: GAC121 for Fulton County, GA. (NWS)
+      same: the six digit location code used in SAME alerts.
+      same_fips: In the US, the six digit SAME location code is derived from the FIPS code. ex: 013121 for Fulton County, GA.
+      same_clc: In Canada, the six digit SAME location code is derived from the Canadian Location Code. ex: 065522 for Saskatoon.
+                - NOTE: Mexico uses the 000000 SAME code for all Early Earthquake Warnings on SASMEX.
+      iata: IATA station code for the location. ex: CYXE for Saskatoon Airport. KIND for Indianapolis Airport. (ECCC, NWS, TWC)
+      geocode: lat/lon geocode for the location on the TWC API. 52.1,-106.6 for Saskatoon. not to be confused with the geocodes used in CAP alerts, which are a different format. (TWC)
+
       id:              Environment Canada City Page ID, NWS County/Zone code, or IATA station ID.
-      forecast_region: CLC paired with City Page code (ECCC), or NWS zone+county. Wildcards supported.
       source:          eccc | nws | twc
       name_override:   Override when the source API omits the location name.
+      region:
+        - id:            Environment Canada Canadian Location Code, US SAME FIPS code, or any six-digit code that your country uses to identify forecast regions.
+          source:        eccc | nws | twc
+          derive_forecast: ID of the location to derive forecast data from. This places the region in the forecast package of the feed and will be read on air.
     -->
     <locations>
       <coverage>
@@ -137,7 +155,7 @@
         <acodec>aac</acodec>
       </webrtc>
 
-      <audio_device enabled="false"/>
+      <audio_device enabled="true"/>
 
     </output>
 

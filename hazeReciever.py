@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
+import pathlib
+import re
 import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
-import json
-import re
-import pathlib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
@@ -21,11 +20,8 @@ pifm_bin = "/home/rai/PiFmAdv/src/pi_fm_adv"
 
 @dataclass(frozen=True)
 class ReceiverConfig:
-    rtp_host: str
-    rtp_port: int
-    payload_type: int
-    codec: str
-    input_sample_rate: int
+    udp_host: str
+    udp_port: int
     output_sample_rate: int
     channels: int
     ffmpeg_bin: str
@@ -94,12 +90,12 @@ def _extract_frequency_from_tags(tags: dict[str, object]) -> float | None:
 def _extract_station_name_from_service_name(service_name: str) -> str:
     text = service_name.strip()
     if not text:
-        return ''
-    if '(' in text and ')' in text:
-        start = text.rfind('(')
-        end = text.rfind(')')
+        return ""
+    if "(" in text and ")" in text:
+        start = text.rfind("(")
+        end = text.rfind(")")
         if start >= 0 and end > start:
-            inside = text[start + 1:end].strip()
+            inside = text[start + 1 : end].strip()
             if inside:
                 return inside
     return text
@@ -115,21 +111,21 @@ def _build_local_station_frequency_map(feeds_file: str) -> dict[str, float]:
     except Exception:
         return mapping
 
-    for feed_el in root.findall('feed'):
-        tx_meta = feed_el.find('transmitter_metadata')
+    for feed_el in root.findall("feed"):
+        tx_meta = feed_el.find("transmitter_metadata")
         if tx_meta is None:
             continue
-        for tx in tx_meta.findall('transmitter'):
-            callsign = (tx.findtext('callsign') or feed_el.get('callsign') or '').strip()
-            site_name = (tx.findtext('site_name') or '').strip()
-            raw_freq = (tx.findtext('frequency_mhz') or '').strip()
+        for tx in tx_meta.findall("transmitter"):
+            callsign = (tx.findtext("callsign") or feed_el.get("callsign") or "").strip()
+            site_name = (tx.findtext("site_name") or "").strip()
+            raw_freq = (tx.findtext("frequency_mhz") or "").strip()
             if not raw_freq:
                 continue
             try:
                 freq = float(raw_freq)
             except ValueError:
                 continue
-            key = ' '.join(part for part in (callsign, site_name) if part).strip().lower()
+            key = " ".join(part for part in (callsign, site_name) if part).strip().lower()
             if key:
                 mapping[key] = freq
     return mapping
@@ -157,7 +153,6 @@ class ReceiverSupervisor:
         logging.info("Receiver stopped")
 
     async def _run_pipeline_once(self) -> str:
-        sdp_path = self._write_temp_sdp()
         ffmpeg_proc: asyncio.subprocess.Process | None = None
         pifm_proc: asyncio.subprocess.Process | None = None
         selected_frequency: float | None = self.config.pifm_frequency
@@ -165,12 +160,12 @@ class ReceiverSupervisor:
 
         try:
             if selected_frequency is None:
-                selected_frequency = await self._detect_frequency_from_stream(sdp_path)
+                selected_frequency = await self._detect_frequency_from_stream()
                 if selected_frequency is None:
                     return "mpegts metadata frequency unavailable"
 
             try:
-                ffmpeg_proc = await self._start_ffmpeg(sdp_path)
+                ffmpeg_proc = await self._start_ffmpeg()
             except Exception as exc:
                 return f"ffmpeg startup failed: {exc}"
 
@@ -178,10 +173,7 @@ class ReceiverSupervisor:
             assert ffmpeg_proc.stderr is not None
 
             self.last_audio_ts = time.monotonic()
-            initial_audio_chunk, warmup_reason = await self._read_initial_audio_chunk(
-                ffmpeg_proc.stdout,
-                ffmpeg_proc,
-            )
+            initial_audio_chunk, warmup_reason = await self._read_initial_audio_chunk(ffmpeg_proc.stdout, ffmpeg_proc)
             if warmup_reason:
                 return warmup_reason
 
@@ -197,24 +189,11 @@ class ReceiverSupervisor:
                 self._pump_audio(ffmpeg_proc.stdout, pifm_proc.stdin, initial_audio_chunk),
                 name="pump_audio",
             )
-            ffmpeg_err_task = asyncio.create_task(
-                self._log_stream(ffmpeg_proc.stderr, "ffmpeg"),
-                name="ffmpeg_stderr",
-            )
-            pifm_err_task = asyncio.create_task(
-                self._log_stream(pifm_proc.stderr, "piFmAdv"),
-                name="pifm_stderr",
-            )
-            health_task = asyncio.create_task(
-                self._monitor_health(ffmpeg_proc, pifm_proc),
-                name="monitor_health",
-            )
+            ffmpeg_err_task = asyncio.create_task(self._log_stream(ffmpeg_proc.stderr, "ffmpeg"), name="ffmpeg_stderr")
+            pifm_err_task = asyncio.create_task(self._log_stream(pifm_proc.stderr, "piFmAdv"), name="pifm_stderr")
+            health_task = asyncio.create_task(self._monitor_health(ffmpeg_proc, pifm_proc), name="monitor_health")
 
-            done, pending = await asyncio.wait(
-                {pump_task, health_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
+            done, pending = await asyncio.wait({pump_task, health_task}, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
 
@@ -242,28 +221,30 @@ class ReceiverSupervisor:
         finally:
             await self._terminate_process(ffmpeg_proc, "ffmpeg")
             await self._terminate_process(pifm_proc, "piFmAdv")
-            try:
-                os.unlink(sdp_path)
-            except OSError:
-                pass
 
-    async def _start_ffmpeg(self, sdp_path: str) -> asyncio.subprocess.Process:
+    def _build_udp_input_url(self, host_override: str | None = None) -> str:
+        host = (host_override if host_override is not None else self.config.udp_host).strip() or "0.0.0.0"
+        return (
+            f"udp://{host}:{self.config.udp_port}"
+            "?fifo_size=1000000"
+            "&overrun_nonfatal=1"
+            "&buffer_size=1048576"
+        )
+
+    async def _start_ffmpeg(self) -> asyncio.subprocess.Process:
+        input_url = self._build_udp_input_url()
         cmd = [
             self.config.ffmpeg_bin,
             "-hide_banner",
             "-nostats",
             "-loglevel",
             self.config.ffmpeg_log_level,
-            "-protocol_whitelist",
-            "file,udp,rtp",
             "-fflags",
             "+nobuffer",
             "-flags",
             "low_delay",
-            "-f",
-            "sdp",
             "-i",
-            sdp_path,
+            input_url,
             "-vn",
             "-sn",
             "-dn",
@@ -275,7 +256,7 @@ class ReceiverSupervisor:
             "wav",
             "pipe:1",
         ]
-        logging.info("Starting ffmpeg RTP receiver")
+        logging.info("Starting ffmpeg UDP receiver (%s)", input_url)
         return await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.DEVNULL,
@@ -283,7 +264,7 @@ class ReceiverSupervisor:
             stderr=asyncio.subprocess.PIPE,
         )
 
-    async def _detect_frequency_from_stream(self, sdp_path: str) -> float | None:
+    async def _detect_frequency_from_stream(self) -> float | None:
         ffprobe_bin = _resolve_ffprobe_bin(self.config.ffmpeg_bin)
 
         async def _probe(cmd: list[str], label: str) -> dict[str, object] | None:
@@ -295,10 +276,7 @@ class ReceiverSupervisor:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=self.config.metadata_probe_timeout_s,
-                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.config.metadata_probe_timeout_s)
             except asyncio.TimeoutError:
                 logging.info("ffprobe timed out while probing %s", label)
                 if proc is not None and proc.returncode is None:
@@ -339,45 +317,33 @@ class ReceiverSupervisor:
                 return payload
             return None
 
-        probe_targets: list[tuple[list[str], str]] = []
-
-        host = self.config.rtp_host.strip()
-        candidate_hosts = []
-        candidate_hosts.append("0.0.0.0")
+        host = self.config.udp_host.strip()
+        candidate_hosts = ["0.0.0.0", "127.0.0.1", "localhost"]
         if host and host not in {"0.0.0.0", "::", "*"}:
-            candidate_hosts.append(host)
-        candidate_hosts.extend(["127.0.0.1", "localhost"])
+            candidate_hosts.insert(1, host)
 
+        probe_targets: list[tuple[list[str], str]] = []
         seen_urls: set[str] = set()
-        for h in candidate_hosts:
-            for p in (8898, self.config.rtp_port):
-                url = f"udp://{h}:{p}"
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                probe_targets.append(([
-                    ffprobe_bin,
-                    "-v", "error",
-                    "-print_format", "json",
-                    "-show_format",
-                    "-show_programs",
+        for candidate in candidate_hosts:
+            url = self._build_udp_input_url(host_override=candidate)
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            probe_targets.append(
+                (
+                    [
+                        ffprobe_bin,
+                        "-v",
+                        "error",
+                        "-print_format",
+                        "json",
+                        "-show_format",
+                        "-show_programs",
+                        url,
+                    ],
                     url,
-                ], url))
-
-        probe_targets.append(([
-            ffprobe_bin,
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_programs",
-            "-protocol_whitelist",
-            "file,udp,rtp",
-            "-f",
-            "sdp",
-            sdp_path,
-        ], "sdp"))
+                )
+            )
 
         for cmd, label in probe_targets:
             payload = await _probe(cmd, label)
@@ -433,11 +399,11 @@ class ReceiverSupervisor:
             "0",
             *self.config.pifm_extra_args,
         ]
-        preemph = str(self.config.pifm_preemphasis or '').strip().lower()
-        if preemph == '50':
-            cmd.extend(['--preemph', '50us'])
-        elif preemph == '75':
-            cmd.extend(['--preemph', '75us'])
+        preemph = str(self.config.pifm_preemphasis or "").strip().lower()
+        if preemph == "50":
+            cmd.extend(["--preemph", "50us"])
+        elif preemph == "75":
+            cmd.extend(["--preemph", "75us"])
         logging.info("Starting piFmAdv transmitter (%s)", self.config.pifmadv_bin)
         return await asyncio.create_subprocess_exec(
             *cmd,
@@ -460,9 +426,8 @@ class ReceiverSupervisor:
             return (
                 b"",
                 (
-                    f"no RTP audio received for {self.config.stream_stall_timeout_s:.1f}s "
-                    f"on {self.config.rtp_host}:{self.config.rtp_port} "
-                    f"(pt={self.config.payload_type}, codec={self.config.codec})"
+                    f"no UDP audio received for {self.config.stream_stall_timeout_s:.1f}s "
+                    f"on {self.config.udp_host}:{self.config.udp_port}"
                 ),
             )
 
@@ -516,7 +481,7 @@ class ReceiverSupervisor:
 
             idle_for = time.monotonic() - self.last_audio_ts
             if idle_for >= self.config.stream_stall_timeout_s:
-                return f"rtp stream stalled for {idle_for:.1f}s"
+                return f"udp stream stalled for {idle_for:.1f}s"
 
             await asyncio.sleep(1.0)
 
@@ -531,11 +496,7 @@ class ReceiverSupervisor:
             if text:
                 logging.info("[%s] %s", name, text)
 
-    async def _terminate_process(
-        self,
-        proc: asyncio.subprocess.Process | None,
-        name: str,
-    ) -> None:
+    async def _terminate_process(self, proc: asyncio.subprocess.Process | None, name: str) -> None:
         if proc is None:
             return
 
@@ -554,20 +515,6 @@ class ReceiverSupervisor:
                 await proc.wait()
 
         logging.info("%s stopped with code %s", name, proc.returncode)
-
-    def _write_temp_sdp(self) -> str:
-        sdp_text = (
-            "v=0\n"
-            "o=- 0 0 IN IP4 127.0.0.1\n"
-            "s=Haze RTP Input\n"
-            f"c=IN IP4 {self.config.rtp_host}\n"
-            "t=0 0\n"
-            f"m=audio {self.config.rtp_port} RTP/AVP {self.config.payload_type}\n"
-            f"a=rtpmap:{self.config.payload_type} {self.config.codec}/{self.config.input_sample_rate}/{self.config.channels}\n"
-        )
-        with tempfile.NamedTemporaryFile("w", suffix=".sdp", delete=False, encoding="utf-8") as handle:
-            handle.write(sdp_text)
-            return handle.name
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -592,10 +539,11 @@ def _ps_quote(value: str) -> str:
 
 
 def _windows_is_admin() -> bool:
-    if os.name != 'nt':
+    if os.name != "nt":
         return False
     try:
         import ctypes
+
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
@@ -631,18 +579,18 @@ def _windows_firewall_rule_exists(rule_name: str) -> bool:
 
 
 def _windows_add_firewall_rules_admin(rule_defs: list[tuple[str, str, int]]) -> bool:
-    cmds: list[str] = []
+    commands: list[str] = []
     for rule_name, program_path, port in rule_defs:
-        cmds.append(
+        commands.append(
             "if (-not (Get-NetFirewallRule -DisplayName "
             f"{_ps_quote(rule_name)} -ErrorAction SilentlyContinue)) "
             "{ New-NetFirewallRule -DisplayName "
             f"{_ps_quote(rule_name)} -Direction Inbound -Action Allow -Protocol UDP "
             f"-LocalPort {port} -Program {_ps_quote(program_path)} -Profile Private,Public | Out-Null }}"
         )
-    if not cmds:
+    if not commands:
         return True
-    script = '; '.join(cmds)
+    script = "; ".join(commands)
     result = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True,
@@ -650,7 +598,7 @@ def _windows_add_firewall_rules_admin(rule_defs: list[tuple[str, str, int]]) -> 
         check=False,
     )
     if result.returncode != 0:
-        logging.warning("Firewall rule creation failed: %s", (result.stderr or result.stdout or '').strip())
+        logging.warning("Firewall rule creation failed: %s", (result.stderr or result.stdout or "").strip())
         return False
     return True
 
@@ -667,9 +615,10 @@ def _windows_request_firewall_rules_uac(rule_defs: list[tuple[str, str, int]]) -
             f"{_ps_quote(rule_name)} -Direction Inbound -Action Allow -Protocol UDP "
             f"-LocalPort {port} -Program {_ps_quote(program_path)} -Profile Private,Public | Out-Null }}"
         )
-    script = '; '.join(lines)
+    script = "; ".join(lines)
     try:
         import ctypes
+
         rc = ctypes.windll.shell32.ShellExecuteW(
             None,
             "runas",
@@ -689,7 +638,7 @@ def _windows_request_firewall_rules_uac(rule_defs: list[tuple[str, str, int]]) -
 
 
 def _ensure_windows_firewall_access(config: ReceiverConfig) -> None:
-    if os.name != 'nt':
+    if os.name != "nt":
         return
 
     python_path = _windows_resolve_program_path(sys.executable)
@@ -697,40 +646,33 @@ def _ensure_windows_firewall_access(config: ReceiverConfig) -> None:
 
     rule_defs: list[tuple[str, str, int]] = []
     if python_path:
-        rule_defs.append((f"Haze Receiver UDP {config.rtp_port} Python", python_path, config.rtp_port))
+        rule_defs.append((f"Haze Receiver UDP {config.udp_port} Python", python_path, config.udp_port))
     if ffmpeg_path:
-        rule_defs.append((f"Haze Receiver UDP {config.rtp_port} FFmpeg", ffmpeg_path, config.rtp_port))
+        rule_defs.append((f"Haze Receiver UDP {config.udp_port} FFmpeg", ffmpeg_path, config.udp_port))
 
-    missing: list[tuple[str, str, int]] = []
-    for rule in rule_defs:
-        if not _windows_firewall_rule_exists(rule[0]):
-            missing.append(rule)
-
+    missing = [rule for rule in rule_defs if not _windows_firewall_rule_exists(rule[0])]
     if not missing:
         return
 
     if _windows_is_admin():
         if _windows_add_firewall_rules_admin(missing):
-            logging.info("Windows firewall rules added for RTP UDP port %s", config.rtp_port)
+            logging.info("Windows firewall rules added for UDP port %s", config.udp_port)
         return
 
-    logging.info("Requesting UAC elevation to add Windows firewall allow rules for RTP UDP port %s", config.rtp_port)
+    logging.info("Requesting UAC elevation to add Windows firewall allow rules for UDP port %s", config.udp_port)
     _windows_request_firewall_rules_uac(missing)
 
 
 def _parse_args() -> ReceiverConfig:
     parser = argparse.ArgumentParser(
         prog="hazeReciever.py",
-        description="Standalone RTP to piFmAdv receiver with automatic restart and stream recovery.",
+        description="Standalone UDP MPEG-TS to piFmAdv receiver with automatic restart and stream recovery.",
     )
 
-    parser.add_argument("--rtp-host", default="0.0.0.0")
-    parser.add_argument("--rtp-port", type=int, default=8899)
-    parser.add_argument("--payload-type", type=int, default=97)
-    parser.add_argument("--codec", default="opus")
-    parser.add_argument("--input-sample-rate", type=int, default=24000)
+    parser.add_argument("--udp-host", "--rtp-host", dest="udp_host", default="0.0.0.0")
+    parser.add_argument("--udp-port", "--rtp-port", dest="udp_port", type=int, default=8898)
     parser.add_argument("--output-sample-rate", type=int, default=16000)
-    parser.add_argument("--channels", type=int, default=2)
+    parser.add_argument("--channels", type=int, default=1)
 
     parser.add_argument("--ffmpeg-bin", default="ffmpeg")
     parser.add_argument("--ffmpeg-log-level", default="warning")
@@ -752,11 +694,8 @@ def _parse_args() -> ReceiverConfig:
     args = parser.parse_args()
 
     return ReceiverConfig(
-        rtp_host=args.rtp_host,
-        rtp_port=args.rtp_port,
-        payload_type=args.payload_type,
-        codec=args.codec,
-        input_sample_rate=args.input_sample_rate,
+        udp_host=args.udp_host,
+        udp_port=args.udp_port,
         output_sample_rate=args.output_sample_rate,
         channels=args.channels,
         ffmpeg_bin=args.ffmpeg_bin,
@@ -778,10 +717,7 @@ def _parse_args() -> ReceiverConfig:
 
 
 def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
 async def _main() -> None:

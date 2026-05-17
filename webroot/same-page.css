@@ -43,9 +43,107 @@
 
 .sp-upload-input {
     position: absolute;
-    inset: 0;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    border: 0;
     opacity: 0;
-    cursor: pointer;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.same-top-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+@media (max-width: 980px) {
+    .same-top-grid { grid-template-columns: 1fr; }
+}
+
+.same-top-grid .section-block {
+    margin-top: 0;
+}
+
+.sp-rail-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.sp-rail-actions .btn-action,
+.sp-rail-actions .btn-ghost,
+.sp-rail-actions .btn-danger {
+    width: 100%;
+}
+
+.sp-preview-player {
+    width: 100%;
+    margin-top: 6px;
+}
+
+.sp-template-head-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.sp-tpl-field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.sp-tpl-field-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.sp-tpl-text-input,
+.sp-tpl-file-input {
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 12px;
+}
+
+.sp-tpl-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.sp-tpl-checkbox-row input[type="checkbox"] {
+    accent-color: var(--accent);
+}
+
+.sp-tpl-meta-stack {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.sp-tpl-lang-row .sp-tpl-lang-file-group {
+    max-width: 220px;
+}
+
+.sp-tpl-lang-file-group .sp-tpl-file-input {
+    font-family: var(--mono-font);
 }
 
 .sp-upload-icon {
@@ -547,8 +645,19 @@
 
 .sp-feeds-locs-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(180px, 0.4fr) minmax(280px, 0.6fr);
     gap: 0;
+}
+
+@media (max-width: 860px) {
+    .sp-feeds-locs-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .sp-feeds-col {
+        border-right: 0;
+        border-bottom: 1px solid var(--border-subtle);
+    }
 }
 
 .sp-feeds-col {

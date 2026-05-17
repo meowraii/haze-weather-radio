@@ -217,7 +217,7 @@ def purge_expired_alerts() -> int:
     return total_removed
 
 
-from module.events import append_runtime_event, push_alert, update_feed_runtime
+from module.events import append_runtime_event, enqueue_scheduled_package, push_alert, update_feed_runtime
 from module.packages import (
     _AL_PH,
     _clean_alert_text,
@@ -265,6 +265,9 @@ _SEVERITY_PRIORITY: dict[str, int] = {
     "Minor": 3,
     "Unknown": 4,
 }
+
+_SEVERITY_POST_ALERT_ALERTS_PACKAGE = frozenset({'EXTREME', 'SEVERE', 'MODERATE'})
+_IMPACT_POST_ALERT_ALERTS_PACKAGE = frozenset({'EXTREME', 'SEVERE', 'MODERATE', 'HIGH'})
 
 _INFORMATIONAL_PRIORITY = 9
 
@@ -638,10 +641,12 @@ def feed_same_codes(feed: dict[str, Any]) -> list[str]:
         for region in coverage:
             if not isinstance(region, dict):
                 continue
-            _append_loc(region)
-            for subregion in region.get('subregions', []):
-                if isinstance(subregion, dict):
+            subregions = [subregion for subregion in region.get('subregions', []) if isinstance(subregion, dict)]
+            if subregions:
+                for subregion in subregions:
                     _append_loc(subregion)
+            else:
+                _append_loc(region)
         return codes
 
     for block in feed.get('locations', []):
@@ -901,6 +906,17 @@ def _alert_priority(alert: CAPAlert) -> int:
     return _SEVERITY_PRIORITY.get(alert.severity, _INFORMATIONAL_PRIORITY)
 
 
+def _should_schedule_post_alert_package(alert: CAPAlert) -> bool:
+    severity = str(alert.severity or '').strip().upper()
+    if severity in _SEVERITY_POST_ALERT_ALERTS_PACKAGE:
+        return True
+    info = alert.infos[0] if alert.infos else None
+    if info is None:
+        return False
+    impact = str(info.param_dict().get('layer:ec-msc-smc:1.1:msc_impact', '') or '').strip().upper()
+    return impact in _IMPACT_POST_ALERT_ALERTS_PACKAGE
+
+
 def _pcm_to_voice_array(pcm: bytes, same_sr: int) -> np.ndarray:
     samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32767.0
     if CHANNELS == 2:
@@ -1114,6 +1130,7 @@ def _generate_alert_audio(
     locations = _header_locations(alert, feed)
     tone_type = _attention_tone(alert, same_event, same_cfg)
     priority = _alert_priority(alert)
+    schedule_post_alert_package = _should_schedule_post_alert_package(alert)
 
     feed_langs = list(feed.get('languages', {}).keys()) or ['en-CA']
 
@@ -1135,6 +1152,8 @@ def _generate_alert_audio(
             samples = samples.reshape(-1, 2).mean(axis=1)
         alert_pcm = to_pcm16(resample(samples, BUS_SR, BUS_SR))
         push_alert(feed_id, priority, alert_pcm, alert.identifier)
+        if schedule_post_alert_package:
+            enqueue_scheduled_package(feed_id, 'alerts')
         log.info('[%s] Alert queued (no SAME): %s (event=%s, priority=%d)', feed_id, alert.identifier, same_event, priority)
         return
 
@@ -1160,6 +1179,8 @@ def _generate_alert_audio(
 
     alert_pcm = to_pcm16(resample(full_signal, same_sr, BUS_SR))
     push_alert(feed_id, priority, alert_pcm, alert.identifier)
+    if schedule_post_alert_package:
+        enqueue_scheduled_package(feed_id, 'alerts')
     log.info(
         '[%s] SAME queued: %s (event=%s, tone=%s, priority=%d)',
         feed_id, header.encoded, same_event, tone_type, priority,

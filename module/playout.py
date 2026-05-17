@@ -697,17 +697,42 @@ async def _playout_main(
     _bridge_stop = asyncio.Event()
 
     def _bridge_thread() -> None:
+        recent_alert_ids: dict[str, float] = {}
+
+        def _is_duplicate(identifier: str) -> bool:
+            if not identifier:
+                return False
+            now = time.monotonic()
+            expired = [key for key, until in recent_alert_ids.items() if until <= now]
+            for key in expired:
+                recent_alert_ids.pop(key, None)
+            if identifier in recent_alert_ids:
+                return True
+            recent_alert_ids[identifier] = now + 30.0
+            return False
+
         while not shutdown_event.is_set() and not _bridge_stop.is_set():
             try:
-                item = thread_alert_q.get(timeout=0.1)
+                item = thread_alert_q.get(timeout=0.01)
+                if _is_duplicate(item[2]):
+                    continue
                 loop.call_soon_threadsafe(alert_queue.put_nowait, item)
             except queue.Empty:
                 pass
-            try:
-                pkg_id = thread_scheduled_q.get_nowait()
+            while True:
+                try:
+                    item = thread_alert_q.get_nowait()
+                except queue.Empty:
+                    break
+                if _is_duplicate(item[2]):
+                    continue
+                loop.call_soon_threadsafe(alert_queue.put_nowait, item)
+            while True:
+                try:
+                    pkg_id = thread_scheduled_q.get_nowait()
+                except queue.Empty:
+                    break
                 loop.call_soon_threadsafe(scheduled_queue.put_nowait, pkg_id)
-            except queue.Empty:
-                pass
 
     bridge = threading.Thread(target=_bridge_thread, name=f'{feed_id}:bridge', daemon=True)
     bridge.start()

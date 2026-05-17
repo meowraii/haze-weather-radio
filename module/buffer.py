@@ -45,6 +45,7 @@ class _BufferedSink:
         '_sink', '_name', '_queue', '_task', '_closed',
         '_drop_oldest', '_dropped_chunks', '_clocked',
         '_prefill_chunks', '_fill_silence',
+        '_alert_mode',
     )
 
     def __init__(
@@ -67,6 +68,7 @@ class _BufferedSink:
         self._clocked = clocked
         self._prefill_chunks = max(0, min(queue_limit, prefill_chunks))
         self._fill_silence = fill_silence
+        self._alert_mode = False
 
     def start(self) -> None:
         if self._task is None:
@@ -145,6 +147,13 @@ class _BufferedSink:
             return
         except asyncio.QueueFull:
             pass
+        if self._alert_mode:
+            try:
+                await self._queue.put(pcm)
+                return
+            except Exception:
+                self._log_drop()
+                return
         if not self._drop_oldest:
             self._log_drop()
             return
@@ -176,6 +185,25 @@ class _BufferedSink:
                         break
             await self._task
         await self._sink.close()
+
+    def drop_pending(self) -> int:
+        dropped = 0
+        while True:
+            try:
+                chunk = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if chunk is None:
+                try:
+                    self._queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
+                break
+            dropped += 1
+        return dropped
+
+    def set_alert_mode(self, active: bool) -> None:
+        self._alert_mode = active
 
 
 class _EscalatingBufferedSink(_BufferedSink):
@@ -397,6 +425,16 @@ class AudioPipeline:
                 next_ns = time.monotonic_ns()
         return True
 
+    def _set_sink_alert_mode(self, active: bool) -> None:
+        for sink, _ in self._sinks:
+            set_alert_mode = getattr(sink, 'set_alert_mode', None)
+            if not callable(set_alert_mode):
+                continue
+            try:
+                set_alert_mode(active)
+            except Exception:
+                continue
+
     async def _playout_loop(self) -> None:
         chunk_ns = int(CHUNK_DURATION * 1_000_000_000)
         next_silence_ns = time.monotonic_ns()
@@ -405,9 +443,11 @@ class AudioPipeline:
                 try:
                     alert_pcm = self._alert_queue.get_nowait()
                     self._alert_active.set()
+                    self._set_sink_alert_mode(True)
                     try:
                         await self._stream_pcm(alert_pcm, interruptible=False)
                     finally:
+                        self._set_sink_alert_mode(False)
                         self._alert_active.clear()
                         self._alert_done.set()
                     next_silence_ns = time.monotonic_ns()
