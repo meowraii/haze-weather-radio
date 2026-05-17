@@ -1,5 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Zalando+Sans:ital,wght@0,200..900;1,200..900&display=swap');
+/* ─────────────────────────────────────────────────────────────
+   Haze Weather Radio — Panel stylesheet
+   ───────────────────────────────────────────────────────────── */
 
+/* ── Custom properties ──────────────────────────────────────── */
 :root {
   --sidebar-w:      272px;
 
@@ -25,8 +28,8 @@
 
   --hd-bg:          #1c1c16;
 
-  --font:      'Zalando Sans', 'Segoe UI', 'Arial', 'Helvetica', sans-serif;
-  --mono-font: 'Zalando Sans', 'Consolas', ui-monospace, monospace;
+  --font:      'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --mono-font: 'IBM Plex Mono', 'Consolas', ui-monospace, monospace;
 }
 
 [data-theme="light"] {
