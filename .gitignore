@@ -4,6 +4,7 @@ data/*
 data/alertsRegistry.json
 __pycache__/
 audio/_uploads
+audio/_previews
 audio/static
 voices/*
 logs/*

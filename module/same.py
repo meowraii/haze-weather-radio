@@ -55,7 +55,7 @@ _SEGMENT_FADE_S: Final[float] = 0.003
 
 _AFSK_HIGHPASS_HZ: Final[float] = 90.0
 _AFSK_LOWPASS_HZ: Final[float] = 4000.0
-_SEQUENCE_AMPLITUDE: Final[float] = 0.32
+_SEQUENCE_AMPLITUDE: Final[float] = 0.75
 
 _INTER_BURST_S: Final[float] = 1.0
 _PRE_ATTN_S: Final[float] = 1.0
@@ -378,13 +378,14 @@ def _load_audio(path: pathlib.Path, target_sr: int) -> np.ndarray:
         audio = np.mean(audio, axis=1)
     audio = audio.astype(np.float32)
     if sr != target_sr:
-        log.info("Resampling audio %d → %d Hz", sr, target_sr)
+        log.info("Resampling audio %d -> %d Hz", sr, target_sr)
         audio = resample(audio, sr, target_sr)
     return audio
 
 
 def _apply_lowpass(signal: np.ndarray, cutoff_hz: float, sample_rate: int) -> np.ndarray:
-    if len(signal) == 0:
+    signal_len = int(np.asarray(signal).size)
+    if signal_len == 0:
         return signal
     nyquist = sample_rate / 2
     normalized_cutoff = cutoff_hz / nyquist
@@ -394,13 +395,16 @@ def _apply_lowpass(signal: np.ndarray, cutoff_hz: float, sample_rate: int) -> np
     if not isinstance(coeffs, tuple) or len(coeffs) != 2:
         raise RuntimeError("Failed to design lowpass filter coefficients")
     b, a = coeffs
-    if len(signal) <= 3 * max(len(a), len(b)):
+    a_len = int(np.asarray(a).size)
+    b_len = int(np.asarray(b).size)
+    if signal_len <= 3 * max(a_len, b_len):
         return signal
     return sp_signal.filtfilt(b, a, signal).astype(np.float32)
 
 
 def _apply_highpass(signal: np.ndarray, cutoff_hz: float, sample_rate: int) -> np.ndarray:
-    if len(signal) == 0:
+    signal_len = int(np.asarray(signal).size)
+    if signal_len == 0:
         return signal
     nyquist = sample_rate / 2
     normalized_cutoff = cutoff_hz / nyquist
@@ -410,7 +414,9 @@ def _apply_highpass(signal: np.ndarray, cutoff_hz: float, sample_rate: int) -> n
     if not isinstance(coeffs, tuple) or len(coeffs) != 2:
         raise RuntimeError("Failed to design highpass filter coefficients")
     b, a = coeffs
-    if len(signal) <= 3 * max(len(a), len(b)):
+    a_len = int(np.asarray(a).size)
+    b_len = int(np.asarray(b).size)
+    if signal_len <= 3 * max(a_len, b_len):
         return signal
     return sp_signal.filtfilt(b, a, signal).astype(np.float32)
 

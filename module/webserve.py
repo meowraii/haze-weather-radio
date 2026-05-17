@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 import wave
+import urllib.parse
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -255,7 +256,7 @@ class WebServer:
         if not self._auth_enabled():
             return
         auth_header = request.headers.get('Authorization', '')
-        token = request.headers.get('X-Session-Token')
+        token = request.headers.get('X-Session-Token') or request.query_params.get('token')
         if auth_header.startswith('Bearer '):
             token = auth_header[7:].strip()
         if not self._check_token(token):
@@ -357,6 +358,129 @@ class WebServer:
             return self.root_dir / 'managed' / 'configs' / filename
         return self.root_dir / 'managed' / filename
 
+    def _preview_audio_dir(self) -> pathlib.Path:
+        return self.root_dir / 'audio' / '_previews'
+
+    def _build_same_audio(self, payload: SAMAirRequest) -> dict[str, Any]:
+        from module.same import SAMEHeader, generate_same, resolve_flavor, resample as _resample, to_pcm16
+
+        feeds_cfg = self.config.get('feeds', [])
+        same_cfg = self.config.get('same', {})
+        callsign = same_cfg.get('sender', 'HAZE0000')
+        flavor = same_cfg.get('flavor') or None
+        same_sr = resolve_flavor(flavor).sample_rate
+
+        if payload.air_on_all_feeds:
+            target_ids = [f.get('id', 'default') for f in feeds_cfg if f.get('enabled', True)]
+            if not target_ids:
+                raise HTTPException(status_code=400, detail='No enabled feeds configured')
+        elif payload.feed_ids:
+            enabled_ids = {f.get('id') for f in feeds_cfg if f.get('enabled', True)}
+            target_ids = [fid for fid in payload.feed_ids if fid in enabled_ids]
+            if not target_ids:
+                raise HTTPException(status_code=400, detail='None of the specified feeds are enabled')
+        else:
+            fid = payload.feed_id or (feeds_cfg[0].get('id', 'default') if feeds_cfg else 'default')
+            target_ids = [fid]
+
+        hours = max(0, min(payload.duration_hours, 99))
+        minutes = max(0, min(payload.duration_minutes, 59))
+        duration_code = f'{hours:02d}{minutes:02d}'
+        if duration_code == '0000':
+            duration_code = '0100'
+        locations = [loc.strip() for loc in payload.locations if loc.strip()] or ['000000']
+        header = SAMEHeader(
+            originator=payload.originator.upper()[:3],
+            event=payload.event.upper()[:3],
+            locations=tuple(locations[:31]),
+            duration=duration_code,
+            callsign=callsign,
+        )
+        tone: str | None = payload.tone_type.upper() if payload.tone_type.upper() != 'NONE' else None
+
+        voice_path: pathlib.Path | None = None
+        voice_array = None
+        prebuilt_alert_pcm: bytes | None = None
+        if payload.audio_file_path.strip():
+            upload_dir = (self.root_dir / 'audio' / '_uploads').resolve()
+            preview_dir = self._preview_audio_dir().resolve()
+            candidate = pathlib.Path(payload.audio_file_path)
+            if not candidate.is_absolute():
+                candidate = (self.root_dir / candidate).resolve()
+            else:
+                candidate = candidate.resolve()
+            in_preview_dir = False
+            try:
+                candidate.relative_to(upload_dir)
+            except ValueError:
+                try:
+                    candidate.relative_to(preview_dir)
+                    in_preview_dir = True
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail='Invalid audio file path') from exc
+            if not candidate.exists():
+                raise HTTPException(status_code=400, detail='Audio file not found')
+            if in_preview_dir:
+                from module.buffer import CHANNELS as _BUS_CH, SAMPLE_RATE as _BUS_SR
+                with wave.open(str(candidate), 'rb') as wf:
+                    channels = wf.getnchannels()
+                    sample_width = wf.getsampwidth()
+                    sample_rate = wf.getframerate()
+                    frames = wf.readframes(wf.getnframes())
+                if sample_width != 2:
+                    raise HTTPException(status_code=400, detail='Invalid preview audio format')
+                if channels != _BUS_CH or sample_rate != _BUS_SR:
+                    raise HTTPException(status_code=400, detail='Invalid preview audio sample rate or channel count')
+                prebuilt_alert_pcm = frames
+            else:
+                voice_path = candidate
+        elif payload.voice_message.strip():
+            from module.tts import synthesize_pcm
+            from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
+            import numpy as np
+            pcm = synthesize_pcm(self.config, payload.voice_message.strip())
+            if pcm:
+                samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32767.0
+                if CHANNELS == 2:
+                    samples = samples.reshape(-1, 2).mean(axis=1)
+                voice_array = _resample(samples, BUS_SR, same_sr)
+        if prebuilt_alert_pcm is not None:
+            alert_pcm = prebuilt_alert_pcm
+        else:
+            full_signal = generate_same(
+                header=header,
+                tone_type=cast(Any, tone),
+                audio_msg_path=voice_path,
+                audio_msg_array=voice_array,
+                attn_duration_s=8.0,
+                flavor=flavor,
+            )
+
+            from module.buffer import SAMPLE_RATE as _BUS_SR
+            alert_pcm = to_pcm16(_resample(full_signal, same_sr, _BUS_SR))
+
+        issued_at = datetime.now(timezone.utc)
+        duration_minutes_total = hours * 60 + minutes
+        if duration_minutes_total <= 0:
+            duration_minutes_total = 60
+        expires_at = issued_at + timedelta(minutes=duration_minutes_total)
+        identifier = f'manual_{int(time.time())}'
+        display_id = f'MSG{issued_at.strftime("%H%M%S")}'
+
+        return {
+            'feeds_cfg': feeds_cfg,
+            'target_ids': target_ids,
+            'locations': locations,
+            'header': header,
+            'alert_pcm': alert_pcm,
+            'issued_at': issued_at,
+            'expires_at': expires_at,
+            'identifier': identifier,
+            'display_id': display_id,
+            'duration_code': duration_code,
+            'same_sr': same_sr,
+        }
+
     def _register_routes(self) -> None:
         api_base = self._api_base()
         self.app.add_api_route('/', self.index, methods=['GET'])
@@ -430,6 +554,18 @@ class WebServer:
             f'{api_base}/same/test',
             self.same_test,
             methods=['POST'],
+            dependencies=[Depends(self._require_auth)],
+        )
+        self.app.add_api_route(
+            f'{api_base}/same/generate',
+            self.same_generate,
+            methods=['POST'],
+            dependencies=[Depends(self._require_auth)],
+        )
+        self.app.add_api_route(
+            f'{api_base}/same/generated-audio',
+            self.same_generated_audio,
+            methods=['GET'],
             dependencies=[Depends(self._require_auth)],
         )
         self.app.add_api_route(
@@ -550,8 +686,7 @@ class WebServer:
     async def same_event_codes(self) -> dict[str, Any]:
         path = self.root_dir / 'managed' / 'sameMapping.json'
         with open(path, encoding='utf-8') as f:
-            same_mapping = json.load(f)
-            return same_mapping.get('eas', {})
+            return json.load(f)
 
     async def same_location_names(self) -> dict[str, str]:
         import csv
@@ -635,86 +770,17 @@ class WebServer:
         return {'ok': True, 'event_code': code}
 
     async def same_air(self, payload: SAMAirRequest) -> dict[str, Any]:
-        import os
-        from module.same import SAMEHeader, generate_same, resolve_flavor, resample as _resample, to_pcm16
-
-        feeds_cfg = self.config.get('feeds', [])
-        same_cfg = self.config.get('same', {})
-        callsign = same_cfg.get('sender', 'HAZE0000')
-        flavor = same_cfg.get('flavor') or None
-        same_sr = resolve_flavor(flavor).sample_rate
-
-        if payload.air_on_all_feeds:
-            target_ids = [f.get('id', 'default') for f in feeds_cfg if f.get('enabled', True)]
-            if not target_ids:
-                raise HTTPException(status_code=400, detail='No enabled feeds configured')
-        elif payload.feed_ids:
-            enabled_ids = {f.get('id') for f in feeds_cfg if f.get('enabled', True)}
-            target_ids = [fid for fid in payload.feed_ids if fid in enabled_ids]
-            if not target_ids:
-                raise HTTPException(status_code=400, detail='None of the specified feeds are enabled')
-        else:
-            fid = payload.feed_id or (feeds_cfg[0].get('id', 'default') if feeds_cfg else 'default')
-            target_ids = [fid]
-
-        hours = max(0, min(payload.duration_hours, 99))
-        minutes = max(0, min(payload.duration_minutes, 59))
-        duration_code = f'{hours:02d}{minutes:02d}'
-        if duration_code == '0000':
-            duration_code = '0100'
-        locations = [loc.strip() for loc in payload.locations if loc.strip()] or ['000000']
-        header = SAMEHeader(
-            originator=payload.originator.upper()[:3],
-            event=payload.event.upper()[:3],
-            locations=tuple(locations[:31]),
-            duration=duration_code,
-            callsign=callsign,
-        )
-        tone: str | None = payload.tone_type.upper() if payload.tone_type.upper() != 'NONE' else None
-
-        voice_path: pathlib.Path | None = None
-        voice_array = None
-        if payload.audio_file_path.strip():
-            upload_dir = self.root_dir / 'audio' / '_uploads'
-            candidate = pathlib.Path(payload.audio_file_path)
-            try:
-                candidate.relative_to(upload_dir)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail='Invalid audio file path') from exc
-            if not candidate.exists():
-                raise HTTPException(status_code=400, detail='Audio file not found')
-            voice_path = candidate
-        elif payload.voice_message.strip():
-            from module.tts import synthesize_pcm
-            from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
-            import numpy as np
-            pcm = synthesize_pcm(self.config, payload.voice_message.strip())
-            if pcm:
-                samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32767.0
-                if CHANNELS == 2:
-                    samples = samples.reshape(-1, 2).mean(axis=1)
-                voice_array = _resample(samples, BUS_SR, same_sr)
-
-        full_signal = generate_same(
-            header=header,
-            tone_type=cast(Any, tone),
-            audio_msg_path=voice_path,
-            audio_msg_array=voice_array,
-            attn_duration_s=8.0,
-            flavor=flavor,
-        )
-
-        from module.buffer import SAMPLE_RATE as _BUS_SR
-        alert_pcm = to_pcm16(_resample(full_signal, same_sr, _BUS_SR))
-
         from module.events import push_alert
-        issued_at = datetime.now(timezone.utc)
-        duration_minutes_total = hours * 60 + minutes
-        if duration_minutes_total <= 0:
-            duration_minutes_total = 60
-        expires_at = issued_at + timedelta(minutes=duration_minutes_total)
-        identifier = f'manual_{int(time.time())}'
-        display_id = f'MSG{issued_at.strftime("%H%M%S")}'
+
+        built = self._build_same_audio(payload)
+        target_ids = built['target_ids']
+        locations = built['locations']
+        header = built['header']
+        alert_pcm = built['alert_pcm']
+        issued_at = built['issued_at']
+        expires_at = built['expires_at']
+        identifier = built['identifier']
+        display_id = built['display_id']
 
         for fid in target_ids:
             store_runtime_alert_entry(fid, identifier, {
@@ -745,8 +811,53 @@ class WebServer:
             push_alert(fid, 0, alert_pcm, identifier)
 
         encoded = header.encoded
-        append_runtime_event('manual-same', f'Manual SAME aired: {encoded} → {", ".join(target_ids)}')
+        append_runtime_event('manual-same', f'Manual SAME aired: {encoded} -> {", ".join(target_ids)}')
         return {'ok': True, 'header': encoded, 'feed_id': target_ids[0], 'feeds_aired': target_ids}
+
+    async def same_generate(self, payload: SAMAirRequest) -> dict[str, Any]:
+        built = self._build_same_audio(payload)
+        preview_dir = self._preview_audio_dir()
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        preview_path = preview_dir / f"{built['identifier']}.wav"
+
+        with wave.open(str(preview_path), 'wb') as wf:
+            from module.buffer import CHANNELS as _BUS_CH, SAMPLE_RATE as _BUS_SR
+            wf.setnchannels(_BUS_CH)
+            wf.setsampwidth(2)
+            wf.setframerate(_BUS_SR)
+            wf.writeframes(built['alert_pcm'])
+
+        encoded = built['header'].encoded
+        preview_url = f"{self._api_base()}/same/generated-audio?path={urllib.parse.quote(str(preview_path))}"
+        append_runtime_event('manual-same', f'Manual SAME generated: {encoded}')
+        return {
+            'ok': True,
+            'header': encoded,
+            'feed_id': built['target_ids'][0],
+            'feeds_aired': built['target_ids'],
+            'path': str(preview_path),
+            'download_url': preview_url,
+            'sample_rate': built['same_sr'],
+        }
+
+    async def same_generated_audio(self, path: str) -> FileResponse:
+        preview_dir = self._preview_audio_dir().resolve()
+        upload_dir = (self.root_dir / 'audio' / '_uploads').resolve()
+        candidate = pathlib.Path(path)
+        if not candidate.is_absolute():
+            candidate = (self.root_dir / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        try:
+            candidate.relative_to(preview_dir)
+        except ValueError:
+            try:
+                candidate.relative_to(upload_dir)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail='Invalid audio file path') from exc
+        if not candidate.exists():
+            raise HTTPException(status_code=404, detail='Audio file not found')
+        return FileResponse(candidate, media_type='audio/wav', filename=candidate.name)
 
     async def wx_packages(self) -> dict[str, Any]:
         return {'packages': list(_ALL_PACKAGES)}
@@ -949,16 +1060,16 @@ class WebServer:
         if fmt in _TEXT_FORMATS:
             pkg_texts = {pkg_id: pkg_lookup.get(pkg_id, '') for pkg_id in requested}
             if fmt == 'json':
-                body = _json.dumps({'packages': pkg_texts, 'locations': requested_locs, 'lang': lang}).encoded()
+                body = _json.dumps({'packages': pkg_texts, 'locations': requested_locs, 'lang': lang}).encode('utf-8')
             elif fmt == 'xml':
                 parts = [f'  <package id="{p}">{t}</package>' for p, t in pkg_texts.items() if t]
-                body = ('<?xml version="1.0" encoding="UTF-8"?>\n<wx>\n' + '\n'.join(parts) + '\n</wx>').encoded()
+                body = ('<?xml version="1.0" encoding="UTF-8"?>\n<wx>\n' + '\n'.join(parts) + '\n</wx>').encode('utf-8')
             elif fmt == 'ssml':
                 paras = '\n  '.join(f'<p>{t}</p>' for t in pkg_texts.values() if t)
                 body = (
                     f'<speak version="1.1" xmlns="http://www.w3.org/2001/10/synthesis"'
                     f' xml:lang="{lang}">\n  {paras}\n</speak>'
-                ).encoded()
+                ).encode('utf-8')
             elif fmt == 'html':
                 rows = '\n'.join(
                     f'<section id="{p}"><h2>{p.replace("_", " ").title()}</h2><p>{t}</p></section>'
@@ -967,11 +1078,11 @@ class WebServer:
                 body = (
                     f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
                     f'<title>Weather Report</title></head><body>{rows}</body></html>'
-                ).encoded()
+                ).encode('utf-8')
             elif fmt == 'markdown':
                 body = '\n\n'.join(
                     f'## {p.replace("_", " ").title()}\n\n{t}' for p, t in pkg_texts.items() if t
-                ).encoded()
+                ).encode('utf-8')
             else:
                 sections = '\n\n'.join(
                     f'\\section{{{p.replace("_", " ").title()}}}\n{t}' for p, t in pkg_texts.items() if t
@@ -980,7 +1091,7 @@ class WebServer:
                     '\\documentclass{article}\n\\usepackage[utf8]{inputenc}\n'
                     '\\begin{document}\n\\title{Weather Report}\n\\maketitle\n'
                     f'{sections}\n\\end{{document}}'
-                ).encoded()
+                ).encode('utf-8')
             return StreamingResponse(
                 iter([body]),
                 media_type=_FORMAT_MEDIA_TYPES[fmt],

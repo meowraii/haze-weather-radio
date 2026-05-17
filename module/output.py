@@ -30,9 +30,9 @@ log = logging.getLogger(__name__)
 
 _IS_LINUX = sys.platform == 'linux'
 
-_STANDARD_STREAM_QUEUE_LIMIT = 24
-_LOW_LATENCY_STREAM_QUEUE_LIMIT = 12
-_LOW_LATENCY_STREAM_PREFILL_CHUNKS = 2
+_STANDARD_STREAM_QUEUE_LIMIT = 48
+_LOW_LATENCY_STREAM_QUEUE_LIMIT = 24
+_LOW_LATENCY_STREAM_PREFILL_CHUNKS = 4
 
 _VIDEO_CODEC_FALLBACKS: dict[str, tuple[str, ...]] = {
     'h264_amf': ('libx264', 'mpeg2video'),
@@ -1191,7 +1191,7 @@ def V4L2Sink(
 
 
 class AudioDeviceSink:
-    bus_queue_limit = 8
+    bus_queue_limit = 20
     bus_drop_oldest = True
 
     def __init__(self, device: str | int | None = None) -> None:
