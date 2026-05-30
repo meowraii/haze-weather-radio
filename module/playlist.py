@@ -774,10 +774,11 @@ def _refill_feed_queue(config: dict[str, Any], feed: dict[str, Any], *, force: b
             continue
 
         queue_cost = _queue_cost(item)
-        if remaining_time_budget < queue_cost:
-            break
-        if boundary_budget is not None and boundary_budget < queue_cost:
-            break
+        if pending or additions:
+            if remaining_time_budget < queue_cost:
+                break
+            if boundary_budget is not None and boundary_budget < queue_cost:
+                break
 
         additions.append(item)
         existing_ids.add(item.item_id)

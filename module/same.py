@@ -55,7 +55,7 @@ _SEGMENT_FADE_S: Final[float] = 0.003
 
 _AFSK_HIGHPASS_HZ: Final[float] = 90.0
 _AFSK_LOWPASS_HZ: Final[float] = 4000.0
-_SEQUENCE_AMPLITUDE: Final[float] = 0.80
+_SEQUENCE_AMPLITUDE: Final[float] = 0.60
 
 _INTER_BURST_S: Final[float] = 1.0
 _PRE_ATTN_S: Final[float] = 1.0
@@ -64,6 +64,9 @@ _EOM_LEAD_S: Final[float] = 1.0
 _EOM_TAIL_S: Final[float] = 0.8
 
 _ATTN_DEFAULT_S: Final[float] = 8.0
+_NPAS_SATURATION_DRIVE: Final[float] = 1.85
+_NPAS_SATURATION_BLEND: Final[float] = 0.32
+SAME_SAMPLE_RATE: Final[int] = _SAMPLE_RATE
 
 ToneType = Literal["WXR", "EAS", "NPAS", "EGG_TIMER", "QUEBEC"]
 
@@ -71,42 +74,9 @@ log = logging.getLogger(__name__)
 _audit_log = logging.getLogger("same.audit")
 _audit_log.propagate = False
 
-flavors = {
-    "SAGE_DIGITAL_ENDEC": {
-        "pilot_prefix": (0.015, 1575.0),
-        "pilot_suffix": (0.030, 2088.0),
-        "afsk_highpass": 90.0,
-        "afsk_lowpass": 4000.0,
-    },
-    "TFT_EAS_911": {
-        "sample_rate": 8000,
-        "afsk_highpass": 4000.0,
-        "segment_fade": 0.000,
-    },
-    "DASDEC": {
-        "sample_rate": 48000,
-        "afsk_highpass": 20.0,
-        "afsk_lowpass": 18000.0,
-        "pilot_prefix": (0.00, 0.0),
-        "pilot_suffix": (0.00, 0.0),
-        "segment_fade": 0.0001,
-    },
-    "NWR": {
-        "sample_rate": 11025,
-        "segment_fade": 0.0001,
-        "pilot_prefix": (0.00, 0.0),
-        "pilot_suffix": (0.00, 0.0),
-    },
-    "EASYPLUS": {
-        "segment_fade": 0.0,
-        "afsk_highpass": 1000,
-        "afsk_lowpass": 2400.0,
-    },
-}
-
 
 @dataclass(frozen=True)
-class FlavorConfig:
+class SameConfig:
     sample_rate: int = _SAMPLE_RATE
     pilot_prefix_s: float = _PILOT_PREFIX_S
     pilot_prefix_freq_hz: float = _PILOT_PREFIX_FREQ_HZ
@@ -115,28 +85,6 @@ class FlavorConfig:
     afsk_highpass_hz: float = _AFSK_HIGHPASS_HZ
     afsk_lowpass_hz: float = _AFSK_LOWPASS_HZ
     segment_fade_s: float = _SEGMENT_FADE_S
-
-
-def resolve_flavor(name: Optional[str] = None) -> FlavorConfig:
-    if name is None:
-        return FlavorConfig()
-    raw = flavors.get(name)
-    if raw is None:
-        raise ValueError(f"Unknown flavor: {name!r}. Available: {list(flavors)}")
-    kw: dict = {}
-    if "sample_rate" in raw:
-        kw["sample_rate"] = int(raw["sample_rate"])
-    if "pilot_prefix" in raw:
-        kw["pilot_prefix_s"], kw["pilot_prefix_freq_hz"] = raw["pilot_prefix"]
-    if "pilot_suffix" in raw:
-        kw["pilot_suffix_s"], kw["pilot_suffix_freq_hz"] = raw["pilot_suffix"]
-    if "afsk_highpass" in raw:
-        kw["afsk_highpass_hz"] = float(raw["afsk_highpass"])
-    if "afsk_lowpass" in raw:
-        kw["afsk_lowpass_hz"] = float(raw["afsk_lowpass"])
-    if "segment_fade" in raw:
-        kw["segment_fade_s"] = float(raw["segment_fade"])
-    return FlavorConfig(**kw)
 
 
 def _ensure_audit_handler() -> None:
@@ -233,25 +181,72 @@ def _apply_fade_out(signal: np.ndarray, fade_duration_s: float, sample_rate: int
     return signal
 
 
+def _apply_soft_saturation(signal: np.ndarray, drive: float, blend: float) -> np.ndarray:
+    if signal.size == 0 or drive <= 1.0 or blend <= 0.0:
+        return signal
+
+    peak = float(np.max(np.abs(signal)))
+    if peak <= 0.0:
+        return signal
+
+    clean = signal / peak
+    saturated = np.tanh(clean * drive)
+    mixed = ((1.0 - blend) * clean) + (blend * saturated)
+
+    mixed_peak = float(np.max(np.abs(mixed)))
+    if mixed_peak > 0.0:
+        mixed = mixed / mixed_peak
+
+    clean64 = clean.astype(np.float64, copy=False)
+    mixed64 = mixed.astype(np.float64, copy=False)
+    clean_rms = float(np.sqrt(np.mean(clean64 * clean64)))
+    mixed_rms = float(np.sqrt(np.mean(mixed64 * mixed64)))
+    if clean_rms > 0.0 and mixed_rms > clean_rms:
+        mixed = mixed * (clean_rms / mixed_rms)
+
+    return (mixed * peak).astype(np.float32)
+
+
+def _match_reference_level(signal: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    if signal.size == 0 or reference.size == 0:
+        return signal
+
+    reference_peak = float(np.max(np.abs(reference)))
+    reference64 = reference.astype(np.float64, copy=False)
+    signal64 = signal.astype(np.float64, copy=False)
+    reference_rms = float(np.sqrt(np.mean(reference64 * reference64)))
+    signal_rms = float(np.sqrt(np.mean(signal64 * signal64)))
+
+    adjusted = signal.astype(np.float32, copy=True)
+    if reference_rms > 0.0 and signal_rms > 0.0:
+        adjusted *= reference_rms / signal_rms
+
+    adjusted_peak = float(np.max(np.abs(adjusted)))
+    if reference_peak > 0.0 and adjusted_peak > reference_peak:
+        adjusted *= reference_peak / adjusted_peak
+
+    return adjusted.astype(np.float32)
+
+
 def _afsk_encode(data: bytes, sample_rate: int) -> np.ndarray:
     mark, space = _bit_waves(sample_rate)
     bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8), bitorder="little")
     return np.stack([space, mark])[bits].ravel()
 
 
-def _preamble(sample_rate: int, cfg: FlavorConfig) -> np.ndarray:
+def _preamble(sample_rate: int, cfg: SameConfig) -> np.ndarray:
     pream = _afsk_encode(bytes([_PREAMBLE_BYTE] * _PREAMBLE_LEN), sample_rate)
     pream = _apply_fade_in(pream, cfg.segment_fade_s, sample_rate)
     return pream
 
 
-def _tone_wxr(duration_s: float, sample_rate: int, cfg: FlavorConfig) -> np.ndarray:
+def _tone_wxr(duration_s: float, sample_rate: int, cfg: SameConfig) -> np.ndarray:
     n = int(sample_rate * duration_s)
     t = np.linspace(0, duration_s, n, endpoint=False)
     return np.sin(2 * np.pi * 1050.0 * t).astype(np.float32)
 
 
-def _tone_quebec(duration_s: float, sample_rate: int, cfg: FlavorConfig) -> np.ndarray:
+def _tone_quebec(duration_s: float, sample_rate: int, cfg: SameConfig) -> np.ndarray:
     n = int(sample_rate * duration_s)
     t = np.linspace(0, duration_s, n, endpoint=False)
     return (
@@ -259,7 +254,7 @@ def _tone_quebec(duration_s: float, sample_rate: int, cfg: FlavorConfig) -> np.n
     ).astype(np.float32)
 
 
-def _tone_eas(duration_s: float, sample_rate: int, cfg: FlavorConfig) -> np.ndarray:
+def _tone_eas(duration_s: float, sample_rate: int, cfg: SameConfig) -> np.ndarray:
     n = int(sample_rate * duration_s)
     t = np.linspace(0, duration_s, n, endpoint=False)
     tone = (
@@ -270,7 +265,7 @@ def _tone_eas(duration_s: float, sample_rate: int, cfg: FlavorConfig) -> np.ndar
     return tone
 
 
-def _tone_npas(duration_s: float, sample_rate: int, cfg: FlavorConfig) -> np.ndarray:
+def _tone_npas(duration_s: float, sample_rate: int, cfg: SameConfig) -> np.ndarray:
     n = int(sample_rate * duration_s)
     half = sample_rate // 2
     freq_a: tuple[float, ...] = (932.33, 1046.50, 3135.96)
@@ -287,10 +282,15 @@ def _tone_npas(duration_s: float, sample_rate: int, cfg: FlavorConfig) -> np.nda
     tone = (np.concatenate(chunks) / 3.0).astype(np.float32)
     tone = _apply_highpass(tone, 900.0, sample_rate)
     tone = _apply_lowpass(tone, 2400.0, sample_rate)
+    clean_tone = tone.copy()
+    tone = _apply_soft_saturation(tone, _NPAS_SATURATION_DRIVE, _NPAS_SATURATION_BLEND)
+    tone = _apply_highpass(tone, 900.0, sample_rate)
+    tone = _apply_lowpass(tone, 2400.0, sample_rate)
+    tone = _match_reference_level(tone, clean_tone)
     return tone
 
 
-def _tone_egg_timer(duration_s: float, sample_rate: int, cfg: FlavorConfig) -> np.ndarray:
+def _tone_egg_timer(duration_s: float, sample_rate: int, cfg: SameConfig) -> np.ndarray:
     n = int(sample_rate * duration_s)
     tone_len = int(round(sample_rate * 0.070))
     inter_len = int(round(sample_rate * 0.055))
@@ -324,7 +324,7 @@ def _tone_egg_timer(duration_s: float, sample_rate: int, cfg: FlavorConfig) -> n
     return tone
 
 
-ToneFn = Callable[[float, int, FlavorConfig], np.ndarray]
+ToneFn = Callable[[float, int, SameConfig], np.ndarray]
 
 _TONE_DISPATCH: dict[str, ToneFn] = {
     "WXR": _tone_wxr,
@@ -335,7 +335,7 @@ _TONE_DISPATCH: dict[str, ToneFn] = {
 }
 
 
-def build_header_burst(header: SAMEHeader, cfg: FlavorConfig = FlavorConfig()) -> np.ndarray:
+def build_header_burst(header: SAMEHeader, cfg: SameConfig = SameConfig()) -> np.ndarray:
     sample_rate = cfg.sample_rate
     preamble = _preamble(sample_rate, cfg)
     preamble = _apply_fade_in(preamble, cfg.segment_fade_s, sample_rate)
@@ -349,7 +349,7 @@ def build_header_burst(header: SAMEHeader, cfg: FlavorConfig = FlavorConfig()) -
     return burst
 
 
-def build_eom_burst(cfg: FlavorConfig = FlavorConfig()) -> np.ndarray:
+def build_eom_burst(cfg: SameConfig = SameConfig()) -> np.ndarray:
     sample_rate = cfg.sample_rate
     preamble = _preamble(sample_rate, cfg)
     preamble = _apply_fade_in(preamble, cfg.segment_fade_s, sample_rate)
@@ -363,7 +363,7 @@ def build_eom_burst(cfg: FlavorConfig = FlavorConfig()) -> np.ndarray:
     return burst
 
 
-def _triple_burst(burst: np.ndarray, cfg: FlavorConfig) -> np.ndarray:
+def _triple_burst(burst: np.ndarray, cfg: SameConfig) -> np.ndarray:
     sample_rate = cfg.sample_rate
     pilot = _pilot(cfg.pilot_prefix_s, sample_rate, cfg.pilot_prefix_freq_hz)
     pilot = _apply_fade_in(pilot, cfg.segment_fade_s, sample_rate)
@@ -427,10 +427,10 @@ def generate_same(
     tone_type: Optional[ToneType] = "WXR",
     audio_msg_path: Optional[pathlib.Path] = None,
     audio_msg_array: Optional[np.ndarray] = None,
-    flavor: Optional[str] = None,
+    audio_label: Optional[str] = None,
 ) -> np.ndarray:
     _ensure_audit_handler()
-    cfg = resolve_flavor(flavor)
+    cfg = SameConfig()
     sample_rate = cfg.sample_rate
 
     pre: list[np.ndarray] = []
@@ -438,8 +438,8 @@ def generate_same(
 
     if header is not None:
         log.info(
-            "Generating SAME: %s tone=%s %.1fs @ %d Hz flavor=%s",
-            header.encoded, tone_type, attn_duration_s, sample_rate, flavor or "default",
+            "Generating SAME: %s tone=%s %.1fs @ %d Hz",
+            header.encoded, tone_type, attn_duration_s, sample_rate,
         )
         pre.append(_silence(_BURST_LEAD_S, sample_rate))
         pre.append(_triple_burst(build_header_burst(header, cfg), cfg))
@@ -462,7 +462,7 @@ def generate_same(
 
         encoded_label = header.encoded
     else:
-        log.info("Generating EOM-only @ %d Hz flavor=%s", sample_rate, flavor or "default")
+        log.info("Generating EOM-only @ %d Hz", sample_rate)
         encoded_label = "EOM"
 
     eom_seq = np.concatenate([
@@ -483,14 +483,13 @@ def generate_same(
 
     log.info("SAME sequence done: %s (%.2fs)", encoded_label, total_s)
     _audit_log.info(
-        "SAME_GENERATED | header=%s | tone=%s | attn=%.1fs | audio=%s | duration=%.2fs | sr=%d | flavor=%s",
+        "SAME_GENERATED | header=%s | tone=%s | attn=%.1fs | audio=%s | duration=%.2fs | sr=%d",
         encoded_label,
         tone_type if header is not None else "none",
         attn_duration_s,
-        str(audio_msg_path) if audio_msg_path else "none",
+        audio_label or (str(audio_msg_path) if audio_msg_path else ("embedded" if audio_msg_array is not None else "none")),
         total_s,
         sample_rate,
-        flavor or "default",
     )
     return out
 
@@ -527,15 +526,9 @@ if __name__ == "__main__":
         help="Attention tone type (default: WXR)",
     )
     parser.add_argument(
-        "--flavor",
-        choices=list(flavors),
-        default=None,
-        help="Hardware encoder flavor",
-    )
-    parser.add_argument(
         "--debug",
         action="store_true",
-        help="Generate one WAV per flavor×tone combination into ./debug_out/",
+        help="Generate one WAV per tone combination into ./debug_out/",
     )
     args = parser.parse_args()
 
@@ -551,25 +544,22 @@ if __name__ == "__main__":
     if args.debug:
         debug_dir = pathlib.Path("debug_out")
         debug_dir.mkdir(exist_ok=True)
-        flavor_keys: list[Optional[str]] = [None, *list(flavors)]
-        total = len(flavor_keys) * len(_TONE_DISPATCH)
+        cfg = SameConfig()
+        total = len(_TONE_DISPATCH)
         done = 0
-        for fl in flavor_keys:
-            for tone_key in _TONE_DISPATCH:
-                cfg = resolve_flavor(fl)
-                label = fl or "default"
-                out_path = debug_dir / f"{label}__{tone_key}.wav"
-                try:
-                    audio = generate_same(h, tone_type=tone_key, flavor=fl)  # type: ignore[arg-type]
-                    out_path.write_bytes(to_wav(audio, cfg.sample_rate))
-                    done += 1
-                    print(f"[{done}/{total}] {out_path} ({len(audio) / cfg.sample_rate:.2f}s)")
-                except Exception as exc:
-                    print(f"[{done}/{total}] FAILED {label}/{tone_key}: {exc}")
+        for tone_key in _TONE_DISPATCH:
+            out_path = debug_dir / f"{tone_key}.wav"
+            try:
+                audio = generate_same(h, tone_type=tone_key)  # type: ignore[arg-type]
+                out_path.write_bytes(to_wav(audio, cfg.sample_rate))
+                done += 1
+                print(f"[{done}/{total}] {out_path} ({len(audio) / cfg.sample_rate:.2f}s)")
+            except Exception as exc:
+                print(f"[{done}/{total}] FAILED {tone_key}: {exc}")
         print(f"Debug run complete — {done}/{total} files written to {debug_dir}/")
     else:
-        cfg = resolve_flavor(args.flavor)
-        full = generate_same(h, tone_type=args.att, flavor=args.flavor)
+        cfg = SameConfig()
+        full = generate_same(h, tone_type=args.att)
         out_path = pathlib.Path("same_test.wav")
         out_path.write_bytes(to_wav(full, cfg.sample_rate))
         print(f"Written: {out_path} ({len(full) / cfg.sample_rate:.2f}s)")

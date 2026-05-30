@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+import hashlib
 import io
 import json
 import logging
+from os import path
 import pathlib
+import queue
 import secrets
 import subprocess
 import threading
@@ -15,25 +19,30 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.websockets import WebSocketState
 
 from module.events import (
     append_runtime_event,
     read_data_pool,
+    register_alert_audio_stream,
     snapshot_alert_queues,
     snapshot_data_pool,
     snapshot_playout_sequences,
     snapshot_runtime,
     store_runtime_alert_entry,
+    unregister_alert_audio_stream,
     update_runtime_status,
 )
 from module.alert_templates import load_alert_templates, merge_alert_templates, write_alert_templates
+from module.banner import get_active_alerts, pick_banner_color, pick_banner_gradient, serialize_alert
 from module.packages import air_quality_package
 from module.alert import feed_same_codes
+from module.buffer import CHANNELS, SAMPLE_RATE
 from module.scheduler import fire_test as _fire_test
 
 log = logging.getLogger(__name__)
@@ -187,6 +196,16 @@ def _tail_lines(path: pathlib.Path, line_count: int) -> list[str]:
         return [line.rstrip('\n') for line in deque(handle, maxlen=line_count)]
 
 
+def _pcm_as_wav(pcm: bytes) -> bytes:
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, 'wb') as wav_file:
+        wav_file.setnchannels(CHANNELS)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(SAMPLE_RATE)
+        wav_file.writeframes(pcm)
+    return wav_buffer.getvalue()
+
+
 class WebServer:
     def __init__(self, config: dict[str, Any], feeds: list[dict[str, Any]] | None = None):
         self.config = config
@@ -276,7 +295,7 @@ class WebServer:
     def _feed_output_modes(self, feed: dict[str, Any]) -> list[str]:
         output_cfg = feed.get('output', {})
         enabled: list[str] = []
-        for key in ('stream', 'audio_device', 'file', 'udp', 'rtp', 'rtmp', 'srt', 'rtsp', 'webrtc', 'framebuffer', 'dri', 'v4l2'):
+        for key in ('stream', 'audio_device', 'file', 'udp', 'rtp', 'rtmp', 'srt', 'rtsp'):
             if _coerce_mapping(output_cfg.get(key, {})).get('enabled'):
                 enabled.append(key)
         return enabled
@@ -362,13 +381,12 @@ class WebServer:
         return self.root_dir / 'audio' / '_previews'
 
     def _build_same_audio(self, payload: SAMAirRequest) -> dict[str, Any]:
-        from module.same import SAMEHeader, generate_same, resolve_flavor, resample as _resample, to_pcm16
+        from module.same import SAMEHeader, SAME_SAMPLE_RATE, generate_same, resample as _resample, to_pcm16
 
         feeds_cfg = self.config.get('feeds', [])
         same_cfg = self.config.get('same', {})
         callsign = same_cfg.get('sender', 'HAZE0000')
-        flavor = same_cfg.get('flavor') or None
-        same_sr = resolve_flavor(flavor).sample_rate
+        same_sr = SAME_SAMPLE_RATE
 
         if payload.air_on_all_feeds:
             target_ids = [f.get('id', 'default') for f in feeds_cfg if f.get('enabled', True)]
@@ -453,7 +471,6 @@ class WebServer:
                 audio_msg_path=voice_path,
                 audio_msg_array=voice_array,
                 attn_duration_s=8.0,
-                flavor=flavor,
             )
 
             from module.buffer import SAMPLE_RATE as _BUS_SR
@@ -477,6 +494,7 @@ class WebServer:
             'expires_at': expires_at,
             'identifier': identifier,
             'display_id': display_id,
+            'callsign': callsign,
             'duration_code': duration_code,
             'same_sr': same_sr,
         }
@@ -485,6 +503,7 @@ class WebServer:
         api_base = self._api_base()
         self.app.add_api_route('/', self.index, methods=['GET'])
         self.app.add_api_route('/panel', self.panel, methods=['GET'])
+        self.app.add_api_route('/banner', self.banner_page, methods=['GET'])
         self.app.add_api_route(f'{api_base}/health', self.health, methods=['GET'])
         self.app.add_api_route(f'{api_base}/auth/login', self.login, methods=['POST'])
         self.app.add_api_route(
@@ -592,6 +611,20 @@ class WebServer:
             methods=['GET'],
             dependencies=[Depends(self._require_auth)],
         )
+        self.app.add_api_route(
+            f'{api_base}/banner',
+            self.banner_payload,
+            methods=['GET'],
+        )
+        self.app.add_api_route(
+            f'{api_base}/banner/stream',
+            self.banner_stream,
+            methods=['GET'],
+        )
+        self.app.add_api_websocket_route(
+            f'{api_base}/banner/audio',
+            self.banner_audio_stream,
+        )
         wx_base = self._wx_base()
         self.app.add_api_route(wx_base,                   self.wx_root,     methods=['GET'])
         self.app.add_api_route(f'{wx_base}/generate',     self.wx_generate, methods=['POST'])
@@ -602,6 +635,9 @@ class WebServer:
 
     async def panel(self) -> FileResponse:
         return FileResponse(self.webroot / 'index.html')
+
+    async def banner_page(self) -> FileResponse:
+        return FileResponse(self.webroot / 'banner.html')
 
     async def health(self) -> dict[str, Any]:
         return {
@@ -688,6 +724,131 @@ class WebServer:
         with open(path, encoding='utf-8') as f:
             return json.load(f)
 
+    def _banner_payload_data(self, feed: str = '') -> dict[str, Any]:
+        feeds_cfg = [
+            cast(dict[str, Any], cfg)
+            for cfg in self.config.get('feeds', [])
+            if isinstance(cfg, dict)
+        ]
+        requested_feed = str(feed or '').strip()
+        feed_cfg: dict[str, Any] | None
+        if requested_feed:
+            feed_cfg = next((cfg for cfg in feeds_cfg if str(cfg.get('id') or '') == requested_feed), None)
+            if feed_cfg is None:
+                raise HTTPException(status_code=404, detail='Feed not found')
+        else:
+            feed_cfg = next((cfg for cfg in feeds_cfg if bool(cfg.get('enabled', True))), None)
+            if feed_cfg is None and feeds_cfg:
+                feed_cfg = feeds_cfg[0]
+
+        if feed_cfg is None:
+            raise HTTPException(status_code=404, detail='No configured feeds available')
+
+        feed_id = str(feed_cfg.get('id') or '').strip()
+        tz_name = str(feed_cfg.get('timezone') or 'UTC')
+        active_entries = get_active_alerts(feed_id)
+        alerts = [serialize_alert(entry, tz_name) for entry in active_entries]
+        combined_message = '   |   '.join(alert['message'] for alert in alerts if alert.get('message'))
+        signature_source: dict[str, Any] = {
+            'feed_id': feed_id,
+            'alerts': [
+                {
+                    'identifier': alert.get('identifier'),
+                    'display_id': alert.get('display_id'),
+                    'effective_at': alert.get('effective_at'),
+                    'expires_at': alert.get('expires_at'),
+                    'description': alert.get('description'),
+                    'instruction': alert.get('instruction'),
+                }
+                for alert in alerts
+            ],
+        }
+        signature = hashlib.sha1(
+            json.dumps(signature_source, sort_keys=True).encode('utf-8')
+        ).hexdigest()
+
+        return {
+            'feed_id': feed_id,
+            'feed_name': str(feed_cfg.get('name') or feed_id),
+            'timezone': tz_name,
+            'active': bool(alerts),
+            'alert_count': len(alerts),
+            'primary_color': pick_banner_color(active_entries),
+            'primary_gradient': pick_banner_gradient(active_entries),
+            'combined_message': combined_message,
+            'signature': signature,
+            'generated_at': datetime.now(timezone.utc).isoformat(),
+            'alerts': alerts,
+        }
+
+    async def banner_payload(self, feed: str = '') -> dict[str, Any]:
+        return self._banner_payload_data(feed)
+
+    async def banner_stream(self, request: Request, feed: str = '') -> StreamingResponse:
+        async def iterator():
+            keepalive_ticks = 0
+            last_signature = ''
+            while True:
+                if await request.is_disconnected():
+                    break
+                payload = self._banner_payload_data(feed)
+                signature = str(payload.get('signature') or '')
+                if signature != last_signature or not last_signature:
+                    last_signature = signature
+                    keepalive_ticks = 0
+                    yield f"event: banner\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                else:
+                    keepalive_ticks += 1
+                    if keepalive_ticks >= 15:
+                        keepalive_ticks = 0
+                        yield ':\n\n'
+                await asyncio.sleep(1.0)
+
+        return StreamingResponse(
+            iterator(),
+            media_type='text/event-stream',
+            headers={
+                'Cache-Control': 'no-store',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
+            },
+        )
+
+    async def banner_audio_stream(self, websocket: WebSocket) -> None:
+        feed = str(websocket.query_params.get('feed') or '').strip()
+        try:
+            payload = self._banner_payload_data(feed)
+        except HTTPException:
+            await websocket.close(code=1008)
+            return
+
+        feed_id = str(payload.get('feed_id') or '').strip()
+        if not feed_id:
+            await websocket.close(code=1008)
+            return
+
+        await websocket.accept()
+        audio_stream = register_alert_audio_stream(feed_id)
+
+        try:
+            while True:
+                if (
+                    websocket.client_state == WebSocketState.DISCONNECTED
+                    or websocket.application_state == WebSocketState.DISCONNECTED
+                ):
+                    break
+
+                try:
+                    pcm, _identifier = await asyncio.to_thread(audio_stream.get, True, 1.0)
+                except queue.Empty:
+                    continue
+
+                await websocket.send_bytes(_pcm_as_wav(pcm))
+        except WebSocketDisconnect:
+            pass
+        finally:
+            unregister_alert_audio_stream(feed_id, audio_stream)
+
     async def same_location_names(self) -> dict[str, str]:
         import csv
         path = self.root_dir / 'managed' / 'csv' / 'FORECAST_LOCATIONS.csv'
@@ -723,11 +884,9 @@ class WebServer:
 
     async def upload_audio(self, file: UploadFile = File(...)) -> dict[str, Any]:
         import subprocess
-        from module.same import resolve_flavor
+        from module.same import SAME_SAMPLE_RATE
 
-        same_cfg = self.config.get('same', {})
-        flavor = same_cfg.get('flavor') or None
-        same_sr = resolve_flavor(flavor).sample_rate
+        same_sr = SAME_SAMPLE_RATE
         upload_dir = self.root_dir / 'audio' / '_uploads'
         upload_dir.mkdir(parents=True, exist_ok=True)
         safe_stem = secrets.token_hex(10)
@@ -781,34 +940,36 @@ class WebServer:
         expires_at = built['expires_at']
         identifier = built['identifier']
         display_id = built['display_id']
+        callsign = built['callsign']
 
         for fid in target_ids:
-            store_runtime_alert_entry(fid, identifier, {
-                'identifier': identifier,
-                'feed_id': fid,
-                'received_at': issued_at.isoformat(),
-                'display_id': display_id,
-                'metadata': {
-                    'event': payload.event.upper()[:3],
-                    'effective': issued_at.isoformat(),
-                    'onset': issued_at.isoformat(),
-                    'expires': expires_at.isoformat(),
-                },
-                'source': {
-                    'kind': 'manual',
-                    'originator': payload.originator.upper()[:3],
-                    'eventCode': payload.event.upper()[:3],
-                },
-                'text': {
-                    'description': payload.voice_message.strip(),
-                    'instruction': '',
-                },
-                'areas': [
-                    {'sameCode': location}
-                    for location in locations[:31]
-                ],
-            })
-            push_alert(fid, 0, alert_pcm, identifier)
+            if push_alert(fid, 0, alert_pcm, identifier):
+                store_runtime_alert_entry(fid, identifier, {
+                    'identifier': identifier,
+                    'feed_id': fid,
+                    'received_at': issued_at.isoformat(),
+                    'display_id': display_id,
+                    'metadata': {
+                        'event': payload.event.upper()[:3],
+                        'effective': issued_at.isoformat(),
+                        'onset': issued_at.isoformat(),
+                        'expires': expires_at.isoformat(),
+                    },
+                    'source': {
+                        'kind': 'manual',
+                        'originator': payload.originator.upper()[:3],
+                        'eventCode': payload.event.upper()[:3],
+                        'callsign': callsign,
+                    },
+                    'text': {
+                        'description': payload.voice_message.strip(),
+                        'instruction': '',
+                    },
+                    'areas': [
+                        {'sameCode': location}
+                        for location in locations[:31]
+                    ],
+                })
 
         encoded = header.encoded
         append_runtime_event('manual-same', f'Manual SAME aired: {encoded} -> {", ".join(target_ids)}')

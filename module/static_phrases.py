@@ -239,6 +239,15 @@ def _reader_tts_config(config: dict[str, Any], lang: str, reader: dict[str, Any]
         tts_cfg['fallback_order'] = ['pyttsx3']
         return cfg
 
+    if provider == 'kokoro':
+        kokoro_cfg = tts_cfg.setdefault('kokoro', {})
+        if reader_path:
+            kokoro_cfg['voice'] = reader_path
+            backend = lang_cfg.setdefault('kokoro', {})
+            backend[voice_slot] = {'voice': reader_path}
+        tts_cfg['fallback_order'] = ['kokoro']
+        return cfg
+
     model_path, model_cfg = _resolve_piper_reader_path(reader_path)
     piper_backend = lang_cfg.setdefault('piper', {})
     slot_cfg = dict(piper_backend.get(voice_slot) or {})
@@ -332,6 +341,7 @@ def _tts_fingerprint(config: dict[str, Any], lang: str, reader: dict[str, Any] |
     tts_cfg = effective_cfg.get('tts', {})
     provider = str((tts_cfg.get('fallback_order') or ['piper'])[0])
     backend_cfg = tts_cfg.get('lang', {}).get(lang, {}).get('backend', {}).get(provider, {})
+    voice_slot = 'female' if str((reader or {}).get('gender') or 'male').strip().lower() == 'female' else 'male'
 
     if provider == 'pyttsx3':
         pyttsx3_cfg = tts_cfg.get('pyttsx3', {}) if isinstance(tts_cfg.get('pyttsx3'), dict) else {}
@@ -342,7 +352,25 @@ def _tts_fingerprint(config: dict[str, Any], lang: str, reader: dict[str, Any] |
             'reader_id': str((reader or {}).get('id', '')),
         }
 
-    voice_slot = 'female' if str((reader or {}).get('gender') or 'male').strip().lower() == 'female' else 'male'
+    if provider == 'kokoro':
+        kokoro_cfg = tts_cfg.get('kokoro', {}) if isinstance(tts_cfg.get('kokoro'), dict) else {}
+        voice_cfg = backend_cfg.get(voice_slot) or backend_cfg.get('male') or backend_cfg.get('female') or {}
+        if isinstance(voice_cfg, str):
+            voice_cfg = {'voice': voice_cfg}
+        if not isinstance(voice_cfg, dict):
+            voice_cfg = {}
+        return {
+            'provider': provider,
+            'voice': str(voice_cfg.get('voice') or kokoro_cfg.get('voice', '')),
+            'lang_code': str(voice_cfg.get('lang_code') or kokoro_cfg.get('lang_code', '')),
+            'model': str(voice_cfg.get('model') or kokoro_cfg.get('model', '')),
+            'config': str(voice_cfg.get('config') or kokoro_cfg.get('config', '')),
+            'device': str(voice_cfg.get('device') or kokoro_cfg.get('device', '')),
+            'speed': str(voice_cfg.get('speed') or kokoro_cfg.get('speed', '')),
+            'reader_id': str((reader or {}).get('id', '')),
+            'voice_slot': voice_slot,
+        }
+
     voice_cfg = backend_cfg.get(voice_slot) or backend_cfg.get('male') or {}
     if not isinstance(voice_cfg, dict):
         voice_cfg = {}

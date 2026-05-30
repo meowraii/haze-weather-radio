@@ -15,7 +15,7 @@ from module.alert_templates import load_alert_templates
 from module.events import append_runtime_event, enqueue_scheduled_package, push_alert, shutdown_event, store_runtime_alert_entry
 from module.alert import feed_same_codes, purge_expired_alerts
 from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
-from module.same import SAMEHeader, generate_same, resample, resolve_flavor, to_pcm16
+from module.same import SAMEHeader, SAME_SAMPLE_RATE, generate_same, resample, to_pcm16
 from module.tts import synthesize_pcm
 
 log = logging.getLogger(__name__)
@@ -163,8 +163,7 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
     same_cfg = config.get('same', {})
     same_block = template.get('same', {}) if isinstance(template.get('same'), dict) else {}
     callsign: str = str(same_block.get('sender_id') or same_cfg.get('sender', 'HAZE0000'))
-    flavor = same_cfg.get('flavor') or None
-    same_sr = resolve_flavor(flavor).sample_rate
+    same_sr = SAME_SAMPLE_RATE
     content_block = same_block.get('content', {}) if isinstance(same_block.get('content'), dict) else {}
     tone_value = str(content_block.get('attention_tone') or same_cfg.get('default_attention_tone', 'WXR')).upper()
     tone_type: str | None = None if tone_value == 'NONE' else tone_value
@@ -213,7 +212,6 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
             tone_type=cast(Any, tone_type),
             audio_msg_array=voice_array,
             attn_duration_s=8.0,
-            flavor=flavor,
         )
 
         alert_pcm = to_pcm16(resample(full_signal, same_sr, BUS_SR))
@@ -223,32 +221,32 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
             minutes=int(same_expire[2:] or 0),
         )
         identifier = f'test_{event_code}_{int(time.time())}'
-        store_runtime_alert_entry(feed_id, identifier, {
-            'identifier': identifier,
-            'feed_id': feed_id,
-            'received_at': issued_at.isoformat(),
-            'display_id': f'MSG{issued_at.strftime("%H%M%S")}',
-            'metadata': {
-                'event': same_event,
-                'effective': issued_at.isoformat(),
-                'onset': issued_at.isoformat(),
-                'expires': expires_at.isoformat(),
-            },
-            'source': {
-                'kind': 'test',
-                'originator': 'EAS',
-                'eventCode': same_event,
-            },
-            'text': {
-                'description': overlay_text,
-                'instruction': '',
-            },
-            'areas': [
-                {'sameCode': location}
-                for location in locations[:31]
-            ],
-        })
-        push_alert(feed_id, 0, alert_pcm, identifier)
+        if push_alert(feed_id, 0, alert_pcm, identifier):
+            store_runtime_alert_entry(feed_id, identifier, {
+                'identifier': identifier,
+                'feed_id': feed_id,
+                'received_at': issued_at.isoformat(),
+                'display_id': f'MSG{issued_at.strftime("%H%M%S")}',
+                'metadata': {
+                    'event': same_event,
+                    'effective': issued_at.isoformat(),
+                    'onset': issued_at.isoformat(),
+                    'expires': expires_at.isoformat(),
+                },
+                'source': {
+                    'kind': 'test',
+                    'originator': 'EAS',
+                    'eventCode': same_event,
+                },
+                'text': {
+                    'description': overlay_text,
+                    'instruction': '',
+                },
+                'areas': [
+                    {'sameCode': location}
+                    for location in locations[:31]
+                ],
+            })
         log.info('[%s] Queued %s test: %s', feed_id, event_code, header.encoded)
         fired_any = True
 

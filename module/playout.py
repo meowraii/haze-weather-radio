@@ -25,12 +25,11 @@ from module.events import (
 )
 from module.packages import date_time_package, station_id
 from module.output import (
-    AudioDeviceSink, FileSink, FramebufferSink, DriSink, V4L2Sink,
+    AudioDeviceSink, FileSink,
     IcecastSink, RtmpSink, RtpSink, RtspSink, SrtSink, UdpSink,
 )
-from module.video import VideoIcecastSink, _VIDEO_FORMATS
 from module.buffer import CHANNELS, SAMPLE_RATE, AudioPipeline, OnSegmentStart
-from module.same import SAMEHeader, generate_same, resample, resolve_flavor, to_pcm16
+from module.same import SAMEHeader, SAME_SAMPLE_RATE, generate_same, resample, to_pcm16
 from module.alert import feed_same_codes
 from module.tts import smooth_pcm_edges, synthesize_pcm_stream
 from module.static_phrases import splice_date_time, splice_station_id
@@ -191,8 +190,7 @@ def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
     same_cfg = config.get('same', {})
     if not same_cfg.get('send_txp_on_startup', False):
         return None
-    flavor = same_cfg.get('flavor') or None
-    same_sr = resolve_flavor(flavor).sample_rate
+    same_sr = SAME_SAMPLE_RATE
 
     locations = feed_same_codes(feed) or ['000000']
     data = SAMEHeader(
@@ -203,7 +201,7 @@ def _generate_txp(config: dict[str, Any], feed: dict[str, Any]) -> bytes | None:
         callsign=same_cfg.get('callsign', 'TESTCALL'),
     )
 
-    message = generate_same(header=data, tone_type="EGG_TIMER", flavor=flavor)
+    message = generate_same(header=data, tone_type="EGG_TIMER")
     return to_pcm16(resample(message, same_sr, SAMPLE_RATE))
 
 def _build_chime_pcm(
@@ -469,13 +467,6 @@ def _build_file_path(config: dict[str, Any], feed: dict[str, Any]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     return str(path)
 
-def _find_video_cfg(config: dict[str, Any], feed_id: str) -> dict[str, Any] | None:
-    for vc in (config.get('video') or []):
-        if isinstance(vc, dict) and vc.get('feed') == feed_id and vc.get('enabled', True):
-            return vc
-    return None
-
-
 def _coerce_display_text(value: Any) -> str:
     if value is None:
         return ''
@@ -564,33 +555,19 @@ async def feed_runner(
     stream_cfg_raw = output_cfg.get('stream')
     if isinstance(stream_cfg_raw, dict) and stream_cfg_raw.get('enabled'):
         try:
-            stream_fmt = str(stream_cfg_raw.get('format', 'opus'))
-            if stream_fmt in _VIDEO_FORMATS:
-                video_cfg = _find_video_cfg(config, feed_id)
-                if video_cfg:
-                    vsink = VideoIcecastSink(feed, video_cfg, stream_cfg_raw)
-                    pipeline.attach_sink(vsink, name=f'{feed_id}:video')
-                    alert_start_cbs.append(vsink.on_alert_start)
-                    alert_end_cbs.append(vsink.on_alert_end)
-                else:
-                    log.warning(
-                        '[%s] Stream format %r is a video format but no video config found — stream skipped',
-                        feed_id, stream_fmt,
-                    )
-            else:
-                stream_cfg = {
-                    **stream_cfg_raw,
-                    'feed_id': feed_id,
-                    'stream_name': stream_identity,
-                    'stream_description': stream_description,
-                    'stream_genre': 'Weather Radio',
-                    'stream_album': stream_identity,
-                    'stream_creator': operator_name,
-                    'stream_artist': on_air_name,
-                }
-                sink = IcecastSink(stream_cfg)
-                metadata_cbs.append(sink.set_metadata)
-                pipeline.attach_sink(sink, name=f'{feed_id}:icecast')
+            stream_cfg = {
+                **stream_cfg_raw,
+                'feed_id': feed_id,
+                'stream_name': stream_identity,
+                'stream_description': stream_description,
+                'stream_genre': 'Weather Radio',
+                'stream_album': stream_identity,
+                'stream_creator': operator_name,
+                'stream_artist': on_air_name,
+            }
+            sink = IcecastSink(stream_cfg)
+            metadata_cbs.append(sink.set_metadata)
+            pipeline.attach_sink(sink, name=f'{feed_id}:icecast')
         except Exception:
             log.exception('Failed to start stream sink for %s', feed_id)
 
@@ -611,19 +588,14 @@ async def feed_runner(
         except Exception:
             log.exception('Failed to start file sink for %s', feed_id)
 
-    _video_cfg = _find_video_cfg(config, feed_id)
-    _feed_tz = str(feed.get('timezone', 'UTC'))
     _program_metadata = _mpegts_program_metadata(feed, feed_id, on_air_name, operator_name)
 
     for _sink_key, _factory, _label in (
-        ('udp',       lambda cfg: UdpSink(cfg, feed_id, _video_cfg, _feed_tz),       'UDP'),
-        ('rtp',       lambda cfg: RtpSink(cfg, feed_id, _video_cfg, _feed_tz),       'RTP'),
-        ('rtmp',      lambda cfg: RtmpSink(cfg, feed_id, _video_cfg, _feed_tz),      'RTMP'),
-        ('srt',       lambda cfg: SrtSink(cfg, feed_id, _video_cfg, _feed_tz),       'SRT'),
-        ('rtsp',      lambda cfg: RtspSink(cfg, feed_id, _video_cfg, _feed_tz),      'RTSP'),
-        ('framebuffer', lambda cfg: FramebufferSink(cfg, feed_id, _video_cfg, _feed_tz), 'framebuffer'),
-        ('dri',       lambda cfg: DriSink(cfg, feed_id, _video_cfg, _feed_tz),       'DRI'),
-        ('v4l2',      lambda cfg: V4L2Sink(cfg, feed_id, _video_cfg, _feed_tz),      'V4L2'),
+        ('udp',  lambda cfg: UdpSink(cfg, feed_id),  'UDP'),
+        ('rtp',  lambda cfg: RtpSink(cfg, feed_id),  'RTP'),
+        ('rtmp', lambda cfg: RtmpSink(cfg, feed_id), 'RTMP'),
+        ('srt',  lambda cfg: SrtSink(cfg, feed_id),  'SRT'),
+        ('rtsp', lambda cfg: RtspSink(cfg, feed_id), 'RTSP'),
     ):
         _sink_cfg = output_cfg.get(_sink_key, {})
         if not (isinstance(_sink_cfg, dict) and _sink_cfg.get('enabled')):

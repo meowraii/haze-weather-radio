@@ -59,8 +59,9 @@ def _coerce_float(raw: str | None) -> float | None:
         return None
 
 
-_INT_OUTPUT_FIELDS: frozenset[str] = frozenset({'port', 'bitrate_kbps', 'vrate_kbps'})
+_INT_OUTPUT_FIELDS: frozenset[str] = frozenset({'port', 'bitrate_kbps'})
 _BOOL_OUTPUT_FIELDS: frozenset[str] = frozenset({'ssl'})
+_TEXT_OUTPUT_FIELDS: frozenset[str] = frozenset({'type', 'host', 'username', 'password', 'mount', 'format', 'ip', 'url', 'acodec', 'name'})
 
 
 def _parse_output_sink(el: ET.Element) -> dict[str, Any]:
@@ -73,7 +74,7 @@ def _parse_output_sink(el: ET.Element) -> dict[str, Any]:
             result[child.tag] = _coerce_bool(raw) if raw else None
         elif child.tag in _INT_OUTPUT_FIELDS:
             result[child.tag] = _coerce_int(raw) if raw else None
-        else:
+        elif child.tag in _TEXT_OUTPUT_FIELDS:
             result[child.tag] = raw if raw else None
     return result
 
@@ -263,8 +264,7 @@ def _parse_feed_el(el: ET.Element) -> dict[str, Any]:
     output_el = el.find('output')
     if output_el is not None:
         output: dict[str, Any] = {}
-        for ot in ('stream', 'udp', 'rtp', 'rtmp', 'srt', 'rtsp', 'webrtc',
-                   'audio_device', 'framebuffer', 'dri', 'v4l2'):
+        for ot in ('stream', 'udp', 'rtp', 'rtmp', 'srt', 'rtsp', 'audio_device'):
             ot_el = output_el.find(ot)
             if ot_el is not None:
                 output[ot] = _parse_output_sink(ot_el)

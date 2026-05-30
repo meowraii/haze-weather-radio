@@ -251,6 +251,9 @@ def _run_gen_tts(config: dict[str, Any], selector: str | None) -> int:
 def main(config: dict[str, Any], log_level: str | None = None) -> None:
     _setup_logging(config, log_level)
     log = logging.getLogger('haze')
+    if config.get('logging', {}).get('clear_terminal', False):
+        os.system('cls' if os.name == 'nt' else 'clear')
+        os.system('clear' if os.name != 'nt' else '')
     data_ready.clear()
     initial_synthesis_done.clear()
     update_runtime_status({
