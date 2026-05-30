@@ -4,7 +4,6 @@ apscheduler>=3.10.0
 coloredlogs>=15.0.1
 fastapi>=0.115.0
 numpy>=2.2.0
-piper-tts>=1.2.0
 pydantic>=2.10.0
 pyttsx3>=2.98
 python-multipart>=0.0.9

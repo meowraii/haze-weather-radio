@@ -1,7 +1,8 @@
-version: 26.06.16
+imentaversion: 26.05.23
 
 logging:
   level: INFO
+  clear_terminal: true
   file:
     enabled: true
     main_path: ./logs/haze-weather-radio.log
@@ -25,7 +26,7 @@ playout:
 
   date_time_schedule:
     enabled: true
-    minutes: [5, 15, 25, 35, 45, 55]
+    minutes: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]
 
   chimes:
     enabled: true
@@ -81,16 +82,16 @@ wx_on_demand: # haze can accept a POST request from external applications with a
     allow_methods: ["POST"]
     allow_headers: ["*"]
   endpoint-base: /api/v1/wx-on-demand/
-  # example: http://127.0.0.1:8080/api/v1/wx-on-demand/sk-40?package_types=current,forecast&voice=male&lang=en-CA&source=eccc&format=opus
-  # example: http://127.0.0.1:8080/api/v1/wx-on-demand/geo,code?package_types=current,forecast&voice=male&lang=en-CA&source=twc&format=ulaw
-  # example: http://127.0.0.1:8080/api/v1/wx-on-demand/CPUN?package_types=current,forecast&voice=male&lang=en-CA&source=twc&format=g722
+  # example: http://127.0.0.1:6444/api/v1/wx-on-demand/sk-40?package_types=current,forecast&voice=male&lang=en-CA&source=eccc&format=opus
+  # example: http://127.0.0.1:6444/api/v1/wx-on-demand/geo,code?package_types=current,forecast&voice=male&lang=en-CA&source=twc&format=ulaw
+  # example: http://127.0.0.1:6444/api/v1/wx-on-demand/CPUN?package_types=current,forecast&voice=male&lang=en-CA&source=twc&format=g722
 
 webpanel:
   enabled: true
   host: "0.0.0.0"
-  port: 8080
+  port: 6444
   cors:
-    allow_origins: ["127.0.0.1"]
+    allow_origins: ["*"]
     allow_methods: ["POST"]
     allow_headers: ["*"]
   rest_api:
@@ -127,81 +128,6 @@ cap:
           "urgency=immediate,expected",
           "certainty=observed,likely,possible",
         ]
-
-video: # haze can output a video stream to accompany emergency alerts like what youd see on television.
-  - feed: naads-catchall # the feed to output the video stream for. if an alert goes out on this feed, the alert crawl or fullscreen alert will be overlaid on the video stream output defined below.
-    enabled: true
-    width: 1920
-    height: 1080
-    fps: 29.97
-    passthrough: [
-      video: false, # haze can accept an incoming video stream and overlay the alert crawl on top of it, then passing it through to the output.
-      audio: false,
-      input_urls: [
-        "udp://239.0.10.75:3000?pkt_size=1316",
-      ],
-    ]
-    style:
-      format: crawl # crawl or fullscreen.
-      idle_details_channel:
-        enabled: false # only used when format=fullscreen. if false, standby is a blank black screen.
-        title: EAS Details Channel
-        refresh_seconds: 1.0
-      crawl_repeat: 1 # number of times to repeat the crawl after the alert ends or EOM headers are sent.
-      font: IBM Plex Sans # font family or path to a .ttf font file to use for the alert text.
-      font_weight: bold
-      font_size: 48
-      font_color: "#FFFFFF"
-      opacity: 0.8
-      text_stroke:
-        enabled: true
-        color: "#000000"
-        width: 2
-      text_alignment: left # left, center, or right. ignored if crawl.
-      text_shadow:
-        enabled: true
-        color: "#000000"
-        offset_x: 2
-        offset_y: 2
-        blur_radius: 4
-      fullscreen_border:
-        enabled: true
-        color: "#FF0000"
-        width: 10
-      interlace: false,
-      background_image: null # path to an image file to use as the background for either fullscreen or crawl style. null for transparent. can also use ffmpeg filters to generate dynamic backgrounds if you set this to a filtergraph string like "color=c=blue:s=1920x1080:d=1" or something.
-      colors: [ # for crawl banners or the fullscreen background.
-        same: [
-          advisory: "#FFFF00",
-          watch: "#FFA500",
-          warning: "#FF0000",
-          unknown: "#FFFFFF",
-        ],
-        naads: [
-          severity: [
-            extreme: "#FF0000",
-            severe: "#FFA500",
-            moderate: "#FFFF00",
-            minor: "#00FF00",
-            unknown: "#FFFFFF"
-          ],
-          certainty: [
-            observed: "#FF0000",
-            likely: "#FFA500",
-            possible: "#FFFF00",
-            unlikely: "#00FF00",
-            unknown: "#FFFFFF"
-          ],
-          urgency: [
-            immediate: "#FF0000",
-            expected: "#FFA500",
-            future: "#FFFF00",
-            past: "#00FF00",
-            unknown: "#FFFFFF"
-          ]
-        ]
-      ]
-
 
 same:
   sender: "MEWRAI:3" # SAME header sender field (callsign or other identifier, max 8 chars. will be either truncated or padded with spaces to 8 chars in the actual SAME message).

@@ -6,11 +6,13 @@ import datetime as _dt
 import functools
 import json
 import logging
-import math
 import pathlib
 import re
 import threading
 import time
+import unicodedata
+import urllib.error
+import urllib.request
 from datetime import datetime
 from typing import Any, cast
 
@@ -63,6 +65,183 @@ def _parse_cap_references(references: str) -> list[str]:
     return ids
 
 
+def _slugify_alert_filename(value: str) -> str:
+    normalized = unicodedata.normalize('NFKD', value)
+    ascii_only = normalized.encode('ascii', 'ignore').decode('ascii')
+    slug = re.sub(r'[^A-Za-z0-9._-]+', '_', ascii_only).strip('._-')
+    return slug or 'alert'
+
+
+def _alert_audio_dir(feed_id: str) -> pathlib.Path:
+    return pathlib.Path('audio') / 'alerts' / _slugify_alert_filename(feed_id)
+
+
+def _alert_audio_path(feed_id: str, identifier: str) -> pathlib.Path:
+    return _alert_audio_dir(feed_id) / f'{_slugify_alert_filename(identifier)}.wav'
+
+
+def _cap_audio_resources(alert: CAPAlert, languages: list[str]) -> list[tuple[CAPInfo, CAPResource]]:
+    ordered_infos: list[CAPInfo] = []
+    seen_info_ids: set[int] = set()
+    for lang in languages:
+        info = alert.info_for_lang(lang)
+        if info is None:
+            continue
+        key = id(info)
+        if key in seen_info_ids:
+            continue
+        seen_info_ids.add(key)
+        ordered_infos.append(info)
+    for info in alert.infos:
+        key = id(info)
+        if key in seen_info_ids:
+            continue
+        seen_info_ids.add(key)
+        ordered_infos.append(info)
+
+    matches: list[tuple[CAPInfo, CAPResource]] = []
+    for info in ordered_infos:
+        for resource in info.resources:
+            mime_type = (resource.mime_type or '').lower()
+            description = (resource.description or '').lower()
+            uri = (resource.uri or '').lower()
+            if mime_type.startswith('audio/') or 'broadcast audio' in description or uri.endswith(('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')):
+                matches.append((info, resource))
+    return matches
+
+
+def _cap_audio_extension(resource: CAPResource) -> str:
+    mime_type = (resource.mime_type or '').lower().split(';', 1)[0].strip()
+    if mime_type == 'audio/mpeg':
+        return '.mp3'
+    if mime_type == 'audio/wav' or mime_type == 'audio/x-wav':
+        return '.wav'
+    if mime_type == 'audio/ogg':
+        return '.ogg'
+    if mime_type == 'audio/flac':
+        return '.flac'
+    if mime_type == 'audio/aac':
+        return '.aac'
+    uri_path = pathlib.Path((resource.uri or '').split('?', 1)[0])
+    if uri_path.suffix:
+        return uri_path.suffix.lower()
+    return '.bin'
+
+
+def _cap_audio_bytes(resource: CAPResource) -> bytes | None:
+    if resource.data:
+        return resource.data
+    uri = (resource.uri or '').strip()
+    if not uri:
+        return None
+    try:
+        with urllib.request.urlopen(uri, timeout=15) as response:
+            return response.read()
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        log.warning('CAP audio fetch failed (%s): %s', uri, exc)
+        return None
+
+
+def _resolve_cap_audio_pcm(
+    alert: CAPAlert,
+    feed_langs: list[str],
+) -> tuple[bytes | None, str | None]:
+    from module.tts import decode_audio_bytes_pcm
+
+    for info, resource in _cap_audio_resources(alert, feed_langs):
+        resource_bytes = _cap_audio_bytes(resource)
+        if not resource_bytes:
+            continue
+        pcm = decode_audio_bytes_pcm(resource_bytes, suffix=_cap_audio_extension(resource))
+        if not pcm:
+            log.warning('[%s] CAP audio decode failed for %s', alert.identifier, resource.uri or resource.description or 'resource')
+            continue
+        label_parts = ['cap']
+        if info.language:
+            label_parts.append(info.language)
+        if resource.description:
+            label_parts.append(resource.description)
+        if resource.uri:
+            label_parts.append(resource.uri)
+        return pcm, ':'.join(part.strip() for part in label_parts if part and part.strip())
+    return None, None
+
+
+def _save_alert_audio(feed_id: str, identifier: str, alert_pcm: bytes) -> pathlib.Path:
+    from module.tts import write_pcm_wav
+
+    output_path = _alert_audio_path(feed_id, identifier)
+    write_pcm_wav(output_path, alert_pcm)
+    return output_path
+
+
+def _build_alert_entry(feed_id: str, alert: CAPAlert | Any) -> dict[str, Any]:
+    identifier = alert.identifier if hasattr(alert, 'identifier') else str(alert)
+    info = alert.infos[0] if hasattr(alert, 'infos') and alert.infos else None
+    sent = getattr(alert, 'sent', None)
+
+    areas: list[dict[str, Any]] = []
+    if info:
+        for area in getattr(info, 'areas', None) or []:
+            geocodes = [
+                {'valueName': g.name, 'value': g.value}
+                for g in (getattr(area, 'geocodes', None) or [])
+            ]
+            polygon = getattr(area, 'polygon', None)
+            areas.append({
+                'areaDesc': getattr(area, 'area_desc', '') or getattr(area, 'description', ''),
+                'polygon': polygon if isinstance(polygon, str) else (' '.join(polygon) if polygon else None),
+                'geocodes': geocodes,
+            })
+
+    event_codes: list[dict[str, str]] = []
+    if info:
+        for ec in getattr(info, 'event_codes', None) or []:
+            event_codes.append({'valueName': getattr(ec, 'name', ''), 'value': getattr(ec, 'value', '')})
+
+    return {
+        'identifier': identifier,
+        'feed_id': feed_id,
+        'received_at': _dt.datetime.now(_dt.UTC).isoformat(),
+        'metadata': {
+            'language': getattr(info, 'language', '') if info else '',
+            'senderName': info.sender_name if info else '',
+            'headline': info.headline if info else '',
+            'event': info.event if info else '',
+            'category': getattr(info, 'category', '') if info else '',
+            'responseType': getattr(info, 'response_type', '') if info else '',
+            'urgency': getattr(info, 'urgency', '') if info else '',
+            'severity': getattr(info, 'severity', '') if info else '',
+            'certainty': getattr(info, 'certainty', '') if info else '',
+            'audience': getattr(info, 'audience', '') if info else '',
+            'effective': info.effective.isoformat() if info and info.effective else None,
+            'onset': info.onset.isoformat() if info and info.onset else None,
+            'expires': info.expires.isoformat() if info and info.expires else None,
+            'web': getattr(info, 'web', '') if info else '',
+            'eventCodes': event_codes,
+        },
+        'source': {
+            'sender': getattr(alert, 'sender', ''),
+            'sent': sent.isoformat() if sent else None,
+            'status': getattr(alert, 'status', ''),
+            'msgType': alert.msg_type if hasattr(alert, 'msg_type') else 'Alert',
+            'scope': getattr(alert, 'scope', ''),
+            'references': getattr(alert, 'references', '') or None,
+            'sourceStr': getattr(alert, 'source', '') or None,
+            'note': getattr(alert, 'note', '') or None,
+        },
+        'parameters': [
+            {'valueName': p.name, 'value': p.value}
+            for p in (info.parameters if info else ())
+        ],
+        'text': {
+            'description': info.description if info else '',
+            'instruction': info.instruction if info else '',
+        },
+        'areas': areas,
+    }
+
+
 def _write_registry_entry(feed_id: str, alert: Any) -> bool:
     identifier = alert.identifier if hasattr(alert, 'identifier') else str(alert)
     if not identifier:
@@ -88,6 +267,7 @@ def _write_registry_entry(feed_id: str, alert: Any) -> bool:
             removed = before - len(registry)
             if removed:
                 log.debug('Registry: removed %d superseded entry/entries for feed %s', removed, feed_id)
+            remove_runtime_alert_entries(feed_id, referenced_ids)
 
         if getattr(alert, 'msg_type', '') == 'Cancel':
             try:
@@ -97,72 +277,7 @@ def _write_registry_entry(feed_id: str, alert: Any) -> bool:
                 log.error('Failed to write alert registry: %s', e)
             return False
 
-        info = None
-        if hasattr(alert, 'infos') and alert.infos:
-            info = alert.infos[0]
-
-        sent = getattr(alert, 'sent', None)
-
-        areas: list[dict[str, Any]] = []
-        if info:
-            for area in getattr(info, 'areas', None) or []:
-                geocodes = [
-                    {'valueName': g.name, 'value': g.value}
-                    for g in (getattr(area, 'geocodes', None) or [])
-                ]
-                polygon = getattr(area, 'polygon', None)
-                areas.append({
-                    'areaDesc': getattr(area, 'area_desc', '') or getattr(area, 'description', ''),
-                    'polygon': polygon if isinstance(polygon, str) else (' '.join(polygon) if polygon else None),
-                    'geocodes': geocodes,
-                })
-
-        event_codes: list[dict[str, str]] = []
-        if info:
-            for ec in getattr(info, 'event_codes', None) or []:
-                event_codes.append({'valueName': getattr(ec, 'name', ''), 'value': getattr(ec, 'value', '')})
-
-        entry: dict[str, Any] = {
-            'identifier': identifier,
-            'feed_id': feed_id,
-            'received_at': _dt.datetime.now(_dt.UTC).isoformat(),
-            'metadata': {
-                'language': getattr(info, 'language', '') if info else '',
-                'senderName': info.sender_name if info else '',
-                'headline': info.headline if info else '',
-                'event': info.event if info else '',
-                'category': getattr(info, 'category', '') if info else '',
-                'responseType': getattr(info, 'response_type', '') if info else '',
-                'urgency': getattr(info, 'urgency', '') if info else '',
-                'severity': getattr(info, 'severity', '') if info else '',
-                'certainty': getattr(info, 'certainty', '') if info else '',
-                'audience': getattr(info, 'audience', '') if info else '',
-                'effective': info.effective.isoformat() if info and info.effective else None,
-                'onset': info.onset.isoformat() if info and info.onset else None,
-                'expires': info.expires.isoformat() if info and info.expires else None,
-                'web': getattr(info, 'web', '') if info else '',
-                'eventCodes': event_codes,
-            },
-            'source': {
-                'sender': getattr(alert, 'sender', ''),
-                'sent': sent.isoformat() if sent else None,
-                'status': getattr(alert, 'status', ''),
-                'msgType': alert.msg_type if hasattr(alert, 'msg_type') else 'Alert',
-                'scope': getattr(alert, 'scope', ''),
-                'references': getattr(alert, 'references', '') or None,
-                'sourceStr': getattr(alert, 'source', '') or None,
-                'note': getattr(alert, 'note', '') or None,
-            },
-            'parameters': [
-                {'valueName': p.name, 'value': p.value}
-                for p in (info.parameters if info else ())
-            ],
-            'text': {
-                'description': info.description if info else '',
-                'instruction': info.instruction if info else '',
-            },
-            'areas': areas,
-        }
+        entry = _build_alert_entry(feed_id, alert)
 
         registry.append(entry)
         try:
@@ -217,7 +332,14 @@ def purge_expired_alerts() -> int:
     return total_removed
 
 
-from module.events import append_runtime_event, enqueue_scheduled_package, push_alert, update_feed_runtime
+from module.events import (
+    append_runtime_event,
+    enqueue_scheduled_package,
+    push_alert,
+    remove_runtime_alert_entries,
+    store_runtime_alert_entry,
+    update_feed_runtime,
+)
 from module.packages import (
     _AL_PH,
     _clean_alert_text,
@@ -230,7 +352,7 @@ from module.cap_specific.naads_tcp import CAPAlert, CAPInfo, naad_listener
 from module.cap_specific.naadsatom_http import naad_archive_fetch
 from module.cap_specific.nwsatom_http import nws_atom_listener
 from module.buffer import CHANNELS, SAMPLE_RATE as BUS_SR
-from module.same import SAMEHeader, generate_same, resample, resolve_flavor, to_pcm16
+from module.same import SAMEHeader, SAME_SAMPLE_RATE, generate_same, resample, to_pcm16
 from module.tts import synthesize_pcm
 
 log = logging.getLogger(__name__)
@@ -285,9 +407,18 @@ _forecast_db: dict[str, str] | None = None
 _aggregate_clc_to_geocodes: dict[str, set[str]] | None = None
 _aggregate_geocode_to_clcs: dict[str, set[str]] | None = None
 _aggregate_clc_to_province: dict[str, str] | None = None
-
-_SPATIAL_RADIUS_FACTOR = 2.0
-_SPATIAL_MIN_RADIUS_KM = 15.0
+_geocode_db: dict[str, tuple[str, str]] | None = None
+_CLC_LABEL_SPLIT_RE = re.compile(r'\bincluding\b', re.IGNORECASE)
+_CLC_LABEL_PART_RE = re.compile(r'\s*(?:,|\band\b|\bet\b|/)\s*', re.IGNORECASE)
+_CLC_ADMIN_PREFIX_RE = re.compile(
+    r'^(?:r\.?m\.?|rm|m\.?r\.?|county|district|regional district|municipality|township|paroisse|parish|village|ville|city|town|district municipality|regional municipality)\s+of\s+',
+    re.IGNORECASE,
+)
+_CLC_ADMIN_SUFFIX_RE = re.compile(
+    r'\b(?:no\.?|number)\s+[0-9]+[a-z]?\b',
+    re.IGNORECASE,
+)
+_CLC_NOISE_RE = re.compile(r'[^a-z0-9]+')
 
 
 def _split_coverage_values(raw_value: str) -> list[str]:
@@ -350,78 +481,43 @@ def _load_nws_zone_county_db() -> tuple[dict[str, set[str]], dict[str, set[str]]
     return zones, counties
 
 
-@functools.lru_cache(maxsize=1)
-def _load_clc_spatial_db() -> dict[str, tuple[float, float, float]]:
-    db: dict[str, tuple[float, float, float]] = {}
-    try:
-        with open(_CLC_BASE_ZONE_PATH, newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            h = [c.strip().upper() for c in next(reader)]
-            clc_idx, lat_idx, lon_idx, area_idx = h.index("CLC"), h.index("LAT_DD"), h.index("LON_DD"), h.index("AREA_KM2")
-            for row in reader:
-                if len(row) <= max(clc_idx, lat_idx, lon_idx, area_idx):
-                    continue
-                clc = row[clc_idx].strip().strip('"')
-                try:
-                    lat, lon, area = float(row[lat_idx]), float(row[lon_idx]), float(row[area_idx])
-                except ValueError:
-                    continue
-                if clc:
-                    db[clc] = (lat, lon, area)
-    except (OSError, csv.Error) as e:
-        log.error("Failed to load CLC spatial DB: %s", e)
-    return db
+def _normalize_location_label(value: str) -> str:
+    ascii_value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
+    lowered = ascii_value.lower().replace('&', ' and ')
+    lowered = lowered.replace('saint', 'st').replace('sainte', 'st')
+    lowered = _CLC_ADMIN_PREFIX_RE.sub('', lowered)
+    lowered = _CLC_ADMIN_SUFFIX_RE.sub('', lowered)
+    lowered = _CLC_NOISE_RE.sub(' ', lowered)
+    return ' '.join(part for part in lowered.split() if part)
 
 
-@functools.lru_cache(maxsize=1)
-def _load_geocode_spatial_db() -> dict[str, tuple[float, float]]:
-    db: dict[str, tuple[float, float]] = {}
-    try:
-        with open(_CAP_CP_GEOCODES_PATH, newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            h = [c.strip().upper() for c in next(reader)]
-            geo_idx, lat_idx, lon_idx = h.index("CAPCPGCODE"), h.index("LAT_DD"), h.index("LON_DD")
-            for row in reader:
-                if len(row) <= max(geo_idx, lat_idx, lon_idx):
-                    continue
-                geo = row[geo_idx].strip().strip('"')
-                try:
-                    lat, lon = float(row[lat_idx]), float(row[lon_idx])
-                except ValueError:
-                    continue
-                if geo:
-                    db[geo] = (lat, lon)
-    except (OSError, csv.Error) as e:
-        log.error("Failed to load geocode spatial DB: %s", e)
-    return db
+def _clc_name_aliases(name: str) -> set[str]:
+    aliases: set[str] = set()
+    raw_name = name.strip()
+    if not raw_name:
+        return aliases
+    normalized_full = _normalize_location_label(raw_name)
+    if normalized_full:
+        aliases.add(normalized_full)
+
+    parts = _CLC_LABEL_SPLIT_RE.split(raw_name, maxsplit=1)
+    for part in parts:
+        normalized_part = _normalize_location_label(part)
+        if normalized_part:
+            aliases.add(normalized_part)
+        for subpart in _CLC_LABEL_PART_RE.split(part):
+            normalized_subpart = _normalize_location_label(subpart)
+            if normalized_subpart:
+                aliases.add(normalized_subpart)
+    return aliases
 
 
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return 6371.0 * 2 * math.asin(math.sqrt(a))
-
-
-def _geocodes_near_any_clc(alert_geocodes: set[str], feed_clcs: list[str]) -> list[str]:
-    geocode_db = _load_geocode_spatial_db()
-    clc_db = _load_clc_spatial_db()
-
-    alert_points = [(geocode_db[gc][0], geocode_db[gc][1]) for gc in alert_geocodes if gc in geocode_db]
-    if not alert_points:
-        return []
-
-    matched: list[str] = []
-    for clc in feed_clcs:
-        entry = clc_db.get(clc)
-        if not entry:
-            continue
-        clat, clon, area = entry
-        radius_km = max(_SPATIAL_MIN_RADIUS_KM, _SPATIAL_RADIUS_FACTOR * math.sqrt(area / math.pi))
-        if any(_haversine_km(clat, clon, glat, glon) <= radius_km for glat, glon in alert_points):
-            matched.append(clc)
-    return matched
+def _geocode_name_aliases(name: str) -> set[str]:
+    aliases: set[str] = set()
+    normalized = _normalize_location_label(name)
+    if normalized:
+        aliases.add(normalized)
+    return aliases
 
 
 def _load_aggregate_db() -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, str]]:
@@ -431,6 +527,69 @@ def _load_aggregate_db() -> tuple[dict[str, set[str]], dict[str, set[str]], dict
     _aggregate_clc_to_geocodes = {}
     _aggregate_geocode_to_clcs = {}
     _aggregate_clc_to_province = _load_forecast_db()
+    geocode_rows_by_region: dict[tuple[str, str], list[tuple[str, set[str]]]] = {}
+
+    try:
+        with open(_CAP_CP_GEOCODES_PATH, newline='', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            header = [column.strip().upper() for column in next(reader, [])]
+            name_idx = header.index('NAME')
+            nom_idx = header.index('NOM')
+            code_idx = header.index('CAPCPGCODE')
+            waterbody_idx = header.index('WATRBODY_C')
+            province_idx = header.index('PROVINCE_C')
+            country_idx = header.index('COUNTRY_C')
+            for row in reader:
+                if len(row) <= max(name_idx, nom_idx, code_idx, waterbody_idx, province_idx, country_idx):
+                    continue
+                geocode = row[code_idx].strip().strip('"')
+                if not geocode:
+                    continue
+                region_key = (
+                    row[country_idx].strip().strip('"').upper(),
+                    row[waterbody_idx].strip().strip('"').upper() or row[province_idx].strip().strip('"').upper(),
+                )
+                aliases: set[str] = set()
+                aliases.update(_geocode_name_aliases(row[name_idx].strip().strip('"')))
+                aliases.update(_geocode_name_aliases(row[nom_idx].strip().strip('"')))
+                if aliases:
+                    geocode_rows_by_region.setdefault(region_key, []).append((geocode, aliases))
+    except (OSError, csv.Error, ValueError) as e:
+        log.error('Failed to load CAP-CP geocode relationships: %s', e)
+        return _aggregate_clc_to_geocodes, _aggregate_geocode_to_clcs, _aggregate_clc_to_province
+
+    try:
+        with open(_CLC_BASE_ZONE_PATH, newline='', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            header = [column.strip().upper() for column in next(reader, [])]
+            clc_idx = header.index('CLC')
+            name_idx = header.index('NAME')
+            nom_idx = header.index('NOM')
+            waterbody_idx = header.index('WATRBODY_C')
+            province_idx = header.index('PROVINCE_C')
+            country_idx = header.index('COUNTRY_C')
+            for row in reader:
+                if len(row) <= max(clc_idx, name_idx, nom_idx, waterbody_idx, province_idx, country_idx):
+                    continue
+                clc = row[clc_idx].strip().strip('"')
+                if not clc:
+                    continue
+                aliases: set[str] = set()
+                aliases.update(_clc_name_aliases(row[name_idx].strip().strip('"')))
+                aliases.update(_clc_name_aliases(row[nom_idx].strip().strip('"')))
+                if not aliases:
+                    continue
+                region_key = (
+                    row[country_idx].strip().strip('"').upper(),
+                    row[waterbody_idx].strip().strip('"').upper() or row[province_idx].strip().strip('"').upper(),
+                )
+                for geocode, geocode_aliases in geocode_rows_by_region.get(region_key, []):
+                    if aliases.isdisjoint(geocode_aliases):
+                        continue
+                    _aggregate_clc_to_geocodes.setdefault(clc, set()).add(geocode)
+                    _aggregate_geocode_to_clcs.setdefault(geocode, set()).add(clc)
+    except (OSError, csv.Error, ValueError) as e:
+        log.error('Failed to load CLC base relationships: %s', e)
     return _aggregate_clc_to_geocodes, _aggregate_geocode_to_clcs, _aggregate_clc_to_province
 
 
@@ -439,7 +598,24 @@ def _load_geocode_db() -> dict[str, tuple[str, str]]:
     if _geocode_db is not None:
         return _geocode_db
     _geocode_db = {}
-    log.debug("_load_geocode_db: stub — use _load_aggregate_db()")
+    try:
+        with open(_CAP_CP_GEOCODES_PATH, newline='', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            header = [column.strip().upper() for column in next(reader, [])]
+            code_idx = header.index('CAPCPGCODE')
+            waterbody_idx = header.index('WATRBODY_C')
+            province_idx = header.index('PROVINCE_C')
+            for row in reader:
+                if len(row) <= max(code_idx, waterbody_idx, province_idx):
+                    continue
+                geocode = row[code_idx].strip().strip('"')
+                if not geocode:
+                    continue
+                region_type = 'WB' if row[waterbody_idx].strip().strip('"') else 'LAND'
+                region_code = row[waterbody_idx].strip().strip('"').upper() or row[province_idx].strip().strip('"').upper()
+                _geocode_db[geocode] = (region_type, region_code)
+    except (OSError, csv.Error, ValueError) as e:
+        log.error('Failed to load CAP-CP geocode DB: %s', e)
     return _geocode_db
 
 
@@ -667,20 +843,6 @@ def _matching_feed_codes(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
     direct_matches = [code for code in feed_codes if _matches_feed_alert_code(code, alert_codes)]
     if direct_matches:
         return direct_matches[:31]
-
-    # No direct CLC hit — spatial proximity using geocode centroids from CAP-CP_Geocodes.csv
-    # and CLC zone centroids + areas from CLC_Base_Zone.csv.  This correctly rejects alerts
-    # whose CAP-CP geocodes happen to be listed under a feed CLC in the aggregate table but
-    # are geographically hundreds of km away.
-    alert_geocodes = set(alert.all_geocodes)
-    if alert_geocodes:
-        spatial_matches = _geocodes_near_any_clc(alert_geocodes, feed_codes)
-        if spatial_matches:
-            log.debug(
-                "Spatial geocode match for feed %s: alert_geocodes=%s → clcs=%s",
-                feed.get("id"), _format_log_codes(alert_geocodes), _format_log_codes(spatial_matches),
-            )
-            return spatial_matches[:31]
 
     waterbody_matches = [
         code for code in feed_codes
@@ -1116,10 +1278,10 @@ def _generate_alert_audio(
     config: dict[str, Any],
 ) -> None:
     feed_id = feed['id']
+    runtime_entry = _build_alert_entry(feed_id, alert)
     same_cfg = config.get('same', {})
     callsign = str(same_cfg.get('sender', 'HAZE0000'))
-    flavor = same_cfg.get('flavor') or None
-    same_sr = resolve_flavor(flavor).sample_rate
+    same_sr = SAME_SAMPLE_RATE
 
     playout_cfg = _feed_playout_cfg(feed)
     include_same = playout_cfg.get('same', True)
@@ -1135,31 +1297,47 @@ def _generate_alert_audio(
     feed_langs = list(feed.get('languages', {}).keys()) or ['en-CA']
 
     voice_pcm_parts: list[bytes] = []
-    for lang in feed_langs:
-        msg = _build_alert_tts_script(alert, feed, lang)
-        if not msg:
-            continue
-        pcm = synthesize_pcm(config, msg, lang=lang)
-        if pcm:
-            voice_pcm_parts.append(pcm)
+    cap_audio_pcm, cap_audio_label = _resolve_cap_audio_pcm(alert, feed_langs)
+    if cap_audio_pcm is None:
+        for lang in feed_langs:
+            msg = _build_alert_tts_script(alert, feed, lang)
+            if not msg:
+                continue
+            pcm = synthesize_pcm(config, msg, lang=lang)
+            if pcm:
+                voice_pcm_parts.append(pcm)
 
     if not include_same:
-        if not voice_pcm_parts:
+        source_pcm = cap_audio_pcm or (b''.join(voice_pcm_parts) if voice_pcm_parts else None)
+        if not source_pcm:
             return
-        raw_pcm = b''.join(voice_pcm_parts)
-        samples = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32767.0
+        samples = np.frombuffer(source_pcm, dtype=np.int16).astype(np.float32) / 32767.0
         if CHANNELS == 2:
             samples = samples.reshape(-1, 2).mean(axis=1)
         alert_pcm = to_pcm16(resample(samples, BUS_SR, BUS_SR))
-        push_alert(feed_id, priority, alert_pcm, alert.identifier)
+        if push_alert(feed_id, priority, alert_pcm, alert.identifier):
+            store_runtime_alert_entry(feed_id, alert.identifier, runtime_entry)
+        saved_path = _save_alert_audio(feed_id, alert.identifier, alert_pcm)
         if schedule_post_alert_package:
             enqueue_scheduled_package(feed_id, 'alerts')
-        log.info('[%s] Alert queued (no SAME): %s (event=%s, priority=%d)', feed_id, alert.identifier, same_event, priority)
+        log.info(
+            '[%s] Alert queued (no SAME): %s (event=%s, priority=%d, audio_source=%s, saved=%s)',
+            feed_id,
+            alert.identifier,
+            same_event,
+            priority,
+            cap_audio_label or 'tts',
+            saved_path,
+        )
         return
 
     voice_array: np.ndarray | None = None
-    if voice_pcm_parts:
+    audio_label = cap_audio_label
+    if cap_audio_pcm:
+        voice_array = _pcm_to_voice_array(cap_audio_pcm, same_sr)
+    elif voice_pcm_parts:
         voice_array = _pcm_to_voice_array(b''.join(voice_pcm_parts), same_sr)
+        audio_label = 'tts'
 
     header = SAMEHeader(
         originator=originator,
@@ -1173,17 +1351,25 @@ def _generate_alert_audio(
         header=header,
         tone_type=cast(Any, tone_type),
         audio_msg_array=voice_array,
+        audio_label=audio_label,
         attn_duration_s=8.0,
-        flavor=flavor,
     )
 
     alert_pcm = to_pcm16(resample(full_signal, same_sr, BUS_SR))
-    push_alert(feed_id, priority, alert_pcm, alert.identifier)
+    if push_alert(feed_id, priority, alert_pcm, alert.identifier):
+        store_runtime_alert_entry(feed_id, alert.identifier, runtime_entry)
+    saved_path = _save_alert_audio(feed_id, alert.identifier, alert_pcm)
     if schedule_post_alert_package:
         enqueue_scheduled_package(feed_id, 'alerts')
     log.info(
-        '[%s] SAME queued: %s (event=%s, tone=%s, priority=%d)',
-        feed_id, header.encoded, same_event, tone_type, priority,
+        '[%s] SAME queued: %s (event=%s, tone=%s, priority=%d, audio_source=%s, saved=%s)',
+        feed_id,
+        header.encoded,
+        same_event,
+        tone_type,
+        priority,
+        audio_label or 'none',
+        saved_path,
     )
 
 

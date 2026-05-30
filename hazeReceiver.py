@@ -226,11 +226,11 @@ class ReceiverSupervisor:
         host = (host_override if host_override is not None else self.config.udp_host).strip() or "0.0.0.0"
         return (
             f"udp://{host}:{self.config.udp_port}"
-            "?fifo_size=1000000"
+            "?fifo_size=65536"
             "&overrun_nonfatal=1"
-            "&buffer_size=1048576"
+            "&buffer_size=131072"
         )
-
+    
     async def _start_ffmpeg(self) -> asyncio.subprocess.Process:
         input_url = self._build_udp_input_url()
         cmd = [
@@ -248,6 +248,8 @@ class ReceiverSupervisor:
             "-vn",
             "-sn",
             "-dn",
+            "-af",
+            "volume=1.65",
             "-ac",
             str(self.config.channels),
             "-ar",
@@ -671,7 +673,7 @@ def _parse_args() -> ReceiverConfig:
 
     parser.add_argument("--udp-host", "--rtp-host", dest="udp_host", default="0.0.0.0")
     parser.add_argument("--udp-port", "--rtp-port", dest="udp_port", type=int, default=8898)
-    parser.add_argument("--output-sample-rate", type=int, default=16000)
+    parser.add_argument("--output-sample-rate", type=int, default=12000)
     parser.add_argument("--channels", type=int, default=1)
 
     parser.add_argument("--ffmpeg-bin", default="ffmpeg")

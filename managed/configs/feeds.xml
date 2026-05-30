@@ -127,7 +127,6 @@
         <url>rtmp://localhost/live/stream</url>
         <format>flv</format>
         <bitrate_kbps>32</bitrate_kbps>
-        <vcodec>libx264</vcodec>
         <acodec>aac</acodec>
       </rtmp>
 
@@ -135,7 +134,6 @@
         <url>srt://localhost:12345</url>
         <format>mpegts</format>
         <bitrate_kbps>32</bitrate_kbps>
-        <vcodec>libx265</vcodec>
         <acodec>aac</acodec>
       </srt>
 
@@ -143,94 +141,16 @@
         <url>rtsp://localhost:8554/stream</url>
         <format>rtsp</format>
         <bitrate_kbps>32</bitrate_kbps>
-        <vcodec>libx264</vcodec>
         <acodec>aac</acodec>
       </rtsp>
 
-      <webrtc enabled="false">
-        <port>8765</port>
-        <format>opus</format>
-        <bitrate_kbps>32</bitrate_kbps>
-        <vcodec>libx264</vcodec>
-        <acodec>aac</acodec>
-      </webrtc>
-
-      <audio_device enabled="true"/>
+      <audio_device enabled="false"/>
 
     </output>
 
   </feed>
 
-  <feed id="sk-0002" callsign="VBP687" enabled="false" timezone="America/Regina">
-
-    <playout priority="true" routine="true" same="true" chimes="true"/>
-
-    <alerts>
-      <cap_cp enabled="true">
-        <filter use_feed_locations="true">
-          <blocklist>
-            <severity>Minor</severity>
-            <severity>Unknown</severity>
-            <certainty>Unknown</certainty>
-            <certainty>Past</certainty>
-            <naads_event>fog</naads_event>
-            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
-          </blocklist>
-        </filter>
-      </cap_cp>
-      <nws_cap enabled="false"/>
-    </alerts>
-
-    <languages>
-      <lang code="en-CA" interval="0"/>
-    </languages>
-
-    <description>
-      <lang code="en-CA"
-            text="This broadcast provides service to the Lake Diefenbaker area, including the communities of Elbow, Outlook, and Lucky Lake."
-            suffix="This service is not affiliated with Environment Canada"/>
-    </description>
-
-    <locations>
-      <coverage>
-        <region id="065500" source="eccc" derive_forecast="sk-18">
-          <subregion id="065524"/>
-        </region>
-        <region id="065500" source="eccc" derive_forecast="sk-37">
-          <subregion id="065522"/>
-          <subregion id="06552*"/>
-        </region>
-        <region id="062200" source="eccc" derive_forecast="sk-24">
-          <subregion id="065526"/>
-          <subregion id="06221*"/>
-        </region>
-      </coverage>
-
-      <observationLocations>
-        <location id="sk-18" source="eccc"/>
-        <location id="sk-37" source="eccc"/>
-        <location id="sk-14" source="eccc"/>
-      </observationLocations>
-    </locations>
-
-    <output>
-
-      <stream enabled="true">
-        <type>icecast</type>
-        <host>icecast.almora.tv</host>
-        <port>8443</port>
-        <username>source</username>
-        <password>aluser</password>
-        <ssl>false</ssl>
-        <format>opus</format>
-        <bitrate_kbps>32</bitrate_kbps>
-      </stream>
-
-    </output>
-
-  </feed>
-
-  <feed id="naads-catchall" callsign="SSPWXR" enabled="false" timezone="America/Regina">
+  <feed id="naads-catchall" callsign="CFSP/CAP" enabled="true" timezone="America/Regina">
 
     <playout routine="false" same="true"/>
 
@@ -262,14 +182,14 @@
 
     <output>
 
-      <stream enabled="true">
+      <stream enabled="false">
         <type>icecast</type>
         <host>icecast.almora.tv</host>
         <port>8443</port>
         <username>source</username>
         <password>aluser</password>
         <ssl>false</ssl>
-        <format>vp9</format>
+        <format>opus</format>
         <bitrate_kbps>32</bitrate_kbps>
       </stream>
 
@@ -278,8 +198,6 @@
         <port>8898</port>
         <format>mpegts</format>
         <bitrate_kbps>64</bitrate_kbps>
-        <vrate_kbps>4000</vrate_kbps>
-        <vcodec>h264_amf</vcodec>
         <acodec>ac3</acodec>
       </udp>
 
@@ -288,22 +206,8 @@
         <port>8899</port>
         <format>rtp_mpegts</format>
         <bitrate_kbps>96</bitrate_kbps>
-        <vrate_kbps>4000</vrate_kbps>
-        <vcodec>h264_amf</vcodec>
         <acodec>ac3</acodec>
       </rtp>
-
-      <framebuffer enabled="false">
-        <path>/dev/fb0</path>
-      </framebuffer>
-
-      <dri enabled="false">
-        <path>/dev/dri/card0</path>
-      </dri>
-
-      <v4l2 enabled="false">
-        <device>/dev/video0</device>
-      </v4l2>
 
       <audio_device enabled="false"/>
 

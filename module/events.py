@@ -41,6 +41,9 @@ _last_played_item_ids: dict[str, str] = {}
 _alert_queues_lock: threading.Lock = threading.Lock()
 _alert_queues: dict[str, queue.Queue[tuple[int, bytes, str]]] = {}
 
+_alert_audio_streams_lock: threading.Lock = threading.Lock()
+_alert_audio_streams: dict[str, list[queue.Queue[tuple[bytes, str]]]] = {}
+
 _runtime_alert_entries_lock: threading.Lock = threading.Lock()
 _runtime_alert_entries: dict[str, dict[str, dict[str, Any]]] = {}
 
@@ -57,18 +60,66 @@ def register_alert_queue(feed_id: str) -> queue.Queue[tuple[int, bytes, str]]:
         _alert_queues[feed_id] = q
         return q
 
-def push_alert(feed_id: str, priority: int, pcm: bytes, identifier: str = '') -> None:
+
+def register_alert_audio_stream(feed_id: str) -> queue.Queue[tuple[bytes, str]]:
+    q: queue.Queue[tuple[bytes, str]] = queue.Queue(maxsize=8)
+    with _alert_audio_streams_lock:
+        streams = _alert_audio_streams.setdefault(feed_id, [])
+        streams.append(q)
+    return q
+
+
+def unregister_alert_audio_stream(feed_id: str, stream: queue.Queue[tuple[bytes, str]]) -> None:
+    with _alert_audio_streams_lock:
+        streams = _alert_audio_streams.get(feed_id)
+        if not streams:
+            return
+        remaining = [item for item in streams if item is not stream]
+        if remaining:
+            _alert_audio_streams[feed_id] = remaining
+        else:
+            _alert_audio_streams.pop(feed_id, None)
+
+
+def _publish_alert_audio(feed_id: str, pcm: bytes, identifier: str = '') -> None:
+    with _alert_audio_streams_lock:
+        streams = list(_alert_audio_streams.get(feed_id, ()))
+
+    for stream in streams:
+        try:
+            stream.put_nowait((pcm, identifier))
+            continue
+        except queue.Full:
+            pass
+
+        try:
+            stream.get_nowait()
+        except queue.Empty:
+            pass
+
+        try:
+            stream.put_nowait((pcm, identifier))
+        except queue.Full:
+            pass
+
+def push_alert(feed_id: str, priority: int, pcm: bytes, identifier: str = '') -> bool:
     with _alert_queues_lock:
         q = _alert_queues.get(feed_id)
     if q is not None:
         q.put((priority, pcm, identifier))
+    _publish_alert_audio(feed_id, pcm, identifier)
+    return q is not None
 
 
 def push_alert_all(priority: int, pcm: bytes, identifier: str = '') -> None:
     with _alert_queues_lock:
         queues = list(_alert_queues.values())
+    with _alert_audio_streams_lock:
+        stream_feed_ids = tuple(_alert_audio_streams.keys())
     for q in queues:
         q.put((priority, pcm, identifier))
+    for feed_id in stream_feed_ids:
+        _publish_alert_audio(feed_id, pcm, identifier)
 
 
 def store_runtime_alert_entry(feed_id: str, identifier: str, entry: dict[str, Any]) -> None:
@@ -77,6 +128,23 @@ def store_runtime_alert_entry(feed_id: str, identifier: str, entry: dict[str, An
     with _runtime_alert_entries_lock:
         feed_entries = _runtime_alert_entries.setdefault(feed_id, {})
         feed_entries[identifier] = deepcopy(entry)
+
+
+def remove_runtime_alert_entries(feed_id: str, identifiers: list[str] | set[str] | tuple[str, ...]) -> None:
+    if not feed_id:
+        return
+    removable = {str(identifier or '').strip() for identifier in identifiers if str(identifier or '').strip()}
+    if not removable:
+        return
+
+    with _runtime_alert_entries_lock:
+        feed_entries = _runtime_alert_entries.get(feed_id)
+        if not feed_entries:
+            return
+        for identifier in removable:
+            feed_entries.pop(identifier, None)
+        if not feed_entries:
+            _runtime_alert_entries.pop(feed_id, None)
 
 
 def get_runtime_alert_entries(feed_id: str) -> list[dict[str, Any]]:

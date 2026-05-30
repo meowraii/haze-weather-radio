@@ -184,7 +184,7 @@
     },
     "naads-catchall": {
       "en-CA": {
-        "station_id": "audio/static/feeds/naads-catchall/en-CA/station_id.wav"
+        "station_id": "audio\\static\\feeds\\naads-catchall\\en-CA\\station_id.wav"
       }
     },
     "sk-0001": {
@@ -210,9 +210,12 @@
     "naads-catchall": {
       "en-CA": {
         "provider": "piper",
-        "model": "./voices/en_US-hfc_male-medium.onnx",
-        "speaker": 1,
-        "text_hash": "00ae8cd15581e1a70059413878de23be"
+        "model": "voices\\en_US-hfc_male-medium.onnx",
+        "config": "voices\\en_US-hfc_male-medium.onnx.json",
+        "speaker": 0,
+        "reader_id": "000",
+        "voice_slot": "male",
+        "text_hash": "fc5aa805bde2b17556dd15fca9b8e211"
       }
     },
     "sk-0001": {

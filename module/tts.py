@@ -12,6 +12,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import wave
@@ -34,6 +35,54 @@ BYTES_PER_SAMPLE = 2
 
 _DICT_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'dictionary.json'
 _READERS_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'configs' / 'readers.xml'
+_VOICES_PATH = pathlib.Path(__file__).parent.parent / 'voices'
+_KOKORO_ROOT = _VOICES_PATH / 'kokoro'
+_KOKORO_HF_HOME = _KOKORO_ROOT / '.hf'
+_KOKORO_REPO_ID = 'hexgrad/Kokoro-82M'
+_KOKORO_MODEL_FILE = 'kokoro-v1_0.pth'
+_KOKORO_CONFIG_FILE = 'config.json'
+_KOKORO_SAMPLE_RATE = 24000
+_KOKORO_LANG_ALIASES = {
+    'a': 'a',
+    'en': 'a',
+    'en-us': 'a',
+    'en-ca': 'a',
+    'b': 'b',
+    'en-gb': 'b',
+    'en-uk': 'b',
+    'e': 'e',
+    'es': 'e',
+    'es-es': 'e',
+    'f': 'f',
+    'fr': 'f',
+    'fr-fr': 'f',
+    'fr-ca': 'f',
+    'h': 'h',
+    'hi': 'h',
+    'i': 'i',
+    'it': 'i',
+    'it-it': 'i',
+    'j': 'j',
+    'ja': 'j',
+    'ja-jp': 'j',
+    'p': 'p',
+    'pt': 'p',
+    'pt-br': 'p',
+    'z': 'z',
+    'zh': 'z',
+    'zh-cn': 'z',
+}
+_KOKORO_DEFAULT_VOICES = {
+    'a': {'male': 'am_adam', 'female': 'af_heart'},
+    'b': {'male': 'bm_george', 'female': 'bf_emma'},
+    'e': {'male': 'em_alex', 'female': 'ef_dora'},
+    'f': {'male': 'ff_siwis', 'female': 'ff_siwis'},
+    'h': {'male': 'hm_omega', 'female': 'hf_alpha'},
+    'i': {'male': 'im_nicola', 'female': 'if_sara'},
+    'j': {'male': 'jm_kumo', 'female': 'jf_alpha'},
+    'p': {'male': 'pm_alex', 'female': 'pf_dora'},
+    'z': {'male': 'zm_yunjian', 'female': 'zf_xiaobei'},
+}
 _DICT_MB_RE = re.compile(r'(\d+)\s+MB\b')
 _loaded_dictionary: dict[str, dict[str, str]] | None = None
 _compiled_dictionary: dict[str, list[tuple[re.Pattern[str], str]]] = {}
@@ -154,6 +203,14 @@ try:
 except ImportError:
     ort = None
 
+KModel = None
+KPipeline = None
+hf_hub_download = None
+kokoro_torch = None
+
+_kokoro_runtime_checked = False
+_hf_hub_download_checked = False
+
 _rocm_libs_preloaded = False
 
 def _preload_rocm_libs() -> bool:
@@ -208,7 +265,11 @@ from module.events import shutdown_event, tts_queue
 _FILE_URI_RE = re.compile(r'^file://', re.IGNORECASE)
 _VOICE_CACHE_MAX = 2
 _voice_cache: OrderedDict[str, Any] = OrderedDict()
+_kokoro_model_cache: OrderedDict[str, Any] = OrderedDict()
+_kokoro_pipeline_cache: OrderedDict[str, Any] = OrderedDict()
 _logged_piper_runtime: set[tuple[str, str]] = set()
+_logged_kokoro_runtime: set[tuple[str, str]] = set()
+_logged_kokoro_voice_fallbacks: set[tuple[str, str]] = set()
 
 _TTS_AUDIO_FILTERS = (
     'acompressor=threshold=-20dB:ratio=4:attack=5:release=50:makeup=10dB,'
@@ -314,6 +375,23 @@ def _decode_file_pcm(file_path: pathlib.Path) -> bytes | None:
             return None
 
 
+def decode_audio_file_pcm(file_path: pathlib.Path) -> bytes | None:
+    return _decode_file_pcm(file_path)
+
+
+def decode_audio_bytes_pcm(audio_bytes: bytes, suffix: str = '.bin') -> bytes | None:
+    if not audio_bytes:
+        return None
+    fd, tmp_name = tempfile.mkstemp(suffix=suffix)
+    tmp_path = pathlib.Path(tmp_name)
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(audio_bytes)
+        return _decode_file_pcm(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def _normalize_pcm(pcm_s16le: bytes) -> bytes | None:
     if not pcm_s16le:
         return None
@@ -393,6 +471,98 @@ def _normalize_piper_acceleration(value: Any) -> str:
     return aliases.get(normalized, normalized)
 
 
+def _ensure_kokoro_cache_env() -> None:
+    _KOKORO_ROOT.mkdir(parents=True, exist_ok=True)
+    hub_cache = _KOKORO_HF_HOME / 'hub'
+    transformers_cache = _KOKORO_HF_HOME / 'transformers'
+    for cache_dir in (_KOKORO_HF_HOME, hub_cache, transformers_cache):
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ['HF_HOME'] = str(_KOKORO_HF_HOME)
+    os.environ['HF_HUB_CACHE'] = str(hub_cache)
+    os.environ['HUGGINGFACE_HUB_CACHE'] = str(hub_cache)
+    os.environ['TRANSFORMERS_CACHE'] = str(transformers_cache)
+
+
+def _load_hf_hub_download() -> Any:
+    global hf_hub_download, _hf_hub_download_checked
+    if _hf_hub_download_checked:
+        return hf_hub_download
+
+    _hf_hub_download_checked = True
+    try:
+        hf_hub_download = importlib.import_module('huggingface_hub').hf_hub_download
+    except Exception as exc:
+        log.warning('huggingface_hub not available, Kokoro asset download will be disabled: %s', exc)
+        hf_hub_download = None
+    return hf_hub_download
+
+
+def _load_kokoro_runtime() -> tuple[Any, Any, Any]:
+    global KModel, KPipeline, kokoro_torch, _kokoro_runtime_checked
+    if _kokoro_runtime_checked:
+        return KModel, KPipeline, kokoro_torch
+
+    _kokoro_runtime_checked = True
+    _ensure_kokoro_cache_env()
+    if sys.version_info >= (3, 13):
+        log.warning('Kokoro TTS is disabled on Python %s; upstream Kokoro dependencies currently require Python < 3.13', sys.version.split()[0])
+        KModel = None
+        KPipeline = None
+        kokoro_torch = None
+        return KModel, KPipeline, kokoro_torch
+    try:
+        kokoro_module = importlib.import_module('kokoro')
+        KModel = kokoro_module.KModel
+        KPipeline = kokoro_module.KPipeline
+        kokoro_torch = importlib.import_module('torch')
+        if 'kokoro' not in available_providers:
+            available_providers.append('kokoro')
+    except Exception as exc:
+        log.warning('Kokoro not available, Kokoro TTS provider will be disabled: %s', exc)
+        KModel = None
+        KPipeline = None
+        kokoro_torch = None
+    return KModel, KPipeline, kokoro_torch
+
+
+def _resolve_existing_path(path_value: str, roots: list[pathlib.Path]) -> str | None:
+    candidate = pathlib.Path(path_value)
+    candidates = [candidate]
+    if not candidate.is_absolute():
+        candidates.extend(root / path_value for root in roots)
+        candidates.extend(root / candidate.name for root in roots)
+    for item in candidates:
+        if item.exists():
+            return str(item)
+    return None
+
+
+def _select_reader(provider_name: str, lang: str, voice: str | None) -> dict[str, str] | None:
+    readers = [reader for reader in _load_readers() if reader.get('provider') == provider_name]
+    if not readers:
+        return None
+
+    normalized_lang = str(lang or '').strip().lower().replace('_', '-')
+    lang_prefix = normalized_lang.split('-', 1)[0]
+    desired_gender = str(voice or 'male').strip().lower()
+    desired_gender = 'female' if desired_gender == 'female' else 'male'
+
+    exact_lang = [reader for reader in readers if reader['language'] == normalized_lang]
+    prefix_lang = [
+        reader for reader in readers
+        if reader['language'] and reader['language'].split('-', 1)[0] == lang_prefix
+    ]
+    unspecified_lang = [reader for reader in readers if not reader['language']]
+
+    for group in (exact_lang, prefix_lang, unspecified_lang, readers):
+        if not group:
+            continue
+        gender_match = [reader for reader in group if reader.get('gender') == desired_gender]
+        return gender_match[0] if gender_match else group[0]
+
+    return None
+
+
 def _load_readers() -> list[dict[str, str]]:
     global _readers_cache
     if _readers_cache is not None:
@@ -412,7 +582,7 @@ def _load_readers() -> list[dict[str, str]]:
 
     for reader_el in root.findall('reader'):
         provider = str(reader_el.get('provider') or '').strip().lower()
-        if provider != 'piper':
+        if provider not in {'piper', 'kokoro'}:
             continue
         language = str(reader_el.findtext('language') or '').strip().lower().replace('_', '-')
         gender = str(reader_el.findtext('gender') or 'male').strip().lower()
@@ -468,34 +638,227 @@ def _resolve_reader_model(path_value: str) -> tuple[str, str | None]:
 
 
 def _reader_piper_cfg(lang: str, voice: str | None) -> dict[str, Any] | None:
-    readers = _load_readers()
-    if not readers:
+    selected = _select_reader('piper', lang, voice)
+    if not selected:
         return None
+    model_path, config_path = _resolve_reader_model(str(selected['path']))
+    if not pathlib.Path(model_path).exists():
+        return None
+    result: dict[str, Any] = {'model': model_path, 'speaker': 0}
+    if config_path:
+        result['config'] = config_path
+    return result
 
-    normalized_lang = str(lang or '').strip().lower().replace('_', '-')
-    lang_prefix = normalized_lang.split('-', 1)[0]
-    desired_gender = str(voice or 'male').strip().lower()
-    desired_gender = 'female' if desired_gender == 'female' else 'male'
 
-    exact_lang = [r for r in readers if r['language'] == normalized_lang]
-    prefix_lang = [r for r in readers if r['language'] and r['language'].split('-', 1)[0] == lang_prefix]
-    unspecified_lang = [r for r in readers if not r['language']]
+def _normalize_kokoro_lang_code(value: Any) -> str | None:
+    normalized = str(value or '').strip().lower().replace('_', '-')
+    if not normalized:
+        return None
+    return _KOKORO_LANG_ALIASES.get(normalized)
 
-    search_groups = [exact_lang, prefix_lang, unspecified_lang, readers]
-    for group in search_groups:
-        if not group:
-            continue
-        gender_match = [r for r in group if r.get('gender') == desired_gender]
-        selected = gender_match[0] if gender_match else group[0]
-        model_path, config_path = _resolve_reader_model(str(selected['path']))
-        if not pathlib.Path(model_path).exists():
-            continue
-        result: dict[str, Any] = {'model': model_path, 'speaker': 0}
-        if config_path:
-            result['config'] = config_path
-        return result
 
-    return None
+def _infer_kokoro_voice_lang_code(voice_value: Any) -> str | None:
+    voice_name = pathlib.Path(str(voice_value or '').strip()).stem.lower()
+    if not voice_name:
+        return None
+    prefix = voice_name.split('_', 1)[0]
+    if len(prefix) == 2 and prefix[0] in _KOKORO_DEFAULT_VOICES and prefix[1] in {'f', 'm'}:
+        return prefix[0]
+    return _normalize_kokoro_lang_code(voice_name)
+
+
+def _default_kokoro_voice(lang_code: Any, voice_type: Any) -> str:
+    resolved_lang = _normalize_kokoro_lang_code(lang_code) or 'a'
+    voice_map = _KOKORO_DEFAULT_VOICES.get(resolved_lang) or _KOKORO_DEFAULT_VOICES['a']
+    slot = 'female' if str(voice_type or 'male').strip().lower() == 'female' else 'male'
+    return voice_map.get(slot) or next(iter(voice_map.values()))
+
+
+def _resolve_kokoro_lang_code(language: Any, voice_value: Any, configured: Any) -> str:
+    return (
+        _normalize_kokoro_lang_code(configured)
+        or _infer_kokoro_voice_lang_code(voice_value)
+        or _normalize_kokoro_lang_code(language)
+        or 'a'
+    )
+
+
+def _reader_kokoro_cfg(lang: str, voice: str | None) -> dict[str, Any] | None:
+    selected = _select_reader('kokoro', lang, voice)
+    if not selected:
+        return None
+    voice_value = str(selected.get('path') or '').strip()
+    if not voice_value:
+        return None
+    return {
+        'voice': voice_value,
+        'lang_code': _resolve_kokoro_lang_code(lang, voice_value, None),
+    }
+
+
+def _resolve_kokoro_support_path(path_value: Any, default_filename: str) -> str:
+    normalized = str(path_value or '').strip()
+    if normalized:
+        resolved = _resolve_existing_path(normalized, [_KOKORO_ROOT, _VOICES_PATH])
+        if resolved:
+            return resolved
+        if pathlib.Path(normalized).is_absolute():
+            raise FileNotFoundError(f'Kokoro asset not found: {normalized}')
+        return _ensure_kokoro_asset(pathlib.Path(normalized).as_posix())
+    return _ensure_kokoro_asset(default_filename)
+
+
+def _ensure_kokoro_asset(relative_path: str) -> str:
+    downloader = _load_hf_hub_download()
+    if downloader is None:
+        raise RuntimeError('huggingface_hub not available')
+
+    _ensure_kokoro_cache_env()
+    local_path = _KOKORO_ROOT / pathlib.Path(relative_path)
+    if local_path.exists():
+        return str(local_path)
+
+    downloaded = downloader(
+        repo_id=_KOKORO_REPO_ID,
+        filename=relative_path.replace('\\', '/'),
+        cache_dir=_KOKORO_HF_HOME / 'hub',
+        local_dir=_KOKORO_ROOT,
+    )
+    return str(pathlib.Path(downloaded))
+
+
+def _resolve_kokoro_voice_path(voice_value: Any, lang_code: str, voice_type: str) -> tuple[str, str]:
+    requested_value = str(voice_value or '').strip()
+    requested_name = pathlib.Path(requested_value).stem if requested_value else ''
+
+    if requested_name:
+        requested_path = requested_value if pathlib.Path(requested_value).suffix.lower() == '.pt' else f'{requested_name}.pt'
+        resolved = _resolve_existing_path(requested_path, [_KOKORO_ROOT / 'voices', _KOKORO_ROOT, _VOICES_PATH])
+        if resolved:
+            return resolved, requested_name
+        try:
+            return _ensure_kokoro_asset(f'voices/{requested_name}.pt'), requested_name
+        except Exception:
+            fallback_name = _default_kokoro_voice(lang_code, voice_type)
+            fallback_key = (requested_name, fallback_name)
+            if fallback_key not in _logged_kokoro_voice_fallbacks:
+                _logged_kokoro_voice_fallbacks.add(fallback_key)
+                log.warning('Kokoro voice %s unavailable, using %s instead', requested_name, fallback_name)
+            return _ensure_kokoro_asset(f'voices/{fallback_name}.pt'), fallback_name
+
+    fallback_name = _default_kokoro_voice(lang_code, voice_type)
+    return _ensure_kokoro_asset(f'voices/{fallback_name}.pt'), fallback_name
+
+
+def _resolve_kokoro_device(v_cfg: dict[str, Any]) -> str:
+    _, _, torch_module = _load_kokoro_runtime()
+    requested = str(v_cfg.get('device') or 'auto').strip().lower()
+    aliases = {
+        '': 'auto',
+        'gpu': 'cuda',
+        'none': 'cpu',
+    }
+    requested = aliases.get(requested, requested)
+    has_cuda = bool(torch_module is not None and torch_module.cuda.is_available())
+
+    if requested == 'cuda':
+        device = 'cuda' if has_cuda else 'cpu'
+    elif requested == 'auto':
+        device = 'cuda' if has_cuda else 'cpu'
+    else:
+        device = 'cpu'
+
+    log_key = (requested, device)
+    if log_key not in _logged_kokoro_runtime:
+        _logged_kokoro_runtime.add(log_key)
+        log.info('Kokoro runtime selected: requested=%s device=%s', requested, device)
+    return device
+
+
+def _coerce_kokoro_cfg(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        return {'voice': value.strip()}
+    return {}
+
+
+def _resolve_kokoro_config(ctx: dict) -> dict[str, Any] | None:
+    tts_cfg = ctx.get('config', {}).get('tts', {})
+    global_cfg = dict(tts_cfg.get('kokoro', {})) if isinstance(tts_cfg.get('kokoro'), dict) else {}
+    lang = str(ctx.get('lang') or 'en-CA')
+    voice_type = ctx.get('voice') if ctx.get('voice') in ('male', 'female') else 'male'
+
+    lang_backend = tts_cfg.get('lang', {}).get(lang, {}).get('backend', {}).get('kokoro', {})
+    selected_cfg = {}
+    if isinstance(lang_backend, dict):
+        selected_cfg = _coerce_kokoro_cfg(lang_backend.get(voice_type))
+        if not selected_cfg:
+            selected_cfg = _coerce_kokoro_cfg(lang_backend.get('voice'))
+        if not selected_cfg and voice_type != 'male':
+            selected_cfg = _coerce_kokoro_cfg(lang_backend.get('male'))
+        if not selected_cfg and voice_type != 'female':
+            selected_cfg = _coerce_kokoro_cfg(lang_backend.get('female'))
+
+    if not selected_cfg:
+        reader_cfg = _reader_kokoro_cfg(lang, voice_type)
+        if reader_cfg:
+            selected_cfg = dict(reader_cfg)
+
+    merged = dict(global_cfg)
+    merged.update(selected_cfg)
+
+    lang_code = _resolve_kokoro_lang_code(lang, merged.get('voice'), merged.get('lang_code'))
+    voice_name = str(merged.get('voice') or '').strip()
+    if not voice_name:
+        voice_name = _default_kokoro_voice(lang_code, voice_type)
+
+    voice_path, resolved_voice = _resolve_kokoro_voice_path(voice_name, lang_code, voice_type)
+    merged['voice'] = resolved_voice
+    merged['voice_path'] = voice_path
+    merged['lang_code'] = lang_code
+    merged['model'] = _resolve_kokoro_support_path(merged.get('model'), _KOKORO_MODEL_FILE)
+    merged['config'] = _resolve_kokoro_support_path(merged.get('config'), _KOKORO_CONFIG_FILE)
+    try:
+        merged['speed'] = float(merged.get('speed') or 1.0)
+    except (TypeError, ValueError):
+        merged['speed'] = 1.0
+    merged['device'] = _resolve_kokoro_device(merged)
+    return merged
+
+
+def _load_kokoro_model(v_cfg: dict[str, Any]) -> Any:
+    model_class, _, _ = _load_kokoro_runtime()
+    if model_class is None:
+        raise RuntimeError('Kokoro not available')
+
+    cache_key = f"{v_cfg['device']}:{v_cfg['config']}:{v_cfg['model']}"
+    if cache_key in _kokoro_model_cache:
+        _kokoro_model_cache.move_to_end(cache_key)
+        return _kokoro_model_cache[cache_key]
+
+    loaded = cast(Any, model_class)(config=v_cfg['config'], model=v_cfg['model']).to(v_cfg['device']).eval()
+    _kokoro_model_cache[cache_key] = loaded
+    if len(_kokoro_model_cache) > _VOICE_CACHE_MAX:
+        _kokoro_model_cache.popitem(last=False)
+    return loaded
+
+
+def _load_kokoro_pipeline(v_cfg: dict[str, Any]) -> Any:
+    _, pipeline_class, _ = _load_kokoro_runtime()
+    if pipeline_class is None:
+        raise RuntimeError('Kokoro not available')
+
+    cache_key = str(v_cfg.get('lang_code') or 'a')
+    if cache_key in _kokoro_pipeline_cache:
+        _kokoro_pipeline_cache.move_to_end(cache_key)
+        return _kokoro_pipeline_cache[cache_key]
+
+    loaded = cast(Any, pipeline_class)(lang_code=cache_key, model=False)
+    _kokoro_pipeline_cache[cache_key] = loaded
+    if len(_kokoro_pipeline_cache) > _VOICE_CACHE_MAX:
+        _kokoro_pipeline_cache.popitem(last=False)
+    return loaded
 
 
 def _resolve_piper_runtime(config: dict[str, Any]) -> tuple[bool, str]:
@@ -597,6 +960,24 @@ def _resolve_piper_config(ctx: dict) -> dict | None:
     return _reader_piper_cfg(str(ctx.get('lang') or 'en-CA'), ctx.get('voice'))
 
 
+def _kokoro_audio_to_pcm(audio: Any) -> bytes | None:
+    if audio is None:
+        return None
+
+    if hasattr(audio, 'detach'):
+        samples = np.asarray(audio.detach().cpu().numpy(), dtype=np.float32)
+    else:
+        samples = np.asarray(audio, dtype=np.float32)
+    if samples.size == 0:
+        return None
+
+    flattened = np.clip(samples.reshape(-1), -1.0, 1.0)
+    pcm = (flattened * 32767.0).astype(np.int16)
+    if CHANNELS == 2:
+        pcm = np.column_stack([pcm, pcm]).ravel().astype(np.int16)
+    return _resample_pcm(pcm.tobytes(), _KOKORO_SAMPLE_RATE)
+
+
 def _piper_spec(ctx: dict, v_cfg: dict) -> Any:
     global_cfg = ctx['config'].get('tts', {}).get('piper', {})
     if SynthesisConfig is None:
@@ -695,55 +1076,64 @@ def _select_and_set_pyttsx3_voice(engine: Any, desired: str) -> str | None:
     if not desired:
         return None
     try:
-        voices = engine.getProperty('voices') or []
+        engine.setProperty('voice', desired)
+        return desired
     except Exception:
-        return None
+        pass
+
+    voices: list[dict[str, Any]] = []
+    try:
+        voices = [
+            {
+                'id': str(getattr(v, 'id', '') or ''),
+                'name': str(getattr(v, 'name', '') or ''),
+                'lang': _normalize_voice_languages(getattr(v, 'languages', [])),
+            }
+            for v in (engine.getProperty('voices') or [])
+        ]
+    except Exception:
+        if os.name == 'nt':
+            voices = _get_windows_sapi5_voices(log_skipped=False)
+        else:
+            return None
 
     desired_norm = str(desired).strip().lower()
 
-    for v in voices:
-        vid = getattr(v, 'id', '')
-        if vid and str(vid) == desired:
+    for voice in voices:
+        voice_id = str(voice.get('id') or '')
+        if voice_id and voice_id == desired:
             try:
-                engine.setProperty('voice', vid)
-                return vid
+                engine.setProperty('voice', voice_id)
+                return voice_id
             except Exception:
                 pass
 
-    for v in voices:
-        name = getattr(v, 'name', '')
+    for voice in voices:
+        name = str(voice.get('name') or '')
         if name and name.lower() == desired_norm:
             try:
-                engine.setProperty('voice', getattr(v, 'id', name))
-                return getattr(v, 'id', name)
+                engine.setProperty('voice', str(voice.get('id') or name))
+                return str(voice.get('id') or name)
             except Exception:
                 pass
 
-    for v in voices:
-        name = getattr(v, 'name', '')
+    for voice in voices:
+        name = str(voice.get('name') or '')
         if name and desired_norm in name.lower():
             try:
-                engine.setProperty('voice', getattr(v, 'id', name))
-                return getattr(v, 'id', name)
+                engine.setProperty('voice', str(voice.get('id') or name))
+                return str(voice.get('id') or name)
             except Exception:
                 pass
 
-    for v in voices:
-        langs = getattr(v, 'languages', None)
-        if not langs:
-            continue
-        for item in langs:
-            try:
-                if isinstance(item, bytes):
-                    token = item.decode('utf-8', errors='ignore').lower()
-                else:
-                    token = str(item).lower()
-            except Exception:
-                continue
-            if desired_norm in token or desired_norm == token:
+    for voice in voices:
+        for token in voice.get('lang') or []:
+            token_text = str(token).lower()
+            if desired_norm in token_text or desired_norm == token_text:
                 try:
-                    engine.setProperty('voice', getattr(v, 'id', getattr(v, 'name', '')))
-                    return getattr(v, 'id', getattr(v, 'name', ''))
+                    resolved = str(voice.get('id') or voice.get('name') or '')
+                    engine.setProperty('voice', resolved)
+                    return resolved
                 except Exception:
                     pass
 
@@ -794,7 +1184,32 @@ def _provide_pyttsx3_pcm(text: str, ctx: dict) -> bytes | None:
             _unlink_with_retries(tmp_file)
 
 
+def _provide_kokoro_pcm(text: str, ctx: dict) -> bytes | None:
+    try:
+        v_cfg = _resolve_kokoro_config(ctx)
+        if not v_cfg:
+            return None
+
+        model = _load_kokoro_model(v_cfg)
+        pipeline = _load_kokoro_pipeline(v_cfg)
+        chunks = []
+        for result in cast(Any, pipeline)(text, voice=v_cfg['voice_path'], speed=v_cfg['speed'], model=model):
+            pcm = _kokoro_audio_to_pcm(getattr(result, 'audio', None))
+            if pcm:
+                chunks.append(pcm)
+
+        if not chunks:
+            return None
+
+        combined = b''.join(chunks)
+        return _normalize_pcm(combined) or smooth_pcm_edges(combined)
+    except Exception as e:
+        log.error('Kokoro PCM provider failed: %s', e)
+        return None
+
+
 PCM_PROVIDERS: dict[str, Any] = {
+    'kokoro': _provide_kokoro_pcm,
     'piper': _provide_piper_pcm,
     'pyttsx3': _provide_pyttsx3_pcm,
 }
@@ -866,6 +1281,19 @@ def _provide_piper(text: str, ctx: dict, out: pathlib.Path) -> bool:
     return success
 
 
+def _write_pcm_wav(path: pathlib.Path, pcm_s16le: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), 'wb') as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(BYTES_PER_SAMPLE)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(pcm_s16le)
+
+
+def write_pcm_wav(path: pathlib.Path, pcm_s16le: bytes) -> None:
+    _write_pcm_wav(path, pcm_s16le)
+
+
 def _normalize_voice_languages(raw_languages: Any) -> list[str]:
     if raw_languages is None:
         return []
@@ -919,18 +1347,50 @@ def _windows_locale_list(language_attr: Any) -> list[str]:
     return locales
 
 
-def _get_windows_sapi5_voices() -> list[dict[str, Any]]:
+def _windows_sapi5_voice_from_token(token: Any, log_skipped: bool = True) -> dict[str, Any] | None:
+    try:
+        voice_id = str(token.Id)
+    except Exception as e:
+        if log_skipped:
+            log.warning('Skipping Windows SAPI voice with unreadable id: %s', e)
+        return None
+
+    try:
+        name = str(token.GetDescription())
+    except Exception as e:
+        if log_skipped:
+            log.warning('Skipping malformed Windows SAPI voice token %s: %s', voice_id, e)
+        return None
+
+    try:
+        lang = _windows_locale_list(token.GetAttribute('Language'))
+    except Exception:
+        lang = []
+
+    return {
+        'id': voice_id,
+        'name': name,
+        'lang': lang,
+    }
+
+
+def _get_windows_sapi5_voices(log_skipped: bool = True) -> list[dict[str, Any]]:
     try:
         comtypes_client = importlib.import_module('comtypes.client')
         speech = comtypes_client.CreateObject('SAPI.SPVoice')
-        return [
-            {
-                'id': str(token.Id),
-                'name': str(token.GetDescription()),
-                'lang': _windows_locale_list(token.GetAttribute('Language')),
-            }
-            for token in speech.GetVoices()
-        ]
+        tokens = speech.GetVoices()
+        voices = []
+        for idx in range(int(tokens.Count)):
+            try:
+                token = tokens.Item(idx)
+            except Exception as e:
+                if log_skipped:
+                    log.warning('Skipping Windows SAPI voice token at index %d: %s', idx, e)
+                continue
+            voice = _windows_sapi5_voice_from_token(token, log_skipped=log_skipped)
+            if voice is not None:
+                voices.append(voice)
+        return voices
     except Exception as e:
         log.error('Failed to enumerate Windows SAPI voices directly: %s', e)
         return []
@@ -951,9 +1411,10 @@ def get_available_pyttsx3_voices() -> list[dict[str, Any]]:
             for v in voices
         ]
     except Exception as e:
-        log.error('Failed to get pyttsx3 voices: %s', e)
         if os.name == 'nt':
+            log.warning('Failed to get pyttsx3 voices, falling back to direct Windows SAPI enumeration: %s', e)
             return _get_windows_sapi5_voices()
+        log.error('Failed to get pyttsx3 voices: %s', e)
         return []
 
 def _provide_pyttsx3(text: str, ctx: dict, out: pathlib.Path) -> bool:
@@ -994,7 +1455,20 @@ def _provide_pyttsx3(text: str, ctx: dict, out: pathlib.Path) -> bool:
                 pass
         _unlink_with_retries(raw_tmp)
 
+
+def _provide_kokoro(text: str, ctx: dict, out: pathlib.Path) -> bool:
+    pcm = _provide_kokoro_pcm(text, ctx)
+    if not pcm:
+        return False
+    try:
+        _write_pcm_wav(out, pcm)
+        return True
+    except Exception as e:
+        log.error('Kokoro provider failed: %s', e)
+        return False
+
 PROVIDERS = {
+    'kokoro': _provide_kokoro,
     'piper': _provide_piper,
     'pyttsx3': _provide_pyttsx3
 }

@@ -42,7 +42,6 @@
   --hd-bg:          #ece3d2;
 }
 
-/* ── Reset ──────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html { font-size: 14px; }
@@ -62,16 +61,12 @@ svg { flex-shrink: 0; }
 svg.lucide { stroke-width: 1.75; }
 a   { color: inherit; text-decoration: none; }
 
-/* ── App shell ──────────────────────────────────────────────── */
 .app-shell {
   display: flex;
   height: 100dvh;
   overflow: hidden;
 }
 
-/* ─────────────────────────────────────────────────────────────
-   SIDEBAR
-   ───────────────────────────────────────────────────────────── */
 .sidebar {
   width: var(--sidebar-w);
   background: var(--sidebar-bg);
@@ -82,7 +77,6 @@ a   { color: inherit; text-decoration: none; }
   overflow: hidden;
 }
 
-/* Brand */
 .sidebar-brand {
   display: flex;
   align-items: center;
@@ -133,7 +127,6 @@ a   { color: inherit; text-decoration: none; }
   display: block;
 }
 
-/* Nav links */
 .sidebar-link {
   display: flex;
   align-items: center;
@@ -167,7 +160,6 @@ a   { color: inherit; text-decoration: none; }
 
 .sidebar-link.active svg { opacity: 1; }
 
-/* Status rows — used by same.html sidebar and index.html */
 .status-row {
   display: flex;
   align-items: center;
