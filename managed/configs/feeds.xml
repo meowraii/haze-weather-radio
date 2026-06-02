@@ -144,7 +144,7 @@
         <acodec>aac</acodec>
       </rtsp>
 
-      <audio_device enabled="false"/>
+      <audio_device enabled="true"/>
 
     </output>
 

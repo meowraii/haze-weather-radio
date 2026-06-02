@@ -84,6 +84,15 @@ _KOKORO_DEFAULT_VOICES = {
     'z': {'male': 'zm_yunjian', 'female': 'zf_xiaobei'},
 }
 _DICT_MB_RE = re.compile(r'(\d+)\s+MB\b')
+_DICT_PCT_EN_RE = re.compile(r'(\d+(?:\.\d+)?)\s*%')
+_DICT_NEG_RE = re.compile(r'(?<!\w)-(\d+(?:\.\d+)?)')
+_DICT_MULTI_PUNCT_RE = re.compile(r'([.!?])\1+')
+_DICT_LONE_COMMA_RE = re.compile(r',\s*,+')
+_DICT_UNICODE_QUOTES_RE = re.compile(r'[\u2018\u2019\u201a\u201b]')
+_DICT_UNICODE_DQUOTES_RE = re.compile(r'[\u201c\u201d\u201e\u201f]')
+_DICT_EMDASH_RE = re.compile(r'\u2014')
+_DICT_ENDASH_RE = re.compile(r'\u2013')
+_DICT_NBSP_RE = re.compile(r'\u00a0')
 _loaded_dictionary: dict[str, dict[str, str]] | None = None
 _compiled_dictionary: dict[str, list[tuple[re.Pattern[str], str]]] = {}
 _readers_cache: list[dict[str, str]] | None = None
@@ -135,8 +144,44 @@ def _compiled_entries(lang: str) -> list[tuple[re.Pattern[str], str]]:
     return _compiled_dictionary[lang]
 
 
+_HTML_ENTITY_RE = re.compile(r'&(?:(?:amp)|(?:#?[a-zA-Z0-9]+));')
+
+def _decode_html_entities(text: str) -> str:
+    text = text.replace('&amp;', 'and')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    text = text.replace('&quot;', '"')
+    text = text.replace('&#39;', "'")
+    text = text.replace('&deg;', 'degrees')
+    text = text.replace('&ndash;', '-')
+    text = text.replace('&mdash;', ' -- ')
+    text = text.replace('&nbsp;', ' ')
+    text = text.replace('&rsquo;', "'")
+    text = text.replace('&lsquo;', "'")
+    text = text.replace('&rdquo;', '"')
+    text = text.replace('&ldquo;', '"')
+    text = _HTML_ENTITY_RE.sub('', text)
+    return text
+
+
 def apply_dictionary(text: str, lang: str = 'en-CA') -> str:
+    text = _decode_html_entities(text)
     text = _DICT_MB_RE.sub(r'\1 millibars', text)
+    lang_short = lang[:2]
+    if lang_short == 'fr':
+        text = _DICT_PCT_EN_RE.sub(r'\1 pour cent', text)
+    elif lang_short == 'es':
+        text = _DICT_PCT_EN_RE.sub(r'\1 por ciento', text)
+    else:
+        text = _DICT_PCT_EN_RE.sub(r'\1 percent', text)
+    text = _DICT_NEG_RE.sub(r'minus \1', text)
+    text = _DICT_MULTI_PUNCT_RE.sub(r'\1', text)
+    text = _DICT_LONE_COMMA_RE.sub(r',', text)
+    text = _DICT_UNICODE_QUOTES_RE.sub("'", text)
+    text = _DICT_UNICODE_DQUOTES_RE.sub('"', text)
+    text = _DICT_EMDASH_RE.sub(' -- ', text)
+    text = _DICT_ENDASH_RE.sub('-', text)
+    text = _DICT_NBSP_RE.sub(' ', text)
     for pattern, replacement in _compiled_entries(lang):
         text = pattern.sub(replacement, text)
     return text

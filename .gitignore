@@ -13,3 +13,4 @@ logs/*
 twc.yaml
 .env
 managed/configs/webhooks.xml
+managed/configs/feeds.xml
