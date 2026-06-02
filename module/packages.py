@@ -1540,12 +1540,15 @@ def current_conditions_package(
     temp_val = _scalar(_d(props, 'temp') or _s(props, 'temp'))
     if temp_val is not None:
         sentences.append(ph['temp'].format(val=temp_val))
-        sentences.append('.')
     elif not secondary:
         sentences.append(ph['no_temp'])
 
+    # Only report windchill if temperature is below 0°C and wind speed is over 5 km/h
     wc_val = _scalar(_d(props, 'windChill') or _s(props, 'windChill'))
-    if wc_val is not None:
+    wind = _d(props, 'wind')
+    wind_speed = _scalar(_d(wind, 'speed') or _s(wind, 'speed')) if wind else None
+    
+    if wc_val is not None and (temp_val is None or temp_val <= 0) and (wind_speed is not None and wind_speed > 5):
         sentences.append(ph['windchill'].format(val=wc_val))
 
     hx_val = _scalar(_d(props, 'humidex') or _s(props, 'humidex'))
@@ -1554,7 +1557,6 @@ def current_conditions_package(
 
     dp_val = _scalar(_d(props, 'dewpoint') or _s(props, 'dewpoint'))
     if dp_val is not None:
-        sentences.append('.')
         sentences.append(ph['dewpoint'].format(val=dp_val))
 
     hum_val = _scalar(_d(props, 'humidity') or _s(props, 'humidity'))
@@ -1601,62 +1603,70 @@ def current_conditions_package(
 
     return " ".join(sentences)
 
+def _get_localized(data: dict[str, Any] | str | None, lang_short: str) -> str:
+    if not data:
+        return ""
+    if isinstance(data, dict):
+        return str(data.get(lang_short) or data.get('en', ''))
+    return str(data)
+
+def _sanitize_for_tts(text: str) -> str:
+    if not text:
+        return ""
+    text = _reformat_times_in_text(text)
+    text = re.sub(r'(?<![A-Za-z0-9])mph(?![A-Za-z0-9])', 'miles per hour', text, flags=re.IGNORECASE)
+    text = re.sub(r'\.(?=[a-zA-Z])', '. ', text)
+    return text.strip()
+
 def forecast_package(
-    forecast_data: Optional[dict[str, Any]] = None,
-    location_name: Optional[str] = None,
-    lang: Optional[str] = "en-CA",
+    forecast_data: dict[str, Any] | None = None,
+    location_name: str | None = None,
+    lang: str | None = "en-CA",
+    use_ssml: bool = False
 ) -> str:
     _lang = lang or 'en-CA'
     lang_short = _lang[:2]
-    fx = _FC_PH.get(lang_short, _FC_PH['en'])
-    if forecast_data is None:
-        return fx['generic_unavailable'].format(name=location_name or fx['station'])
+    fx = _FC_PH.get(lang_short, _FC_PH.get('en', {}))
 
-    source_key = str(forecast_data.get('source') or '').strip().lower()
+    if not forecast_data:
+        return fx.get('generic_unavailable', '').format(name=location_name or fx.get('station', ''))
 
-    name_block = forecast_data.get('name') or {}
-    forecast_name = None
-    if isinstance(name_block, dict):
-        forecast_name = name_block.get(lang_short) or name_block.get('en')
-    elif name_block:
-        forecast_name = str(name_block)
-
-    loc_name = _spoken_forecast_location_name(location_name or forecast_name or fx['station'], lang_short)
+    source_key = str(forecast_data.get('source', '')).strip().lower()
+    forecast_name = _get_localized(forecast_data.get('name'), lang_short)
+    loc_name = _spoken_forecast_location_name(location_name or forecast_name or fx.get('station', ''), lang_short)
 
     forecasts = forecast_data.get('forecast', [])
     if not forecasts:
         unavailable_key = f'{source_key}_unavailable' if source_key else 'generic_unavailable'
-        return fx.get(unavailable_key, fx['generic_unavailable']).format(name=loc_name)
+        return fx.get(unavailable_key, fx.get('generic_unavailable', '')).format(name=loc_name)
 
     opener_key = f'{source_key}_opener' if source_key else 'generic_opener'
-    opener = fx.get(opener_key, fx['generic_opener'])
+    opener = fx.get(opener_key, fx.get('generic_opener', ''))
     time_str = _format_time_spoken(datetime.datetime.now().astimezone())
+
     sentences: list[str] = [opener.format(name=loc_name, time=time_str)]
 
     for period in forecasts[:6]:
         if not isinstance(period, dict):
             continue
-        p: dict[str, Any] = cast(dict[str, Any], period)
 
-        period_name_raw = p.get('period', {})
-        if isinstance(period_name_raw, dict):
-            pn: dict[str, Any] = cast(dict[str, Any], period_name_raw)
-            period_name = str(pn.get(lang_short) or pn.get('en', ''))
-        else:
-            period_name = str(period_name_raw) if period_name_raw else ''
+        period_name = _get_localized(period.get('period'), lang_short)
+        raw_text = _get_localized(period.get('textSummary'), lang_short)
 
-        text_raw = p.get('textSummary', {})
-        if isinstance(text_raw, dict):
-            ts: dict[str, Any] = cast(dict[str, Any], text_raw)
-            text = str(ts.get(lang_short) or ts.get('en', ''))
-        else:
-            text = str(text_raw) if text_raw else ''
+        if period_name and raw_text:
+            clean_text = _sanitize_for_tts(raw_text).rstrip('.')
 
-        if period_name and text:
-            clean = text.rstrip('.')
-            sentences.append(f"{period_name}. {clean}.")
+            if use_ssml:
+                sentences.append(f"{period_name}. <break time='400ms'/> {clean_text}.")
+            else:
+                sentences.append(f"{period_name}... {clean_text}.")
 
-    return " ".join(sentences)
+    final_text = " ".join(sentences)
+
+    if use_ssml:
+        return f"<speak>{final_text}</speak>"
+
+    return final_text
 
 
 def _spoken_forecast_location_name(value: Optional[str], lang_short: str) -> str:
