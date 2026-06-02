@@ -30,6 +30,7 @@ from module.playout import playout_thread_worker
 from module.scheduler import clean_stale_data, scheduler_thread_worker
 from module.static_phrases import init_static_phrases
 from module.tts import generate_package, get_available_pyttsx3_voices, synthesize, synthesize_pcm
+from module.webhook import dispatch_startup_webhook
 from module.webserve import start_web_server
 from module.packages import (
     alerts_package,
@@ -310,6 +311,14 @@ def main(config: dict[str, Any], log_level: str | None = None) -> None:
 
     scheduler = _thread(scheduler_thread_worker, config, feeds, name='scheduler')
     scheduler.start()
+
+    for feed in feeds:
+        threading.Thread(
+            target=dispatch_startup_webhook,
+            args=(feed,),
+            name=f'webhook:startup:{feed["id"]}',
+            daemon=True,
+        ).start()
 
     all_threads = infra + data + playout + [scheduler]
     try:

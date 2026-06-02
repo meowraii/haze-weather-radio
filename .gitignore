@@ -12,3 +12,4 @@ voices/*
 logs/*
 twc.yaml
 .env
+managed/configs/webhooks.xml

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import html
 import io
 import json
 import logging
@@ -44,6 +45,7 @@ from module.packages import air_quality_package
 from module.alert import feed_same_codes
 from module.buffer import CHANNELS, SAMPLE_RATE
 from module.scheduler import fire_test as _fire_test
+from module.webhook import dispatch_webhook_async
 
 log = logging.getLogger(__name__)
 
@@ -204,6 +206,39 @@ def _pcm_as_wav(pcm: bytes) -> bytes:
         wav_file.setframerate(SAMPLE_RATE)
         wav_file.writeframes(pcm)
     return wav_buffer.getvalue()
+
+
+def _wx_rendered_packages(pkg_lookup: dict[str, str], requested: list[str]) -> list[tuple[str, str]]:
+    rendered: list[tuple[str, str]] = []
+    for pkg_id in requested:
+        text = str(pkg_lookup.get(pkg_id, '') or '')
+        if text.strip():
+            rendered.append((pkg_id, text))
+    return rendered
+
+
+def _wx_escape_xml_text(value: str) -> str:
+    return html.escape(value, quote=False)
+
+
+def _wx_escape_xml_attr(value: str) -> str:
+    return html.escape(value, quote=True)
+
+
+def _wx_escape_latex(value: str) -> str:
+    replacements = {
+        '\\': r'\textbackslash{}',
+        '{': r'\{',
+        '}': r'\}',
+        '#': r'\#',
+        '$': r'\$',
+        '%': r'\%',
+        '&': r'\&',
+        '_': r'\_',
+        '^': r'\textasciicircum{}',
+        '~': r'\textasciitilde{}',
+    }
+    return ''.join(replacements.get(char, char) for char in value)
 
 
 class WebServer:
@@ -929,6 +964,7 @@ class WebServer:
         return {'ok': True, 'event_code': code}
 
     async def same_air(self, payload: SAMAirRequest) -> dict[str, Any]:
+        from module.alert import save_alert_audio
         from module.events import push_alert
 
         built = self._build_same_audio(payload)
@@ -941,35 +977,44 @@ class WebServer:
         identifier = built['identifier']
         display_id = built['display_id']
         callsign = built['callsign']
+        same_event = payload.event.upper()[:3]
+        webhook_jobs: list[Coroutine[Any, Any, None]] = []
 
         for fid in target_ids:
+            runtime_entry = {
+                'identifier': identifier,
+                'feed_id': fid,
+                'received_at': issued_at.isoformat(),
+                'display_id': display_id,
+                'metadata': {
+                    'event': same_event,
+                    'effective': issued_at.isoformat(),
+                    'onset': issued_at.isoformat(),
+                    'expires': expires_at.isoformat(),
+                },
+                'source': {
+                    'kind': 'manual',
+                    'originator': payload.originator.upper()[:3],
+                    'eventCode': same_event,
+                    'callsign': callsign,
+                    'sameHeader': header.encoded,
+                },
+                'text': {
+                    'description': payload.voice_message.strip(),
+                    'instruction': '',
+                },
+                'areas': [
+                    {'sameCode': location}
+                    for location in locations[:31]
+                ],
+            }
             if push_alert(fid, 0, alert_pcm, identifier):
-                store_runtime_alert_entry(fid, identifier, {
-                    'identifier': identifier,
-                    'feed_id': fid,
-                    'received_at': issued_at.isoformat(),
-                    'display_id': display_id,
-                    'metadata': {
-                        'event': payload.event.upper()[:3],
-                        'effective': issued_at.isoformat(),
-                        'onset': issued_at.isoformat(),
-                        'expires': expires_at.isoformat(),
-                    },
-                    'source': {
-                        'kind': 'manual',
-                        'originator': payload.originator.upper()[:3],
-                        'eventCode': payload.event.upper()[:3],
-                        'callsign': callsign,
-                    },
-                    'text': {
-                        'description': payload.voice_message.strip(),
-                        'instruction': '',
-                    },
-                    'areas': [
-                        {'sameCode': location}
-                        for location in locations[:31]
-                    ],
-                })
+                store_runtime_alert_entry(fid, identifier, runtime_entry)
+                saved_path = save_alert_audio(fid, identifier, alert_pcm)
+                webhook_jobs.append(dispatch_webhook_async(fid, runtime_entry, same_event, saved_path, self.config))
+
+        if webhook_jobs:
+            await asyncio.gather(*webhook_jobs)
 
         encoded = header.encoded
         append_runtime_event('manual-same', f'Manual SAME aired: {encoded} -> {", ".join(target_ids)}')
@@ -1218,35 +1263,65 @@ class WebServer:
         source_label = requested_source or 'auto'
         append_runtime_event('wx-generate', f'On-demand WX: {requested} [{lang}] fmt={fmt} source={source_label} locs={loc_str}')
 
+        rendered_packages = _wx_rendered_packages(pkg_lookup, requested)
+        if not rendered_packages:
+            raise HTTPException(
+                status_code=404,
+                detail='No weather content was available for the requested packages and locations',
+            )
+        rendered_package_ids = [pkg_id for pkg_id, _ in rendered_packages]
+
         if fmt in _TEXT_FORMATS:
-            pkg_texts = {pkg_id: pkg_lookup.get(pkg_id, '') for pkg_id in requested}
+            pkg_texts = dict(rendered_packages)
             if fmt == 'json':
-                body = _json.dumps({'packages': pkg_texts, 'locations': requested_locs, 'lang': lang}).encode('utf-8')
+                body = _json.dumps(
+                    {
+                        'packages': pkg_texts,
+                        'locations': requested_locs,
+                        'lang': lang,
+                        'source': source_label,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ).encode('utf-8')
             elif fmt == 'xml':
-                parts = [f'  <package id="{p}">{t}</package>' for p, t in pkg_texts.items() if t]
+                parts = [
+                    f'  <package id="{_wx_escape_xml_attr(package_id)}">{_wx_escape_xml_text(text)}</package>'
+                    for package_id, text in pkg_texts.items()
+                ]
                 body = ('<?xml version="1.0" encoding="UTF-8"?>\n<wx>\n' + '\n'.join(parts) + '\n</wx>').encode('utf-8')
             elif fmt == 'ssml':
-                paras = '\n  '.join(f'<p>{t}</p>' for t in pkg_texts.values() if t)
+                paras = '\n  '.join(f'<p>{_wx_escape_xml_text(text)}</p>' for text in pkg_texts.values())
                 body = (
                     f'<speak version="1.1" xmlns="http://www.w3.org/2001/10/synthesis"'
-                    f' xml:lang="{lang}">\n  {paras}\n</speak>'
+                    f' xml:lang="{_wx_escape_xml_attr(lang)}">\n  {paras}\n</speak>'
                 ).encode('utf-8')
             elif fmt == 'html':
                 rows = '\n'.join(
-                    f'<section id="{p}"><h2>{p.replace("_", " ").title()}</h2><p>{t}</p></section>'
-                    for p, t in pkg_texts.items() if t
+                    (
+                        f'<section id="{_wx_escape_xml_attr(package_id)}">'
+                        f'<h2>{html.escape(package_id.replace("_", " ").title(), quote=False)}</h2>'
+                        f'<pre>{html.escape(text, quote=False)}</pre>'
+                        f'</section>'
+                    )
+                    for package_id, text in pkg_texts.items()
                 )
                 body = (
-                    f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
+                    f'<!doctype html><html lang="{_wx_escape_xml_attr(lang)}"><head><meta charset="utf-8">'
                     f'<title>Weather Report</title></head><body>{rows}</body></html>'
                 ).encode('utf-8')
             elif fmt == 'markdown':
                 body = '\n\n'.join(
-                    f'## {p.replace("_", " ").title()}\n\n{t}' for p, t in pkg_texts.items() if t
+                    f'## {package_id.replace("_", " ").title()}\n\n{text}'
+                    for package_id, text in pkg_texts.items()
                 ).encode('utf-8')
             else:
                 sections = '\n\n'.join(
-                    f'\\section{{{p.replace("_", " ").title()}}}\n{t}' for p, t in pkg_texts.items() if t
+                    (
+                        f'\\section{{{_wx_escape_latex(package_id.replace("_", " ").title())}}}\n'
+                        f'{_wx_escape_latex(text)}'
+                    )
+                    for package_id, text in pkg_texts.items()
                 )
                 body = (
                     '\\documentclass{article}\n\\usepackage[utf8]{inputenc}\n'
@@ -1257,7 +1332,7 @@ class WebServer:
                 iter([body]),
                 media_type=_FORMAT_MEDIA_TYPES[fmt],
                 headers={
-                    'X-Packages':     ','.join(requested),
+                    'X-Packages':     ','.join(rendered_package_ids),
                     'X-Format':       fmt,
                     'X-Source':       source_label,
                     'Content-Length': str(len(body)),
@@ -1267,28 +1342,37 @@ class WebServer:
         from module.buffer import SAMPLE_RATE as _BUS_SR, CHANNELS as _BUS_CH
 
         def _pcm_generator():
-            for pkg_id in requested:
-                text = pkg_lookup.get(pkg_id, '')
-                if not text:
-                    continue
+            for _, text in rendered_packages:
                 yield from synthesize_pcm_stream(self.config, text, lang=lang, voice=voice)
 
         common_headers = {
             'X-Audio-Sample-Rate': str(_BUS_SR),
             'X-Audio-Channels':    str(_BUS_CH),
-            'X-Packages':          ','.join(requested),
+            'X-Packages':          ','.join(rendered_package_ids),
             'X-Format':            fmt,
             'X-Source':            source_label,
         }
 
         if fmt == 'raw':
+            pcm_stream = iter(_pcm_generator())
+            try:
+                first_chunk = next(pcm_stream)
+            except StopIteration as exc:
+                raise HTTPException(status_code=502, detail='No audio was synthesized for the requested content') from exc
+
+            def _raw_generator():
+                yield first_chunk
+                yield from pcm_stream
+
             return StreamingResponse(
-                _pcm_generator(),
+                _raw_generator(),
                 media_type='audio/raw',
                 headers={'X-Audio-Encoding': 's16le', **common_headers},
             )
 
         pcm = b''.join(_pcm_generator())
+        if not pcm:
+            raise HTTPException(status_code=502, detail='No audio was synthesized for the requested content')
 
         if fmt == 'wav':
             buf = io.BytesIO()

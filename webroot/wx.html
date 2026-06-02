@@ -102,7 +102,8 @@
                             <div class="wx-panel-form-grid">
                                 <div class="form-group">
                                     <label for="tryLocations">Locations</label>
-                                    <input id="tryLocations" type="text" value="sk-40" placeholder="Comma or newline separated IDs, e.g. sk-40, CWIW, CWRJ">
+                                    <textarea id="tryLocations" rows="3" placeholder="Comma or newline separated IDs, e.g. sk-40, CWIW, CWRJ">sk-40</textarea>
+                                    <p class="form-hint">Use configured feed, station, or forecast IDs. Separate multiple values with commas or new lines.</p>
                                 </div>
                                 <div class="form-group">
                                     <label for="trySource">Data source</label>
@@ -156,8 +157,16 @@
                             </div>
 
                             <div class="form-group wx-panel-chip-group">
-                                <label>Packages</label>
+                                <div class="wx-panel-chip-toolbar">
+                                    <label>Packages</label>
+                                    <div class="wx-panel-chip-actions">
+                                        <button class="btn-ghost" id="pkgDefaultBtn" type="button">Default</button>
+                                        <button class="btn-ghost" id="pkgAllBtn" type="button">All</button>
+                                        <button class="btn-ghost" id="pkgClearBtn" type="button">Clear</button>
+                                    </div>
+                                </div>
                                 <div class="pkg-chips" id="tryPkgs"></div>
+                                <p class="wx-panel-hint" id="pkgSummary">Loading packages…</p>
                             </div>
 
                             <div class="wx-panel-actions">
@@ -224,7 +233,7 @@
                         <div class="endpoint-block">
                             <div class="endpoint-hd">
                                 <span class="method post">POST</span>
-                                <span class="endpoint-path" id="generatePath">/api/wx-on-demand/v1/generate</span>
+                                <span class="endpoint-path" id="generatePath">Resolving…</span>
                                 <span class="endpoint-desc">Generate weather content as audio or text.</span>
                             </div>
                             <table>
@@ -273,7 +282,7 @@
                         <div class="endpoint-block">
                             <div class="endpoint-hd">
                                 <span class="method">GET</span>
-                                <span class="endpoint-path" id="packagesPath">/api/wx-on-demand/v1/packages</span>
+                                <span class="endpoint-path" id="packagesPath">Resolving…</span>
                                 <span class="endpoint-desc">List the valid package IDs for the generate endpoint.</span>
                             </div>
                             <table>
