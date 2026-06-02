@@ -107,7 +107,7 @@
         <bitrate_kbps>32</bitrate_kbps>
       </stream>
 
-      <udp enabled="false">
+      <udp enabled="true">
         <ip>172.16.1.37</ip>
         <port>8898</port>
         <format>mpegts</format>
@@ -144,7 +144,7 @@
         <acodec>aac</acodec>
       </rtsp>
 
-      <audio_device enabled="true"/>
+      <audio_device enabled="false"/>
 
     </output>
 
