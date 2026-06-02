@@ -200,6 +200,8 @@ class IcecastSink:
             return
         try:
             await asyncio.to_thread(self._write_proc, pcm)
+            if self._proc.poll() is not None:
+                raise BrokenPipeError('icecast ffmpeg exited after write')
             self._consecutive_failures = 0
             self._reconnect_delay = 2.0
         except RuntimeError as exc:

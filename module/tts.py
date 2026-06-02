@@ -89,11 +89,23 @@ _compiled_dictionary: dict[str, list[tuple[re.Pattern[str], str]]] = {}
 _readers_cache: list[dict[str, str]] | None = None
 
 
+_TRAILING_COMMA_RE = re.compile(r',\s*(?=[}\]])')
+
+
 def _load_dictionary() -> dict[str, dict[str, str]]:
     global _loaded_dictionary
-    if _loaded_dictionary is None:
-        with open(_DICT_PATH, encoding='utf-8') as f:
-            _loaded_dictionary = json.load(f)
+    if _loaded_dictionary is not None:
+        return _loaded_dictionary
+    raw = _DICT_PATH.read_text(encoding='utf-8')
+    try:
+        _loaded_dictionary = json.loads(raw)
+    except json.JSONDecodeError:
+        cleaned = _TRAILING_COMMA_RE.sub('', raw)
+        try:
+            _loaded_dictionary = json.loads(cleaned)
+            log.warning('dictionary.json contained trailing commas — please fix %s', _DICT_PATH)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f'Failed to parse dictionary.json: {exc}') from exc
     assert _loaded_dictionary is not None
     return _loaded_dictionary
 
@@ -184,6 +196,7 @@ available_providers = []
 
 try:
     pyttsx3 = importlib.import_module('pyttsx3')
+    available_providers.append('pyttsx3')
 except ImportError:
     log.warning("pyttsx3 not available, pyttsx3 TTS provider will be disabled.")
     pyttsx3 = None
@@ -582,7 +595,7 @@ def _load_readers() -> list[dict[str, str]]:
 
     for reader_el in root.findall('reader'):
         provider = str(reader_el.get('provider') or '').strip().lower()
-        if provider not in {'piper', 'kokoro'}:
+        if provider not in {'piper', 'kokoro', 'pyttsx3'}:
             continue
         language = str(reader_el.findtext('language') or '').strip().lower().replace('_', '-')
         gender = str(reader_el.findtext('gender') or 'male').strip().lower()
@@ -1048,131 +1061,98 @@ def _provide_piper_pcm(text: str, ctx: dict) -> bytes | None:
     return b''.join(chunks) if chunks else None
 
 
-def _resolve_pyttsx3_voice_value(ctx: dict) -> str | None:
+def _resolve_pyttsx3_voice_name(ctx: dict) -> str | None:
     tts_cfg = ctx.get('config', {}).get('tts', {})
-    lang = ctx.get('lang')
+    lang = str(ctx.get('lang') or 'en-CA')
+    voice_type = 'female' if ctx.get('voice') == 'female' else 'male'
 
-    lang_backend = (
-        tts_cfg.get('lang', {}).get(lang, {})
-        .get('backend', {}).get('pyttsx3', {})
-    ) if lang is not None else {}
-
-    voice_type = ctx.get('voice') if ctx.get('voice') in ('male', 'female') else 'male'
+    lang_backend = tts_cfg.get('lang', {}).get(lang, {}).get('backend', {}).get('pyttsx3', {})
     if isinstance(lang_backend, dict):
-        v_cfg = lang_backend.get(voice_type)
-        if isinstance(v_cfg, dict) and v_cfg.get('voice'):
-            return v_cfg.get('voice')
+        slot = lang_backend.get(voice_type) or lang_backend.get('male') or lang_backend.get('female')
+        if isinstance(slot, dict) and slot.get('voice'):
+            return str(slot['voice'])
+        if isinstance(slot, str) and slot.strip():
+            return slot.strip()
 
-        if isinstance(lang_backend.get('voice'), str):
-            return lang_backend.get('voice')
+    global_cfg = tts_cfg.get('pyttsx3', {})
+    if isinstance(global_cfg, dict) and global_cfg.get('voice'):
+        return str(global_cfg['voice'])
 
-    global_pyttsx3 = tts_cfg.get('pyttsx3', {})
-    if isinstance(global_pyttsx3, dict) and global_pyttsx3.get('voice'):
-        return global_pyttsx3.get('voice')
-    return None
+    reader = _select_reader('pyttsx3', lang, voice_type)
+    return str(reader['path']) if reader else None
 
 
-def _select_and_set_pyttsx3_voice(engine: Any, desired: str) -> str | None:
-    if not desired:
-        return None
-    try:
-        engine.setProperty('voice', desired)
-        return desired
-    except Exception:
-        pass
-
-    voices: list[dict[str, Any]] = []
+def _set_pyttsx3_voice(engine: Any, desired: str) -> None:
+    desired_norm = desired.strip().lower()
+    voices: list[dict[str, str]] = []
     try:
         voices = [
-            {
-                'id': str(getattr(v, 'id', '') or ''),
-                'name': str(getattr(v, 'name', '') or ''),
-                'lang': _normalize_voice_languages(getattr(v, 'languages', [])),
-            }
+            {'id': str(getattr(v, 'id', '') or ''), 'name': str(getattr(v, 'name', '') or '')}
             for v in (engine.getProperty('voices') or [])
         ]
     except Exception:
         if os.name == 'nt':
-            voices = _get_windows_sapi5_voices(log_skipped=False)
-        else:
-            return None
+            voices = [{'id': v['id'], 'name': v['name']} for v in _get_windows_sapi5_voices(log_skipped=False)]
 
-    desired_norm = str(desired).strip().lower()
+    for v in voices:
+        if v['id'] == desired or v['id'].lower().endswith('\\' + desired_norm):
+            engine.setProperty('voice', v['id'])
+            return
 
-    for voice in voices:
-        voice_id = str(voice.get('id') or '')
-        if voice_id and voice_id == desired:
-            try:
-                engine.setProperty('voice', voice_id)
-                return voice_id
-            except Exception:
-                pass
+    for v in voices:
+        if v['name'].lower() == desired_norm:
+            engine.setProperty('voice', v['id'] or v['name'])
+            return
 
-    for voice in voices:
-        name = str(voice.get('name') or '')
-        if name and name.lower() == desired_norm:
-            try:
-                engine.setProperty('voice', str(voice.get('id') or name))
-                return str(voice.get('id') or name)
-            except Exception:
-                pass
-
-    for voice in voices:
-        name = str(voice.get('name') or '')
-        if name and desired_norm in name.lower():
-            try:
-                engine.setProperty('voice', str(voice.get('id') or name))
-                return str(voice.get('id') or name)
-            except Exception:
-                pass
-
-    for voice in voices:
-        for token in voice.get('lang') or []:
-            token_text = str(token).lower()
-            if desired_norm in token_text or desired_norm == token_text:
-                try:
-                    resolved = str(voice.get('id') or voice.get('name') or '')
-                    engine.setProperty('voice', resolved)
-                    return resolved
-                except Exception:
-                    pass
-
-    return None
+    for v in voices:
+        if desired_norm in v['name'].lower():
+            engine.setProperty('voice', v['id'] or v['name'])
+            return
 
 
-def _provide_pyttsx3_pcm(text: str, ctx: dict) -> bytes | None:
+def _run_pyttsx3(text: str, ctx: dict) -> bytes | None:
     if pyttsx3 is None:
         return None
-    cfg = ctx['config'].get('tts', {}).get('pyttsx3', {})
-    if not cfg.get('enabled'):
+    tts_cfg = ctx['config'].get('tts', {}).get('pyttsx3', {})
+    voice_name = _resolve_pyttsx3_voice_name(ctx)
+    if not tts_cfg.get('enabled') and not voice_name and os.name != 'nt':
         return None
+
+    _pythoncom: Any = None
+    if os.name == 'nt':
+        try:
+            _pythoncom = importlib.import_module('pythoncom')
+            _pythoncom.CoInitialize()
+        except Exception:
+            _pythoncom = None
+
     engine = None
     tmp_file = None
     try:
-        engine = pyttsx3.init()
-
+        # Bypass pyttsx3's module-level engine cache so each call creates a fresh COM
+        # object in the calling thread's STA. The cached engine is tied to whichever
+        # thread first called pyttsx3.init() (typically the main thread during static
+        # phrase init), and COM will refuse to marshal its STA proxy to thread-pool
+        # threads whose apartments are unrelated — causing runAndWait() to deadlock.
         try:
-            desired = _resolve_pyttsx3_voice_value(ctx)
-            if desired:
-                _select_and_set_pyttsx3_voice(engine, desired)
-
-            if cfg.get('voice'):
-                _select_and_set_pyttsx3_voice(engine, cfg.get('voice'))
+            _engine_mod = importlib.import_module('pyttsx3.engine')
+            engine = _engine_mod.Engine()
         except Exception:
-            pass
-        if cfg.get('rate'):
-            engine.setProperty('rate', cfg['rate'])
-        if cfg.get('volume'):
-            engine.setProperty('volume', cfg['volume'])
+            engine = pyttsx3.init()
+        if voice_name:
+            _set_pyttsx3_voice(engine, voice_name)
+        if tts_cfg.get('rate'):
+            engine.setProperty('rate', tts_cfg['rate'])
+        if tts_cfg.get('volume'):
+            engine.setProperty('volume', tts_cfg['volume'])
         fd, tmp_path = tempfile.mkstemp(suffix='.wav')
         os.close(fd)
         tmp_file = pathlib.Path(tmp_path)
-        engine.save_to_file(text, tmp_path)
+        engine.save_to_file(text, str(tmp_path))
         engine.runAndWait()
-        pcm = _decode_file_pcm(tmp_file)
-        return pcm
+        return _decode_file_pcm(tmp_file)
     except Exception as e:
-        log.error("Pyttsx3 PCM provider failed: %s", e)
+        log.error('pyttsx3 synthesis failed: %s', e)
         return None
     finally:
         if engine is not None:
@@ -1182,6 +1162,15 @@ def _provide_pyttsx3_pcm(text: str, ctx: dict) -> bytes | None:
                 pass
         if tmp_file is not None:
             _unlink_with_retries(tmp_file)
+        if _pythoncom is not None:
+            try:
+                _pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+
+def _provide_pyttsx3_pcm(text: str, ctx: dict) -> bytes | None:
+    return _run_pyttsx3(text, ctx)
 
 
 def _provide_kokoro_pcm(text: str, ctx: dict) -> bytes | None:
@@ -1219,6 +1208,42 @@ _PCM_STREAM_PROVIDERS: dict[str, Any] = {
 }
 
 
+def _resolve_fallback_order(config: dict, lang: str, voice: str | None) -> list[str]:
+    explicit = config.get('tts', {}).get('fallback_order')
+    if explicit:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for entry in explicit:
+            provider_name = str(entry or '').strip().lower()
+            if not provider_name or provider_name in seen or provider_name not in PCM_PROVIDERS:
+                continue
+            seen.add(provider_name)
+            ordered.append(provider_name)
+        return ordered or ['piper']
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def _append(provider_name: str) -> None:
+        if provider_name in seen or provider_name not in PCM_PROVIDERS:
+            return
+        seen.add(provider_name)
+        ordered.append(provider_name)
+
+    for provider_name in ('piper', 'kokoro', 'pyttsx3'):
+        if _select_reader(provider_name, lang, voice):
+            _append(provider_name)
+
+    for provider_name in ('piper', 'kokoro'):
+        if provider_name in available_providers:
+            _append(provider_name)
+
+    if os.name == 'nt' and pyttsx3 is not None:
+        _append('pyttsx3')
+
+    return ordered or ['piper']
+
+
 def synthesize_pcm(
     config: dict[str, Any],
     text: str,
@@ -1237,7 +1262,7 @@ def synthesize_pcm_stream(
     """Yield normalized s16le PCM chunks, one per synthesized line.
     File URI lines are decoded and normalized whole after ffmpeg processing."""
     ctx = {'config': config, 'lang': lang, 'voice': voice}
-    fallback_order = config.get('tts', {}).get('fallback_order', ['piper'])
+    fallback_order = _resolve_fallback_order(config, lang, voice)
 
     for line in text.strip().split('\n'):
         line = line.strip()
@@ -1398,62 +1423,33 @@ def _get_windows_sapi5_voices(log_skipped: bool = True) -> list[dict[str, Any]]:
 
 def get_available_pyttsx3_voices() -> list[dict[str, Any]]:
     if pyttsx3 is None:
-        return []
+        return _get_windows_sapi5_voices() if os.name == 'nt' else []
     try:
         engine = pyttsx3.init()
-        voices = engine.getProperty('voices')
-        return [
+        result = [
             {
                 'id': str(v.id),
                 'name': str(v.name),
                 'lang': _normalize_voice_languages(getattr(v, 'languages', [])),
             }
-            for v in voices
+            for v in (engine.getProperty('voices') or [])
         ]
+        engine.stop()
+        return result
     except Exception as e:
         if os.name == 'nt':
-            log.warning('Failed to get pyttsx3 voices, falling back to direct Windows SAPI enumeration: %s', e)
+            log.warning('pyttsx3 voice enumeration failed, using SAPI direct: %s', e)
             return _get_windows_sapi5_voices()
         log.error('Failed to get pyttsx3 voices: %s', e)
         return []
 
+
 def _provide_pyttsx3(text: str, ctx: dict, out: pathlib.Path) -> bool:
-    if pyttsx3 is None: return False
-    cfg = ctx['config'].get('tts', {}).get('pyttsx3', {})
-    if not cfg.get('enabled'): return False
-
-    engine = None
-    raw_tmp = out.with_suffix('.bin.wav')
-    try:
-        engine = pyttsx3.init()
-
-        try:
-            desired = _resolve_pyttsx3_voice_value(ctx)
-            if desired:
-                _select_and_set_pyttsx3_voice(engine, desired)
-            if cfg.get('voice'):
-                _select_and_set_pyttsx3_voice(engine, cfg.get('voice'))
-        except Exception:
-            pass
-        if cfg.get('rate'): engine.setProperty('rate', cfg['rate'])
-        if cfg.get('volume'): engine.setProperty('volume', cfg['volume'])
-
-        _unlink_with_retries(raw_tmp)
-        engine.save_to_file(text, str(raw_tmp))
-        engine.runAndWait()
-
-        success = _transcode(raw_tmp, out)
-        return success
-    except Exception as e:
-        log.error("Pyttsx3 provider failed: %s", e)
+    pcm = _run_pyttsx3(text, ctx)
+    if not pcm:
         return False
-    finally:
-        if engine is not None:
-            try:
-                engine.stop()
-            except Exception:
-                pass
-        _unlink_with_retries(raw_tmp)
+    _write_pcm_wav(out, pcm)
+    return True
 
 
 def _provide_kokoro(text: str, ctx: dict, out: pathlib.Path) -> bool:
@@ -1500,7 +1496,7 @@ def synthesize(
     processed_parts = []
 
     ctx = {'config': config, 'lang': lang, 'voice': voice}
-    fallback_order = config.get('tts', {}).get('fallback_order', ['piper'])
+    fallback_order = _resolve_fallback_order(config, lang, voice)
 
     try:
         for i, (kind, content) in enumerate(segments):

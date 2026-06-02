@@ -65,6 +65,8 @@ a   { color: inherit; text-decoration: none; }
   display: flex;
   height: 100dvh;
   overflow: hidden;
+  width: 100%;
+  min-width: 0;
 }
 
 .sidebar {
@@ -432,6 +434,7 @@ a   { color: inherit; text-decoration: none; }
   padding: 18px 22px 56px;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 /* ── Section blocks — shared by all pages ───────────────────── */
@@ -441,6 +444,7 @@ a   { color: inherit; text-decoration: none; }
   border-radius: var(--radius);
   overflow: hidden;
   margin-top: 18px;
+  min-width: 0;
 }
 
 .section-hd {
@@ -1044,6 +1048,11 @@ a   { color: inherit; text-decoration: none; }
   border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
 }
 
+.btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .btn-confirm {
   display: inline-flex;
   align-items: center;
@@ -1215,6 +1224,11 @@ a   { color: inherit; text-decoration: none; }
 .form-group input:focus,
 .form-group select:focus,
 .form-group textarea:focus { border-color: var(--border-focus); }
+
+.form-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+}
 
 .form-row {
   display: grid;
@@ -1713,6 +1727,12 @@ a   { color: inherit; text-decoration: none; }
 .wx-panel-page .wx-panel-reference-stack {
   display: grid;
   gap: 16px;
+  min-width: 0;
+}
+
+.wx-panel-page .wx-panel-grid > *,
+.wx-panel-page .two-col > * {
+  min-width: 0;
 }
 
 .wx-panel-page table {
@@ -1789,6 +1809,7 @@ a   { color: inherit; text-decoration: none; }
   font-family: var(--mono-font);
   font-size: 13px;
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .wx-panel-page .endpoint-desc {
@@ -1831,9 +1852,39 @@ a   { color: inherit; text-decoration: none; }
 
 .wx-panel-page .wx-panel-chip-group label {
   display: block;
-  margin-bottom: 8px;
   font-size: 12px;
   font-weight: 600;
+  color: var(--muted);
+}
+
+.wx-panel-page .wx-panel-chip-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.wx-panel-page .wx-panel-chip-toolbar label {
+  margin-bottom: 0;
+}
+
+.wx-panel-page .wx-panel-chip-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wx-panel-page .wx-panel-chip-actions .btn-ghost {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.wx-panel-page .wx-panel-hint {
+  margin-top: 8px;
+  font-size: 12px;
   color: var(--muted);
 }
 
@@ -1843,6 +1894,7 @@ a   { color: inherit; text-decoration: none; }
   gap: 10px;
   margin-top: 14px;
   flex-wrap: wrap;
+  justify-content: flex-start;
 }
 
 .wx-panel-page .try-status {
@@ -1852,6 +1904,7 @@ a   { color: inherit; text-decoration: none; }
 
 .wx-panel-page .try-status.err { color: var(--accent-err); }
 .wx-panel-page .try-status.ok { color: var(--accent-ok); }
+.wx-panel-page .try-status.warn { color: var(--accent-warn); }
 
 .wx-panel-page .wx-panel-audio {
   width: 100%;
@@ -1863,6 +1916,13 @@ a   { color: inherit; text-decoration: none; }
   max-height: 420px;
   overflow: auto;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.wx-panel-page .code-view {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .wx-panel-page .wx-panel-preview-body {
@@ -1946,6 +2006,12 @@ a   { color: inherit; text-decoration: none; }
   .two-col       { grid-template-columns: 1fr; }
   .same-grid     { grid-template-columns: 1fr; }
   .summary-grid  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 1240px) {
+  .wx-panel-page .wx-panel-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 680px) {

@@ -175,6 +175,10 @@ def _save_alert_audio(feed_id: str, identifier: str, alert_pcm: bytes) -> pathli
     return output_path
 
 
+def save_alert_audio(feed_id: str, identifier: str, alert_pcm: bytes) -> pathlib.Path:
+    return _save_alert_audio(feed_id, identifier, alert_pcm)
+
+
 def _build_alert_entry(feed_id: str, alert: CAPAlert | Any) -> dict[str, Any]:
     identifier = alert.identifier if hasattr(alert, 'identifier') else str(alert)
     info = alert.infos[0] if hasattr(alert, 'infos') and alert.infos else None
@@ -340,6 +344,7 @@ from module.events import (
     store_runtime_alert_entry,
     update_feed_runtime,
 )
+from module.webhook import dispatch_webhook
 from module.packages import (
     _AL_PH,
     _clean_alert_text,
@@ -1318,6 +1323,11 @@ def _generate_alert_audio(
         if push_alert(feed_id, priority, alert_pcm, alert.identifier):
             store_runtime_alert_entry(feed_id, alert.identifier, runtime_entry)
         saved_path = _save_alert_audio(feed_id, alert.identifier, alert_pcm)
+        threading.Thread(
+            target=dispatch_webhook,
+            args=(feed_id, runtime_entry, same_event, saved_path, config),
+            daemon=True,
+        ).start()
         if schedule_post_alert_package:
             enqueue_scheduled_package(feed_id, 'alerts')
         log.info(
@@ -1346,6 +1356,7 @@ def _generate_alert_audio(
         duration=duration,
         callsign=callsign,
     )
+    runtime_entry.setdefault('source', {})['sameHeader'] = header.encoded
 
     full_signal = generate_same(
         header=header,
@@ -1359,6 +1370,11 @@ def _generate_alert_audio(
     if push_alert(feed_id, priority, alert_pcm, alert.identifier):
         store_runtime_alert_entry(feed_id, alert.identifier, runtime_entry)
     saved_path = _save_alert_audio(feed_id, alert.identifier, alert_pcm)
+    threading.Thread(
+        target=dispatch_webhook,
+        args=(feed_id, runtime_entry, same_event, saved_path, config),
+        daemon=True,
+    ).start()
     if schedule_post_alert_package:
         enqueue_scheduled_package(feed_id, 'alerts')
     log.info(
