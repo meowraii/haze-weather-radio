@@ -2,11 +2,11 @@
   "tts_config": {
     "en-CA": {
       "provider": "piper",
-      "model": "voices\\en_US-hfc_male-medium.onnx",
-      "config": "voices\\en_US-hfc_male-medium.onnx.json",
+      "model": "voices\\en_US-lessac-low.onnx",
+      "config": "voices\\en_US-lessac-low.onnx.json",
       "speaker": 0,
-      "reader_id": "000",
-      "voice_slot": "male"
+      "reader_id": "01",
+      "voice_slot": "female"
     }
   },
   "lang_clips": {
@@ -224,7 +224,7 @@
         "model": "voices\\en_US-hfc_male-medium.onnx",
         "config": "voices\\en_US-hfc_male-medium.onnx.json",
         "speaker": 0,
-        "reader_id": "000",
+        "reader_id": "00",
         "voice_slot": "male",
         "text_hash": "b3e40cbec5118441dbbaf95db11e7c0d"
       }

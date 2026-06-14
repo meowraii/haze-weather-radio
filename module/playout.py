@@ -7,17 +7,20 @@ import datetime
 import logging
 import pathlib
 import queue
-import subprocess
 import threading
 import zoneinfo
 from typing import Any
 
+from module.audio import decode_audio_file_pcm
 from module.events import (
     NowPlayingMetadata,
     PlayableItem,
     append_runtime_event,
+    get_playout_sequence,
     mark_playout_item_started,
     pop_next_playout_item,
+    publish_feed_audio,
+    push_public_stream_item,
     register_alert_queue,
     register_scheduled_queue,
     shutdown_event,
@@ -43,16 +46,11 @@ _CHIME_WAV_PATHS: dict[int, pathlib.Path] = {
 
 
 def _decode_chime_wav(path: pathlib.Path) -> bytes | None:
-    try:
-        result = subprocess.run(
-            ['ffmpeg', '-loglevel', 'error', '-i', str(path),
-             '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS), 'pipe:1'],
-            capture_output=True, check=True,
-        )
-        return result.stdout or None
-    except Exception as exc:
-        log.warning('Failed to decode chime %s: %s', path.name, exc)
-        return None
+    pcm = decode_audio_file_pcm(path, sample_rate=SAMPLE_RATE, channels=CHANNELS)
+    if pcm:
+        return pcm
+    log.warning('Failed to decode chime %s', path.name)
+    return None
 
 
 def _load_chime_pcm() -> dict[int, bytes]:
@@ -143,13 +141,21 @@ def _make_segment_callback(
     feed_id: str,
     metadata: NowPlayingMetadata | None,
     metadata_cb: Any,
+    on_air_cb: Any | None = None,
 ) -> OnSegmentStart:
     async def _on_start() -> None:
         log.info('[%s] Now playing: %s', feed_id, label)
         update_feed_runtime(feed_id, {
             'now_playing': label,
+            'on_air_now_playing': label,
             'last_played_at': datetime.datetime.now(datetime.UTC).isoformat(),
+            'on_air_last_played_at': datetime.datetime.now(datetime.UTC).isoformat(),
         })
+        if on_air_cb is not None:
+            try:
+                on_air_cb(label)
+            except Exception:
+                pass
         if metadata_cb is not None and metadata is not None:
             try:
                 await metadata_cb(metadata)
@@ -262,6 +268,7 @@ async def _produce_tts(
     metadata_cb: Any,
     txp_pcm: bytes | None,
     scheduled_queue: asyncio.Queue | None = None,
+    on_air_cb: Any | None = None,
 ) -> None:
     pcm_cache: OrderedDict[tuple[str, str, str | None, str], bytes] = OrderedDict()
 
@@ -401,7 +408,14 @@ async def _produce_tts(
             log.warning('[%s] Empty synthesis for %s', feed_id, pkg_id)
             continue
 
-        on_start = _make_segment_callback(label, feed_id, item.metadata, metadata_cb)
+        if callable(segment_source):
+            resolved_segment = await asyncio.to_thread(segment_source)
+            if not resolved_segment:
+                log.warning('[%s] Empty dynamic segment for %s', feed_id, pkg_id)
+                continue
+            segment_source = resolved_segment
+
+        on_start = _make_segment_callback(label, feed_id, item.metadata, metadata_cb, on_air_cb=on_air_cb)
         await pipeline.enqueue_segment(segment_source, on_start, gap_after_s=item.gap_after_s)
 
 async def _alert_feeder(
@@ -413,6 +427,7 @@ async def _alert_feeder(
     metadata_cb: Any,
     alert_start_cbs: list[Any] | None = None,
     alert_end_cbs: list[Any] | None = None,
+    on_air_cb: Any | None = None,
 ) -> None:
     alert_metadata = NowPlayingMetadata(title='Alert')
     while not shutdown.is_set():
@@ -426,8 +441,15 @@ async def _alert_feeder(
         log.info('[%s] Playing alert: %s', feed_id, identifier or '(unnamed)')
         update_feed_runtime(feed_id, {
             'now_playing': 'Alert',
+            'on_air_now_playing': 'Alert',
             'last_played_at': datetime.datetime.now(datetime.UTC).isoformat(),
+            'on_air_last_played_at': datetime.datetime.now(datetime.UTC).isoformat(),
         })
+        if on_air_cb is not None:
+            try:
+                on_air_cb('Alert')
+            except Exception:
+                pass
         if metadata_cb is not None:
             try:
                 await metadata_cb(alert_metadata)
@@ -550,7 +572,22 @@ async def feed_runner(
         'display_name': feed.get('name', feed_id),
         'on_air_name': on_air_name,
         'started_at': datetime.datetime.now(datetime.UTC).isoformat(),
+        'public_stream_recent_items': [],
+        'public_stream_queue_depth': 0,
     })
+
+    mix_state: dict[str, str] = {'label': 'Idle'}
+
+    def _on_air_mix_started(label: str) -> None:
+        clean_label = str(label or '').strip() or 'Idle'
+        mix_state['label'] = clean_label
+        queue_depth = len(get_playout_sequence(feed_id))
+        push_public_stream_item(feed_id, clean_label, queue_depth=queue_depth)
+
+    def _publish_on_air_mix_chunk(chunk: bytes) -> None:
+        publish_feed_audio(feed_id, chunk, label=mix_state['label'])
+
+    pipeline.set_chunk_observer(_publish_on_air_mix_chunk)
 
     stream_cfg_raw = output_cfg.get('stream')
     if isinstance(stream_cfg_raw, dict) and stream_cfg_raw.get('enabled'):
@@ -574,7 +611,7 @@ async def feed_runner(
     audio_device_cfg = output_cfg.get('audio_device')
     if isinstance(audio_device_cfg, dict) and audio_device_cfg.get('enabled'):
         try:
-            sink = AudioDeviceSink(audio_device_cfg.get('name'))
+            sink = AudioDeviceSink(audio_device_cfg)
             pipeline.attach_sink(sink, name=f'{feed_id}:audio_device')
         except Exception:
             log.exception('Failed to start audio device sink for %s', feed_id)
@@ -629,6 +666,7 @@ async def feed_runner(
             pipeline, shutdown, feed_id, config, feed, on_air_name,
             _update_metadata if metadata_cbs else None, txp_pcm,
             scheduled_queue,
+            on_air_cb=_on_air_mix_started,
         ),
         name=f'{feed_id}:tts_producer',
     )
@@ -639,6 +677,7 @@ async def feed_runner(
             _update_metadata if metadata_cbs else None,
             alert_start_cbs or None,
             alert_end_cbs or None,
+            on_air_cb=_on_air_mix_started,
         ),
         name=f'{feed_id}:alert_feeder',
     )

@@ -6,6 +6,7 @@ import datetime as _dt
 import functools
 import json
 import logging
+import os
 import pathlib
 import re
 import threading
@@ -366,6 +367,11 @@ _SAME_MAPPING_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'sameMap
 
 _same_mapping_cache: dict[str, Any] | None = None
 _EVENT_NORMALIZE_RE = re.compile(r'[^a-z0-9]+')
+
+
+def _event_key(text: str) -> str:
+    return _EVENT_NORMALIZE_RE.sub('', text.lower())
+
 
 _WXR_CATEGORIES = frozenset({'met', 'geo'})
 _CIV_CATEGORIES = frozenset({
@@ -885,7 +891,7 @@ def _header_locations(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
     active_clcs, is_eccc_update = _eccc_active_clcs_for_update(alert)
     if is_eccc_update:
         matched = [c for c in feed_codes if c in active_clcs]
-        return matched[:31] if matched else feed_codes[:31]
+        return matched[:31] if matched else []
 
     all_geocodes = alert.all_geocodes
     if _is_national_geocode(all_geocodes):
@@ -895,7 +901,7 @@ def _header_locations(alert: CAPAlert, feed: dict[str, Any]) -> list[str]:
     if matched_codes:
         return matched_codes
 
-    return feed_codes[:31]
+    return []
 
 
 def _normalize_blocklist(raw_blocklist: Any) -> dict[str, Any]:
@@ -944,34 +950,34 @@ def _matches_geocode_pattern(pattern: str, raw_geocodes: set[str]) -> bool:
 
 def _alert_blocked(alert: CAPAlert, cap_filter: dict[str, Any]) -> tuple[bool, str | None]:
     blocklist = _normalize_blocklist(cap_filter.get("blocklist"))
-    current_values = {
+
+    scalar_checks = {
         "severity": alert.severity,
         "certainty": alert.certainty,
         "urgency": alert.urgency,
         "status": alert.status,
         "scope": alert.scope,
     }
-    for key in ("severity", "certainty", "urgency", "status", "scope"):
-        blocked_values = blocklist.get(key, set())
-        value = current_values.get(key, "")
+    for field, value in scalar_checks.items():
+        blocked_values: set[str] = blocklist.get(field, set())
         if value and value in blocked_values:
-            return True, f"{key}={value}"
+            return True, f"{field}={value}"
 
     blocked_events: set[str] = blocklist.get("naads_events", set())
     if blocked_events:
         cap_event = alert.cap_cp_event or ""
         alert_event = alert.event
         for blocked in blocked_events:
-            blocked_lower = blocked.lower()
-            if (cap_event and _event_key(cap_event) == _event_key(blocked_lower)) or \
-               (alert_event and _event_key(alert_event) == _event_key(blocked_lower)):
+            blocked_key = _event_key(blocked)
+            if (cap_event and _event_key(cap_event) == blocked_key) or \
+               (alert_event and _event_key(alert_event) == blocked_key):
                 return True, f"naads_event={blocked}"
 
     other_rules: list[dict[str, str]] = blocklist.get("other", [])
     if other_rules:
         params = alert.param_dict()
         for rule in other_rules:
-            vn = rule.get("value_name", "")
+            vn = rule.get("value_name", "").lower()
             rv = rule.get("value", "")
             if vn and rv:
                 actual = params.get(vn, "")
@@ -1285,7 +1291,7 @@ def _generate_alert_audio(
     feed_id = feed['id']
     runtime_entry = _build_alert_entry(feed_id, alert)
     same_cfg = config.get('same', {})
-    callsign = str(same_cfg.get('sender', 'HAZE0000'))
+    callsign = str(same_cfg.get('sender') or os.environ.get('SAME_ID', 'HAZE0000'))
     same_sr = SAME_SAMPLE_RATE
 
     playout_cfg = _feed_playout_cfg(feed)
@@ -1295,6 +1301,14 @@ def _generate_alert_audio(
     originator = _same_originator(alert)
     duration = _duration_code(alert)
     locations = _header_locations(alert, feed)
+    if not locations:
+        log.info(
+            '[%s] Alert skipped — no matching locations: %s (event=%s)',
+            feed_id,
+            alert.identifier,
+            same_event,
+        )
+        return
     tone_type = _attention_tone(alert, same_event, same_cfg)
     priority = _alert_priority(alert)
     schedule_post_alert_package = _should_schedule_post_alert_package(alert)
@@ -1418,6 +1432,43 @@ class AlertDedup:
             return True
 
 
+def _alert_geo_matches_feed(
+    alert: CAPAlert,
+    feed: dict[str, Any],
+    cap_filter: dict[str, Any],
+) -> tuple[bool, str]:
+    all_geocodes = alert.all_geocodes
+
+    if _is_national_geocode(all_geocodes):
+        return True, "national coverage"
+
+    use_feed_locs = cap_filter.get("use_feed_locations", True)
+
+    if use_feed_locs:
+        if alert.msg_type == "Update":
+            active_clcs, is_eccc_update = _eccc_active_clcs_for_update(alert)
+            if is_eccc_update:
+                feed_codes = feed_same_codes(feed)
+                matched = [c for c in feed_codes if c in active_clcs]
+                if matched:
+                    return True, "eccc update CLC coverage"
+                return False, "eccc update outside feed CLC coverage"
+
+        matched_feed_codes = _matching_feed_codes(alert, feed)
+        if matched_feed_codes:
+            return True, "feed code coverage"
+        return False, "outside feed coverage"
+
+    filter_geocodes = _normalize_strings(cap_filter.get("geocodes"))
+    if filter_geocodes:
+        alert_geocodes = set(all_geocodes)
+        if any(_matches_geocode_pattern(pattern, alert_geocodes) for pattern in filter_geocodes):
+            return True, "configured geocode filter"
+        return False, "no geocode filter match"
+
+    return True, "location filtering disabled"
+
+
 def _covers_feed_area(
     alert: CAPAlert,
     feed: dict[str, Any],
@@ -1427,39 +1478,7 @@ def _covers_feed_area(
         return False, f"status={alert.status}"
     if alert.msg_type not in ("Alert", "Update"):
         return False, f"msg_type={alert.msg_type}"
-
-    if cap_filter is None:
-        cap_filter = {}
-
-    use_feed_locs = cap_filter.get("use_feed_locations", True)
-    all_geocodes = alert.all_geocodes
-    alert_geocodes = set(all_geocodes)
-
-    if _is_national_geocode(all_geocodes):
-        return True, "national coverage"
-
-    if use_feed_locs:
-        active_clcs, is_eccc_update = _eccc_active_clcs_for_update(alert)
-        if is_eccc_update:
-            feed_codes = feed_same_codes(feed)
-            matched = [c for c in feed_codes if c in active_clcs]
-            if matched:
-                return True, "eccc update CLC coverage"
-            return False, "eccc update outside feed CLC coverage"
-
-        matched_feed_codes = _matching_feed_codes(alert, feed)
-        if matched_feed_codes:
-            return True, "feed code coverage"
-
-        return False, "outside feed coverage"
-
-    filter_geocodes = _normalize_strings(cap_filter.get("geocodes"))
-    if filter_geocodes:
-        if any(_matches_geocode_pattern(pattern, alert_geocodes) for pattern in filter_geocodes):
-            return True, "configured geocode filter"
-        return False, "no geocode filter match"
-
-    return True, "filters disabled"
+    return _alert_geo_matches_feed(alert, feed, cap_filter or {})
 
 
 def _alert_expired(alert: CAPAlert) -> bool:
@@ -1506,6 +1525,10 @@ async def alert_worker(
                 cap_cfg = feed.get("alerts", {}).get(feed_alert_key, {})
                 if not cap_cfg.get("enabled", True):
                     continue
+                effective_filter = _feed_cap_filter(cap_cfg)
+                geo_match, _ = _alert_geo_matches_feed(alert, feed, effective_filter)
+                if not geo_match:
+                    continue
                 _write_registry_entry(feed["id"], alert)
             return
 
@@ -1519,15 +1542,15 @@ async def alert_worker(
 
             effective_filter = _feed_cap_filter(cap_cfg)
 
-            covers, cover_reason = _covers_feed_area(alert, feed, effective_filter)
-            if not covers:
+            matched, match_reason = matches_feed(alert, feed, effective_filter)
+            if not matched:
                 log.info(
-                    "[%s] %s alert outside area: %s — %s (%s; %s)",
+                    "[%s] %s alert filtered: %s — %s (%s; %s)",
                     feed_id,
                     source_name,
                     alert.event,
                     alert.headline,
-                    cover_reason,
+                    match_reason,
                     _match_log_context(alert, feed, effective_filter),
                 )
                 continue
@@ -1547,7 +1570,7 @@ async def alert_worker(
                     feed_id,
                     {'severity': alert.severity},
                 )
-                log.info("[%s] %s alert registered: %s — %s (%s)", feed_id, source_name, alert.event, alert.headline, cover_reason)
+                log.info("[%s] %s alert registered: %s — %s (%s)", feed_id, source_name, alert.event, alert.headline, match_reason)
                 if not suppress_audio:
                     try:
                         _generate_alert_audio(alert, feed, config)

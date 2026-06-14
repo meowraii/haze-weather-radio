@@ -281,8 +281,8 @@ def main(config: dict[str, Any], log_level: str | None = None) -> None:
     asyncio.run(fetch_once(config))
 
     infra: list[threading.Thread] = []
-    web_thread = start_web_server(config, feeds)
-    if web_thread is not None:
+    web_threads = start_web_server(config, feeds)
+    for web_thread in web_threads:
         infra.append(web_thread)
         web_thread.start()
 
@@ -338,7 +338,7 @@ if __name__ == '__main__':
     parser.add_argument('--log-level', '-l', type=str, help='Override log level (e.g. DEBUG, INFO, WARNING).')
     parser.add_argument('--gen-pkg-text', '-t', nargs='?', const='*', default=None, help='Generate text output for one package type, feed-prefixed package id, or all packages, then exit.')
     parser.add_argument('--gen-tts', '-s', nargs='?', const='*', default=None, help='Generate TTS audio for one package type, feed-prefixed package id, all packages, or raw input text, then exit.')
-    parser.add_argument('--pytts-voices', action='store_true', help='List available pyttsx3 voices and exit.')
+    parser.add_argument('--pyttsx3-voices', action='store_true', help='List available pyttsx3 voices and exit.')
     args = parser.parse_args()
 
     if args.log_level:
@@ -352,7 +352,7 @@ if __name__ == '__main__':
         raise SystemExit(_run_gen_pkg_text(config, args.gen_pkg_text))
     if args.gen_tts is not None:
         raise SystemExit(_run_gen_tts(config, args.gen_tts))
-    if args.pytts_voices:
+    if args.pyttsx3_voices:
         print(json.dumps(get_available_pyttsx3_voices(), indent=2))
         raise SystemExit(0)
 

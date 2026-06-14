@@ -1,5 +1,4 @@
-import { token } from './lib/api.js';
-import { initTheme } from './lib/theme.js';
+import { apiCommand, apiGet, token } from './lib/api.js';
 import { pcmToWav } from './lib/audio.js';
 
 
@@ -56,9 +55,8 @@ const apiDot = document.getElementById('apiDot');
 const wxDot = document.getElementById('wxDot');
 const healthPill = document.getElementById('healthPill');
 const wxBasePill = document.getElementById('wxBasePill');
-const statusBanner = document.getElementById('statusBanner');
-const themeToggle = document.getElementById('themeToggle');
-const themeLabel = document.getElementById('themeLabel');
+const statusBanner = document.getElementById('wxStatusBanner');
+
 const tryLocations = document.getElementById('tryLocations');
 const trySource = document.getElementById('trySource');
 const tryLang = document.getElementById('tryLang');
@@ -345,22 +343,14 @@ async function readError(response) {
 }
 
 async function loadHealth() {
-    const response = await fetchWithAuth(`${state.apiBase}/health`);
-    if (!response.ok) {
-        throw new Error(await readError(response));
-    }
-    const health = await response.json();
+    const health = await apiGet('/health');
     state.wxBase = health.wx_base || state.wxBase;
     const authState = health.auth_required ? 'panel auth enabled' : 'panel auth disabled';
     setHealth(true, `API healthy. WX base ${state.wxBase}. ${authState}.`, `Healthy • ${authState}`);
 }
 
 async function loadPackages() {
-    const response = await fetchWithAuth(`${state.wxBase}/packages`);
-    if (!response.ok) {
-        throw new Error(await readError(response));
-    }
-    const payload = await response.json();
+    const payload = await apiCommand('wx.packages');
     const packages = Array.isArray(payload.packages) ? payload.packages : [];
     state.allPackages = packages.length ? packages : Object.keys(PACKAGE_DESCRIPTIONS);
 }
@@ -486,7 +476,6 @@ async function boot() {
     if (window.lucide) {
         lucide.createIcons();
     }
-    initTheme(themeToggle);
     populateFormatTable();
     bindEvents();
 
@@ -510,4 +499,6 @@ async function boot() {
     tryStatus.textContent = 'Ready';
 }
 
-boot();
+export function initWxView() {
+    boot();
+}

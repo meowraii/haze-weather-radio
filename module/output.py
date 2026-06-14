@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import subprocess
 import threading
 import urllib.error
 import urllib.parse
@@ -15,7 +14,8 @@ try:
 except Exception:
     sd = None
 
-from module.buffer import CHANNELS, SAMPLE_RATE
+from module.audio import PyAVStreamWriter
+from module.buffer import CHANNELS, CHUNK_BYTES, CHUNK_SAMPLES, SAMPLE_RATE
 from module.events import NowPlayingMetadata
 
 log = logging.getLogger(__name__)
@@ -25,74 +25,69 @@ _LOW_LATENCY_STREAM_QUEUE_LIMIT = 16
 _LOW_LATENCY_STREAM_PREFILL_CHUNKS = 2
 
 _CODEC_MAP: dict[str, tuple[str, str, str]] = {
-    'opus': ('libopus', 'audio/ogg', 'ogg'),
+    'opus': ('opus', 'audio/ogg', 'ogg'),
     'flac': ('flac', 'audio/flac', 'flac'),
-    'ogg': ('libvorbis', 'audio/ogg', 'ogg'),
+    'ogg': ('opus', 'audio/ogg', 'ogg'),
     'mp3': ('libmp3lame', 'audio/mpeg', 'mp3'),
     'aac': ('aac', 'audio/aac', 'adts'),
 }
 
-_STREAM_DYNAMICS = (
-    'volume=0.65,'
-    'highpass=f=110,'
-    'equalizer=f=140:t=q:w=1.0:g=2.5,'
-    'equalizer=f=220:t=q:w=1.0:g=2.0,'
-    'equalizer=f=350:t=q:w=1.2:g=1.2,'
-    'equalizer=f=500:t=q:w=1.4:g=-2.5,'
-    'equalizer=f=900:t=q:w=1.6:g=-1.5,'
-    'equalizer=f=2400:t=q:w=0.8:g=1.5,'
-    'lowpass=f=3400,'
-    'acompressor=threshold=-18dB:ratio=6:attack=8:release=140:makeup=2dB,'
-    'alimiter=limit=0.80,'
-)
 
-
-def _audio_codec_args(acodec: str, bitrate_kbps: int) -> list[str]:
+def _normalize_codec(acodec: str, container: str) -> str:
     normalized = str(acodec or '').strip()
     if normalized in {'', 'pcm', 'pcm_s16le'}:
-        return ['-c:a', 'pcm_s16le']
-    return ['-c:a', normalized, '-b:a', f'{bitrate_kbps}k']
+        return 'pcm_s16le'
+    aliases = {
+        'libopus': 'opus',
+        'libvorbis': 'opus' if container == 'ogg' else 'vorbis',
+        'vorbis': 'opus' if container == 'ogg' else 'vorbis',
+        'mp3': 'libmp3lame',
+    }
+    return aliases.get(normalized, normalized)
 
 
-def _metadata_args(stream_metadata: dict[str, Any] | None) -> list[str]:
-    args: list[str] = []
+def _bit_rate(codec: str, bitrate_kbps: int) -> int | None:
+    if codec in {'pcm_s16le', 'flac'}:
+        return None
+    return max(1, int(bitrate_kbps)) * 1000
+
+
+def _clean_metadata(stream_metadata: dict[str, Any] | None) -> dict[str, str]:
     if not isinstance(stream_metadata, dict):
-        return args
-    for key, value in stream_metadata.items():
-        if value is None:
-            continue
-        text = str(value).strip()
-        if not text:
-            continue
-        args.extend(['-metadata', f'{key}={text}'])
-    return args
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in stream_metadata.items()
+        if value is not None and str(value).strip()
+    }
 
 
-def _build_stream_cmd(
+def _stream_options(
     *,
-    audio_bitrate_kbps: int,
-    acodec: str,
-    container: str,
-    output_url: str,
-    extra_output_args: list[str] | None = None,
-    stream_metadata: dict[str, Any] | None = None,
     low_latency: bool = False,
-) -> list[str]:
-    output_args = list(extra_output_args or [])
+    ssl: bool = False,
+    content_type: str | None = None,
+    ice_name: str | None = None,
+    ice_description: str | None = None,
+    ice_genre: str | None = None,
+    rtsp_transport: str | None = None,
+) -> dict[str, str]:
+    options: dict[str, str] = {}
     if low_latency:
-        output_args = ['-flush_packets', '1', '-muxdelay', '0', '-muxpreload', '0', *output_args]
-
-    return [
-        'ffmpeg', '-loglevel', 'warning',
-        '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-        '-i', 'pipe:0',
-        '-af', _STREAM_DYNAMICS + 'alimiter=limit=0.50,',
-        *_audio_codec_args(acodec, audio_bitrate_kbps),
-        *_metadata_args(stream_metadata),
-        *output_args,
-        '-f', container,
-        output_url,
-    ]
+        options.update({'flush_packets': '1', 'muxdelay': '0', 'muxpreload': '0'})
+    if ssl:
+        options['tls'] = '1'
+    if content_type:
+        options['content_type'] = content_type
+    if ice_name:
+        options['ice_name'] = ice_name
+    if ice_description:
+        options['ice_description'] = ice_description
+    if ice_genre:
+        options['ice_genre'] = ice_genre
+    if rtsp_transport:
+        options['rtsp_transport'] = rtsp_transport
+    return options
 
 
 class IcecastSink:
@@ -118,32 +113,36 @@ class IcecastSink:
 
         url = f"icecast://{username}:{password}@{config['host']}:{config['port']}{mount}"
         fmt = str(config.get('format', 'opus')).strip().lower()
-        codec, content_type, container = _CODEC_MAP.get(fmt, ('libopus', 'audio/ogg', 'ogg'))
+        codec, content_type, container = _CODEC_MAP.get(fmt, ('opus', 'audio/ogg', 'ogg'))
         bitrate = int(config.get('bitrate_kbps', 32))
 
-        self._cmd = [
-            'ffmpeg', '-loglevel', 'error',
-            '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-            '-i', 'pipe:0',
-            '-af', _STREAM_DYNAMICS + 'alimiter=limit=0.50,',
-            '-c:a', codec, '-b:a', f'{bitrate}k',
-            '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-            '-ice_name', self._stream_name,
-            '-ice_description', self._stream_description,
-            '-ice_genre', self._stream_genre,
-            '-metadata', f'artist={self._stream_artist}',
-            '-metadata', f'album={self._stream_album}',
-            '-metadata', f'creator={self._stream_creator}',
-            '-metadata', f'genre={self._stream_genre}',
-            '-metadata', f'title={self._stream_name}',
-            *(['-tls', '1'] if self._ssl else []),
-            '-content_type', content_type,
-            '-f', container,
-            url,
-        ]
+        codec = _normalize_codec(codec, container)
+        metadata = {
+            'artist': self._stream_artist,
+            'album': self._stream_album,
+            'creator': self._stream_creator,
+            'genre': self._stream_genre,
+            'title': self._stream_name,
+        }
 
         self._proc_lock = threading.Lock()
-        self._proc = subprocess.Popen(self._cmd, stdin=subprocess.PIPE)
+        self._writer = PyAVStreamWriter(
+            url=url,
+            container_format=container,
+            codec=codec,
+            sample_rate=SAMPLE_RATE,
+            channels=CHANNELS,
+            bit_rate=_bit_rate(codec, bitrate),
+            metadata=metadata,
+            options=_stream_options(
+                ssl=self._ssl,
+                content_type=content_type,
+                ice_name=self._stream_name,
+                ice_description=self._stream_description,
+                ice_genre=self._stream_genre,
+            ),
+        )
+        self._writer.open()
         self._closed = False
         self._reconnect_delay = 2.0
         self._max_reconnect_delay = 60.0
@@ -151,24 +150,11 @@ class IcecastSink:
 
     def _restart_proc(self) -> None:
         with self._proc_lock:
-            old = self._proc
-            try:
-                if old.stdin:
-                    old.stdin.close()
-            except Exception:
-                pass
-            try:
-                old.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                old.kill()
-                old.wait()
-            self._proc = subprocess.Popen(self._cmd, stdin=subprocess.PIPE)
+            self._writer.restart()
 
     def _write_proc(self, pcm: bytes) -> None:
         with self._proc_lock:
-            if self._proc.stdin is None or self._proc.poll() is not None:
-                raise BrokenPipeError('icecast ffmpeg stdin unavailable')
-            self._proc.stdin.write(pcm)
+            self._writer.write(pcm)
 
     async def _recover_from_write_failure(self, reason: Exception) -> None:
         self._consecutive_failures += 1
@@ -200,8 +186,6 @@ class IcecastSink:
             return
         try:
             await asyncio.to_thread(self._write_proc, pcm)
-            if self._proc.poll() is not None:
-                raise BrokenPipeError('icecast ffmpeg exited after write')
             self._consecutive_failures = 0
             self._reconnect_delay = 2.0
         except RuntimeError as exc:
@@ -217,14 +201,7 @@ class IcecastSink:
         if self._closed:
             return
         self._closed = True
-        with self._proc_lock:
-            proc = self._proc
-        try:
-            if proc.stdin:
-                proc.stdin.close()
-        except Exception:
-            pass
-        await asyncio.to_thread(proc.wait)
+        await asyncio.to_thread(self._writer.close)
 
     async def set_metadata(self, metadata: NowPlayingMetadata | str) -> None:
         if self._closed:
@@ -274,7 +251,7 @@ class IcecastSink:
                 return
 
 
-class _FfmpegStreamSink:
+class _PyAVStreamSink:
     bus_queue_limit = _STANDARD_STREAM_QUEUE_LIMIT
     bus_drop_oldest = False
     bus_clocked = False
@@ -283,7 +260,7 @@ class _FfmpegStreamSink:
 
     def __init__(
         self,
-        cmd: list[str],
+        writer: PyAVStreamWriter,
         label: str,
         *,
         queue_limit: int = _STANDARD_STREAM_QUEUE_LIMIT,
@@ -292,7 +269,7 @@ class _FfmpegStreamSink:
         prefill_chunks: int = 0,
         fill_silence: bool = False,
     ) -> None:
-        self._cmd = list(cmd)
+        self._writer = writer
         self._label = label
         self._closed = False
         self.bus_queue_limit = max(1, int(queue_limit))
@@ -301,35 +278,16 @@ class _FfmpegStreamSink:
         self.bus_prefill_chunks = max(0, int(prefill_chunks))
         self.bus_fill_silence = bool(fill_silence)
         self._proc_lock = threading.Lock()
-        self._proc = subprocess.Popen(self._cmd, stdin=subprocess.PIPE)
+        self._writer.open()
         log.info('%s started', self._label)
 
     def _restart_proc(self) -> None:
         with self._proc_lock:
-            old = self._proc
-            try:
-                if old.stdin:
-                    old.stdin.close()
-            except Exception:
-                pass
-            if old.poll() is None:
-                try:
-                    old.terminate()
-                except Exception:
-                    pass
-                try:
-                    old.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    old.kill()
-                    old.wait(timeout=1.0)
-            self._proc = subprocess.Popen(self._cmd, stdin=subprocess.PIPE)
+            self._writer.restart()
 
     def _write_proc(self, pcm: bytes) -> None:
         with self._proc_lock:
-            proc = self._proc
-            if proc.stdin is None or proc.poll() is not None:
-                raise BrokenPipeError('ffmpeg stdin unavailable')
-            proc.stdin.write(pcm)
+            self._writer.write(pcm)
 
     async def write(self, pcm: bytes) -> None:
         if self._closed or not pcm:
@@ -358,14 +316,7 @@ class _FfmpegStreamSink:
         if self._closed:
             return
         self._closed = True
-        with self._proc_lock:
-            proc = self._proc
-        try:
-            if proc.stdin:
-                proc.stdin.close()
-        except Exception:
-            pass
-        await asyncio.to_thread(proc.wait)
+        await asyncio.to_thread(self._writer.close)
         log.info('%s closed', self._label)
 
 
@@ -383,16 +334,24 @@ def _make_stream_sink(
     fill_silence: bool = False,
     extra_output_args: list[str] | None = None,
     stream_metadata: dict[str, Any] | None = None,
-) -> _FfmpegStreamSink:
-    return _FfmpegStreamSink(
-        _build_stream_cmd(
-            audio_bitrate_kbps=audio_bitrate_kbps,
-            acodec=acodec,
-            container=container,
-            output_url=url,
-            extra_output_args=extra_output_args,
-            stream_metadata=stream_metadata,
-            low_latency=low_latency,
+) -> _PyAVStreamSink:
+    if extra_output_args:
+        log.warning('%s ignores legacy CLI-style extra_output_args under PyAV: %s', sink_label, extra_output_args)
+    codec = _normalize_codec(acodec, container)
+    options = _stream_options(
+        low_latency=low_latency,
+        rtsp_transport='tcp' if container == 'rtsp' else None,
+    )
+    return _PyAVStreamSink(
+        PyAVStreamWriter(
+            url=url,
+            container_format=container,
+            codec=codec,
+            sample_rate=SAMPLE_RATE,
+            channels=CHANNELS,
+            bit_rate=_bit_rate(codec, audio_bitrate_kbps),
+            metadata=_clean_metadata(stream_metadata),
+            options=options,
         ),
         sink_label,
         queue_limit=queue_limit,
@@ -403,7 +362,7 @@ def _make_stream_sink(
     )
 
 
-def UdpSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
+def UdpSink(config: dict[str, Any], feed_id: str) -> _PyAVStreamSink:
     ip = config.get('ip', '127.0.0.1')
     port = int(config.get('port', 8899))
     return _make_stream_sink(
@@ -421,7 +380,7 @@ def UdpSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
     )
 
 
-def RtpSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
+def RtpSink(config: dict[str, Any], feed_id: str) -> _PyAVStreamSink:
     ip = config.get('ip', '127.0.0.1')
     port = int(config.get('port', 8899))
     return _make_stream_sink(
@@ -439,7 +398,7 @@ def RtpSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
     )
 
 
-def RtmpSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
+def RtmpSink(config: dict[str, Any], feed_id: str) -> _PyAVStreamSink:
     return _make_stream_sink(
         sink_label=f'RTMP({config.get("url", "")})',
         audio_bitrate_kbps=int(config.get('bitrate_kbps', 32)),
@@ -451,7 +410,7 @@ def RtmpSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
     )
 
 
-def SrtSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
+def SrtSink(config: dict[str, Any], feed_id: str) -> _PyAVStreamSink:
     return _make_stream_sink(
         sink_label=f'SRT({config.get("url", "")})',
         audio_bitrate_kbps=int(config.get('bitrate_kbps', 32)),
@@ -463,7 +422,7 @@ def SrtSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
     )
 
 
-def RtspSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
+def RtspSink(config: dict[str, Any], feed_id: str) -> _PyAVStreamSink:
     return _make_stream_sink(
         sink_label=f'RTSP({config.get("url", "")})',
         audio_bitrate_kbps=int(config.get('bitrate_kbps', 32)),
@@ -477,35 +436,167 @@ def RtspSink(config: dict[str, Any], feed_id: str) -> _FfmpegStreamSink:
 
 
 class AudioDeviceSink:
-    bus_queue_limit = 20
+    bus_queue_limit = 6
     bus_drop_oldest = True
 
-    def __init__(self, device: str | int | None = None) -> None:
+    def __init__(self, config: dict[str, Any] | str | int | None = None) -> None:
         if sd is None:
             raise RuntimeError('sounddevice is unavailable; install PortAudio and the sounddevice package to use the audio device sink')
+        cfg = config if isinstance(config, dict) else {'device': config}
+        device = _resolve_audio_device(cfg.get('device', cfg.get('name')))
+        self._label = _audio_device_label(device)
+        self._blocksize = max(128, int(cfg.get('blocksize') or CHUNK_SAMPLES))
+        self._max_buffer_bytes = max(
+            CHUNK_BYTES * 2,
+            CHUNK_BYTES * int(cfg.get('buffer_chunks') or 8),
+        )
+        self._buffer = bytearray()
+        self._lock = threading.Lock()
+        self._closed = False
+        self._underruns = 0
+        self._overruns = 0
+        self._callback_errors = 0
         self._stream = sd.RawOutputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype='int16',
             device=device,
-            latency='high',
+            blocksize=self._blocksize,
+            latency=cfg.get('latency', 'low'),
+            callback=self._callback,
         )
         self._stream.start()
+        log.info(
+            'Audio device sink started: %s (%d Hz, %d channel%s, blocksize=%d)',
+            self._label,
+            SAMPLE_RATE,
+            CHANNELS,
+            '' if CHANNELS == 1 else 's',
+            self._blocksize,
+        )
+
+    def _callback(self, outdata: Any, frames: int, time_info: Any, status: Any) -> None:
+        needed = int(frames) * CHANNELS * 2
+        chunk = bytes(needed)
+        underrun_happened = False
+        try:
+            if status:
+                self._callback_errors += 1
+                if self._callback_errors in {1, 8, 32} or self._callback_errors % 128 == 0:
+                    log.warning('Audio device status on %s: %s', self._label, status)
+            with self._lock:
+                available = min(len(self._buffer), needed)
+                if available:
+                    chunk = bytes(self._buffer[:available])
+                    del self._buffer[:available]
+                    if available < needed:
+                        self._underruns += 1
+                        underrun_happened = True
+                        chunk += bytes(needed - available)
+                else:
+                    self._underruns += 1
+                    underrun_happened = True
+            if underrun_happened and (self._underruns in {1, 8, 32} or self._underruns % 128 == 0):
+                log.debug('Audio device underrun on %s: %d', self._label, self._underruns)
+            outdata[:] = chunk
+        except Exception:
+            self._callback_errors += 1
+            outdata[:] = bytes(needed)
+            if self._callback_errors in {1, 8, 32} or self._callback_errors % 128 == 0:
+                log.exception('Audio device callback failed on %s', self._label)
 
     async def write(self, pcm: bytes) -> None:
-        await asyncio.to_thread(self._stream.write, pcm)
+        if self._closed or not pcm:
+            return
+        with self._lock:
+            self._buffer.extend(pcm)
+            overflow = len(self._buffer) - self._max_buffer_bytes
+            if overflow > 0:
+                frame_width = CHANNELS * 2
+                drop = overflow
+                remainder = drop % frame_width
+                if remainder:
+                    drop += frame_width - remainder
+                del self._buffer[:drop]
+                self._overruns += 1
+                if self._overruns in {1, 8, 32} or self._overruns % 128 == 0:
+                    log.warning(
+                        'Audio device buffer overrun on %s; dropped %.1f ms (%d total)',
+                        self._label,
+                        (drop / (SAMPLE_RATE * CHANNELS * 2)) * 1000.0,
+                        self._overruns,
+                    )
+
+    def drop_pending(self) -> int:
+        with self._lock:
+            dropped = len(self._buffer)
+            self._buffer.clear()
+        return dropped // max(CHUNK_BYTES, 1)
 
     async def close(self) -> None:
-        self._stream.stop()
-        self._stream.close()
+        if self._closed:
+            return
+        self._closed = True
+        with self._lock:
+            self._buffer.clear()
+        await asyncio.to_thread(self._stream.stop)
+        await asyncio.to_thread(self._stream.close)
+        log.info('Audio device sink closed: %s', self._label)
+
+
+def _resolve_audio_device(value: Any) -> str | int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    if sd is None:
+        return text
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        return text
+    lowered = text.lower()
+    for idx, device in enumerate(devices):
+        name = str(device.get('name', ''))
+        if name.lower() == lowered and int(device.get('max_output_channels') or 0) >= CHANNELS:
+            return idx
+    for idx, device in enumerate(devices):
+        name = str(device.get('name', ''))
+        if lowered in name.lower() and int(device.get('max_output_channels') or 0) >= CHANNELS:
+            return idx
+    return text
+
+
+def _audio_device_label(device: str | int | None) -> str:
+    if sd is None:
+        return str(device or 'default')
+    try:
+        info = sd.query_devices(device, 'output')
+        name = str(info.get('name') or device or 'default')
+        return f'{device}: {name}' if device is not None else name
+    except Exception:
+        return str(device or 'default')
 
 
 class FileSink:
     def __init__(self, path: str) -> None:
-        self._f = open(path, 'wb')
+        self._writer = PyAVStreamWriter(
+            url=path,
+            container_format='wav',
+            codec='pcm_s16le',
+            sample_rate=SAMPLE_RATE,
+            channels=CHANNELS,
+        )
+        self._writer.open()
 
     async def write(self, pcm: bytes) -> None:
-        await asyncio.to_thread(self._f.write, pcm)
+        if pcm:
+            await asyncio.to_thread(self._writer.write, pcm)
 
     async def close(self) -> None:
-        self._f.close()
+        await asyncio.to_thread(self._writer.close)
