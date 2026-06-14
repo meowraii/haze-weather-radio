@@ -324,8 +324,8 @@ def _date_time_schedule_cfg(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _pkg_voice(pkg_id: str) -> str | None:
-    return Package_Config.get_voice(pkg_id)
+def _pkg_reader_id(pkg_id: str) -> str | None:
+    return Package_Config.get_reader_id(pkg_id)
 
 
 def _pkg_allowed_in_lang(pkg_id: str, lang: str) -> bool:
@@ -352,7 +352,7 @@ def _make_item(
         pkg_id=pkg_id,
         text=text,
         lang=lang,
-        voice=_pkg_voice(pkg_id),
+        voice=_pkg_reader_id(pkg_id),
         metadata=NowPlayingMetadata(title=title),
         item_id=item_id,
         group_id=group_id,

@@ -982,8 +982,21 @@ def _twc_location_name(point: TWCLocationPoint | None, fallback: str) -> str:
     return point.airportName or point.displayName or point.city or point.locale.locale2 or fallback
 
 
-def _pause_forecast_region_name(value: str) -> str:
-    return value.replace(' - ', '. ')
+def _pause_forecast_region_name(value: str, language: str = "en") -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        return cleaned
+
+    parts = [part.strip() for part in cleaned.split(" - ") if part.strip()]
+    if len(parts) <= 1:
+        return cleaned
+
+    if language == "en":
+        if len(parts) == 2:
+            return f"{parts[0]} and {parts[1]} region"
+        return f"{', '.join(parts[:-1])}, and {parts[-1]} region"
+
+    return cleaned.replace(' - ', '. ')
 
 
 def _forecast_location_name_block(
@@ -993,8 +1006,8 @@ def _forecast_location_name_block(
     if loc.name_en or loc.name_fr:
         fallback = loc.name_en or loc.name_fr or loc.id
         return {
-            "en": _pause_forecast_region_name(loc.name_en or fallback),
-            "fr": _pause_forecast_region_name(loc.name_fr or fallback),
+            "en": _pause_forecast_region_name(loc.name_en or fallback, "en"),
+            "fr": _pause_forecast_region_name(loc.name_fr or fallback, "fr"),
         }
     resolved_name = _twc_location_name(point, loc.id)
     return {

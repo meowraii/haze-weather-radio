@@ -2,133 +2,166 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import os
 import pathlib
 import re
-import shutil
+import secrets
 import signal
+import socket
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
+import uuid
 from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urljoin, urlparse, urlunparse
+
+import aiohttp
+try:
+    import av
+    from aiortc import RTCPeerConnection, RTCSessionDescription
+except Exception as exc:
+    av = None
+    RTCPeerConnection = None
+    RTCSessionDescription = None
+    _WEBRTC_IMPORT_ERROR = exc
+else:
+    _WEBRTC_IMPORT_ERROR = None
 
 pifm_bin = "/home/rai/PiFmAdv/src/pi_fm_adv"
+
+log = logging.getLogger(__name__)
+
+
+class ReceiverHttpError(RuntimeError):
+    def __init__(self, url: str, status: int, detail: str) -> None:
+        super().__init__(f'{url} failed with HTTP {status}: {detail}')
+        self.url = url
+        self.status = status
+        self.detail = detail
+
+
+def _ensure_webrtc_dependencies() -> None:
+    if _WEBRTC_IMPORT_ERROR is None:
+        return
+    raise RuntimeError(
+        'hazeReceiver.py requires aiortc for secure WebRTC. '
+        'With av>=17.1.0, install the current aiortc wheel without dependencies '
+        'until upstream metadata supports PyAV 17: python -m pip install --no-deps aiortc==1.14.0'
+    ) from _WEBRTC_IMPORT_ERROR
 
 
 @dataclass(frozen=True)
 class ReceiverConfig:
-    udp_host: str
-    udp_port: int
+    server_url: str
+    feed_id: str
+    receiver_api_base: str
+    pair_token: str
+    state_file: pathlib.Path
+    allow_insecure_dev: bool
     output_sample_rate: int
     channels: int
+    webrtc_input_sample_rate: int
     ffmpeg_bin: str
-    pifmadv_bin: str
-    pifm_frequency: float | None
-    pifm_bandwidth_khz: float
-    pifm_deviation_hz: int
-    pifm_preemphasis: str
-    pifm_extra_args: tuple[str, ...]
     ffmpeg_log_level: str
+    audio_filters: str
+    pifmadv_bin: str
+    pifm_extra_args: tuple[str, ...]
     reconnect_initial_delay_s: float
     reconnect_max_delay_s: float
     reconnect_backoff: float
     stream_stall_timeout_s: float
     write_chunk_size: int
-    metadata_probe_timeout_s: float
-    feeds_file: str
 
 
-_FREQ_RE = re.compile(r"(?<!\d)(\d{2,3}(?:\.\d{1,3})?)(?:\s*(?:mhz|m))?", re.IGNORECASE)
+def _safe_feed_name(feed_id: str) -> str:
+    return re.sub(r'[^A-Za-z0-9_.-]+', '_', feed_id).strip('._') or 'default'
 
 
-def _resolve_ffprobe_bin(ffmpeg_bin: str) -> str:
-    base = os.path.basename(ffmpeg_bin).lower()
-    if base.startswith("ffmpeg"):
-        return os.path.join(os.path.dirname(ffmpeg_bin), "ffprobe") if os.path.dirname(ffmpeg_bin) else "ffprobe"
-    return "ffprobe"
+def _default_state_file(feed_id: str) -> pathlib.Path:
+    base = pathlib.Path.home() / '.haze_receiver'
+    return base / f'{_safe_feed_name(feed_id)}.json'
 
 
-def _extract_frequency_from_tags(tags: dict[str, object]) -> float | None:
-    preferred_keys = (
-        "haze_tx_frequency_mhz",
-        "tx_frequency_mhz",
-        "frequency_mhz",
-        "frequency",
-        "tx_data",
-        "service_name",
-        "comment",
-    )
-
-    for key in preferred_keys:
-        value = tags.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if not text:
-            continue
-        try:
-            parsed = float(text)
-            if 60.0 <= parsed <= 110.0:
-                return parsed
-        except ValueError:
-            pass
-        match = _FREQ_RE.search(text)
-        if not match:
-            continue
-        try:
-            parsed = float(match.group(1))
-        except ValueError:
-            continue
-        if 60.0 <= parsed <= 110.0:
-            return parsed
-    return None
+def _normalize_server_url(raw: str, allow_insecure_dev: bool) -> str:
+    value = str(raw or '').strip()
+    if not value:
+        raise ValueError('--server is required')
+    parsed = urlparse(value)
+    if not parsed.scheme:
+        value = f'https://{value}'
+        parsed = urlparse(value)
+    if parsed.scheme in {'ws', 'wss'}:
+        parsed = parsed._replace(scheme='https' if parsed.scheme == 'wss' else 'http')
+    if parsed.scheme not in {'http', 'https'}:
+        raise ValueError('--server must use http:// or https://')
+    if parsed.scheme == 'http' and not allow_insecure_dev:
+        raise ValueError('Receiver transport requires HTTPS; use --allow-insecure-dev only for local testing')
+    if not parsed.netloc:
+        raise ValueError('--server must include a hostname or IP address')
+    return urlunparse((parsed.scheme, parsed.netloc, '', '', '', '')).rstrip('/')
 
 
-def _extract_station_name_from_service_name(service_name: str) -> str:
-    text = service_name.strip()
-    if not text:
-        return ""
-    if "(" in text and ")" in text:
-        start = text.rfind("(")
-        end = text.rfind(")")
-        if start >= 0 and end > start:
-            inside = text[start + 1 : end].strip()
-            if inside:
-                return inside
-    return text
+def _api_url(config: ReceiverConfig, path: str) -> str:
+    base = '/' + config.receiver_api_base.strip('/') + '/'
+    return urljoin(config.server_url + base, path.lstrip('/'))
 
 
-def _build_local_station_frequency_map(feeds_file: str) -> dict[str, float]:
-    mapping: dict[str, float] = {}
-    path = pathlib.Path(feeds_file)
+def _receiver_proof_message(kind: str, values: dict[str, Any]) -> bytes:
+    payload = {'kind': kind, **{str(k): str(v) for k, v in values.items()}}
+    return json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
+
+
+def _receiver_hmac(secret: str, message: bytes) -> str:
+    return hmac.new(secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
+
+
+def _load_state(path: pathlib.Path) -> dict[str, Any]:
     if not path.exists():
-        return mapping
+        return {}
     try:
-        root = ET.parse(path).getroot()
+        with path.open('r', encoding='utf-8') as handle:
+            data = json.load(handle)
     except Exception:
-        return mapping
+        log.warning('Receiver state file is unreadable; starting unpaired')
+        return {}
+    return data if isinstance(data, dict) else {}
 
-    for feed_el in root.findall("feed"):
-        tx_meta = feed_el.find("transmitter_metadata")
-        if tx_meta is None:
-            continue
-        for tx in tx_meta.findall("transmitter"):
-            callsign = (tx.findtext("callsign") or feed_el.get("callsign") or "").strip()
-            site_name = (tx.findtext("site_name") or "").strip()
-            raw_freq = (tx.findtext("frequency_mhz") or "").strip()
-            if not raw_freq:
-                continue
-            try:
-                freq = float(raw_freq)
-            except ValueError:
-                continue
-            key = " ".join(part for part in (callsign, site_name) if part).strip().lower()
-            if key:
-                mapping[key] = freq
-    return mapping
+
+def _save_state(path: pathlib.Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    with tmp.open('w', encoding='utf-8') as handle:
+        json.dump(state, handle, indent=2, sort_keys=True)
+        handle.write('\n')
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+async def _post_json(session: aiohttp.ClientSession, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async with session.post(url, json=payload) as response:
+        body = await response.text()
+        if response.status >= 400:
+            detail = body
+            with contextlib.suppress(Exception):
+                parsed = json.loads(body)
+                detail = str(parsed.get('detail') or body)
+            raise ReceiverHttpError(url, response.status, detail)
+        try:
+            parsed_body = json.loads(body or '{}')
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f'{url} returned invalid JSON') from exc
+        if not isinstance(parsed_body, dict):
+            raise RuntimeError(f'{url} returned a non-object JSON payload')
+        return parsed_body
 
 
 class ReceiverSupervisor:
@@ -136,277 +169,274 @@ class ReceiverSupervisor:
         self.config = config
         self.stop_event = asyncio.Event()
         self.last_audio_ts = 0.0
-        self._local_station_freq_map = _build_local_station_frequency_map(config.feeds_file)
+        self.receiver_hostname = socket.gethostname()
+        self.state = _load_state(config.state_file)
+        self.receiver_id = str(self.state.get('receiver_id') or uuid.uuid4())
+        self.state['receiver_id'] = self.receiver_id
+        self.state['feed_id'] = config.feed_id
+        self.state['server_url'] = config.server_url
+        _save_state(config.state_file, self.state)
 
     async def run_forever(self) -> None:
         self._install_signal_handlers()
         delay = self.config.reconnect_initial_delay_s
-
         while not self.stop_event.is_set():
-            reason = await self._run_pipeline_once()
+            try:
+                reason = await self._run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                reason = f'receiver failure: {exc}'
             if self.stop_event.is_set():
                 break
-            logging.warning("Pipeline restart requested: %s", reason)
+            log.warning('Receiver reconnect requested: %s', reason)
             await asyncio.sleep(delay)
             delay = min(self.config.reconnect_max_delay_s, delay * self.config.reconnect_backoff)
+        log.info('Receiver stopped')
 
-        logging.info("Receiver stopped")
+    async def _run_once(self) -> str:
+        timeout = aiohttp.ClientTimeout(total=12, sock_connect=4, sock_read=8)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            auth = await self._receiver_auth(session)
+            ws_url = str(auth.get('ws_url') or '')
+            cookie = str(auth.get('cookie') or '')
+            if not ws_url or not cookie:
+                return 'receiver session did not return websocket credentials'
+            if ws_url.startswith('ws://') and not self.config.allow_insecure_dev:
+                return 'receiver websocket URL is insecure'
+            async with session.ws_connect(
+                ws_url,
+                headers={'Authorization': f'HazeReceiverCookie {cookie}'},
+                heartbeat=15,
+            ) as ws:
+                ready_msg = await ws.receive_json()
+                if ready_msg.get('type') != 'receiver_ready':
+                    return f'unexpected receiver websocket message: {ready_msg.get("type")}'
+                transmitter = ready_msg.get('transmitter') if isinstance(ready_msg.get('transmitter'), dict) else {}
+                return await self._run_webrtc_session(ws, transmitter)
 
-    async def _run_pipeline_once(self) -> str:
-        ffmpeg_proc: asyncio.subprocess.Process | None = None
-        pifm_proc: asyncio.subprocess.Process | None = None
-        selected_frequency: float | None = self.config.pifm_frequency
-        initial_audio_chunk: bytes = b""
-
-        try:
-            if selected_frequency is None:
-                selected_frequency = await self._detect_frequency_from_stream()
-                if selected_frequency is None:
-                    return "mpegts metadata frequency unavailable"
-
+    async def _receiver_auth(self, session: aiohttp.ClientSession) -> dict[str, Any]:
+        credential_id = str(self.state.get('credential_id') or '')
+        credential_secret = str(self.state.get('credential_secret') or '')
+        if credential_id and credential_secret:
             try:
-                ffmpeg_proc = await self._start_ffmpeg()
+                return await self._request_session_cookie(session, credential_id, credential_secret)
+            except ReceiverHttpError as exc:
+                if exc.status in {401, 403, 404}:
+                    log.warning('Stored receiver credential was rejected by Haze: %s', exc)
+                    self.state.pop('credential_id', None)
+                    self.state.pop('credential_secret', None)
+                    _save_state(self.config.state_file, self.state)
+                else:
+                    log.warning('Stored receiver credential could not be checked yet: %s', exc)
+                    raise
             except Exception as exc:
-                return f"ffmpeg startup failed: {exc}"
+                log.warning('Stored receiver credential check failed transiently: %s', exc)
+                raise
 
+        if not self.config.pair_token:
+            raise RuntimeError('receiver is not paired and no pairing token was supplied')
+        return await self._pair_receiver(session)
+
+    async def _pair_receiver(self, session: aiohttp.ClientSession) -> dict[str, Any]:
+        nonce = secrets.token_urlsafe(24)
+        challenge = await _post_json(session, _api_url(self.config, 'pair/challenge'), {
+            'feed_id': self.config.feed_id,
+            'receiver_id': self.receiver_id,
+            'receiver_hostname': self.receiver_hostname,
+            'nonce': nonce,
+        })
+        challenge_id = str(challenge.get('challenge_id') or '')
+        server_nonce = str(challenge.get('server_nonce') or '')
+        if not challenge_id or not server_nonce:
+            raise RuntimeError('pairing challenge was missing required fields')
+        proof = _receiver_hmac(
+            self.config.pair_token,
+            _receiver_proof_message('pair-v1', {
+                'challenge_id': challenge_id,
+                'feed_id': self.config.feed_id,
+                'receiver_id': self.receiver_id,
+                'receiver_hostname': self.receiver_hostname,
+                'receiver_nonce': nonce,
+                'server_nonce': server_nonce,
+            }),
+        )
+        completed = await _post_json(session, _api_url(self.config, 'pair/complete'), {
+            'challenge_id': challenge_id,
+            'feed_id': self.config.feed_id,
+            'receiver_id': self.receiver_id,
+            'receiver_hostname': self.receiver_hostname,
+            'nonce': nonce,
+            'proof': proof,
+        })
+        credential_id = str(completed.get('credential_id') or '')
+        credential_secret = str(completed.get('credential_secret') or '')
+        if not credential_id or not credential_secret:
+            raise RuntimeError('pairing response did not include receiver credentials')
+        self.state.update({
+            'credential_id': credential_id,
+            'credential_secret': credential_secret,
+            'paired_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        })
+        _save_state(self.config.state_file, self.state)
+        log.info('Receiver paired with %s for feed %s', self.config.server_url, self.config.feed_id)
+        return completed
+
+    async def _request_session_cookie(
+        self,
+        session: aiohttp.ClientSession,
+        credential_id: str,
+        credential_secret: str,
+    ) -> dict[str, Any]:
+        nonce = secrets.token_urlsafe(24)
+        proof = _receiver_hmac(
+            credential_secret,
+            _receiver_proof_message('session-v1', {
+                'credential_id': credential_id,
+                'feed_id': self.config.feed_id,
+                'receiver_id': self.receiver_id,
+                'receiver_hostname': self.receiver_hostname,
+                'nonce': nonce,
+            }),
+        )
+        return await _post_json(session, _api_url(self.config, 'session'), {
+            'feed_id': self.config.feed_id,
+            'receiver_id': self.receiver_id,
+            'receiver_hostname': self.receiver_hostname,
+            'credential_id': credential_id,
+            'nonce': nonce,
+            'proof': proof,
+        })
+
+    async def _run_webrtc_session(self, ws: aiohttp.ClientWebSocketResponse, transmitter: dict[str, Any]) -> str:
+        frequency = transmitter.get('frequency_mhz')
+        if frequency is None:
+            return 'receiver transmitter parameters did not include frequency_mhz'
+        pifm_proc: asyncio.subprocess.Process | None = None
+        ffmpeg_proc: asyncio.subprocess.Process | None = None
+        pc: RTCPeerConnection | None = None
+        try:
+            pifm_proc = await self._start_pifmadv(transmitter)
+            ffmpeg_proc = await self._start_audio_processor()
+            assert ffmpeg_proc.stdin is not None
             assert ffmpeg_proc.stdout is not None
             assert ffmpeg_proc.stderr is not None
-
-            self.last_audio_ts = time.monotonic()
-            initial_audio_chunk, warmup_reason = await self._read_initial_audio_chunk(ffmpeg_proc.stdout, ffmpeg_proc)
-            if warmup_reason:
-                return warmup_reason
-
-            try:
-                pifm_proc = await self._start_pifmadv(selected_frequency)
-            except Exception as exc:
-                return f"piFmAdv startup failed: {exc}"
-
             assert pifm_proc.stdin is not None
             assert pifm_proc.stderr is not None
 
-            pump_task = asyncio.create_task(
-                self._pump_audio(ffmpeg_proc.stdout, pifm_proc.stdin, initial_audio_chunk),
-                name="pump_audio",
-            )
-            ffmpeg_err_task = asyncio.create_task(self._log_stream(ffmpeg_proc.stderr, "ffmpeg"), name="ffmpeg_stderr")
-            pifm_err_task = asyncio.create_task(self._log_stream(pifm_proc.stderr, "piFmAdv"), name="pifm_stderr")
-            health_task = asyncio.create_task(self._monitor_health(ffmpeg_proc, pifm_proc), name="monitor_health")
+            pc = RTCPeerConnection()
+            track_future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
 
-            done, pending = await asyncio.wait({pump_task, health_task}, return_when=asyncio.FIRST_COMPLETED)
+            @pc.on('track')
+            def _on_track(track: Any) -> None:
+                if getattr(track, 'kind', '') == 'audio' and not track_future.done():
+                    track_future.set_result(track)
+
+            pc.addTransceiver('audio', direction='recvonly')
+            offer = await pc.createOffer()
+            await pc.setLocalDescription(offer)
+            await ws.send_json({
+                'type': 'webrtc_offer',
+                'sdp': pc.localDescription.sdp,
+                'sdp_type': pc.localDescription.type,
+            })
+
+            while True:
+                msg = await ws.receive_json()
+                msg_type = str(msg.get('type') or '')
+                if msg_type == 'webrtc_answer':
+                    await pc.setRemoteDescription(RTCSessionDescription(sdp=str(msg.get('sdp') or ''), type=str(msg.get('sdp_type') or 'answer')))
+                    break
+                if msg_type == 'webrtc_error':
+                    return f'webrtc negotiation failed: {msg.get("detail")}'
+
+            track = await asyncio.wait_for(track_future, timeout=10.0)
+            self.last_audio_ts = time.monotonic()
+            pump_audio_task = asyncio.create_task(self._pump_track_to_processor(track, ffmpeg_proc.stdin), name='webrtc_to_ffmpeg')
+            pipe_task = asyncio.create_task(self._pump_processor_to_pifm(ffmpeg_proc.stdout, pifm_proc.stdin), name='ffmpeg_to_pifm')
+            ffmpeg_err_task = asyncio.create_task(self._log_stream(ffmpeg_proc.stderr, 'ffmpeg'), name='ffmpeg_stderr')
+            pifm_err_task = asyncio.create_task(self._log_stream(pifm_proc.stderr, 'piFmAdv'), name='pifm_stderr')
+            monitor_task = asyncio.create_task(self._monitor_health(ffmpeg_proc, pifm_proc, pc), name='monitor_health')
+            ws_task = asyncio.create_task(self._watch_control_ws(ws), name='receiver_ws')
+
+            done, pending = await asyncio.wait(
+                {pump_audio_task, pipe_task, monitor_task, ws_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
             for task in pending:
                 task.cancel()
-
-            reason = "pipeline stopped"
+            for task in (ffmpeg_err_task, pifm_err_task):
+                task.cancel()
+            for task in (*pending, ffmpeg_err_task, pifm_err_task):
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            reason = 'receiver session stopped'
             for task in done:
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     result = await task
                     if isinstance(result, str) and result:
                         reason = result
-                except asyncio.CancelledError:
-                    pass
-                except Exception as exc:
-                    reason = f"task failure: {exc}"
-
-            for task in (ffmpeg_err_task, pifm_err_task):
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    pass
-
             return reason
         finally:
-            await self._terminate_process(ffmpeg_proc, "ffmpeg")
-            await self._terminate_process(pifm_proc, "piFmAdv")
+            if pc is not None:
+                await pc.close()
+            await self._terminate_process(ffmpeg_proc, 'ffmpeg')
+            await self._terminate_process(pifm_proc, 'piFmAdv')
 
-    def _build_udp_input_url(self, host_override: str | None = None) -> str:
-        host = (host_override if host_override is not None else self.config.udp_host).strip() or "0.0.0.0"
-        return (
-            f"udp://{host}:{self.config.udp_port}"
-            "?fifo_size=65536"
-            "&overrun_nonfatal=1"
-            "&buffer_size=131072"
-        )
-    
-    async def _start_ffmpeg(self) -> asyncio.subprocess.Process:
-        input_url = self._build_udp_input_url()
+    async def _start_audio_processor(self) -> asyncio.subprocess.Process:
         cmd = [
             self.config.ffmpeg_bin,
-            "-hide_banner",
-            "-nostats",
-            "-loglevel",
+            '-hide_banner',
+            '-nostats',
+            '-loglevel',
             self.config.ffmpeg_log_level,
-            "-fflags",
-            "+nobuffer",
-            "-flags",
-            "low_delay",
-            "-i",
-            input_url,
-            "-vn",
-            "-sn",
-            "-dn",
-            "-af",
-            "volume=1.65",
-            "-ac",
+            '-f',
+            's16le',
+            '-ar',
+            str(self.config.webrtc_input_sample_rate),
+            '-ac',
             str(self.config.channels),
-            "-ar",
+            '-i',
+            'pipe:0',
+            '-af',
+            self.config.audio_filters,
+            '-ar',
             str(self.config.output_sample_rate),
-            "-f",
-            "wav",
-            "pipe:1",
+            '-ac',
+            str(self.config.channels),
+            '-f',
+            'wav',
+            'pipe:1',
         ]
-        logging.info("Starting ffmpeg UDP receiver (%s)", input_url)
+        log.info('Starting WebRTC audio processor (%d Hz -> %d Hz)', self.config.webrtc_input_sample_rate, self.config.output_sample_rate)
         return await asyncio.create_subprocess_exec(
             *cmd,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
-    async def _detect_frequency_from_stream(self) -> float | None:
-        ffprobe_bin = _resolve_ffprobe_bin(self.config.ffmpeg_bin)
-
-        async def _probe(cmd: list[str], label: str) -> dict[str, object] | None:
-            proc: asyncio.subprocess.Process | None = None
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.config.metadata_probe_timeout_s)
-            except asyncio.TimeoutError:
-                logging.info("ffprobe timed out while probing %s", label)
-                if proc is not None and proc.returncode is None:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        await proc.wait()
-                    except Exception:
-                        pass
-                return None
-            except Exception as exc:
-                logging.info("ffprobe failed for %s: %s", label, exc)
-                if proc is not None and proc.returncode is None:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        await proc.wait()
-                    except Exception:
-                        pass
-                return None
-
-            if proc.returncode != 0:
-                detail = stderr.decode(errors="replace").strip()
-                if detail:
-                    logging.info("ffprobe probe failed for %s: %s", label, detail)
-                return None
-
-            try:
-                payload = json.loads(stdout.decode(errors="replace") or "{}")
-            except Exception as exc:
-                logging.info("ffprobe JSON parse failed for %s: %s", label, exc)
-                return None
-            if isinstance(payload, dict):
-                return payload
-            return None
-
-        host = self.config.udp_host.strip()
-        candidate_hosts = ["0.0.0.0", "127.0.0.1", "localhost"]
-        if host and host not in {"0.0.0.0", "::", "*"}:
-            candidate_hosts.insert(1, host)
-
-        probe_targets: list[tuple[list[str], str]] = []
-        seen_urls: set[str] = set()
-        for candidate in candidate_hosts:
-            url = self._build_udp_input_url(host_override=candidate)
-            if url in seen_urls:
-                continue
-            seen_urls.add(url)
-            probe_targets.append(
-                (
-                    [
-                        ffprobe_bin,
-                        "-v",
-                        "error",
-                        "-print_format",
-                        "json",
-                        "-show_format",
-                        "-show_programs",
-                        url,
-                    ],
-                    url,
-                )
-            )
-
-        for cmd, label in probe_targets:
-            payload = await _probe(cmd, label)
-            if payload is None:
-                continue
-
-            format_block = payload.get("format")
-            format_tags = format_block.get("tags", {}) if isinstance(format_block, dict) else {}
-            if isinstance(format_tags, dict):
-                frequency = _extract_frequency_from_tags(format_tags)
-                if frequency is not None:
-                    logging.info("Detected transmitter frequency %.3f MHz from %s format metadata", frequency, label)
-                    return frequency
-
-            programs = payload.get("programs")
-            if isinstance(programs, list):
-                for program in programs:
-                    if not isinstance(program, dict):
-                        continue
-                    tags = program.get("tags", {})
-                    if not isinstance(tags, dict):
-                        continue
-                    frequency = _extract_frequency_from_tags(tags)
-                    if frequency is not None:
-                        logging.info("Detected transmitter frequency %.3f MHz from %s program metadata", frequency, label)
-                        return frequency
-
-                    if self._local_station_freq_map:
-                        service_name = str(tags.get("service_name") or "").strip()
-                        station_name = _extract_station_name_from_service_name(service_name).lower()
-                        if station_name and station_name in self._local_station_freq_map:
-                            frequency = self._local_station_freq_map[station_name]
-                            logging.info(
-                                "Resolved transmitter frequency %.3f MHz from local feeds map using service_name '%s'",
-                                frequency,
-                                service_name,
-                            )
-                            return frequency
-
-        logging.warning("Unable to determine frequency from MPEG-TS metadata")
-        return None
-
-    async def _start_pifmadv(self, frequency_mhz: float) -> asyncio.subprocess.Process:
+    async def _start_pifmadv(self, transmitter: dict[str, Any]) -> asyncio.subprocess.Process:
+        frequency_mhz = float(transmitter['frequency_mhz'])
+        deviation_hz = int(transmitter.get('deviation_hz') or 5000)
+        preemphasis = str(transmitter.get('preemphasis') or 'none').strip().lower()
         cmd = [
             self.config.pifmadv_bin,
-            "--audio",
-            "-",
-            "--freq",
+            '--audio',
+            '-',
+            '--freq',
             str(frequency_mhz),
-            "--dev",
-            str(self.config.pifm_deviation_hz),
-            "--rds",
-            "0",
+            '--dev',
+            str(deviation_hz),
+            '--rds',
+            '0',
             *self.config.pifm_extra_args,
         ]
-        preemph = str(self.config.pifm_preemphasis or "").strip().lower()
-        if preemph == "50":
-            cmd.extend(["--preemph", "50us"])
-        elif preemph == "75":
-            cmd.extend(["--preemph", "75us"])
-        logging.info("Starting piFmAdv transmitter (%s)", self.config.pifmadv_bin)
+        if preemphasis == '50':
+            cmd.extend(['--preemph', '50us'])
+        elif preemphasis == '75':
+            cmd.extend(['--preemph', '75us'])
+        log.info('Starting piFmAdv transmitter %.3f MHz (%s)', frequency_mhz, self.config.pifmadv_bin)
         return await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -414,119 +444,126 @@ class ReceiverSupervisor:
             stderr=asyncio.subprocess.PIPE,
         )
 
-    async def _read_initial_audio_chunk(
-        self,
-        ffmpeg_stdout: asyncio.StreamReader,
-        ffmpeg_proc: asyncio.subprocess.Process,
-    ) -> tuple[bytes, str | None]:
-        try:
-            chunk = await asyncio.wait_for(
-                ffmpeg_stdout.read(self.config.write_chunk_size),
-                timeout=self.config.stream_stall_timeout_s,
-            )
-        except asyncio.TimeoutError:
-            return (
-                b"",
-                (
-                    f"no UDP audio received for {self.config.stream_stall_timeout_s:.1f}s "
-                    f"on {self.config.udp_host}:{self.config.udp_port}"
-                ),
-            )
+    async def _pump_track_to_processor(self, track: Any, ffmpeg_stdin: asyncio.StreamWriter) -> str:
+        layout = 'mono' if self.config.channels == 1 else 'stereo'
+        resampler = av.AudioResampler(format='s16', layout=layout, rate=self.config.webrtc_input_sample_rate)
+        silence_samples = max(1, int(self.config.webrtc_input_sample_rate * 0.02))
+        silence = b'\x00' * silence_samples * self.config.channels * 2
+        while not self.stop_event.is_set():
+            try:
+                frame = await asyncio.wait_for(track.recv(), timeout=0.1)
+            except asyncio.TimeoutError:
+                chunk = silence
+            except Exception as exc:
+                return f'webrtc audio track ended: {exc}'
+            else:
+                chunks: list[bytes] = []
+                try:
+                    for out_frame in resampler.resample(frame):
+                        needed = int(out_frame.samples) * self.config.channels * 2
+                        raw = bytes(out_frame.planes[0])
+                        if len(raw) < needed:
+                            raw += b'\x00' * (needed - len(raw))
+                        chunks.append(raw[:needed])
+                except Exception as exc:
+                    return f'webrtc audio resample failed: {exc}'
+                chunk = b''.join(chunks)
+                if chunk:
+                    self.last_audio_ts = time.monotonic()
 
-        if not chunk:
-            if ffmpeg_proc.returncode is not None:
-                return b"", f"ffmpeg exited with code {ffmpeg_proc.returncode} before audio"
-            return b"", "ffmpeg output ended before first audio packet"
+            if not chunk:
+                continue
+            try:
+                ffmpeg_stdin.write(chunk)
+                await ffmpeg_stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                return 'ffmpeg stdin closed'
+            except Exception as exc:
+                return f'ffmpeg write failed: {exc}'
+        return 'shutdown requested'
 
-        self.last_audio_ts = time.monotonic()
-        return chunk, None
-
-    async def _pump_audio(
+    async def _pump_processor_to_pifm(
         self,
         ffmpeg_stdout: asyncio.StreamReader,
         pifm_stdin: asyncio.StreamWriter,
-        initial_chunk: bytes = b"",
     ) -> str:
-        if initial_chunk:
-            try:
-                pifm_stdin.write(initial_chunk)
-                await pifm_stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                return "piFmAdv stdin closed"
-            except Exception as exc:
-                return f"piFmAdv write failed: {exc}"
-
         while not self.stop_event.is_set():
             chunk = await ffmpeg_stdout.read(self.config.write_chunk_size)
             if not chunk:
-                return "ffmpeg output ended"
-            self.last_audio_ts = time.monotonic()
+                return 'ffmpeg output ended'
             try:
                 pifm_stdin.write(chunk)
                 await pifm_stdin.drain()
             except (BrokenPipeError, ConnectionResetError):
-                return "piFmAdv stdin closed"
+                return 'piFmAdv stdin closed'
             except Exception as exc:
-                return f"piFmAdv write failed: {exc}"
-        return "shutdown requested"
+                return f'piFmAdv write failed: {exc}'
+        return 'shutdown requested'
+
+    async def _watch_control_ws(self, ws: aiohttp.ClientWebSocketResponse) -> str:
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.ERROR:
+                return f'receiver websocket error: {ws.exception()}'
+            if msg.type == aiohttp.WSMsgType.CLOSED:
+                return 'receiver websocket closed'
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                with contextlib.suppress(Exception):
+                    payload = json.loads(msg.data)
+                    if payload.get('type') == 'webrtc_error':
+                        return f"receiver websocket reported error: {payload.get('detail')}"
+        return 'receiver websocket ended'
 
     async def _monitor_health(
         self,
         ffmpeg_proc: asyncio.subprocess.Process,
         pifm_proc: asyncio.subprocess.Process,
+        pc: RTCPeerConnection,
     ) -> str:
         while not self.stop_event.is_set():
             if ffmpeg_proc.returncode is not None:
-                return f"ffmpeg exited with code {ffmpeg_proc.returncode}"
+                return f'ffmpeg exited with code {ffmpeg_proc.returncode}'
             if pifm_proc.returncode is not None:
-                return f"piFmAdv exited with code {pifm_proc.returncode}"
-
+                return f'piFmAdv exited with code {pifm_proc.returncode}'
+            if pc.connectionState in {'failed', 'closed'}:
+                return f'webrtc peer connection {pc.connectionState}'
             idle_for = time.monotonic() - self.last_audio_ts
             if idle_for >= self.config.stream_stall_timeout_s:
-                return f"udp stream stalled for {idle_for:.1f}s"
-
+                return f'webrtc audio stalled for {idle_for:.1f}s'
             await asyncio.sleep(1.0)
-
-        return "shutdown requested"
+        return 'shutdown requested'
 
     async def _log_stream(self, stream: asyncio.StreamReader, name: str) -> None:
         while not self.stop_event.is_set():
             line = await stream.readline()
             if not line:
                 return
-            text = line.decode(errors="replace").rstrip()
+            text = line.decode(errors='replace').rstrip()
             if text:
-                logging.info("[%s] %s", name, text)
+                logging.info('[%s] %s', name, text)
 
     async def _terminate_process(self, proc: asyncio.subprocess.Process | None, name: str) -> None:
         if proc is None:
             return
-
         if proc.returncode is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.terminate()
-            except ProcessLookupError:
-                pass
             try:
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
             except asyncio.TimeoutError:
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     proc.kill()
-                except ProcessLookupError:
-                    pass
                 await proc.wait()
-
-        logging.info("%s stopped with code %s", name, proc.returncode)
+        log.info('%s stopped with code %s', name, proc.returncode)
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
 
         def _trigger_stop() -> None:
             if not self.stop_event.is_set():
-                logging.info("Shutdown signal received")
+                log.info('Shutdown signal received')
                 self.stop_event.set()
 
-        for sig_name in ("SIGINT", "SIGTERM"):
+        for sig_name in ('SIGINT', 'SIGTERM'):
             sig = getattr(signal, sig_name, None)
             if sig is None:
                 continue
@@ -536,201 +573,84 @@ class ReceiverSupervisor:
                 signal.signal(sig, lambda _s, _f: _trigger_stop())
 
 
-def _ps_quote(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _windows_is_admin() -> bool:
-    if os.name != "nt":
-        return False
-    try:
-        import ctypes
-
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
-
-
-def _windows_resolve_program_path(path_or_name: str) -> str | None:
-    if not path_or_name:
-        return None
-    if os.path.isabs(path_or_name) and os.path.exists(path_or_name):
-        return os.path.abspath(path_or_name)
-    resolved = shutil.which(path_or_name)
-    if resolved:
-        return os.path.abspath(resolved)
-    return None
-
-
-def _windows_firewall_rule_exists(rule_name: str) -> bool:
-    query = (
-        "$r = Get-NetFirewallRule -DisplayName "
-        f"{_ps_quote(rule_name)} -ErrorAction SilentlyContinue; "
-        "if ($r) { exit 0 } else { exit 1 }"
-    )
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", query],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0
-
-
-def _windows_add_firewall_rules_admin(rule_defs: list[tuple[str, str, int]]) -> bool:
-    commands: list[str] = []
-    for rule_name, program_path, port in rule_defs:
-        commands.append(
-            "if (-not (Get-NetFirewallRule -DisplayName "
-            f"{_ps_quote(rule_name)} -ErrorAction SilentlyContinue)) "
-            "{ New-NetFirewallRule -DisplayName "
-            f"{_ps_quote(rule_name)} -Direction Inbound -Action Allow -Protocol UDP "
-            f"-LocalPort {port} -Program {_ps_quote(program_path)} -Profile Private,Public | Out-Null }}"
-        )
-    if not commands:
-        return True
-    script = "; ".join(commands)
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        logging.warning("Firewall rule creation failed: %s", (result.stderr or result.stdout or "").strip())
-        return False
-    return True
-
-
-def _windows_request_firewall_rules_uac(rule_defs: list[tuple[str, str, int]]) -> bool:
-    if not rule_defs:
-        return True
-    lines: list[str] = []
-    for rule_name, program_path, port in rule_defs:
-        lines.append(
-            "if (-not (Get-NetFirewallRule -DisplayName "
-            f"{_ps_quote(rule_name)} -ErrorAction SilentlyContinue)) "
-            "{ New-NetFirewallRule -DisplayName "
-            f"{_ps_quote(rule_name)} -Direction Inbound -Action Allow -Protocol UDP "
-            f"-LocalPort {port} -Program {_ps_quote(program_path)} -Profile Private,Public | Out-Null }}"
-        )
-    script = "; ".join(lines)
-    try:
-        import ctypes
-
-        rc = ctypes.windll.shell32.ShellExecuteW(
-            None,
-            "runas",
-            "powershell.exe",
-            f"-NoProfile -ExecutionPolicy Bypass -Command \"{script}\"",
-            None,
-            1,
-        )
-    except Exception as exc:
-        logging.warning("Could not request elevated firewall setup: %s", exc)
-        return False
-
-    if rc <= 32:
-        logging.warning("Firewall setup elevation was canceled or failed (code %s)", rc)
-        return False
-    return True
-
-
-def _ensure_windows_firewall_access(config: ReceiverConfig) -> None:
-    if os.name != "nt":
-        return
-
-    python_path = _windows_resolve_program_path(sys.executable)
-    ffmpeg_path = _windows_resolve_program_path(config.ffmpeg_bin)
-
-    rule_defs: list[tuple[str, str, int]] = []
-    if python_path:
-        rule_defs.append((f"Haze Receiver UDP {config.udp_port} Python", python_path, config.udp_port))
-    if ffmpeg_path:
-        rule_defs.append((f"Haze Receiver UDP {config.udp_port} FFmpeg", ffmpeg_path, config.udp_port))
-
-    missing = [rule for rule in rule_defs if not _windows_firewall_rule_exists(rule[0])]
-    if not missing:
-        return
-
-    if _windows_is_admin():
-        if _windows_add_firewall_rules_admin(missing):
-            logging.info("Windows firewall rules added for UDP port %s", config.udp_port)
-        return
-
-    logging.info("Requesting UAC elevation to add Windows firewall allow rules for UDP port %s", config.udp_port)
-    _windows_request_firewall_rules_uac(missing)
-
-
 def _parse_args() -> ReceiverConfig:
     parser = argparse.ArgumentParser(
-        prog="hazeReciever.py",
-        description="Standalone UDP MPEG-TS to piFmAdv receiver with automatic restart and stream recovery.",
+        prog='hazeReceiver.py',
+        description='Secure Haze feed receiver using pairing, WebSocket signaling, WebRTC audio, and piFmAdv output.',
     )
+    parser.add_argument('--server', required=True, help='Haze admin server URL, for example https://haze-host:6444')
+    parser.add_argument('--feed-id', required=True, help='Feed ID to receive, for example sk-0001')
+    parser.add_argument('--receiver-api-base', default='/api/receiver/v1')
+    parser.add_argument('--pair-token', default='')
+    parser.add_argument('--pair-token-env', default='')
+    parser.add_argument('--state-file', default='')
+    parser.add_argument('--allow-insecure-dev', action='store_true')
 
-    parser.add_argument("--udp-host", "--rtp-host", dest="udp_host", default="0.0.0.0")
-    parser.add_argument("--udp-port", "--rtp-port", dest="udp_port", type=int, default=8898)
-    parser.add_argument("--output-sample-rate", type=int, default=12000)
-    parser.add_argument("--channels", type=int, default=1)
+    parser.add_argument('--output-sample-rate', type=int, default=12000)
+    parser.add_argument('--channels', type=int, choices=[1, 2], default=1)
+    parser.add_argument('--webrtc-input-sample-rate', type=int, default=48000)
+    parser.add_argument('--ffmpeg-bin', default='ffmpeg')
+    parser.add_argument('--ffmpeg-log-level', default='warning')
+    parser.add_argument(
+        '--audio-filters',
+        default='agate=threshold=-24dB:range=-40dB:attack=10:release=150,acompressor=threshold=-32dB:ratio=12:attack=5:release=100:makeup=20,highpass=f=120,lowpass=f=2600',
+    )
+    parser.add_argument('--pifmadv-bin', default=pifm_bin)
+    parser.add_argument('--pi-extra-arg', action='append', default=[])
 
-    parser.add_argument("--ffmpeg-bin", default="ffmpeg")
-    parser.add_argument("--ffmpeg-log-level", default="warning")
-
-    parser.add_argument("--freq", type=float, default=None)
-    parser.add_argument("--bandwidth-khz", type=float, default=12.5)
-    parser.add_argument("--deviation-hz", type=int, default=5000)
-    parser.add_argument("--preemphasis", choices=["none", "50", "75"], default="none")
-    parser.add_argument("--pi-extra-arg", action="append", default=[])
-
-    parser.add_argument("--stall-timeout", type=float, default=12.0)
-    parser.add_argument("--reconnect-initial-delay", type=float, default=1.0)
-    parser.add_argument("--reconnect-max-delay", type=float, default=8.0)
-    parser.add_argument("--reconnect-backoff", type=float, default=1.5)
-    parser.add_argument("--chunk-size", type=int, default=4096)
-    parser.add_argument("--metadata-probe-timeout", type=float, default=2.5)
-    parser.add_argument("--feeds-file", default="managed/configs/feeds.xml")
-
+    parser.add_argument('--stall-timeout', type=float, default=12.0)
+    parser.add_argument('--reconnect-initial-delay', type=float, default=1.0)
+    parser.add_argument('--reconnect-max-delay', type=float, default=8.0)
+    parser.add_argument('--reconnect-backoff', type=float, default=1.5)
+    parser.add_argument('--chunk-size', type=int, default=4096)
     args = parser.parse_args()
 
+    pair_token = args.pair_token
+    if not pair_token and args.pair_token_env:
+        pair_token = os.environ.get(args.pair_token_env, '')
+
+    try:
+        server_url = _normalize_server_url(args.server, args.allow_insecure_dev)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    state_file = pathlib.Path(args.state_file).expanduser() if args.state_file else _default_state_file(args.feed_id)
     return ReceiverConfig(
-        udp_host=args.udp_host,
-        udp_port=args.udp_port,
-        output_sample_rate=args.output_sample_rate,
-        channels=args.channels,
-        ffmpeg_bin=args.ffmpeg_bin,
-        pifmadv_bin=pifm_bin,
-        pifm_frequency=args.freq,
-        pifm_bandwidth_khz=args.bandwidth_khz,
-        pifm_deviation_hz=args.deviation_hz,
-        pifm_preemphasis=args.preemphasis,
+        server_url=server_url,
+        feed_id=str(args.feed_id).strip(),
+        receiver_api_base=str(args.receiver_api_base or '/api/receiver/v1'),
+        pair_token=str(pair_token or ''),
+        state_file=state_file,
+        allow_insecure_dev=bool(args.allow_insecure_dev),
+        output_sample_rate=max(8000, int(args.output_sample_rate)),
+        channels=int(args.channels),
+        webrtc_input_sample_rate=max(8000, int(args.webrtc_input_sample_rate)),
+        ffmpeg_bin=str(args.ffmpeg_bin or 'ffmpeg'),
+        ffmpeg_log_level=str(args.ffmpeg_log_level or 'warning'),
+        audio_filters=str(args.audio_filters or 'anull'),
+        pifmadv_bin=str(args.pifmadv_bin or pifm_bin),
         pifm_extra_args=tuple(args.pi_extra_arg),
-        ffmpeg_log_level=args.ffmpeg_log_level,
-        reconnect_initial_delay_s=max(0.1, args.reconnect_initial_delay),
-        reconnect_max_delay_s=max(0.1, args.reconnect_max_delay),
-        reconnect_backoff=max(1.0, args.reconnect_backoff),
-        stream_stall_timeout_s=max(2.0, args.stall_timeout),
-        write_chunk_size=max(512, args.chunk_size),
-        metadata_probe_timeout_s=max(0.5, args.metadata_probe_timeout),
-        feeds_file=os.path.expanduser(args.feeds_file),
+        reconnect_initial_delay_s=max(0.1, float(args.reconnect_initial_delay)),
+        reconnect_max_delay_s=max(0.1, float(args.reconnect_max_delay)),
+        reconnect_backoff=max(1.0, float(args.reconnect_backoff)),
+        stream_stall_timeout_s=max(2.0, float(args.stall_timeout)),
+        write_chunk_size=max(512, int(args.chunk_size)),
     )
 
 
 def _configure_logging() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 
 async def _main() -> None:
     _configure_logging()
     config = _parse_args()
-    _ensure_windows_firewall_access(config)
+    _ensure_webrtc_dependencies()
     supervisor = ReceiverSupervisor(config)
     await supervisor.run_forever()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
         asyncio.run(_main())
     except KeyboardInterrupt:

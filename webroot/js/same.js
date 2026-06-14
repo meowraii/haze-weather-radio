@@ -1,5 +1,5 @@
 import { apiGet, apiPost, apiPut, apiPostForm, token } from './lib/api.js';
-import { initTheme } from './lib/theme.js';
+import { getDashboardState, refreshDashboard, waitForDashboardState } from './dashboard.js';
 
 const TEST_CODES = new Set(['DMO', 'RWT', 'RMT']);
 
@@ -44,10 +44,25 @@ let airConfirmPending   = false;
 let airConfirmTimer     = null;
 const recentBroadcasts  = [];
 let templateData        = {};
+let sameStateListenerBound = false;
+
+const CAP_NS = 'urn:oasis:names:tc:emergency:cap:1.2';
+const CAP_CP_EVENT_VALUE_NAME = 'profile:CAP-CP:Event:0.4';
+const CAP_CP_CLC_VALUE_NAME = 'layer:EC-MSC-SMC:1.0:CLC';
 
 function cloneData(value) {
     if (typeof structuredClone === 'function') return structuredClone(value);
     return JSON.parse(JSON.stringify(value));
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char]));
 }
 
 function makeEmptyTemplate(code) {
@@ -94,6 +109,7 @@ function buildAlertSignature() {
         tone: selectedTone,
         audioMode,
         voice: voiceInput?.value || '',
+        prepend: prependSameTranslation?.checked || false,
         file: audioMode === 'file' ? (uploadedFilePath || selectedFile?.name || '') : '',
         feeds: [...selectedFeedIds].sort(),
     });
@@ -101,17 +117,24 @@ function buildAlertSignature() {
 
 function buildLayout() {
     document.getElementById('sameMain').innerHTML = `
-        <section class="section-block">
-            <div class="section-hd">
+        <section class="section-block sp-cap-section">
+            <div class="section-hd sp-cap-hd">
                 <i data-lucide="file-code-2" width="14" height="14" class="sp-hd-icon"></i>
-                <span>Auto-fill from CAP XML</span>
-                <span class="section-hd-sub">Pre-fill from a CAP-CP or NWS alert XML.</span>
+                <span>CAP XML</span>
                 <div class="section-hd-actions">
                     <label class="btn-action sp-file-label" for="capXmlInput">
                         <i data-lucide="upload" width="13" height="13"></i>
-                        Choose File
+                        Import XML
                     </label>
                     <input type="file" id="capXmlInput" accept=".xml,text/xml" class="sp-hidden">
+                    <select id="capExportProfile" class="sp-cap-profile" aria-label="CAP export profile">
+                        <option value="cap-cp">CAP-CP</option>
+                        <option value="ipaws">IPAWS</option>
+                    </select>
+                    <button id="capExportBtn" type="button" class="btn-action">
+                        <i data-lucide="download" width="13" height="13"></i>
+                        Export XML
+                    </button>
                     <span id="capStatus" class="sp-status-text"></span>
                 </div>
             </div>
@@ -216,8 +239,12 @@ function buildLayout() {
 
                 <div id="audioPanelTts" class="sp-audio-panel">
                     <div class="form-group">
-                        <label for="voiceInput">Text to Synthesize</label>
-                        <textarea id="voiceInput" rows="3" placeholder="Spoken message appended after the attention tone…"></textarea>
+                        <label class="sp-prepend-row" for="prependSameTranslation">
+                            <input id="prependSameTranslation" type="checkbox">
+                            <span>Prepend SAME-to-text intro</span>
+                        </label>
+                        <label for="voiceInput">Custom Text</label>
+                        <textarea id="voiceInput" rows="3" placeholder="Optional custom message after the SAME intro…"></textarea>
                     </div>
                 </div>
 
@@ -300,7 +327,7 @@ function buildLayout() {
                 </div>
             </div>
             <div id="railTtsSection" class="sp-rail-section sp-hidden">
-                <p class="sp-rail-label">Message Preview</p>
+                <p class="sp-rail-label">Custom Message</p>
                 <p id="railTtsText" class="sp-rail-tts-text"></p>
             </div>
             <div class="sp-rail-section sp-rail-air">
@@ -332,6 +359,7 @@ const customLocInput     = document.getElementById('customLocInput');
 const customLocNameInput = document.getElementById('customLocNameInput');
 const customLocAdd       = document.getElementById('customLocAdd');
 const audioModeTabs      = document.getElementById('audioModeTabs');
+const prependSameTranslation = document.getElementById('prependSameTranslation');
 const voiceInput         = document.getElementById('voiceInput');
 const audioFile          = document.getElementById('audioFile');
 const uploadArea         = document.getElementById('uploadArea');
@@ -352,6 +380,8 @@ const previewBtn         = document.getElementById('previewBtn');
 const airBtn             = document.getElementById('airBtn');
 const previewAudio       = document.getElementById('previewAudio');
 const capXmlInput        = document.getElementById('capXmlInput');
+const capExportProfile   = document.getElementById('capExportProfile');
+const capExportBtn       = document.getElementById('capExportBtn');
 const capStatus          = document.getElementById('capStatus');
 const templateList       = document.getElementById('templateList');
 const templateStatus     = document.getElementById('templateStatus');
@@ -359,7 +389,6 @@ const templateAddBtn     = document.getElementById('templateAddBtn');
 const templateSaveBtn    = document.getElementById('templateSaveBtn');
 const recentList         = document.getElementById('recentList');
 
-initTheme(document.getElementById('themeToggle'));
 
 function showStatus(msg, type) {
     statusBanner.textContent = msg;
@@ -418,7 +447,6 @@ function updatePreview() {
     headerPreview.textContent = buildPreview();
     updateEventHint();
     updateRailLocations();
-    if (audioMode === 'tts') generateTtsText();
     updateRailTts();
 }
 
@@ -444,7 +472,7 @@ toneCarousel.addEventListener('click', (e) => {
 function populateEventSelect() {
     const options = getEventCatalog();
     eventSelect.innerHTML = options
-        .map(({ code, description, naads }) => `<option value="${code}">${code} - ${description || code}${naads ? ` - ${naads}` : ''}</option>`)
+        .map(({ code, description, naads }) => `<option value="${escapeHtml(code)}">${escapeHtml(code)} - ${escapeHtml(description || code)}${naads ? ` - ${escapeHtml(naads)}` : ''}</option>`)
         .join('');
     eventSelect.value = 'DMO';
     updateEventHint();
@@ -462,9 +490,11 @@ function renderFeedPicker() {
     }
     feedPicker.innerHTML = allFeedsData.map((f) => {
         const checked = selectedFeedIds.has(f.id) ? 'checked' : '';
+        const id = String(f.id || '');
+        const name = String(f.name || f.id || '');
         return `<label class="sp-ex-item">
-            <input type="checkbox" class="sp-feed-check" value="${f.id}" ${checked}>
-            <span class="sp-ex-name" title="${f.name || f.id}">${f.name || f.id}</span>
+            <input type="checkbox" class="sp-feed-check" value="${escapeHtml(id)}" ${checked}>
+            <span class="sp-ex-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
         </label>`;
     }).join('');
     feedPicker.querySelectorAll('.sp-feed-check').forEach((cb) => {
@@ -474,6 +504,29 @@ function renderFeedPicker() {
             renderLocPicker();
             updatePreview();
         });
+    });
+}
+
+function applyPanelState(panelState) {
+    const summary = panelState?.summary || {};
+    const config = panelState?.config || {};
+    apiDot.dataset.state = 'ok';
+    healthPill.textContent = 'Live socket connected';
+    allFeedsData = summary.feeds || [];
+    configuredCallsign = config.same?.sender || configuredCallsign || 'XXXXXXXX';
+    if (!selectedFeedIds.size && allFeedsData.length) {
+        selectedFeedIds.add(allFeedsData[0].id);
+    }
+    renderFeedPicker();
+    renderLocPicker();
+    updatePreview();
+}
+
+function bindSameStateListener() {
+    if (sameStateListenerBound) return;
+    sameStateListenerBound = true;
+    window.addEventListener('haze:admin-state', (event) => {
+        applyPanelState(event.detail || {});
     });
 }
 
@@ -517,19 +570,22 @@ function renderLocPicker() {
     let html = '';
     for (const [code, name] of feedCodes) {
         const checked = selectedLocCodes.has(code) ? 'checked' : '';
+        const label = name || code;
         html += `<label class="sp-ex-item">
-            <input type="checkbox" class="sp-loc-check" value="${code}" ${checked}>
-            <span class="sp-ex-name" title="${name || code}">${name || code}</span>
-            ${name ? `<span class="sp-ex-code">${code}</span>` : ''}
+            <input type="checkbox" class="sp-loc-check" value="${escapeHtml(code)}" ${checked}>
+            <span class="sp-ex-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+            ${name ? `<span class="sp-ex-code">${escapeHtml(code)}</span>` : ''}
         </label>`;
     }
     for (const entry of customLocEntries) {
         const checked = selectedLocCodes.has(entry.code) ? 'checked' : '';
+        const code = String(entry.code || '');
+        const label = String(entry.name || entry.code || '');
         html += `<label class="sp-ex-item">
-            <input type="checkbox" class="sp-loc-check" value="${entry.code}" ${checked}>
-            <span class="sp-ex-name" title="${entry.name || entry.code}">${entry.name || entry.code}</span>
-            <span class="sp-ex-code">${entry.code} <em class="sp-custom-tag">custom</em></span>
-            <button type="button" class="sp-remove-custom" data-code="${entry.code}" title="Remove">&#x2715;</button>
+            <input type="checkbox" class="sp-loc-check" value="${escapeHtml(code)}" ${checked}>
+            <span class="sp-ex-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+            <span class="sp-ex-code">${escapeHtml(code)} <em class="sp-custom-tag">custom</em></span>
+            <button type="button" class="sp-remove-custom" data-code="${escapeHtml(code)}" title="Remove">&#x2715;</button>
         </label>`;
     }
 
@@ -604,39 +660,19 @@ function updateRailLocations() {
 
 function updateRailTts() {
     const text = voiceInput.value.trim();
-    const show = audioMode === 'tts' && Boolean(text);
+    const prepend = Boolean(prependSameTranslation?.checked);
+    const show = audioMode === 'tts' && (Boolean(text) || prepend);
     railTtsSection.classList.toggle('sp-hidden', !show);
-    if (show) railTtsText.textContent = text.length > 160 ? text.slice(0, 160) + '\u2026' : text;
+    if (show) {
+        const display = [
+            prepend ? 'SAME-to-text intro will be prepended.' : '',
+            text,
+        ].filter(Boolean).join(' ');
+        railTtsText.textContent = display.length > 180 ? display.slice(0, 180) + '\u2026' : display;
+    }
 }
 voiceInput.addEventListener('input', updateRailTts);
-
-function generateTtsText() {
-    const ORIGINATOR_LABELS = {
-        WXR: 'Environment and Climate Change Canada',
-        CIV: 'Civil Authorities',
-        PEP: 'A Primary Entry Point System',
-    };
-    const issuer    = ORIGINATOR_LABELS[origSelect.value] ?? 'An EAS Participant';
-    const code      = eventSelect.value || 'DMO';
-    const eventName = (sameMapping.eas || {})[code] || code;
-    const codes       = getAllSelectedCodes();
-    const allNamesMap = new Map([...getCodesForSelectedFeeds()]);
-    for (const { code: c, name } of customLocEntries) allNamesMap.set(c, name);
-    const names = [...new Set(codes.map((c) => allNamesMap.get(c) || locationNames[c] || c))];
-
-    let areaClause = '';
-    if (names.length === 1)      areaClause = ` for ${names[0]}`;
-    else if (names.length === 2) areaClause = ` for ${names[0]} and ${names[1]}`;
-    else if (names.length <= 4)  areaClause = ` for ${names.slice(0, -1).join(', ')}, and ${names.at(-1)}`;
-    else                         areaClause = ` for ${names.slice(0, 3).join(', ')}, and ${names.length - 3} other ${names.length - 3 === 1 ? 'area' : 'areas'}`;
-
-    const h = parseInt(durationHours.value, 10) || 0;
-    const m = parseInt(durationMins.value,  10) || 0;
-    const dParts = [];
-    if (h) dParts.push(`${h} hour${h !== 1 ? 's' : ''}`);
-    if (m) dParts.push(`${m} minute${m !== 1 ? 's' : ''}`);
-    voiceInput.value = `${issuer} has issued a ${eventName}${areaClause}. In effect for ${dParts.join(' and ') || '1 hour'}.`;
-}
+prependSameTranslation.addEventListener('change', updatePreview);
 
 const audioPanels = {
     tts:  document.getElementById('audioPanelTts'),
@@ -648,12 +684,7 @@ const audioPanels = {
 audioModeTabs.addEventListener('click', (e) => {
     const btn = e.target.closest('.sp-audio-tab');
     if (!btn) return;
-    audioMode = btn.dataset.mode;
-    audioModeTabs.querySelectorAll('.sp-audio-tab').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    for (const [mode, panel] of Object.entries(audioPanels)) {
-        panel.classList.toggle('sp-hidden', mode !== audioMode);
-    }
+    setActiveAudioMode(btn.dataset.mode);
     updateRailTts();
 });
 
@@ -664,14 +695,31 @@ capXmlInput.addEventListener('change', () => {
     reader.onload = (e) => {
         try {
             parseCapXml(e.target.result);
-            capStatus.textContent = `Loaded: ${file.name}`;
-            capStatus.className = 'sp-status-text ok';
+            if (!capStatus.textContent) {
+                capStatus.textContent = `Loaded: ${file.name}`;
+                capStatus.className = 'sp-status-text ok';
+            }
         } catch (err) {
             capStatus.textContent = `Parse error: ${err.message}`;
             capStatus.className = 'sp-status-text err';
         }
     };
     reader.readAsText(file);
+});
+
+capExportBtn.addEventListener('click', () => {
+    try {
+        const profile = capExportProfile.value === 'ipaws' ? 'ipaws' : 'cap-cp';
+        const xml = buildCapXml(profile);
+        const code = (eventSelect.value || 'DMO').toUpperCase();
+        const suffix = profile === 'ipaws' ? 'ipaws' : 'cap-cp';
+        downloadTextFile(`haze-${code.toLowerCase()}-${suffix}.xml`, xml, 'application/xml');
+        capStatus.textContent = `Exported ${profile === 'ipaws' ? 'IPAWS' : 'CAP-CP'} XML`;
+        capStatus.className = 'sp-status-text ok';
+    } catch (err) {
+        capStatus.textContent = `Export failed: ${err.message}`;
+        capStatus.className = 'sp-status-text err';
+    }
 });
 
 function getCurrentAudioFilePath() {
@@ -692,6 +740,7 @@ function buildAirPayload() {
         duration_minutes: parseInt(durationMins.value, 10) || 0,
         tone_type:        selectedTone,
         voice_message:    audioMode === 'tts'  ? voiceInput.value.trim() : '',
+        prepend_same_translation: audioMode === 'tts' && Boolean(prependSameTranslation.checked),
         audio_file_path:  generatedPreviewReady && generatedPreviewPath
             ? generatedPreviewPath
             : (audioMode === 'file' ? getCurrentAudioFilePath() : ''),
@@ -744,28 +793,244 @@ async function generatePreviewAudio() {
     }
 }
 
+function xmlElements(root, localName) {
+    return [...root.getElementsByTagName('*')].filter((el) => el.localName === localName);
+}
+
+function xmlText(root, localName) {
+    const el = xmlElements(root, localName)[0];
+    return el ? el.textContent.trim() : '';
+}
+
+function capValuePairs(root, pairName) {
+    return xmlElements(root, pairName).map((el) => ({
+        name: xmlText(el, 'valueName'),
+        value: xmlText(el, 'value'),
+    })).filter((pair) => pair.value);
+}
+
+function splitCapValues(value) {
+    return String(value || '')
+        .split(/[\s,;]+/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+}
+
+function normalizeLocationCode(value) {
+    const raw = String(value || '').trim();
+    if (/^\d{6}$/.test(raw)) return raw;
+    if (/^\d{5}$/.test(raw)) return raw.padStart(6, '0');
+    return '';
+}
+
+function normalizeSameEvent(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const upper = raw.toUpperCase();
+    if ((sameMapping.eas || {})[upper]) return upper;
+
+    const naadsToEas = sameMapping.naadsToEas || {};
+    const lower = raw.toLowerCase();
+    for (const [naads, easCode] of Object.entries(naadsToEas)) {
+        if (String(naads).toLowerCase() === lower) return easCode;
+    }
+
+    const normalized = upper.replace(/[^A-Z0-9]+/g, ' ').trim();
+    const match = getEventCatalog().find((entry) => (
+        entry.code === upper
+        || entry.description.toUpperCase() === upper
+        || entry.description.toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim() === normalized
+        || entry.naads.toUpperCase() === upper
+    ));
+    return match ? match.code : '';
+}
+
+function sameEventToNaads(code) {
+    const eventCode = String(code || '').toUpperCase();
+    for (const [naads, easCode] of Object.entries(sameMapping.naadsToEas || {})) {
+        if (String(easCode).toUpperCase() === eventCode) return naads;
+    }
+    return eventCode.toLowerCase();
+}
+
+function isSameGeocodeName(valueName) {
+    const name = String(valueName || '').toLowerCase();
+    return name === 'same'
+        || name.includes('same')
+        || name.includes('fips')
+        || name.includes(':clc')
+        || name.includes('cap-cp:location')
+        || name.includes('capcpgcode');
+}
+
+function looksCanadianCap(senderText) {
+    return /(ec\.gc|weather\.gc|canada|eccc|environment|msc|sorem|cap-pac@canada)/i.test(senderText || '');
+}
+
+function setActiveAudioMode(mode) {
+    audioMode = mode;
+    audioModeTabs.querySelectorAll('.sp-audio-tab').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+    for (const [panelMode, panel] of Object.entries(audioPanels)) {
+        panel.classList.toggle('sp-hidden', panelMode !== mode);
+    }
+}
+
+function escapeXml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
+function capDate(date) {
+    return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function capIdentifier(profile, sentDate) {
+    const code = (eventSelect.value || 'DMO').toUpperCase();
+    const stamp = sentDate.toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+    const random = Math.random().toString(36).slice(2, 9);
+    return `haze.${profile}.${code}.${stamp}.${random}`;
+}
+
+function capDurationMinutes() {
+    const h = Math.max(0, Math.min(parseInt(durationHours.value, 10) || 0, 99));
+    const m = Math.max(0, Math.min(parseInt(durationMins.value, 10) || 0, 59));
+    return Math.max(1, h * 60 + m);
+}
+
+function capSeverityFor(code) {
+    if (TEST_CODES.has(code)) return 'Minor';
+    const severeCodes = new Set([
+        'BZW', 'CDW', 'CEM', 'CFA', 'CFW', 'CHW', 'CWW', 'DBW', 'DEW', 'DSW',
+        'EAN', 'EVA', 'EVI', 'EWW', 'EQW', 'FFW', 'FLW', 'FRW', 'FSW', 'HMW',
+        'HUW', 'LEW', 'NUW', 'RHW', 'SMW', 'SPW', 'SSW', 'SVR', 'SQW', 'TOR',
+        'TRW', 'TSW', 'VOW', 'WFW', 'WSW',
+    ]);
+    if (severeCodes.has(code) || code.endsWith('W')) return 'Severe';
+    if (code.endsWith('A')) return 'Moderate';
+    return 'Moderate';
+}
+
+function capAreaDesc(codes) {
+    const names = codes.map((code) => locationNames[code]
+        || customLocEntries.find((entry) => entry.code === code)?.name
+        || code);
+    return names.length ? [...new Set(names)].join('; ') : 'Unspecified area';
+}
+
+function buildCapXml(profile) {
+    const locs = getAllSelectedCodes().map(normalizeLocationCode).filter(Boolean);
+    if (!locs.length) throw new Error('Select at least one location before exporting.');
+
+    const sentDate = new Date();
+    const expiresDate = new Date(sentDate.getTime() + capDurationMinutes() * 60000);
+    const eventCode = (eventSelect.value || 'DMO').toUpperCase();
+    const eventName = (sameMapping.eas || {})[eventCode] || eventCode;
+    const bodyText = voiceInput.value.trim() || `${eventName} for ${capAreaDesc(locs)}.`;
+    const isTest = TEST_CODES.has(eventCode);
+    const sender = (configuredCallsign || 'HAZE').replace(/\s+/g, '').toLowerCase();
+    const senderName = configuredCallsign || 'Haze Weather Radio';
+    const isIpaws = profile === 'ipaws';
+    const eventCodeXml = isIpaws
+        ? `<eventCode><valueName>SAME</valueName><value>${escapeXml(eventCode)}</value></eventCode>`
+        : `<eventCode><valueName>${CAP_CP_EVENT_VALUE_NAME}</valueName><value>${escapeXml(sameEventToNaads(eventCode))}</value></eventCode>
+        <eventCode><valueName>SAME</valueName><value>${escapeXml(eventCode)}</value></eventCode>`;
+    const geocodeXml = locs.map((code) => isIpaws
+        ? `<geocode><valueName>SAME</valueName><value>${escapeXml(code)}</value></geocode>`
+        : `<geocode><valueName>${CAP_CP_CLC_VALUE_NAME}</valueName><value>${escapeXml(code)}</value></geocode>`).join('\n            ');
+    const profileCodes = isIpaws
+        ? '<code>IPAWSv1.0</code>'
+        : '<code>profile:CAP-CP:0.4</code>\n    <code>layer:EC-MSC-SMC:1.0</code>';
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<alert xmlns="${CAP_NS}">
+    <identifier>${escapeXml(capIdentifier(profile, sentDate))}</identifier>
+    <sender>${escapeXml(sender)}@haze.local</sender>
+    <sent>${capDate(sentDate)}</sent>
+    <status>${isTest ? 'Test' : 'Actual'}</status>
+    <msgType>Alert</msgType>
+    <scope>Public</scope>
+    ${profileCodes}
+    <info>
+        <language>en-CA</language>
+        <category>Met</category>
+        <event>${escapeXml(eventName)}</event>
+        <responseType>Monitor</responseType>
+        <urgency>${isTest ? 'Future' : 'Expected'}</urgency>
+        <severity>${capSeverityFor(eventCode)}</severity>
+        <certainty>${isTest ? 'Likely' : 'Observed'}</certainty>
+        ${eventCodeXml}
+        <effective>${capDate(sentDate)}</effective>
+        <expires>${capDate(expiresDate)}</expires>
+        <senderName>${escapeXml(senderName)}</senderName>
+        <headline>${escapeXml(eventName)}</headline>
+        <description>${escapeXml(bodyText)}</description>
+        <instruction>${escapeXml(bodyText)}</instruction>
+        <area>
+            <areaDesc>${escapeXml(capAreaDesc(locs))}</areaDesc>
+            ${geocodeXml}
+        </area>
+    </info>
+</alert>
+`;
+}
+
+function downloadTextFile(filename, content, type) {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function parseCapXml(xmlText) {
     const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
-    const ns  = 'urn:oasis:names:tc:emergency:cap:1.2';
-    const get = (p, tag) => {
-        const el = p.querySelector(tag)
-            || p.getElementsByTagNameNS(ns, tag)[0]
-            || p.getElementsByTagName(tag)[0];
-        return el ? el.textContent.trim() : '';
-    };
+    if (doc.getElementsByTagName('parsererror').length) {
+        throw new Error('Invalid XML document.');
+    }
 
-    const event    = get(doc, 'event');
-    const expires  = get(doc, 'expires');
-    const sent     = get(doc, 'sent');
-    const geocodes = [...doc.getElementsByTagName('geocode'), ...doc.getElementsByTagNameNS(ns, 'geocode')];
-    const sameCodes = geocodes
-        .filter((gc) => { const vn = get(gc, 'valueName'); return vn === 'SAME' || vn.includes('SAME'); })
-        .flatMap((gc) => get(gc, 'value').split(/\s+/).map((s) => s.replace(/^0/, '').padStart(6, '0')))
-        .filter((s) => /^\d{6}$/.test(s));
+    const infos = xmlElements(doc, 'info');
+    const info = infos.find((el) => (xmlText(el, 'language') || '').toLowerCase().startsWith('en'))
+        || infos[0]
+        || doc;
+    const sent = xmlText(doc, 'sent');
+    const expires = xmlText(info, 'expires') || xmlText(doc, 'expires');
+    const senderBlob = [
+        xmlText(doc, 'sender'),
+        xmlText(info, 'senderName'),
+        [...xmlElements(doc, 'code')].map((el) => el.textContent.trim()).join(' '),
+    ].filter(Boolean).join(' ');
 
-    if (sameCodes.length) {
+    const eventPairs = capValuePairs(info, 'eventCode');
+    let importedEvent = '';
+    for (const pair of eventPairs) {
+        const name = pair.name.toLowerCase();
+        if (name === 'same') importedEvent = normalizeSameEvent(pair.value);
+        else if (pair.name === CAP_CP_EVENT_VALUE_NAME) importedEvent = normalizeSameEvent(pair.value);
+        if (importedEvent) break;
+    }
+    importedEvent = importedEvent || normalizeSameEvent(xmlText(info, 'event'));
+    if (importedEvent) eventSelect.value = importedEvent;
+
+    const importedCodes = new Set();
+    for (const pair of capValuePairs(info, 'geocode')) {
+        if (!isSameGeocodeName(pair.name)) continue;
+        for (const value of splitCapValues(pair.value)) {
+            const code = normalizeLocationCode(value);
+            if (code) importedCodes.add(code);
+        }
+    }
+
+    if (importedCodes.size) {
         const feedCodeKeys = new Set(getCodesForSelectedFeeds().keys());
-        for (const code of [...new Set(sameCodes)]) {
+        for (const code of importedCodes) {
             if (!feedCodeKeys.has(code) && !customLocEntries.some((e) => e.code === code)) {
                 customLocEntries.push({ code, name: locationNames[code] || '' });
             }
@@ -773,22 +1038,37 @@ function parseCapXml(xmlText) {
         }
     }
 
-    if (event) {
-        const upper = event.toUpperCase();
-        const match = getEventCatalog().find((entry) => entry.description.toUpperCase() === upper || entry.code === upper);
-        if (match) eventSelect.value = match.code;
-    }
-
     if (expires && sent) {
         const diffMs = new Date(expires) - new Date(sent);
         if (Number.isFinite(diffMs) && diffMs > 0) {
-            const totalMins = Math.round(diffMs / 60000);
+            const totalMins = Math.max(1, Math.round(diffMs / 60000));
             durationHours.value = Math.floor(totalMins / 60);
             durationMins.value  = totalMins % 60;
         }
     }
+
+    const importedText = [
+        xmlText(info, 'headline'),
+        xmlText(info, 'description'),
+        xmlText(info, 'instruction'),
+    ].filter(Boolean).join('\n\n');
+    if (importedText) {
+        setActiveAudioMode('tts');
+        voiceInput.value = importedText;
+    }
+
+    if (looksCanadianCap(senderBlob)) origSelect.value = 'WXR';
+    else if (xmlElements(doc, 'code').some((el) => /ipaws/i.test(el.textContent))) origSelect.value = 'CIV';
+
     renderLocPicker();
     updatePreview();
+
+    const parts = [];
+    if (importedEvent) parts.push(importedEvent);
+    if (importedCodes.size) parts.push(`${importedCodes.size} location${importedCodes.size === 1 ? '' : 's'}`);
+    if (importedText) parts.push('message text');
+    capStatus.textContent = parts.length ? `Imported ${parts.join(', ')}` : 'Imported CAP XML';
+    capStatus.className = 'sp-status-text ok';
 }
 
 function handleFileSelect(file) {
@@ -925,10 +1205,10 @@ function addRecentBroadcast(result) {
         return `<article class="event-item sp-broadcast-item">
             <div class="event-head">
                 <span class="event-kind">SAME</span>
-                <span class="sp-broadcast-feed">${feedLabel}</span>
-                <time>${b.ts}</time>
+                <span class="sp-broadcast-feed">${escapeHtml(feedLabel)}</span>
+                <time>${escapeHtml(b.ts)}</time>
             </div>
-            <p class="sp-broadcast-hdr">${b.header}</p>
+            <p class="sp-broadcast-hdr">${escapeHtml(b.header)}</p>
         </article>`;
     }).join('');
 }
@@ -955,42 +1235,42 @@ function renderTemplates() {
         const msgs = tpl.msg || content.lang || {};
         const files = tpl.files || content.file || {};
         const langRows = Object.entries(msgs).map(([lang, text]) => `
-            <div class="template-lang-row" data-code="${code}" data-lang="${lang}">
+            <div class="template-lang-row" data-code="${escapeHtml(code)}" data-lang="${escapeHtml(lang)}">
                 <div class="form-row sp-tpl-lang-row">
                     <div class="form-group sp-tpl-lang-key-group">
                         <label>Language pattern</label>
-                        <input type="text" class="tpl-lang-key" value="${lang}" placeholder="en*">
+                        <input type="text" class="tpl-lang-key" value="${escapeHtml(lang)}" placeholder="en*">
                     </div>
                     <div class="form-group sp-tpl-lang-text-group">
                         <label>Message text</label>
-                        <textarea class="tpl-lang-text" rows="3">${text}</textarea>
+                        <textarea class="tpl-lang-text" rows="3">${escapeHtml(text)}</textarea>
                     </div>
                     <div class="form-group sp-tpl-lang-file-group">
                         <label>Audio file</label>
-                        <input type="text" class="tpl-lang-file" value="${files[lang] || ''}" placeholder="audio/_uploads/example.wav">
+                        <input type="text" class="tpl-lang-file" value="${escapeHtml(files[lang] || '')}" placeholder="audio/_uploads/example.wav">
                     </div>
                     <button type="button" class="btn-ghost tpl-remove-lang sp-tpl-lang-remove"
-                        data-code="${code}" data-lang="${lang}">&#x2715;</button>
+                        data-code="${escapeHtml(code)}" data-lang="${escapeHtml(lang)}">&#x2715;</button>
                 </div>
             </div>`).join('');
         return `
-            <div class="section-block sp-tpl-block" data-template-code="${code}">
+            <div class="section-block sp-tpl-block" data-template-code="${escapeHtml(code)}">
                 <div class="section-hd sp-tpl-hd">
-                    <input type="text" class="tpl-code-input sp-tpl-code-input" value="${code}" placeholder="RWT">
+                    <input type="text" class="tpl-code-input sp-tpl-code-input" value="${escapeHtml(code)}" placeholder="RWT">
                     <div class="section-hd-actions">
-                        <button type="button" class="btn-action tpl-fire-btn" data-code="${code}">&#9654; Send Now</button>
-                        <button type="button" class="btn-ghost tpl-add-lang" data-code="${code}">+ Language</button>
-                        <button type="button" class="btn-ghost tpl-remove-tpl sp-tpl-remove-btn" data-code="${code}">Remove</button>
+                        <button type="button" class="btn-action tpl-fire-btn" data-code="${escapeHtml(code)}">&#9654; Send Now</button>
+                        <button type="button" class="btn-ghost tpl-add-lang" data-code="${escapeHtml(code)}">+ Language</button>
+                        <button type="button" class="btn-ghost tpl-remove-tpl sp-tpl-remove-btn" data-code="${escapeHtml(code)}">Remove</button>
                     </div>
                 </div>
                 <div class="sp-template-head-grid">
                     <div class="sp-tpl-field-group">
                         <label class="sp-tpl-field-label">Template Name</label>
-                        <input type="text" class="sp-tpl-text-input tpl-name" value="${tpl.name || code}">
+                        <input type="text" class="sp-tpl-text-input tpl-name" value="${escapeHtml(tpl.name || code)}">
                     </div>
                     <div class="sp-tpl-field-group">
                         <label class="sp-tpl-field-label">Description</label>
-                        <input type="text" class="sp-tpl-text-input tpl-description" value="${tpl.description || ''}">
+                        <input type="text" class="sp-tpl-text-input tpl-description" value="${escapeHtml(tpl.description || '')}">
                     </div>
                 </div>
                 <div class="sp-tpl-meta-stack">
@@ -1006,21 +1286,21 @@ function renderTemplates() {
                 <div class="sp-tpl-meta-stack">
                     <div class="sp-tpl-field-group">
                         <label class="sp-tpl-field-label">SAME event</label>
-                        <input type="text" class="sp-tpl-text-input tpl-event" value="${tpl.sameEvent || same.event || code}">
+                        <input type="text" class="sp-tpl-text-input tpl-event" value="${escapeHtml(tpl.sameEvent || same.event || code)}">
                     </div>
                     <div class="sp-tpl-field-group">
                         <label class="sp-tpl-field-label">Expire</label>
-                        <input type="text" class="sp-tpl-text-input tpl-expire" value="${tpl.sameExpire || '0015'}">
+                        <input type="text" class="sp-tpl-text-input tpl-expire" value="${escapeHtml(tpl.sameExpire || '0015')}">
                     </div>
                 </div>
                 <div class="sp-tpl-meta-stack">
                     <div class="sp-tpl-field-group">
                         <label class="sp-tpl-field-label">Sender ID</label>
-                        <input type="text" class="sp-tpl-text-input tpl-sender" value="${same.sender_id || ''}">
+                        <input type="text" class="sp-tpl-text-input tpl-sender" value="${escapeHtml(same.sender_id || '')}">
                     </div>
                     <div class="sp-tpl-field-group">
                         <label class="sp-tpl-field-label">Attention Tone</label>
-                        <input type="text" class="sp-tpl-text-input tpl-tone" value="${content.attention_tone || ''}">
+                        <input type="text" class="sp-tpl-text-input tpl-tone" value="${escapeHtml(content.attention_tone || '')}">
                     </div>
                 </div>
                 <div class="section-body sp-tpl-lang-body">
@@ -1150,28 +1430,19 @@ templateAddBtn.addEventListener('click', () => {
 });
 templateSaveBtn.addEventListener('click', saveTemplates);
 
-if (!token.get()) {
-    window.location.href = '/';
-} else {
+export function initSameView() {
+    bindSameStateListener();
     Promise.all([
         (async () => {
             try {
-                await fetch('/api/v1/health').then((r) => r.json());
-                apiDot.dataset.state  = 'ok';
-                healthPill.textContent = 'API healthy';
-                const [summary, config] = await Promise.all([
-                    apiGet('/summary'),
-                    apiGet('/config').catch(() => ({})),
-                ]);
-                allFeedsData          = summary.feeds || [];
-                configuredCallsign    = config.same?.sender || 'XXXXXXXX';
-                if (allFeedsData.length) selectedFeedIds.add(allFeedsData[0].id);
-                renderFeedPicker();
-                renderLocPicker();
+                refreshDashboard().catch(() => {});
+                const panelState = getDashboardState() || await waitForDashboardState();
+                applyPanelState(panelState);
             } catch {
-                apiDot.dataset.state   = 'err';
-                healthPill.textContent = 'API unavailable';
-                feedPicker.innerHTML   = '<p class="sp-picker-empty">Could not load feeds.</p>';
+                apiDot.dataset.state = 'warn';
+                healthPill.textContent = 'Waiting for live socket';
+                feedPicker.innerHTML = '<p class="sp-picker-empty">Waiting for live feed state…</p>';
+                refreshDashboard({ force: true }).catch(() => {});
             }
         })(),
         apiGet('/same/event-codes').then((m) => { sameMapping     = m; }).catch(() => { sameMapping     = {}; }),
@@ -1179,9 +1450,10 @@ if (!token.get()) {
         loadTemplates(),
     ]).then(() => {
         populateEventSelect();
+        if (getDashboardState()) applyPanelState(getDashboardState());
+        else renderLocPicker();
         updatePreview();
         clearStatus();
         window.lucide?.createIcons();
     });
 }
-

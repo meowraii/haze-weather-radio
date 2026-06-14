@@ -42,24 +42,8 @@ class Package_Config:
         'eccc_discussion': {
             'lang': ['en-CA'],
         },
-        'forecast': {
-            'use_voice': 'female',
-        },
-        'climate_summary': {
-            'use_voice': 'female',
-        },
-        'station_id': {
-            'use_voice': 'female',
-        },
-        'air_quality': {
-            'use_voice': 'female',
-        },
-        'date_time': {
-            'use_voice': 'female',
-        },
         'geophysical_alert': {
             'lang': ['en-CA'],
-            'use_voice': 'female',
         },
     }
 
@@ -118,9 +102,16 @@ class Package_Config:
         for child in element:
             tag = child.tag.lower()
             text = cls._as_text(child.text)
+            if tag in ('reader_id', 'reader', 'use_reader'):
+                if text:
+                    profile['reader_id'] = text
+                continue
             if tag in ('voice', 'use_voice'):
                 if text:
-                    profile['use_voice'] = text
+                    if text.lower() in ('male', 'female'):
+                        profile['use_voice'] = text.lower()
+                    else:
+                        profile['reader_id'] = text
                 continue
             if tag in ('languages', 'lang'):
                 langs = cls._parse_languages(child)
@@ -184,6 +175,10 @@ class Package_Config:
             profiles[pkg_id] = merged_profile
 
             pkg_cfg = dict(per_package.get(pkg_id, {}))
+            reader_id = cls._as_text(merged_profile.get('reader_id'))
+            if reader_id:
+                pkg_cfg['reader_id'] = reader_id
+
             voice = cls._as_text(merged_profile.get('use_voice'))
             if voice:
                 pkg_cfg['use_voice'] = voice
@@ -214,13 +209,20 @@ class Package_Config:
         return dict(cls.package_profiles.get(pkg_id, {}))
 
     @classmethod
-    def get_voice(cls, pkg_id: str) -> str | None:
+    def get_reader_id(cls, pkg_id: str) -> str | None:
         cls.ensure_loaded()
         pkg_cfg = cls.per_package.get(pkg_id, {})
+        reader_id = pkg_cfg.get('reader_id')
+        if isinstance(reader_id, str) and reader_id:
+            return reader_id
         voice = pkg_cfg.get('use_voice')
         if isinstance(voice, str) and voice:
             return voice
         return None
+
+    @classmethod
+    def get_voice(cls, pkg_id: str) -> str | None:
+        return cls.get_reader_id(pkg_id)
 
     @classmethod
     def is_lang_allowed(cls, pkg_id: str, lang: str) -> bool:
@@ -1618,6 +1620,14 @@ def _sanitize_for_tts(text: str) -> str:
     text = re.sub(r'\.(?=[a-zA-Z])', '. ', text)
     return text.strip()
 
+def _forecast_template_location_name(name: str, source_key: str, lang_short: str) -> str:
+    clean = ' '.join(str(name or '').split()).strip(' ,.')
+    if not clean:
+        return clean
+    if source_key == 'eccc' and lang_short == 'en':
+        return re.sub(r'\s+region$', '', clean, flags=re.IGNORECASE).strip(' ,.')
+    return clean
+
 def forecast_package(
     forecast_data: dict[str, Any] | None = None,
     location_name: str | None = None,
@@ -1634,17 +1644,18 @@ def forecast_package(
     source_key = str(forecast_data.get('source', '')).strip().lower()
     forecast_name = _get_localized(forecast_data.get('name'), lang_short)
     loc_name = _spoken_forecast_location_name(location_name or forecast_name or fx.get('station', ''), lang_short)
+    template_loc_name = _forecast_template_location_name(loc_name, source_key, lang_short)
 
     forecasts = forecast_data.get('forecast', [])
     if not forecasts:
         unavailable_key = f'{source_key}_unavailable' if source_key else 'generic_unavailable'
-        return fx.get(unavailable_key, fx.get('generic_unavailable', '')).format(name=loc_name)
+        return fx.get(unavailable_key, fx.get('generic_unavailable', '')).format(name=template_loc_name)
 
     opener_key = f'{source_key}_opener' if source_key else 'generic_opener'
     opener = fx.get(opener_key, fx.get('generic_opener', ''))
     time_str = _format_time_spoken(datetime.datetime.now().astimezone())
 
-    sentences: list[str] = [opener.format(name=loc_name, time=time_str)]
+    sentences: list[str] = [opener.format(name=template_loc_name, time=time_str)]
 
     for period in forecasts[:6]:
         if not isinstance(period, dict):

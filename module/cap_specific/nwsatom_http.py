@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 from xml.etree import ElementTree as ET
 
 from module.cap_specific.naads_tcp import CAPAlert, parse_cap
+from module.version import app_version
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ def _source_url(source: dict[str, Any]) -> str:
 def _user_agent(config: dict[str, Any]) -> str:
     operator = config.get('operator', {})
     contact = operator.get('email') or operator.get('operator_name') or 'unknown'
-    version = config.get('version', 'dev')
+    version = app_version(config)
     return f'haze-weather-radio/{version} ({contact})'
 
 
