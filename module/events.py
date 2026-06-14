@@ -1,5 +1,6 @@
 import queue
 import threading
+from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ initial_synthesis_done: threading.Event = threading.Event()
 
 _data_pool: dict[str, Any] = {}
 _data_pool_lock: threading.Lock = threading.Lock()
+_data_pool_version = 0
 data_ready: threading.Event = threading.Event()
 
 tts_queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
@@ -40,9 +42,13 @@ _last_played_item_ids: dict[str, str] = {}
 
 _alert_queues_lock: threading.Lock = threading.Lock()
 _alert_queues: dict[str, queue.Queue[tuple[int, bytes, str]]] = {}
+_alert_queue_version = 0
 
 _alert_audio_streams_lock: threading.Lock = threading.Lock()
 _alert_audio_streams: dict[str, list[queue.Queue[tuple[bytes, str]]]] = {}
+
+_feed_audio_streams_lock: threading.Lock = threading.Lock()
+_feed_audio_streams: dict[str, list[queue.Queue[tuple[bytes, str]]]] = {}
 
 _runtime_alert_entries_lock: threading.Lock = threading.Lock()
 _runtime_alert_entries: dict[str, dict[str, dict[str, Any]]] = {}
@@ -53,6 +59,7 @@ _runtime_state: dict[str, Any] = {
     'feeds': {},
     'events': [],
 }
+_runtime_version = 0
 
 def register_alert_queue(feed_id: str) -> queue.Queue[tuple[int, bytes, str]]:
     with _alert_queues_lock:
@@ -81,6 +88,26 @@ def unregister_alert_audio_stream(feed_id: str, stream: queue.Queue[tuple[bytes,
             _alert_audio_streams.pop(feed_id, None)
 
 
+def register_feed_audio_stream(feed_id: str) -> queue.Queue[tuple[bytes, str]]:
+    q: queue.Queue[tuple[bytes, str]] = queue.Queue(maxsize=96)
+    with _feed_audio_streams_lock:
+        streams = _feed_audio_streams.setdefault(feed_id, [])
+        streams.append(q)
+    return q
+
+
+def unregister_feed_audio_stream(feed_id: str, stream: queue.Queue[tuple[bytes, str]]) -> None:
+    with _feed_audio_streams_lock:
+        streams = _feed_audio_streams.get(feed_id)
+        if not streams:
+            return
+        remaining = [item for item in streams if item is not stream]
+        if remaining:
+            _feed_audio_streams[feed_id] = remaining
+        else:
+            _feed_audio_streams.pop(feed_id, None)
+
+
 def _publish_alert_audio(feed_id: str, pcm: bytes, identifier: str = '') -> None:
     with _alert_audio_streams_lock:
         streams = list(_alert_audio_streams.get(feed_id, ()))
@@ -102,22 +129,54 @@ def _publish_alert_audio(feed_id: str, pcm: bytes, identifier: str = '') -> None
         except queue.Full:
             pass
 
+
+def publish_feed_audio(feed_id: str, pcm: bytes, label: str = '') -> None:
+    with _feed_audio_streams_lock:
+        streams = list(_feed_audio_streams.get(feed_id, ()))
+
+    if not streams or not pcm:
+        return
+
+    for stream in streams:
+        try:
+            stream.put_nowait((pcm, label))
+            continue
+        except queue.Full:
+            pass
+
+        try:
+            stream.get_nowait()
+        except queue.Empty:
+            pass
+
+        try:
+            stream.put_nowait((pcm, label))
+        except queue.Full:
+            pass
+
 def push_alert(feed_id: str, priority: int, pcm: bytes, identifier: str = '') -> bool:
+    global _alert_queue_version
     with _alert_queues_lock:
         q = _alert_queues.get(feed_id)
     if q is not None:
         q.put((priority, pcm, identifier))
+        with _alert_queues_lock:
+            _alert_queue_version += 1
     _publish_alert_audio(feed_id, pcm, identifier)
     return q is not None
 
 
 def push_alert_all(priority: int, pcm: bytes, identifier: str = '') -> None:
+    global _alert_queue_version
     with _alert_queues_lock:
         queues = list(_alert_queues.values())
     with _alert_audio_streams_lock:
         stream_feed_ids = tuple(_alert_audio_streams.keys())
     for q in queues:
         q.put((priority, pcm, identifier))
+    if queues:
+        with _alert_queues_lock:
+            _alert_queue_version += 1
     for feed_id in stream_feed_ids:
         _publish_alert_audio(feed_id, pcm, identifier)
 
@@ -225,8 +284,10 @@ def get_sequence_version(feed_id: str) -> int:
 
 
 def update_data_pool(key: str, value: Any, notify: bool = True) -> None:
+    global _data_pool_version
     with _data_pool_lock:
         _data_pool[key] = value
+        _data_pool_version += 1
     if notify:
         data_ready.set()
 
@@ -252,14 +313,38 @@ def snapshot_alert_queues() -> dict[str, int]:
 
 
 def update_runtime_status(values: dict[str, Any]) -> None:
+    global _runtime_version
     with _runtime_lock:
         _runtime_state['system'].update(values)
+        _runtime_version += 1
 
 
 def update_feed_runtime(feed_id: str, values: dict[str, Any]) -> None:
+    global _runtime_version
     with _runtime_lock:
         feed_state = _runtime_state['feeds'].setdefault(feed_id, {})
         feed_state.update(values)
+        _runtime_version += 1
+
+
+def push_public_stream_item(feed_id: str, title: str, queue_depth: int | None = None) -> None:
+    global _runtime_version
+    now = datetime.now(timezone.utc).isoformat()
+    with _runtime_lock:
+        feed_state = _runtime_state['feeds'].setdefault(feed_id, {})
+        recent = feed_state.get('public_stream_recent_items')
+        if not isinstance(recent, list):
+            recent_list: deque[str] = deque(maxlen=8)
+        else:
+            recent_list = deque((str(item) for item in recent if str(item).strip()), maxlen=8)
+        clean_title = str(title or '').strip() or 'Unknown'
+        recent_list.appendleft(clean_title)
+        feed_state['public_stream_now_playing'] = clean_title
+        feed_state['public_stream_started_at'] = now
+        feed_state['public_stream_recent_items'] = list(recent_list)
+        if queue_depth is not None:
+            feed_state['public_stream_queue_depth'] = max(0, int(queue_depth))
+        _runtime_version += 1
 
 
 def append_runtime_event(
@@ -268,6 +353,7 @@ def append_runtime_event(
     feed_id: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
+    global _runtime_version
     event: dict[str, Any] = {
         'timestamp': datetime.now(timezone.utc).isoformat(),
         'kind': kind,
@@ -283,11 +369,29 @@ def append_runtime_event(
         events.append(event)
         if len(events) > 100:
             del events[:-100]
+        _runtime_version += 1
 
 
 def snapshot_runtime() -> dict[str, Any]:
     with _runtime_lock:
         return deepcopy(_runtime_state)
+
+
+def snapshot_change_versions() -> dict[str, Any]:
+    with _data_pool_lock:
+        data_pool_version = _data_pool_version
+    with _runtime_lock:
+        runtime_version = _runtime_version
+    with _sequences_lock:
+        sequence_versions = dict(_sequence_versions)
+    with _alert_queues_lock:
+        alert_queue_version = _alert_queue_version
+    return {
+        'data_pool': data_pool_version,
+        'runtime': runtime_version,
+        'sequences': sequence_versions,
+        'alert_queues': alert_queue_version,
+    }
 
 
 _scheduled_package_queues: dict[str, queue.Queue[str]] = {}
@@ -310,4 +414,3 @@ def enqueue_scheduled_package(feed_id: str, pkg_id: str) -> None:
         q.put_nowait(pkg_id)
     except queue.Full:
         pass
-

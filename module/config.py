@@ -285,6 +285,20 @@ def _load_twc_env(config: dict[str, Any]) -> None:
     config['sources'] = sources
 
 
+def _load_env_secrets(config: dict[str, Any]) -> None:
+    load_dotenv()
+    same_cfg = config.get('same', {})
+    if isinstance(same_cfg, dict):
+        if same_id := os.environ.get('SAME_ID'):
+            same_cfg['sender'] = same_id
+    webpanel_cfg = config.get('webpanel', {})
+    if isinstance(webpanel_cfg, dict):
+        auth_cfg = webpanel_cfg.get('authentication', {})
+        if isinstance(auth_cfg, dict):
+            if admin_passwd := os.environ.get('ADMIN_PASSWD'):
+                auth_cfg['password'] = admin_passwd
+
+
 def _load_feeds_sidecar(config: dict[str, Any], config_file: pathlib.Path) -> None:
     feeds_path = _resolve_sidecar_path(config_file.parent, config.get('feeds_file'), _DEFAULT_FEEDS_FILE)
     if not feeds_path.exists():
@@ -307,5 +321,6 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     raw_config = _load_yaml_file(config_file)
     config = dict(raw_config) if isinstance(raw_config, dict) else {}
     _load_twc_env(config)
+    _load_env_secrets(config)
     _load_feeds_sidecar(config, config_file)
     return config

@@ -14,3 +14,5 @@ twc.yaml
 .env
 managed/configs/webhooks.xml
 managed/configs/feeds.xml
+managed/configs/cwxr-feeds.xml
+managed/receiver_credentials.json

@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Haze Weather Radio control and monitoring panel">
+    <title>Haze Weather Radio</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+    <div class="app-shell">
+
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <img class="brand-mark" src="/assets/hazelogo.svg" alt="Haze WXR">
+            </div>
+            <div class="sidebar-connection" id="lastConnected">Last connected from unknown IP at unknown time</div>
+
+            <nav class="sidebar-section" aria-label="Navigation">
+                <a class="sidebar-link active" href="#/" data-view="home">
+                    <i data-lucide="house" width="15" height="15"></i>
+                    Home
+                </a>
+                <a class="sidebar-link" href="#/same" data-view="same">
+                    <i data-lucide="radio-tower" width="15" height="15"></i>
+                    SAME Broadcast
+                </a>
+                <a class="sidebar-link" href="#/wx" data-view="wx">
+                    <i data-lucide="cloud-sun" width="15" height="15"></i>
+                    WX On-Demand
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <button id="refreshButton" type="button" class="sidebar-icon-btn" title="Refresh dashboard" aria-label="Refresh">
+                    <i data-lucide="refresh-cw" width="15" height="15"></i>
+                </button>
+                <button id="themeToggle" type="button" class="sidebar-icon-btn" title="Toggle theme" aria-label="Toggle theme">
+                    <i data-lucide="sun" width="15" height="15"></i>
+                </button>
+                <button id="logoutButton" type="button" class="sidebar-icon-btn sidebar-logout-btn" title="Log out" aria-label="Log out">
+                    <i data-lucide="log-out" width="15" height="15"></i>
+                </button>
+            </div>
+        </aside>
+
+        <div class="main-wrap">
+
+            <div class="view active" data-view="home">
+                <main class="dashboard">
+
+                    <section class="section-block" id="summary">
+                        <div class="section-hd">
+                            <span>Station Summary</span>
+                            <span class="section-hd-sub">Live feed counts, manual actions, and the main routes through the panel.</span>
+                        </div>
+                        <div class="section-body overview-grid">
+                            <div class="overview-main">
+                                <div class="overview-hero">
+                                    <p class="overview-label">Current State</p>
+                                    <h2 id="heroTitle">Haze Weather Radio</h2>
+                                    <p id="heroSubtitle">Waiting for server response.</p>
+                                </div>
+                                <div id="summaryCards" class="summary-grid"></div>
+                            </div>
+                            <aside class="overview-side">
+                                <div class="overview-actions">
+                                    <button id="rwtButton" type="button" class="btn-action" title="Send Required Weekly Test to all enabled feeds">
+                                        <i data-lucide="clock" width="13" height="13"></i>
+                                        Send RWT
+                                    </button>
+                                    <a class="btn-action btn-link" href="#/same">
+                                        <i data-lucide="radio-tower" width="13" height="13"></i>
+                                        Manual SAME
+                                    </a>
+                                    <a class="btn-action btn-link" href="#/wx">
+                                        <i data-lucide="cloud-sun" width="13" height="13"></i>
+                                        WX Builder
+                                    </a>
+                                </div>
+                                <div class="overview-note">
+                                    <p class="overview-note-label">Panel Flow</p>
+                                    <p>Watch feed state first, use the manual tools when you need to inject or test audio, and keep the logs and configuration panels below for diagnosis.</p>
+                                </div>
+                            </aside>
+                        </div>
+                    </section>
+
+                    <div class="ops-grid">
+
+                    <section class="section-block" id="feeds">
+                        <div class="section-hd">
+                            <span>Broadcast Feeds</span>
+                            <span class="section-hd-sub">Live playout, queue depth, output routing, and recent alert activity per feed.</span>
+                        </div>
+                        <div class="section-body">
+                            <div class="feed-grid" id="feedsGrid"></div>
+                        </div>
+                    </section>
+
+                    <div class="ops-stack">
+
+                    <section class="section-block" id="events">
+                        <div class="section-hd">
+                            <span>Runtime Events</span>
+                            <span class="section-hd-sub">Recent internal events, task results, and feed-specific notices.</span>
+                        </div>
+                        <div class="section-body pad-none">
+                            <div class="event-list" id="eventsList"></div>
+                        </div>
+                    </section>
+                    </div>
+                    </div>
+
+                    <div class="two-col" id="logs">
+                        <section class="section-block" style="margin-top:0">
+                            <div class="section-hd">
+                                <span>Log Tail</span>
+                                <select id="logSourceSelect" class="hd-select">
+                                    <option value="app">Application</option>
+                                    <option value="same">SAME Audit</option>
+                                </select>
+                            </div>
+                            <div class="section-body pad-none">
+                                <pre class="code-view" id="logsView">No logs loaded.</pre>
+                            </div>
+                        </section>
+
+                        <section class="section-block" id="datapool" style="margin-top:0">
+                            <div class="section-hd"><span>Weather Data Pool</span></div>
+                            <div class="section-body pad-none">
+                                <pre class="code-view" id="datapoolView">No data loaded.</pre>
+                            </div>
+                        </section>
+                    </div>
+
+                    <section class="section-block" id="config">
+                        <div class="section-hd"><span>Loaded Configuration</span></div>
+                        <div class="section-body pad-none">
+                            <pre class="code-view" id="configView">No configuration loaded.</pre>
+                        </div>
+                    </section>
+
+                </main>
+            </div>
+
+            <div class="view" data-view="same">
+                <header class="topbar">
+                    <div class="topbar-inner">
+                        <div class="topbar-title">
+                            <p class="topbar-eyebrow">Manual Alerting</p>
+                            <h1>SAME Broadcast</h1>
+                            <p>Compose and air a SAME/EAS sequence directly into a feed queue.</p>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="dashboard same-page">
+                    <div class="same-layout">
+                        <div class="same-main" id="sameMain"></div>
+                        <aside class="same-rail" id="sameRail"></aside>
+                    </div>
+                </main>
+            </div>
+
+            <div class="view wx-panel-page" data-view="wx">
+                <header class="topbar">
+                    <div class="topbar-inner">
+                        <div class="topbar-title">
+                            <p class="topbar-eyebrow">Manual Weather</p>
+                            <h1>WX On-Demand</h1>
+                            <p>Generate weather audio or text packages from configured locations with optional source filtering.</p>
+                        </div>
+                        <div class="metric-strip">
+                            <article class="metric-card">
+                                <p>Source</p>
+                                <strong id="sourceMetric">auto</strong>
+                            </article>
+                            <article class="metric-card">
+                                <p>Format</p>
+                                <strong id="formatMetric">wav</strong>
+                            </article>
+                            <article class="metric-card">
+                                <p>Packages</p>
+                                <strong id="packageMetric">3</strong>
+                            </article>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="dashboard">
+                    <p id="wxStatusBanner" class="status-banner">Checking panel API…</p>
+
+                    <div class="wx-panel-grid">
+                        <section class="section-block">
+                            <div class="section-hd">
+                                <span>Request Builder</span>
+                                <span class="section-hd-sub">Compose a request body, preview the equivalent curl, and generate output directly in the browser.</span>
+                            </div>
+                            <div class="section-body">
+                                <div class="wx-panel-form-grid">
+                                    <div class="form-group">
+                                        <label for="tryLocations">Locations</label>
+                                        <textarea id="tryLocations" rows="3" placeholder="Comma or newline separated IDs, e.g. sk-40, CWIW, CWRJ">sk-40</textarea>
+                                        <p class="form-hint">Use configured feed, station, or forecast IDs. Separate multiple values with commas or new lines.</p>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="trySource">Data source</label>
+                                        <select id="trySource">
+                                            <option value="">Auto</option>
+                                            <option value="eccc">ECCC</option>
+                                            <option value="nws">NWS</option>
+                                            <option value="twc">TWC</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tryLang">Language</label>
+                                        <select id="tryLang">
+                                            <option value="en-CA">en-CA</option>
+                                            <option value="fr-CA">fr-CA</option>
+                                            <option value="es-US">es-US</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tryVoice">Voice override</label>
+                                        <input id="tryVoice" type="text" placeholder="Optional voice override">
+                                    </div>
+                                    <div class="form-group wx-panel-format-group">
+                                        <label for="tryFormat">Format</label>
+                                        <select id="tryFormat">
+                                            <optgroup label="Audio">
+                                                <option value="raw">raw — PCM s16le</option>
+                                                <option value="wav" selected>wav</option>
+                                                <option value="mp3">mp3</option>
+                                                <option value="ogg">ogg</option>
+                                                <option value="flac">flac</option>
+                                                <option value="aac">aac</option>
+                                                <option value="opus">opus</option>
+                                            </optgroup>
+                                            <optgroup label="VoIP">
+                                                <option value="ulaw">ulaw — G.711 μ-law</option>
+                                                <option value="alaw">alaw — G.711 A-law</option>
+                                                <option value="g722">g722</option>
+                                                <option value="webm">webm</option>
+                                            </optgroup>
+                                            <optgroup label="Text">
+                                                <option value="json">json</option>
+                                                <option value="xml">xml</option>
+                                                <option value="ssml">ssml</option>
+                                                <option value="html">html</option>
+                                                <option value="markdown">markdown</option>
+                                                <option value="latex">latex</option>
+                                            </optgroup>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="form-group wx-panel-chip-group">
+                                    <div class="wx-panel-chip-toolbar">
+                                        <label>Packages</label>
+                                        <div class="wx-panel-chip-actions">
+                                            <button class="btn-ghost" id="pkgDefaultBtn" type="button">Default</button>
+                                            <button class="btn-ghost" id="pkgAllBtn" type="button">All</button>
+                                            <button class="btn-ghost" id="pkgClearBtn" type="button">Clear</button>
+                                        </div>
+                                    </div>
+                                    <div class="pkg-chips" id="tryPkgs"></div>
+                                    <p class="wx-panel-hint" id="pkgSummary">Loading packages…</p>
+                                </div>
+
+                                <div class="wx-panel-actions">
+                                    <button class="btn-primary" id="tryBtn" type="button" disabled>Generate &amp; Play</button>
+                                    <button class="btn-ghost" id="tryStop" type="button" disabled>Stop</button>
+                                    <span class="try-status" id="tryStatus">Loading…</span>
+                                </div>
+
+                                <audio id="tryAudio" class="wx-panel-audio" controls hidden></audio>
+                                <pre id="tryText" class="code-view wx-panel-output" hidden></pre>
+                            </div>
+                        </section>
+
+                        <div class="wx-panel-stack">
+                            <section class="section-block">
+                                <div class="section-hd">
+                                    <span>Request Preview</span>
+                                    <span class="section-hd-sub">Live JSON payload and curl command for the current form state.</span>
+                                </div>
+                                <div class="section-body wx-panel-preview-body">
+                                    <div class="wx-panel-mini-grid">
+                                        <article class="wx-panel-mini-card">
+                                            <p>Endpoint base</p>
+                                            <strong id="wxBaseMetric">Resolving…</strong>
+                                        </article>
+                                        <article class="wx-panel-mini-card">
+                                            <p>Response type</p>
+                                            <strong id="responseTypeMetric">audio</strong>
+                                        </article>
+                                    </div>
+                                    <div>
+                                        <p class="wx-panel-label">JSON body</p>
+                                        <pre id="requestBodyPreview" class="code-view"></pre>
+                                    </div>
+                                    <div>
+                                        <p class="wx-panel-label">curl</p>
+                                        <pre id="curlPreview" class="code-view"></pre>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="section-block">
+                                <div class="section-hd">
+                                    <span>Last Response</span>
+                                    <span class="section-hd-sub">Headers and payload details from the most recent generate call.</span>
+                                </div>
+                                <div class="section-body">
+                                    <div id="responseMeta" class="wx-panel-response-grid">
+                                        <article class="wx-panel-response-card is-empty">
+                                            <p>No request has been sent yet.</p>
+                                        </article>
+                                    </div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+
+                    <section class="section-block">
+                        <div class="section-hd">
+                            <span>Endpoints</span>
+                            <span class="section-hd-sub">Available request fields for generation and package discovery.</span>
+                        </div>
+                        <div class="section-body wx-panel-reference-stack">
+                            <div class="endpoint-block">
+                                <div class="endpoint-hd">
+                                    <span class="method post">POST</span>
+                                    <span class="endpoint-path" id="generatePath">Resolving…</span>
+                                    <span class="endpoint-desc">Generate weather content as audio or text.</span>
+                                </div>
+                                <table>
+                                    <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><code>locations</code><span class="param-optional">optional</span></td>
+                                            <td><code>string | string[]</code></td>
+                                            <td><code>[]</code></td>
+                                            <td>Location IDs to resolve against configured observation, forecast, and climate entries.</td>
+                                        </tr>
+                                        <tr>
+                                            <td><code>packages</code><span class="param-optional">optional</span></td>
+                                            <td><code>string | string[]</code></td>
+                                            <td><code>"all"</code></td>
+                                            <td>Requested package IDs in playback order. Pass <code>"all"</code> to include every published package.</td>
+                                        </tr>
+                                        <tr>
+                                            <td><code>source</code><span class="param-optional">optional</span></td>
+                                            <td><code>string | null</code></td>
+                                            <td><code>null</code></td>
+                                            <td>Restrict location resolution to a single source: <code>eccc</code>, <code>nws</code>, or <code>twc</code>. Auto selects the first configured match.</td>
+                                        </tr>
+                                        <tr>
+                                            <td><code>lang</code><span class="param-optional">optional</span></td>
+                                            <td><code>string</code></td>
+                                            <td><code>"en-CA"</code></td>
+                                            <td>BCP-47 language tag used for text rendering and voice selection.</td>
+                                        </tr>
+                                        <tr>
+                                            <td><code>voice</code><span class="param-optional">optional</span></td>
+                                            <td><code>string | null</code></td>
+                                            <td><code>null</code></td>
+                                            <td>Optional TTS voice override. Omit to use the default voice for the selected language.</td>
+                                        </tr>
+                                        <tr>
+                                            <td><code>format</code><span class="param-optional">optional</span></td>
+                                            <td><code>string</code></td>
+                                            <td><code>"raw"</code></td>
+                                            <td>Audio formats return synthesized audio. Text formats return serialized package bodies instead of speech.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div class="endpoint-block">
+                                <div class="endpoint-hd">
+                                    <span class="method">GET</span>
+                                    <span class="endpoint-path" id="packagesPath">Resolving…</span>
+                                    <span class="endpoint-desc">List the valid package IDs for the generate endpoint.</span>
+                                </div>
+                                <table>
+                                    <thead><tr><th>Response field</th><th>Type</th><th>Description</th></tr></thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><code>packages</code></td>
+                                            <td><code>string[]</code></td>
+                                            <td>Ordered list of accepted <code>packages</code> values.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="two-col wx-panel-reference-grid">
+                        <section class="section-block">
+                            <div class="section-hd">
+                                <span>Available Packages</span>
+                                <span class="section-hd-sub">High-level meaning of each published package block.</span>
+                            </div>
+                            <div class="section-body pad-none">
+                                <table>
+                                    <thead><tr><th>Package ID</th><th>Description</th></tr></thead>
+                                    <tbody id="pkgTable"><tr><td colspan="2" class="wx-doc-muted-cell">Loading…</td></tr></tbody>
+                                </table>
+                            </div>
+                        </section>
+
+                        <section class="section-block">
+                            <div class="section-hd">
+                                <span>Output Formats</span>
+                                <span class="section-hd-sub">Mime types and delivery behavior for every supported format.</span>
+                            </div>
+                            <div class="section-body pad-none">
+                                <table>
+                                    <thead><tr><th>Format</th><th>Content-Type</th><th>Delivery</th><th>Type</th></tr></thead>
+                                    <tbody id="formatTable"><tr><td colspan="4" class="wx-doc-muted-cell">Loading…</td></tr></tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </div>
+
+                    <section class="section-block">
+                        <div class="section-hd">
+                            <span>Response Headers</span>
+                            <span class="section-hd-sub">Headers emitted by generate responses for text and audio formats.</span>
+                        </div>
+                        <div class="section-body pad-none">
+                            <table>
+                                <thead><tr><th>Header</th><th>Description</th></tr></thead>
+                                <tbody>
+                                    <tr><td><code>X-Audio-Sample-Rate</code></td><td>Audio only. PCM sample rate in Hz.</td></tr>
+                                    <tr><td><code>X-Audio-Channels</code></td><td>Audio only. PCM channel count.</td></tr>
+                                    <tr><td><code>X-Audio-Encoding</code></td><td><code>raw</code> only. PCM encoding, always <code>s16le</code>.</td></tr>
+                                    <tr><td><code>X-Packages</code></td><td>Comma-separated list of rendered packages.</td></tr>
+                                    <tr><td><code>X-Format</code></td><td>Echo of the selected output format.</td></tr>
+                                    <tr><td><code>X-Source</code></td><td>Resolved source mode for the request: <code>auto</code>, <code>eccc</code>, <code>nws</code>, or <code>twc</code>.</td></tr>
+                                    <tr><td><code>Content-Length</code></td><td>Present for buffered responses with a fixed byte length.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </main>
+            </div>
+
+        </div>
+
+    </div>
+
+    <div style="display:none">
+        <span class="status-dot" id="apiDot" data-state="pending"></span>
+        <span id="healthPill"></span>
+        <span id="authPill"></span>
+        <span class="status-dot" id="authDot"></span>
+        <span class="status-dot" id="wxDot"></span>
+        <span id="wxBasePill"></span>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script type="module" src="/assets/js/app.js"></script>
+</body>
+</html>
