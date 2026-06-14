@@ -1,74 +1,130 @@
+import { session, token } from './session.js';
+
 export const API_BASE = '/api/v1';
-export const TOKEN_KEY = 'haze.panel.token';
+export { session, token };
 
-export const token = {
-    get: () => localStorage.getItem(TOKEN_KEY) || '',
-    set: (t) => localStorage.setItem(TOKEN_KEY, t),
-    clear: () => localStorage.removeItem(TOKEN_KEY),
-};
-
-function authHeaders(extra = {}) {
-    const h = new Headers(extra);
-    const t = token.get();
-    if (t) h.set('Authorization', `Bearer ${t}`);
-    return h;
+async function command(name, payload = {}, timeoutMs = 15000) {
+    const { createControlClient } = await import('./ws-client.js');
+    const client = createControlClient();
+    try {
+        return await client.command(name, payload, timeoutMs);
+    } finally {
+        client.close();
+    }
 }
 
-function onUnauth() {
-    token.clear();
-    window.location.href = '/';
+export function apiCommand(name, payload = {}, timeoutMs = 15000) {
+    return command(name, payload, timeoutMs);
 }
 
-async function unwrapError(r) {
-    const body = await r.json().catch(() => ({ detail: `Request failed: ${r.status}` }));
-    return new Error(body.detail || `Request failed: ${r.status}`);
+async function authCheck() {
+    const { createControlClient } = await import('./ws-client.js');
+    const client = createControlClient();
+    try {
+        return await client.request('auth_check', {}, 5000);
+    } finally {
+        client.close();
+    }
 }
 
-export async function apiGet(path) {
-    const r = await fetch(`${API_BASE}${path}`, { headers: authHeaders() });
-    if (r.status === 401) { onUnauth(); throw new Error('Not authenticated'); }
-    if (!r.ok) throw await unwrapError(r);
-    return r.json();
+async function onUnauth() {
+    try {
+        const state = await authCheck();
+        if (state.authenticated) return true;
+    } catch {
+        // If the control socket cannot confirm the session, fall back to login.
+    }
+    return false;
 }
 
-export async function apiPost(path, body) {
-    const r = await fetch(`${API_BASE}${path}`, {
-        method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(body),
+async function unwrapError(response) {
+    const body = await response.json().catch(() => ({ detail: `Request failed: ${response.status}` }));
+    return new Error(body.detail || `Request failed: ${response.status}`);
+}
+
+function commandFor(method, path, body) {
+    const cleanPath = path.split('?')[0];
+    const query = new URLSearchParams(path.includes('?') ? path.slice(path.indexOf('?') + 1) : '');
+
+    if (method === 'GET' && cleanPath === '/health') return ['health', {}];
+    if (method === 'GET' && cleanPath === '/same/templates') return ['same.templates.get', {}];
+    if (method === 'PUT' && cleanPath === '/same/templates') return ['same.templates.put', body || {}];
+    if (method === 'POST' && cleanPath === '/same/test') {
+        return ['same.test', { event_code: query.get('event_code') || body?.event_code || 'RWT' }];
+    }
+    if (method === 'POST' && cleanPath === '/same/generate') return ['same.generate', body || {}];
+    if (method === 'POST' && cleanPath === '/same/air') return ['same.air', body || {}];
+    if (method === 'GET' && cleanPath === '/same/event-codes') return ['same.event_codes', {}];
+    if (method === 'GET' && cleanPath === '/same/location-names') return ['same.location_names', {}];
+    if (method === 'GET' && cleanPath.startsWith('/managed/')) {
+        return ['managed.read', { filename: decodeURIComponent(cleanPath.slice('/managed/'.length)) }];
+    }
+    if (method === 'PUT' && cleanPath.startsWith('/managed/')) {
+        return ['managed.write', { filename: decodeURIComponent(cleanPath.slice('/managed/'.length)), ...(body || {}) }];
+    }
+    return null;
+}
+
+async function requestJson(method, path, body = undefined) {
+    const mapped = commandFor(method, path, body);
+    if (mapped) {
+        const [name, payload] = mapped;
+        return command(name, payload);
+    }
+
+    const response = await fetch(`${API_BASE}${path}`, {
+        method,
+        headers: session.authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        credentials: 'same-origin',
+        body: body === undefined ? undefined : JSON.stringify(body),
     });
-    if (r.status === 401) { onUnauth(); throw new Error('Not authenticated'); }
-    if (!r.ok) throw await unwrapError(r);
-    return r.json();
+    if (response.status === 401) {
+        const stillAuthenticated = await onUnauth();
+        throw new Error(stillAuthenticated ? 'Request was rejected, but the panel session is still active.' : 'Not authenticated');
+    }
+    if (!response.ok) throw await unwrapError(response);
+    return response.json();
+}
+
+export function apiGet(path) {
+    return requestJson('GET', path);
+}
+
+export function apiPost(path, body) {
+    return requestJson('POST', path, body || {});
+}
+
+export function apiPut(path, body) {
+    return requestJson('PUT', path, body || {});
 }
 
 export async function apiPostForm(path, formData) {
-    const r = await fetch(`${API_BASE}${path}`, {
+    const response = await fetch(`${API_BASE}${path}`, {
         method: 'POST',
-        headers: authHeaders(),
+        headers: session.authHeaders(),
+        credentials: 'same-origin',
         body: formData,
     });
-    if (r.status === 401) { onUnauth(); throw new Error('Not authenticated'); }
-    if (!r.ok) throw await unwrapError(r);
-    return r.json();
-}
-
-export async function apiPut(path, body) {
-    const r = await fetch(`${API_BASE}${path}`, {
-        method: 'PUT',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(body),
-    });
-    if (r.status === 401) { onUnauth(); throw new Error('Not authenticated'); }
-    if (!r.ok) throw await unwrapError(r);
-    return r.json();
+    if (response.status === 401) {
+        const stillAuthenticated = await onUnauth();
+        throw new Error(stillAuthenticated ? 'Request was rejected, but the panel session is still active.' : 'Not authenticated');
+    }
+    if (!response.ok) throw await unwrapError(response);
+    return response.json();
 }
 
 export async function apiRaw(path, options = {}) {
     const extra = options.body && typeof options.body === 'string'
         ? { 'Content-Type': 'application/json' }
         : {};
-    const r = await fetch(`${API_BASE}${path}`, { ...options, headers: authHeaders(extra) });
-    if (r.status === 401) { onUnauth(); throw new Error('Not authenticated'); }
-    return r;
+    const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        credentials: 'same-origin',
+        headers: session.authHeaders(extra),
+    });
+    if (response.status === 401) {
+        const stillAuthenticated = await onUnauth();
+        throw new Error(stillAuthenticated ? 'Request was rejected, but the panel session is still active.' : 'Not authenticated');
+    }
+    return response;
 }

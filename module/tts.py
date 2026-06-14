@@ -9,9 +9,7 @@ import os
 import pathlib
 import queue
 import re
-import shutil
 import struct
-import subprocess
 import sys
 import tempfile
 import time
@@ -20,9 +18,16 @@ import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from typing import Any, Generator, Optional, Protocol, cast
 from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 import numpy as np
 
+from module.audio import (
+    decode_audio_bytes_pcm as _av_decode_audio_bytes_pcm,
+    decode_audio_file_pcm as _av_decode_audio_file_pcm,
+    normalize_pcm_s16le,
+    write_pcm_wav as _av_write_pcm_wav,
+)
 from .config import load_config
 
 log = logging.getLogger(__name__)
@@ -31,8 +36,6 @@ log = logging.getLogger(__name__)
 _MODULE_CONFIG = load_config()
 SAMPLE_RATE = _MODULE_CONFIG.get('playout', {}).get('sample_rate', 16000)
 CHANNELS = _MODULE_CONFIG.get('playout', {}).get('channels', 1)
-BYTES_PER_SAMPLE = 2
-
 _DICT_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'dictionary.json'
 _READERS_PATH = pathlib.Path(__file__).parent.parent / 'managed' / 'configs' / 'readers.xml'
 _VOICES_PATH = pathlib.Path(__file__).parent.parent / 'voices'
@@ -329,11 +332,6 @@ _logged_piper_runtime: set[tuple[str, str]] = set()
 _logged_kokoro_runtime: set[tuple[str, str]] = set()
 _logged_kokoro_voice_fallbacks: set[tuple[str, str]] = set()
 
-_TTS_AUDIO_FILTERS = (
-    'acompressor=threshold=-20dB:ratio=4:attack=5:release=50:makeup=10dB,'
-    'loudnorm=I=-9.0:LRA=7:TP=0.0'
-)
-
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
 _PCM_EDGE_FADE_MS = 8
 
@@ -409,28 +407,13 @@ def _to_system_pcm(wav_bytes: bytes) -> bytes | None:
 
 
 def _decode_file_pcm(file_path: pathlib.Path) -> bytes | None:
-    try:
-        proc = subprocess.run(
-            ['ffmpeg', '-loglevel', 'error', '-i', str(file_path),
-             '-af', _TTS_AUDIO_FILTERS,
-             '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-             'pipe:1'],
-            capture_output=True, check=True,
-        )
-        return smooth_pcm_edges(proc.stdout) if proc.stdout else None
-    except Exception as e:
-        log.warning('TTS normalization failed for %s, retrying without filters: %s', file_path.name, e)
-        try:
-            proc = subprocess.run(
-                ['ffmpeg', '-loglevel', 'error', '-i', str(file_path),
-                 '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-                 'pipe:1'],
-                capture_output=True, check=True,
-            )
-            return smooth_pcm_edges(proc.stdout) if proc.stdout else None
-        except Exception as exc:
-            log.error("Failed to decode %s: %s", file_path.name, exc)
-            return None
+    pcm = _av_decode_audio_file_pcm(
+        file_path,
+        sample_rate=SAMPLE_RATE,
+        channels=CHANNELS,
+        normalize=True,
+    )
+    return smooth_pcm_edges(pcm) if pcm else None
 
 
 def decode_audio_file_pcm(file_path: pathlib.Path) -> bytes | None:
@@ -438,67 +421,20 @@ def decode_audio_file_pcm(file_path: pathlib.Path) -> bytes | None:
 
 
 def decode_audio_bytes_pcm(audio_bytes: bytes, suffix: str = '.bin') -> bytes | None:
-    if not audio_bytes:
-        return None
-    fd, tmp_name = tempfile.mkstemp(suffix=suffix)
-    tmp_path = pathlib.Path(tmp_name)
-    try:
-        with os.fdopen(fd, 'wb') as handle:
-            handle.write(audio_bytes)
-        return _decode_file_pcm(tmp_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    pcm = _av_decode_audio_bytes_pcm(
+        audio_bytes,
+        sample_rate=SAMPLE_RATE,
+        channels=CHANNELS,
+        normalize=True,
+    )
+    return smooth_pcm_edges(pcm) if pcm else None
 
 
 def _normalize_pcm(pcm_s16le: bytes) -> bytes | None:
     if not pcm_s16le:
         return None
-    try:
-        proc = subprocess.run(
-            ['ffmpeg', '-y', '-loglevel', 'error',
-             '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-             '-i', 'pipe:0',
-             '-af', _TTS_AUDIO_FILTERS,
-             '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS),
-             'pipe:1'],
-            input=pcm_s16le,
-            capture_output=True,
-            check=True,
-        )
-        return smooth_pcm_edges(proc.stdout) if proc.stdout else None
-    except Exception:
-        return smooth_pcm_edges(pcm_s16le)
-
-
-def _transcode(src: pathlib.Path, dst: pathlib.Path) -> bool:
-    try:
-        subprocess.run(
-            ['ffmpeg', '-y', '-loglevel', 'error', '-i', str(src),
-            '-af', _TTS_AUDIO_FILTERS,
-            '-ar', str(SAMPLE_RATE),
-            '-ac', str(CHANNELS),
-            '-sample_fmt', 's16', str(dst)],
-            capture_output=True,
-            check=True,
-        )
-        log.info("Transcoded %s to %s", src.name, dst.name)
-        return True
-    except Exception as e:
-        log.warning('TTS normalization failed for %s, retrying without filters: %s', src.name, e)
-        try:
-            subprocess.run(
-                ['ffmpeg', '-y', '-loglevel', 'error', '-i', str(src),
-                '-ar', str(SAMPLE_RATE),
-                '-ac', str(CHANNELS),
-                '-sample_fmt', 's16', str(dst)],
-                capture_output=True,
-                check=True,
-            )
-            log.info("Transcoded %s to %s", src.name, dst.name)
-            return True
-        except Exception as exc:
-            log.error("Transcode failed %s: %s", src.name, exc)
-            return False
+    normalized = normalize_pcm_s16le(pcm_s16le, channels=CHANNELS)
+    return smooth_pcm_edges(normalized or pcm_s16le)
 
 
 def _unlink_with_retries(path: pathlib.Path, attempts: int = 8, delay: float = 0.1) -> None:
@@ -514,6 +450,17 @@ def _unlink_with_retries(path: pathlib.Path, attempts: int = 8, delay: float = 0
         except OSError:
             log.debug('Temp file cleanup failed for %s', path, exc_info=True)
             return
+
+
+def _file_uri_to_path(uri: str) -> pathlib.Path:
+    parsed = urlparse(uri)
+    path = unquote(parsed.path or '')
+    if parsed.netloc and parsed.netloc.lower() not in {'localhost', '127.0.0.1'}:
+        path = f'//{parsed.netloc}{path}'
+    if os.name == 'nt':
+        return pathlib.Path(url2pathname(path))
+    return pathlib.Path(path)
+
 
 def _normalize_piper_acceleration(value: Any) -> str:
     normalized = str(value or 'auto').strip().lower()
@@ -595,6 +542,11 @@ def _resolve_existing_path(path_value: str, roots: list[pathlib.Path]) -> str | 
     return None
 
 
+def _normalize_voice_slot(value: str | None) -> str:
+    normalized = str(value or '').strip().lower()
+    return 'female' if normalized == 'female' else 'male'
+
+
 def _select_reader(provider_name: str, lang: str, voice: str | None) -> dict[str, str] | None:
     readers = [reader for reader in _load_readers() if reader.get('provider') == provider_name]
     if not readers:
@@ -602,8 +554,12 @@ def _select_reader(provider_name: str, lang: str, voice: str | None) -> dict[str
 
     normalized_lang = str(lang or '').strip().lower().replace('_', '-')
     lang_prefix = normalized_lang.split('-', 1)[0]
-    desired_gender = str(voice or 'male').strip().lower()
-    desired_gender = 'female' if desired_gender == 'female' else 'male'
+    requested_reader_id = str(voice or '').strip()
+    if requested_reader_id and requested_reader_id.lower() not in {'male', 'female'}:
+        reader = next((item for item in readers if item.get('id') == requested_reader_id), None)
+        if reader is not None:
+            return reader
+    desired_gender = _normalize_voice_slot(voice)
 
     exact_lang = [reader for reader in readers if reader['language'] == normalized_lang]
     prefix_lang = [
@@ -639,6 +595,9 @@ def _load_readers() -> list[dict[str, str]]:
         return readers
 
     for reader_el in root.findall('reader'):
+        reader_id = str(reader_el.get('id') or '').strip()
+        if not reader_id:
+            continue
         provider = str(reader_el.get('provider') or '').strip().lower()
         if provider not in {'piper', 'kokoro', 'pyttsx3'}:
             continue
@@ -648,6 +607,7 @@ def _load_readers() -> list[dict[str, str]]:
         if not path:
             continue
         readers.append({
+            'id': reader_id,
             'provider': provider,
             'language': language,
             'gender': 'female' if gender == 'female' else 'male',
@@ -1305,7 +1265,7 @@ def synthesize_pcm_stream(
     voice: Optional[str] = None,
 ) -> Generator[bytes, None, None]:
     """Yield normalized s16le PCM chunks, one per synthesized line.
-    File URI lines are decoded and normalized whole after ffmpeg processing."""
+    File URI lines are decoded and normalized whole through PyAV."""
     ctx = {'config': config, 'lang': lang, 'voice': voice}
     fallback_order = _resolve_fallback_order(config, lang, voice)
 
@@ -1314,7 +1274,7 @@ def synthesize_pcm_stream(
         if not line:
             continue
         if _FILE_URI_RE.match(line):
-            file_path = pathlib.Path(unquote(urlparse(line).path))
+            file_path = _file_uri_to_path(line)
             pcm = _decode_file_pcm(file_path)
             if pcm:
                 yield pcm
@@ -1342,22 +1302,15 @@ def _provide_piper(text: str, ctx: dict, out: pathlib.Path) -> bool:
     wav_bytes = _piper_synthesize_wav_bytes(text, ctx)
     if not wav_bytes:
         return False
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(wav_bytes)
-    raw_path = out.with_suffix('.bin.wav')
-    out.rename(raw_path)
-    success = _transcode(raw_path, out)
-    raw_path.unlink(missing_ok=True)
-    return success
+    pcm = decode_audio_bytes_pcm(wav_bytes, suffix='.wav')
+    if not pcm:
+        return False
+    _write_pcm_wav(out, pcm)
+    return True
 
 
 def _write_pcm_wav(path: pathlib.Path, pcm_s16le: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(BYTES_PER_SAMPLE)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(pcm_s16le)
+    _av_write_pcm_wav(path, pcm_s16le, sample_rate=SAMPLE_RATE, channels=CHANNELS)
 
 
 def write_pcm_wav(path: pathlib.Path, pcm_s16le: bytes) -> None:
@@ -1508,12 +1461,6 @@ def _provide_kokoro(text: str, ctx: dict, out: pathlib.Path) -> bool:
         log.error('Kokoro provider failed: %s', e)
         return False
 
-PROVIDERS = {
-    'kokoro': _provide_kokoro,
-    'piper': _provide_piper,
-    'pyttsx3': _provide_pyttsx3
-}
-
 def synthesize(
     config: dict[str, Any],
     text: str,
@@ -1536,60 +1483,35 @@ def synthesize(
 
     if not segments: return None
 
-    part_dir = out_dir / f".{package_id}_parts"
-    part_dir.mkdir(parents=True, exist_ok=True)
-    processed_parts = []
+    processed_parts: list[bytes] = []
 
     ctx = {'config': config, 'lang': lang, 'voice': voice}
     fallback_order = _resolve_fallback_order(config, lang, voice)
 
-    try:
-        for i, (kind, content) in enumerate(segments):
-            part_path = part_dir / f"{i}.wav"
-            
-            if kind == 'file':
-                file_path = pathlib.Path(unquote(urlparse(content).path))
-                if _transcode(file_path, part_path):
-                    processed_parts.append(part_path)
-            else:
-
-                clean_text = apply_dictionary(content, lang)
-                for provider_name in fallback_order:
-                    if provider_name in PROVIDERS and PROVIDERS[provider_name](clean_text, ctx, part_path):
-                        processed_parts.append(part_path)
-                        break
-
-        if not processed_parts: return None
-
-        if len(processed_parts) == 1:
-            _transcode(processed_parts[0], final_path)
+    for kind, content in segments:
+        if kind == 'file':
+            file_path = _file_uri_to_path(content)
+            pcm = _decode_file_pcm(file_path)
+            if pcm:
+                processed_parts.append(pcm)
         else:
-            inputs = []
-            filter_str = ""
-            for i, p in enumerate(processed_parts):
-                inputs.extend(['-i', str(p)])
+            clean_text = apply_dictionary(content, lang)
+            for provider_name in fallback_order:
+                batch_fn = PCM_PROVIDERS.get(provider_name)
+                if batch_fn is None:
+                    continue
+                pcm = batch_fn(clean_text, ctx)
+                if pcm:
+                    processed_parts.append(pcm)
+                    break
 
-                filter_str += f"[{i}:a]aresample={SAMPLE_RATE},pan={'stereo|c0=c0|c1=c0' if CHANNELS==2 else 'mono|c0=c0'}[a{i}];"
-            
-            filter_str += "".join([f"[a{i}]" for i in range(len(processed_parts))])
-            filter_str += f"concat=n={len(processed_parts)}:v=0:a=1,{_TTS_AUDIO_FILTERS}[outa]"
-            
-            cmd = ['ffmpeg', '-y', '-loglevel', 'error'] + inputs + [
-                '-filter_complex', filter_str,
-                '-map', '[outa]',
-                '-ac', str(CHANNELS),
-                '-ar', str(SAMPLE_RATE),
-                '-sample_fmt', 's16',
-                str(final_path)
-            ]
-            proc = subprocess.run(cmd, capture_output=True)
+    if not processed_parts:
+        return None
 
-            if proc.returncode != 0 or not final_path.exists():
-                log.error("FFmpeg concat failed: %s", proc.stderr.decode(errors="ignore"))
-                return None
-
-    finally:
-        shutil.rmtree(part_dir, ignore_errors=True)
+    final_pcm = _normalize_pcm(b''.join(processed_parts))
+    if not final_pcm:
+        return None
+    _write_pcm_wav(final_path, final_pcm)
 
     return final_path if final_path.exists() else None
 

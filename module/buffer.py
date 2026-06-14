@@ -296,6 +296,7 @@ class AudioPipeline:
     __slots__ = (
         '_segment_queue', '_alert_queue', '_alert_active', '_alert_done',
         '_segment_consumed', '_shutdown', '_sinks', '_playout_task',
+        '_chunk_observer',
     )
 
     def __init__(self) -> None:
@@ -310,6 +311,7 @@ class AudioPipeline:
         self._shutdown = asyncio.Event()
         self._sinks: list[tuple[OutputSink, str]] = []
         self._playout_task: asyncio.Task | None = None
+        self._chunk_observer: Callable[[bytes], None] | None = None
 
     def attach_sink(self, sink: OutputSink, name: str = '') -> None:
         queue_limit = int(getattr(sink, 'bus_queue_limit', 0) or 0)
@@ -372,6 +374,9 @@ class AudioPipeline:
             self._playout_loop(), name='playout',
         )
 
+    def set_chunk_observer(self, observer: Callable[[bytes], None] | None) -> None:
+        self._chunk_observer = observer
+
     async def stop(self) -> None:
         self._shutdown.set()
         if self._playout_task:
@@ -387,6 +392,12 @@ class AudioPipeline:
                 log.error('Sink close failed (%s): %s', name, exc)
 
     async def _write_sinks(self, chunk: bytes) -> None:
+        observer = self._chunk_observer
+        if observer is not None:
+            try:
+                observer(chunk)
+            except Exception as exc:
+                log.debug('Chunk observer failed: %s', exc)
         if not self._sinks:
             return
         if len(self._sinks) == 1:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as _dt
 import fnmatch
 import logging
+import os
 import pathlib
 import time
 from typing import Any, cast
@@ -162,7 +163,7 @@ def fire_test(config: dict[str, Any], feeds: list[dict[str, Any]], event_code: s
     same_event: str = str(template.get('sameEvent', event_code))
     same_cfg = config.get('same', {})
     same_block = template.get('same', {}) if isinstance(template.get('same'), dict) else {}
-    callsign: str = str(same_block.get('sender_id') or same_cfg.get('sender', 'HAZE0000'))
+    callsign: str = str(same_block.get('sender_id') or same_cfg.get('sender') or os.environ.get('SAME_ID', 'HAZE0000'))
     same_sr = SAME_SAMPLE_RATE
     content_block = same_block.get('content', {}) if isinstance(same_block.get('content'), dict) else {}
     tone_value = str(content_block.get('attention_tone') or same_cfg.get('default_attention_tone', 'WXR')).upper()

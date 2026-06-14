@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Haze Weather Radio admin sign in">
+    <title>Haze Weather Radio Sign In</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body class="login-body">
+    <main class="login-page">
+        <section class="login-panel" aria-labelledby="loginTitle">
+            <header class="login-header">
+                <img class="login-mark" src="/assets/hazelogo.svg" alt="Haze Weather Radio">
+                <div class="login-title-block">
+                    <h1 id="loginTitle">Haze Weather Radio</h1>
+                    <p id="loginSubtitle">Haze Weather Radio</p>
+                </div>
+            </header>
+
+            <form id="loginForm" class="login-form">
+                <label for="passwordInput">Password</label>
+                <input id="passwordInput" name="password" type="password" autocomplete="current-password" autofocus required>
+                <button type="submit" id="loginButton">
+                    <span>Sign in</span>
+                </button>
+                <p class="auth-status" id="authStatus">Authorized operators only.</p>
+            </form>
+        </section>
+    </main>
+
+    <script type="module" src="/assets/js/login.js"></script>
+</body>
+</html>
