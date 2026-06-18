@@ -1,0 +1,134 @@
+package productrender
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestCAPSAMEPayloadSuppressesCancellations(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, ok := cfg.feedByID("sk-0001")
+	if !ok {
+		t.Fatal("fixture feed not found")
+	}
+	alert := parseTestAlert(t, testCAP("urn:test:cancel", "Cancel", "ended", "2099-06-15T21:30:00-06:00", true))
+
+	payload := capSAMEPayload(alert, feed, cfg.BaseDir, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC))
+
+	if payload["include_same"] != false {
+		t.Fatalf("include_same = %#v, want false", payload["include_same"])
+	}
+	if payload["same_suppressed_reason"] != "cancellation" {
+		t.Fatalf("same_suppressed_reason = %#v", payload["same_suppressed_reason"])
+	}
+}
+
+func TestCAPPriorityBroadcastUsesFreshnessWindow(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alert := parseTestAlert(t, testCAP("urn:test:freshness", "Alert", "active", "2099-06-15T21:30:00-06:00", false))
+	service := &Service{cfg: cfg}
+
+	freshUpdates, err := service.recordCAPAlert(alert, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(freshUpdates) != 1 || !freshUpdates[0].Broadcast {
+		t.Fatalf("fresh updates = %#v", freshUpdates)
+	}
+
+	staleUpdates, err := service.recordCAPAlert(alert, time.Date(2026, 6, 15, 23, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staleUpdates) != 1 {
+		t.Fatalf("stale updates = %#v", staleUpdates)
+	}
+	if staleUpdates[0].Broadcast {
+		t.Fatalf("stale alert should not priority broadcast: %#v", staleUpdates[0])
+	}
+	if !staleUpdates[0].Renderable {
+		t.Fatalf("stale active alert should remain routine-renderable until ended/expired: %#v", staleUpdates[0])
+	}
+}
+
+func TestCAPPriorityBroadcastSuppressesEndedAlerts(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alert := parseTestAlert(t, testCAP("urn:test:ended", "Update", "ended", "2099-06-15T21:30:00-06:00", true))
+	service := &Service{cfg: cfg}
+
+	updates, err := service.recordCAPAlert(alert, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 {
+		t.Fatalf("updates = %#v", updates)
+	}
+	if updates[0].Broadcast {
+		t.Fatalf("ended alert should not priority broadcast: %#v", updates[0])
+	}
+	if !updates[0].Cancelled {
+		t.Fatalf("ended alert should emit cancellation cleanup metadata: %#v", updates[0])
+	}
+}
+
+func TestSameAlertFreshForToneUsesShortWindowForSVRAndTOR(t *testing.T) {
+	alert := parseTestAlert(t, testCAP("urn:test:svr", "Alert", "active", "2099-06-15T21:30:00-06:00", false))
+	info := chooseAlertInfo(alert, "en-CA")
+	if info == nil {
+		t.Fatal("alert info not found")
+	}
+	sentPlus29 := time.Date(2026, 6, 15, 22, 27, 0, 0, time.UTC)
+	sentPlus31 := time.Date(2026, 6, 15, 22, 29, 0, 0, time.UTC)
+
+	if !sameAlertFreshForTone(alert, *info, "SVR", sentPlus29) {
+		t.Fatal("SVR should allow SAME tones before 30 minutes")
+	}
+	if sameAlertFreshForTone(alert, *info, "SVR", sentPlus31) {
+		t.Fatal("SVR should suppress SAME tones after 30 minutes")
+	}
+	if !sameAlertFreshForTone(alert, *info, "TOR", sentPlus29) {
+		t.Fatal("TOR should allow SAME tones before 30 minutes")
+	}
+	if sameAlertFreshForTone(alert, *info, "TOR", sentPlus31) {
+		t.Fatal("TOR should suppress SAME tones after 30 minutes")
+	}
+}
+
+func TestSameAlertFreshForToneUsesLongWindowForOtherAlerts(t *testing.T) {
+	alert := parseTestAlert(t, testCAP("urn:test:watch", "Alert", "active", "2099-06-15T21:30:00-06:00", false))
+	info := chooseAlertInfo(alert, "en-CA")
+	if info == nil {
+		t.Fatal("alert info not found")
+	}
+	sentPlus59 := time.Date(2026, 6, 15, 22, 57, 0, 0, time.UTC)
+	sentPlus61 := time.Date(2026, 6, 15, 22, 59, 0, 0, time.UTC)
+
+	if !sameAlertFreshForTone(alert, *info, "SVA", sentPlus59) {
+		t.Fatal("SVA should allow SAME tones before 60 minutes")
+	}
+	if sameAlertFreshForTone(alert, *info, "SVA", sentPlus61) {
+		t.Fatal("SVA should suppress SAME tones after 60 minutes")
+	}
+	if !sameAlertFreshForTone(alert, *info, "ADR", sentPlus59) {
+		t.Fatal("other SAME events should allow tones before 60 minutes")
+	}
+	if sameAlertFreshForTone(alert, *info, "ADR", sentPlus61) {
+		t.Fatal("other SAME events should suppress tones after 60 minutes")
+	}
+}

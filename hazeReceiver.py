@@ -25,15 +25,30 @@ import aiohttp
 try:
     import av
     from aiortc import RTCPeerConnection, RTCSessionDescription
+    try:
+        from aiortc import RTCRtpSender
+    except Exception:
+        RTCRtpSender = None
 except Exception as exc:
     av = None
     RTCPeerConnection = None
     RTCSessionDescription = None
+    RTCRtpSender = None
     _WEBRTC_IMPORT_ERROR = exc
 else:
     _WEBRTC_IMPORT_ERROR = None
 
 pifm_bin = "/home/rai/PiFmAdv/src/pi_fm_adv"
+DEFAULT_DEVIATION_HZ = 7000
+DEFAULT_AUDIO_FILTERS = (
+    'agate=threshold=-42dB:ratio=18:attack=4:release=110:makeup=1,'
+    'highpass=f=30,'
+    'lowpass=f=10000,'
+    'equalizer=f=1800:t=q:w=1.1:g=2.5,'
+    'acompressor=threshold=-18dB:ratio=3:attack=5:release=120:makeup=2,'
+    'volume=14dB,'
+    'alimiter=limit=0.995:level=disabled'
+)
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +92,7 @@ class ReceiverConfig:
     reconnect_backoff: float
     stream_stall_timeout_s: float
     write_chunk_size: int
+    audio_frame_ms: int
 
 
 def _safe_feed_name(feed_id: str) -> str:
@@ -94,14 +110,12 @@ def _normalize_server_url(raw: str, allow_insecure_dev: bool) -> str:
         raise ValueError('--server is required')
     parsed = urlparse(value)
     if not parsed.scheme:
-        value = f'https://{value}'
+        value = f'http://{value}'
         parsed = urlparse(value)
     if parsed.scheme in {'ws', 'wss'}:
         parsed = parsed._replace(scheme='https' if parsed.scheme == 'wss' else 'http')
     if parsed.scheme not in {'http', 'https'}:
         raise ValueError('--server must use http:// or https://')
-    if parsed.scheme == 'http' and not allow_insecure_dev:
-        raise ValueError('Receiver transport requires HTTPS; use --allow-insecure-dev only for local testing')
     if not parsed.netloc:
         raise ValueError('--server must include a hostname or IP address')
     return urlunparse((parsed.scheme, parsed.netloc, '', '', '', '')).rstrip('/')
@@ -112,6 +126,13 @@ def _api_url(config: ReceiverConfig, path: str) -> str:
     return urljoin(config.server_url + base, path.lstrip('/'))
 
 
+def _panel_ws_url(config: ReceiverConfig) -> str:
+    parsed = urlparse(config.server_url)
+    scheme = 'wss' if parsed.scheme == 'https' else 'ws'
+    base = urlunparse((scheme, parsed.netloc, '', '', '', '')).rstrip('/')
+    return f'{base}/api/public/v1/panel/ws?feeds=1'
+
+
 def _receiver_proof_message(kind: str, values: dict[str, Any]) -> bytes:
     payload = {'kind': kind, **{str(k): str(v) for k, v in values.items()}}
     return json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
@@ -119,6 +140,25 @@ def _receiver_proof_message(kind: str, values: dict[str, Any]) -> bytes:
 
 def _receiver_hmac(secret: str, message: bytes) -> str:
     return hmac.new(secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
+
+
+def _sdp_audio_codecs(sdp: str) -> list[str]:
+    codecs: list[str] = []
+    for line in str(sdp or '').splitlines():
+        line = line.strip()
+        if not line.lower().startswith('a=rtpmap:'):
+            continue
+        _, _, payload = line.partition(' ')
+        codec = payload.split('/', 1)[0].strip()
+        if codec and codec not in codecs:
+            codecs.append(codec)
+    return codecs
+
+
+def _transmitter_label(transmitter: dict[str, Any]) -> str:
+    relationship = str(transmitter.get('relationship') or 'unknown').strip() or 'unknown'
+    frequency = str(transmitter.get('frequency_mhz') or 'unknown').strip() or 'unknown'
+    return f'{relationship}@{frequency}MHz'
 
 
 def _load_state(path: pathlib.Path) -> dict[str, Any]:
@@ -175,68 +215,89 @@ class ReceiverSupervisor:
         self.state['receiver_id'] = self.receiver_id
         self.state['feed_id'] = config.feed_id
         self.state['server_url'] = config.server_url
+        last_transmitter = self.state.get('last_transmitter')
+        self.last_transmitter = last_transmitter if isinstance(last_transmitter, dict) else None
+        self.fallback_pifm_proc: asyncio.subprocess.Process | None = None
+        self.fallback_ffmpeg_proc: asyncio.subprocess.Process | None = None
+        self.fallback_pipe_task: asyncio.Task[Any] | None = None
+        self.fallback_log_tasks: list[asyncio.Task[Any]] = []
         _save_state(config.state_file, self.state)
 
     async def run_forever(self) -> None:
         self._install_signal_handlers()
         delay = self.config.reconnect_initial_delay_s
-        while not self.stop_event.is_set():
-            try:
-                reason = await self._run_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                reason = f'receiver failure: {exc}'
-            if self.stop_event.is_set():
-                break
-            log.warning('Receiver reconnect requested: %s', reason)
-            await asyncio.sleep(delay)
-            delay = min(self.config.reconnect_max_delay_s, delay * self.config.reconnect_backoff)
-        log.info('Receiver stopped')
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    reason = await self._run_once()
+                    delay = self.config.reconnect_initial_delay_s
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    reason = f'receiver failure: {exc}'
+                if self.stop_event.is_set():
+                    break
+                log.warning('Receiver reconnect requested: %s', reason)
+                await self._ensure_fallback_carrier()
+                await asyncio.sleep(delay)
+                delay = min(self.config.reconnect_max_delay_s, delay * self.config.reconnect_backoff)
+        finally:
+            await self._stop_fallback_carrier()
+            log.info('Receiver stopped')
 
     async def _run_once(self) -> str:
-        timeout = aiohttp.ClientTimeout(total=12, sock_connect=4, sock_read=8)
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=4, sock_read=None)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            auth = await self._receiver_auth(session)
-            ws_url = str(auth.get('ws_url') or '')
-            cookie = str(auth.get('cookie') or '')
-            if not ws_url or not cookie:
-                return 'receiver session did not return websocket credentials'
-            if ws_url.startswith('ws://') and not self.config.allow_insecure_dev:
-                return 'receiver websocket URL is insecure'
+            ws_url = _panel_ws_url(self.config)
             async with session.ws_connect(
                 ws_url,
-                headers={'Authorization': f'HazeReceiverCookie {cookie}'},
                 heartbeat=15,
+                receive_timeout=None,
             ) as ws:
-                ready_msg = await ws.receive_json()
-                if ready_msg.get('type') != 'receiver_ready':
-                    return f'unexpected receiver websocket message: {ready_msg.get("type")}'
-                transmitter = ready_msg.get('transmitter') if isinstance(ready_msg.get('transmitter'), dict) else {}
+                feed = await self._wait_for_feed(ws)
+                transmitter = feed.get('transmitter') if isinstance(feed.get('transmitter'), dict) else {}
+                if transmitter.get('frequency_mhz') is not None:
+                    self.last_transmitter = dict(transmitter)
+                    self.state['last_transmitter'] = self.last_transmitter
+                    _save_state(self.config.state_file, self.state)
                 return await self._run_webrtc_session(ws, transmitter)
 
-    async def _receiver_auth(self, session: aiohttp.ClientSession) -> dict[str, Any]:
-        credential_id = str(self.state.get('credential_id') or '')
-        credential_secret = str(self.state.get('credential_secret') or '')
-        if credential_id and credential_secret:
+    async def _wait_for_feed(self, ws: aiohttp.ClientWebSocketResponse) -> dict[str, Any]:
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            msg = await ws.receive(timeout=max(0.1, deadline - time.monotonic()))
+            if msg.type == aiohttp.WSMsgType.ERROR:
+                raise RuntimeError(f'public panel websocket error: {ws.exception()}')
+            if msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE}:
+                raise RuntimeError('public panel websocket closed before feed metadata arrived')
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                continue
             try:
-                return await self._request_session_cookie(session, credential_id, credential_secret)
-            except ReceiverHttpError as exc:
-                if exc.status in {401, 403, 404}:
-                    log.warning('Stored receiver credential was rejected by Haze: %s', exc)
-                    self.state.pop('credential_id', None)
-                    self.state.pop('credential_secret', None)
-                    _save_state(self.config.state_file, self.state)
-                else:
-                    log.warning('Stored receiver credential could not be checked yet: %s', exc)
-                    raise
-            except Exception as exc:
-                log.warning('Stored receiver credential check failed transiently: %s', exc)
-                raise
+                payload = json.loads(msg.data)
+            except json.JSONDecodeError:
+                continue
+            if payload.get('type') != 'public_state':
+                continue
+            data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
+            summary = data.get('summary') if isinstance(data.get('summary'), dict) else {}
+            feeds = data.get('feeds') if isinstance(data.get('feeds'), list) else []
+            if not feeds:
+                feeds = summary.get('feeds') if isinstance(summary.get('feeds'), list) else []
+            for feed in feeds:
+                if not isinstance(feed, dict):
+                    continue
+                if str(feed.get('id') or '').strip() == self.config.feed_id:
+                    if not bool(feed.get('webrtc_enabled')):
+                        raise RuntimeError(f'feed {self.config.feed_id} does not have WebRTC enabled')
+                    return feed
+        raise RuntimeError(f'feed {self.config.feed_id} was not advertised by the public panel websocket')
 
-        if not self.config.pair_token:
-            raise RuntimeError('receiver is not paired and no pairing token was supplied')
-        return await self._pair_receiver(session)
+    async def _receiver_auth(self, session: aiohttp.ClientSession) -> dict[str, Any]:
+        return await _post_json(session, _api_url(self.config, 'session'), {
+            'feed_id': self.config.feed_id,
+            'receiver_id': self.receiver_id,
+            'receiver_hostname': self.receiver_hostname,
+        })
 
     async def _pair_receiver(self, session: aiohttp.ClientSession) -> dict[str, Any]:
         nonce = secrets.token_urlsafe(24)
@@ -309,15 +370,15 @@ class ReceiverSupervisor:
         })
 
     async def _run_webrtc_session(self, ws: aiohttp.ClientWebSocketResponse, transmitter: dict[str, Any]) -> str:
-        frequency = transmitter.get('frequency_mhz')
-        if frequency is None:
+        if transmitter.get('frequency_mhz') is None:
             return 'receiver transmitter parameters did not include frequency_mhz'
+        await self._stop_fallback_carrier()
         pifm_proc: asyncio.subprocess.Process | None = None
         ffmpeg_proc: asyncio.subprocess.Process | None = None
         pc: RTCPeerConnection | None = None
         try:
             pifm_proc = await self._start_pifmadv(transmitter)
-            ffmpeg_proc = await self._start_audio_processor()
+            ffmpeg_proc = await self._start_audio_processor(transmitter)
             assert ffmpeg_proc.stdin is not None
             assert ffmpeg_proc.stdout is not None
             assert ffmpeg_proc.stderr is not None
@@ -330,46 +391,69 @@ class ReceiverSupervisor:
             @pc.on('track')
             def _on_track(track: Any) -> None:
                 if getattr(track, 'kind', '') == 'audio' and not track_future.done():
+                    log.info('Receiver WebRTC audio track started: id=%s', getattr(track, 'id', 'unknown'))
                     track_future.set_result(track)
 
-            pc.addTransceiver('audio', direction='recvonly')
+            @pc.on('iceconnectionstatechange')
+            def _on_ice_state_change() -> None:
+                log.info('Receiver WebRTC ICE state: %s', getattr(pc, 'iceConnectionState', 'unknown'))
+
+            @pc.on('connectionstatechange')
+            def _on_connection_state_change() -> None:
+                log.info('Receiver WebRTC connection state: %s', getattr(pc, 'connectionState', 'unknown'))
+
+            transceiver = pc.addTransceiver('audio', direction='recvonly')
+            self._prefer_receiver_codecs(transceiver)
             offer = await pc.createOffer()
             await pc.setLocalDescription(offer)
+            log.info(
+                'Sending receiver WebRTC offer with audio codecs: %s',
+                ', '.join(_sdp_audio_codecs(pc.localDescription.sdp)) or 'unknown',
+            )
             await ws.send_json({
                 'type': 'webrtc_offer',
+                'feed_id': self.config.feed_id,
                 'sdp': pc.localDescription.sdp,
                 'sdp_type': pc.localDescription.type,
+                'require_opus': True,
             })
 
             while True:
                 msg = await ws.receive_json()
                 msg_type = str(msg.get('type') or '')
                 if msg_type == 'webrtc_answer':
-                    await pc.setRemoteDescription(RTCSessionDescription(sdp=str(msg.get('sdp') or ''), type=str(msg.get('sdp_type') or 'answer')))
+                    answer_sdp = str(msg.get('sdp') or '')
+                    log.info(
+                        'Received receiver WebRTC answer with audio codecs: %s',
+                        ', '.join(_sdp_audio_codecs(answer_sdp)) or 'unknown',
+                    )
+                    await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type=str(msg.get('sdp_type') or 'answer')))
                     break
                 if msg_type == 'webrtc_error':
                     return f'webrtc negotiation failed: {msg.get("detail")}'
 
             track = await asyncio.wait_for(track_future, timeout=10.0)
             self.last_audio_ts = time.monotonic()
-            pump_audio_task = asyncio.create_task(self._pump_track_to_processor(track, ffmpeg_proc.stdin), name='webrtc_to_ffmpeg')
-            pipe_task = asyncio.create_task(self._pump_processor_to_pifm(ffmpeg_proc.stdout, pifm_proc.stdin), name='ffmpeg_to_pifm')
+            pump_audio_task = asyncio.create_task(
+                self._pump_track_to_processor(track, ffmpeg_proc.stdin),
+                name='webrtc_to_ffmpeg',
+            )
+            pipe_task = asyncio.create_task(
+                self._pump_processor_to_pifm(ffmpeg_proc.stdout, pifm_proc.stdin),
+                name='ffmpeg_to_pifm',
+            )
+            ffmpeg_wait_task = asyncio.create_task(self._wait_process(ffmpeg_proc, 'ffmpeg'), name='ffmpeg_wait')
+            pifm_wait_task = asyncio.create_task(self._wait_process(pifm_proc, 'piFmAdv'), name='pifm_wait')
             ffmpeg_err_task = asyncio.create_task(self._log_stream(ffmpeg_proc.stderr, 'ffmpeg'), name='ffmpeg_stderr')
             pifm_err_task = asyncio.create_task(self._log_stream(pifm_proc.stderr, 'piFmAdv'), name='pifm_stderr')
             monitor_task = asyncio.create_task(self._monitor_health(ffmpeg_proc, pifm_proc, pc), name='monitor_health')
             ws_task = asyncio.create_task(self._watch_control_ws(ws), name='receiver_ws')
 
             done, pending = await asyncio.wait(
-                {pump_audio_task, pipe_task, monitor_task, ws_task},
+                {pump_audio_task, pipe_task, ffmpeg_wait_task, pifm_wait_task, monitor_task, ws_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            for task in pending:
-                task.cancel()
-            for task in (ffmpeg_err_task, pifm_err_task):
-                task.cancel()
-            for task in (*pending, ffmpeg_err_task, pifm_err_task):
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+            await self._cancel_tasks((*pending, ffmpeg_err_task, pifm_err_task), timeout_s=2.0)
             reason = 'receiver session stopped'
             for task in done:
                 with contextlib.suppress(asyncio.CancelledError):
@@ -379,11 +463,29 @@ class ReceiverSupervisor:
             return reason
         finally:
             if pc is not None:
-                await pc.close()
+                await self._close_peer_connection(pc)
             await self._terminate_process(ffmpeg_proc, 'ffmpeg')
             await self._terminate_process(pifm_proc, 'piFmAdv')
 
-    async def _start_audio_processor(self) -> asyncio.subprocess.Process:
+    def _prefer_receiver_codecs(self, transceiver: Any) -> None:
+        if RTCRtpSender is None or not hasattr(transceiver, 'setCodecPreferences'):
+            return
+        with contextlib.suppress(Exception):
+            capabilities = RTCRtpSender.getCapabilities('audio')
+            preferred = [
+                codec
+                for codec in getattr(capabilities, 'codecs', [])
+                if str(getattr(codec, 'mimeType', '')).lower() == 'audio/opus'
+            ]
+            preferred.sort(key=lambda codec: {
+                'audio/opus': 0,
+            }.get(str(getattr(codec, 'mimeType', '')).lower(), 99))
+            if preferred:
+                transceiver.setCodecPreferences(preferred)
+                names = [str(getattr(codec, 'mimeType', '')).split('/', 1)[-1] for codec in preferred]
+                log.info('Receiver preferred WebRTC codecs: %s', ', '.join(names))
+
+    async def _start_audio_processor(self, transmitter: dict[str, Any]) -> asyncio.subprocess.Process:
         cmd = [
             self.config.ffmpeg_bin,
             '-hide_banner',
@@ -408,17 +510,106 @@ class ReceiverSupervisor:
             'wav',
             'pipe:1',
         ]
-        log.info('Starting WebRTC audio processor (%d Hz -> %d Hz)', self.config.webrtc_input_sample_rate, self.config.output_sample_rate)
+        log.info(
+            'Starting WebRTC audio processor for %s (%d Hz -> %d Hz)',
+            _transmitter_label(transmitter),
+            self.config.webrtc_input_sample_rate,
+            self.config.output_sample_rate,
+        )
         return await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **self._process_kwargs(),
         )
+
+    async def _start_silence_processor(self, transmitter: dict[str, Any]) -> asyncio.subprocess.Process:
+        layout = 'mono' if self.config.channels == 1 else 'stereo'
+        cmd = [
+            self.config.ffmpeg_bin,
+            '-hide_banner',
+            '-nostats',
+            '-loglevel',
+            self.config.ffmpeg_log_level,
+            '-f',
+            'lavfi',
+            '-i',
+            f'anullsrc=r={self.config.output_sample_rate}:cl={layout}',
+            '-af',
+            self.config.audio_filters,
+            '-ar',
+            str(self.config.output_sample_rate),
+            '-ac',
+            str(self.config.channels),
+            '-f',
+            'wav',
+            'pipe:1',
+        ]
+        log.info('Starting silent reconnect carrier for %s', _transmitter_label(transmitter))
+        return await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **self._process_kwargs(),
+        )
+
+    def _fallback_carrier_running(self) -> bool:
+        return (
+            self.fallback_pifm_proc is not None
+            and self.fallback_pifm_proc.returncode is None
+            and self.fallback_ffmpeg_proc is not None
+            and self.fallback_ffmpeg_proc.returncode is None
+            and self.fallback_pipe_task is not None
+            and not self.fallback_pipe_task.done()
+        )
+
+    async def _ensure_fallback_carrier(self) -> None:
+        if self._fallback_carrier_running():
+            return
+        await self._stop_fallback_carrier()
+        transmitter = self.last_transmitter
+        if not isinstance(transmitter, dict) or transmitter.get('frequency_mhz') is None:
+            log.warning('No cached transmitter metadata; reconnect will not hold a silent carrier')
+            return
+        try:
+            self.fallback_pifm_proc = await self._start_pifmadv(transmitter)
+            self.fallback_ffmpeg_proc = await self._start_silence_processor(transmitter)
+            assert self.fallback_ffmpeg_proc.stdout is not None
+            assert self.fallback_ffmpeg_proc.stderr is not None
+            assert self.fallback_pifm_proc.stdin is not None
+            assert self.fallback_pifm_proc.stderr is not None
+            self.fallback_pipe_task = asyncio.create_task(
+                self._pump_processor_to_pifm(self.fallback_ffmpeg_proc.stdout, self.fallback_pifm_proc.stdin),
+                name='fallback_silence_to_pifm',
+            )
+            self.fallback_log_tasks = [
+                asyncio.create_task(self._log_stream(self.fallback_ffmpeg_proc.stderr, 'fallback_ffmpeg'), name='fallback_ffmpeg_stderr'),
+                asyncio.create_task(self._log_stream(self.fallback_pifm_proc.stderr, 'fallback_piFmAdv'), name='fallback_pifm_stderr'),
+            ]
+            log.info('Silent reconnect carrier is active')
+        except Exception as exc:
+            log.warning('Could not start silent reconnect carrier: %s', exc)
+            await self._stop_fallback_carrier()
+
+    async def _stop_fallback_carrier(self) -> None:
+        tasks: list[asyncio.Task[Any]] = []
+        if self.fallback_pipe_task is not None:
+            tasks.append(self.fallback_pipe_task)
+        tasks.extend(self.fallback_log_tasks)
+        if tasks:
+            await self._cancel_tasks(tuple(tasks), timeout_s=1.0)
+        await self._terminate_process(self.fallback_ffmpeg_proc, 'fallback ffmpeg')
+        await self._terminate_process(self.fallback_pifm_proc, 'fallback piFmAdv')
+        self.fallback_pipe_task = None
+        self.fallback_log_tasks = []
+        self.fallback_ffmpeg_proc = None
+        self.fallback_pifm_proc = None
 
     async def _start_pifmadv(self, transmitter: dict[str, Any]) -> asyncio.subprocess.Process:
         frequency_mhz = float(transmitter['frequency_mhz'])
-        deviation_hz = int(transmitter.get('deviation_hz') or 5000)
+        deviation_hz = int(transmitter.get('deviation_hz') or DEFAULT_DEVIATION_HZ)
         preemphasis = str(transmitter.get('preemphasis') or 'none').strip().lower()
         cmd = [
             self.config.pifmadv_bin,
@@ -432,47 +623,109 @@ class ReceiverSupervisor:
             '0',
             *self.config.pifm_extra_args,
         ]
-        if preemphasis == '50':
-            cmd.extend(['--preemph', '50us'])
-        elif preemphasis == '75':
-            cmd.extend(['--preemph', '75us'])
-        log.info('Starting piFmAdv transmitter %.3f MHz (%s)', frequency_mhz, self.config.pifmadv_bin)
+        if preemphasis in {'50', '50us', 'eu'}:
+            cmd.extend(['--preemph', 'eu'])
+        elif preemphasis in {'75', '75us', 'us'}:
+            cmd.extend(['--preemph', 'us'])
+        log.info(
+            'Starting piFmAdv transmitter %.3f MHz relationship=%s deviation=%dHz preemphasis=%s (%s)',
+            frequency_mhz,
+            transmitter.get('relationship') or 'unknown',
+            deviation_hz,
+            preemphasis,
+            self.config.pifmadv_bin,
+        )
         return await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            **self._process_kwargs(),
         )
 
     async def _pump_track_to_processor(self, track: Any, ffmpeg_stdin: asyncio.StreamWriter) -> str:
+        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
+        producer = asyncio.create_task(self._read_track_audio(track, queue), name='webrtc_audio_reader')
+        writer = asyncio.create_task(self._write_paced_audio(queue, ffmpeg_stdin), name='ffmpeg_audio_writer')
+        try:
+            done, pending = await asyncio.wait({producer, writer}, return_when=asyncio.FIRST_COMPLETED)
+            await self._cancel_tasks(tuple(pending), timeout_s=1.0)
+            for task in done:
+                with contextlib.suppress(asyncio.CancelledError):
+                    result = await task
+                    if isinstance(result, str) and result:
+                        return result
+            return 'audio pump stopped'
+        finally:
+            with contextlib.suppress(Exception):
+                track.stop()
+            await self._cancel_tasks((producer, writer), timeout_s=1.0)
+
+    async def _read_track_audio(self, track: Any, queue: asyncio.Queue[bytes]) -> str:
         layout = 'mono' if self.config.channels == 1 else 'stereo'
         resampler = av.AudioResampler(format='s16', layout=layout, rate=self.config.webrtc_input_sample_rate)
-        silence_samples = max(1, int(self.config.webrtc_input_sample_rate * 0.02))
-        silence = b'\x00' * silence_samples * self.config.channels * 2
+        logged_frame = False
         while not self.stop_event.is_set():
             try:
-                frame = await asyncio.wait_for(track.recv(), timeout=0.1)
-            except asyncio.TimeoutError:
-                chunk = silence
+                frame = await track.recv()
             except Exception as exc:
                 return f'webrtc audio track ended: {exc}'
-            else:
-                chunks: list[bytes] = []
-                try:
-                    for out_frame in resampler.resample(frame):
-                        needed = int(out_frame.samples) * self.config.channels * 2
-                        raw = bytes(out_frame.planes[0])
-                        if len(raw) < needed:
-                            raw += b'\x00' * (needed - len(raw))
-                        chunks.append(raw[:needed])
-                except Exception as exc:
-                    return f'webrtc audio resample failed: {exc}'
-                chunk = b''.join(chunks)
-                if chunk:
-                    self.last_audio_ts = time.monotonic()
-
+            if not logged_frame:
+                log.info(
+                    'Receiver WebRTC audio frame: rate=%s layout=%s samples=%s format=%s',
+                    getattr(frame, 'sample_rate', 'unknown'),
+                    getattr(getattr(frame, 'layout', None), 'name', 'unknown'),
+                    getattr(frame, 'samples', 'unknown'),
+                    getattr(getattr(frame, 'format', None), 'name', 'unknown'),
+                )
+                logged_frame = True
+            chunks: list[bytes] = []
+            try:
+                for out_frame in resampler.resample(frame):
+                    needed = int(out_frame.samples) * self.config.channels * 2
+                    raw = bytes(out_frame.planes[0])
+                    if len(raw) < needed:
+                        raw += b'\x00' * (needed - len(raw))
+                    chunks.append(raw[:needed])
+            except Exception as exc:
+                return f'webrtc audio resample failed: {exc}'
+            chunk = b''.join(chunks)
             if not chunk:
                 continue
+            self.last_audio_ts = time.monotonic()
+            self._push_audio_chunk(queue, chunk)
+        return 'shutdown requested'
+
+    async def _write_paced_audio(self, queue: asyncio.Queue[bytes], ffmpeg_stdin: asyncio.StreamWriter) -> str:
+        frame_ms = max(10, min(100, self.config.audio_frame_ms))
+        frame_samples = max(1, int(self.config.webrtc_input_sample_rate * frame_ms / 1000))
+        frame_bytes = frame_samples * self.config.channels * 2
+        silence = b'\x00' * frame_bytes
+        buffered = bytearray()
+        next_tick = time.monotonic()
+        transport = getattr(ffmpeg_stdin, 'transport', None)
+        if transport is not None:
+            with contextlib.suppress(Exception):
+                transport.set_write_buffer_limits(high=frame_bytes * 50, low=frame_bytes * 10)
+        while not self.stop_event.is_set():
+            if len(buffered) < frame_bytes:
+                try:
+                    buffered.extend(await asyncio.wait_for(queue.get(), timeout=frame_ms / 1000))
+                except asyncio.TimeoutError:
+                    pass
+            while len(buffered) < frame_bytes:
+                try:
+                    buffered.extend(queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            if len(buffered) >= frame_bytes:
+                chunk = bytes(buffered[:frame_bytes])
+                del buffered[:frame_bytes]
+            elif buffered:
+                chunk = bytes(buffered) + silence[len(buffered):]
+                buffered.clear()
+            else:
+                chunk = silence
             try:
                 ffmpeg_stdin.write(chunk)
                 await ffmpeg_stdin.drain()
@@ -480,7 +733,21 @@ class ReceiverSupervisor:
                 return 'ffmpeg stdin closed'
             except Exception as exc:
                 return f'ffmpeg write failed: {exc}'
+            next_tick += frame_ms / 1000
+            sleep_for = next_tick - time.monotonic()
+            if sleep_for < -0.5:
+                next_tick = time.monotonic()
+                sleep_for = 0
+            if sleep_for > 0:
+                await asyncio.sleep(sleep_for)
         return 'shutdown requested'
+
+    def _push_audio_chunk(self, queue: asyncio.Queue[bytes], chunk: bytes) -> None:
+        while queue.full():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                queue.get_nowait()
+        with contextlib.suppress(asyncio.QueueFull):
+            queue.put_nowait(chunk)
 
     async def _pump_processor_to_pifm(
         self,
@@ -499,6 +766,10 @@ class ReceiverSupervisor:
             except Exception as exc:
                 return f'piFmAdv write failed: {exc}'
         return 'shutdown requested'
+
+    async def _wait_process(self, proc: asyncio.subprocess.Process, name: str) -> str:
+        code = await proc.wait()
+        return f'{name} exited with code {code}'
 
     async def _watch_control_ws(self, ws: aiohttp.ClientWebSocketResponse) -> str:
         async for msg in ws:
@@ -541,19 +812,71 @@ class ReceiverSupervisor:
             if text:
                 logging.info('[%s] %s', name, text)
 
+    async def _close_peer_connection(self, pc: RTCPeerConnection) -> None:
+        with contextlib.suppress(Exception):
+            for receiver in pc.getReceivers():
+                track = getattr(receiver, 'track', None)
+                if track is not None:
+                    track.stop()
+        try:
+            await asyncio.wait_for(pc.close(), timeout=3.0)
+        except asyncio.TimeoutError:
+            log.warning('WebRTC peer close timed out')
+        except Exception as exc:
+            log.warning('WebRTC peer close failed: %s', exc)
+
+    async def _cancel_tasks(self, tasks: tuple[asyncio.Task[Any], ...], timeout_s: float) -> None:
+        live = [task for task in tasks if not task.done()]
+        for task in live:
+            task.cancel()
+        if not live:
+            return
+        done, pending = await asyncio.wait(live, timeout=timeout_s)
+        for task in done:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        for task in pending:
+            log.warning('Task %s did not stop cleanly', task.get_name())
+
+    def _process_kwargs(self) -> dict[str, Any]:
+        if os.name == 'nt':
+            return {}
+        return {'start_new_session': True}
+
     async def _terminate_process(self, proc: asyncio.subprocess.Process | None, name: str) -> None:
         if proc is None:
             return
+        stdin = getattr(proc, 'stdin', None)
+        if stdin is not None:
+            with contextlib.suppress(Exception):
+                stdin.close()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(stdin.wait_closed(), timeout=1.0)
         if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
+            self._signal_process(proc, signal.SIGTERM)
             try:
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
             except asyncio.TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                await proc.wait()
+                self._signal_process(proc, signal.SIGKILL)
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
         log.info('%s stopped with code %s', name, proc.returncode)
+
+    def _signal_process(self, proc: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+        if proc.returncode is not None:
+            return
+        try:
+            if os.name != 'nt':
+                os.killpg(proc.pid, sig)
+            elif sig == signal.SIGKILL:
+                proc.kill()
+            else:
+                proc.terminate()
+        except ProcessLookupError:
+            return
+        except Exception as exc:
+            log.warning('Could not signal process %s with %s: %s', proc.pid, sig, exc)
+
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -576,24 +899,24 @@ class ReceiverSupervisor:
 def _parse_args() -> ReceiverConfig:
     parser = argparse.ArgumentParser(
         prog='hazeReceiver.py',
-        description='Secure Haze feed receiver using pairing, WebSocket signaling, WebRTC audio, and piFmAdv output.',
+        description='Haze feed receiver using WebSocket signaling, WebRTC audio, and piFmAdv output.',
     )
-    parser.add_argument('--server', required=True, help='Haze admin server URL, for example https://haze-host:6444')
+    parser.add_argument('--server', required=True, help='Haze server URL, for example http://haze-host:8086')
     parser.add_argument('--feed-id', required=True, help='Feed ID to receive, for example sk-0001')
     parser.add_argument('--receiver-api-base', default='/api/receiver/v1')
-    parser.add_argument('--pair-token', default='')
-    parser.add_argument('--pair-token-env', default='')
+    parser.add_argument('--pair-token', default='', help=argparse.SUPPRESS)
+    parser.add_argument('--pair-token-env', default='', help=argparse.SUPPRESS)
     parser.add_argument('--state-file', default='')
     parser.add_argument('--allow-insecure-dev', action='store_true')
 
-    parser.add_argument('--output-sample-rate', type=int, default=12000)
+    parser.add_argument('--output-sample-rate', type=int, default=48000)
     parser.add_argument('--channels', type=int, choices=[1, 2], default=1)
     parser.add_argument('--webrtc-input-sample-rate', type=int, default=48000)
     parser.add_argument('--ffmpeg-bin', default='ffmpeg')
     parser.add_argument('--ffmpeg-log-level', default='warning')
     parser.add_argument(
         '--audio-filters',
-        default='agate=threshold=-24dB:range=-40dB:attack=10:release=150,acompressor=threshold=-32dB:ratio=12:attack=5:release=100:makeup=20,highpass=f=120,lowpass=f=2600',
+        default=DEFAULT_AUDIO_FILTERS,
     )
     parser.add_argument('--pifmadv-bin', default=pifm_bin)
     parser.add_argument('--pi-extra-arg', action='append', default=[])
@@ -603,6 +926,7 @@ def _parse_args() -> ReceiverConfig:
     parser.add_argument('--reconnect-max-delay', type=float, default=8.0)
     parser.add_argument('--reconnect-backoff', type=float, default=1.5)
     parser.add_argument('--chunk-size', type=int, default=4096)
+    parser.add_argument('--audio-frame-ms', type=int, default=20)
     args = parser.parse_args()
 
     pair_token = args.pair_token
@@ -635,11 +959,14 @@ def _parse_args() -> ReceiverConfig:
         reconnect_backoff=max(1.0, float(args.reconnect_backoff)),
         stream_stall_timeout_s=max(2.0, float(args.stall_timeout)),
         write_chunk_size=max(512, int(args.chunk_size)),
+        audio_frame_ms=max(10, min(100, int(args.audio_frame_ms))),
     )
 
 
 def _configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+    for name in ('aioice', 'aiortc'):
+        logging.getLogger(name).setLevel(logging.ERROR)
 
 
 async def _main() -> None:

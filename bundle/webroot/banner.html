@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Haze Banner</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Zalando+Sans+SemiExpanded:ital,wght@0,200..900;1,200..900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --frame-width: 1920px;
+            --frame-height: 1080px;
+            --frame-scale: 1;
+            --banner-height: 96px;
+            --banner-bg: #ff6600;
+            --banner-gradient: none;
+            --banner-text: #ffffff;
+            --banner-text-soft: rgba(255, 255, 255, 0.82);
+            --banner-text-dim: rgba(255, 255, 255, 0.68);
+            --text-main: #f8fafc;
+            --text-soft: rgba(226, 232, 240, 0.82);
+            --text-dim: rgba(148, 163, 184, 0.74);
+            --ticker-font-size: 20px;
+            --fullscreen-title-size: 48px;
+            --fullscreen-body-size: 24px;
+            --fullscreen-meta-size: 14px;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background-color: transparent;
+            color: var(--text-main);
+            font-family: 'Zalando Sans SemiExpanded', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            display: block;
+        }
+
+        .frame {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: var(--frame-width);
+            height: var(--frame-height);
+            overflow: hidden;
+            isolation: isolate;
+            transform-origin: top left;
+            transform: scale(var(--frame-scale));
+        }
+
+        .frame[data-visible="false"] .ticker-shell,
+        .frame[data-visible="false"] .fullscreen-shell {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .frame[data-mode="ticker"] .fullscreen-shell,
+        .frame[data-mode="fullscreen"] .ticker-shell {
+            display: none;
+        }
+
+        .ticker-shell,
+        .fullscreen-shell {
+            position: absolute;
+            inset: 0;
+            transition: opacity 220ms ease;
+        }
+
+        .ticker-shell {
+            display: block;
+            width: 100%;
+            height: var(--banner-height);
+            top: 0;
+            right: 0;
+            bottom: auto;
+            left: 0;
+            background-color: var(--banner-bg);
+            background-image: var(--banner-gradient);
+            background-repeat: no-repeat;
+            background-size: 100% 100%;
+        }
+
+        .ticker-window {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            clip-path: inset(-120px 0 -120px 0);
+        }
+
+        .ticker-track {
+            position: relative;
+            left: 0;
+            display: flex;
+            align-items: center;
+            height: 100%;
+            flex-wrap: nowrap;
+            white-space: nowrap;
+        }
+
+        .ticker-entries {
+            display: flex;
+            align-items: center;
+            height: 100%;
+            flex-shrink: 0;
+            padding: 0 36px;
+            font-size: var(--ticker-font-size);
+            line-height: 0.9;
+            color: var(--banner-text);
+            white-space: nowrap;
+            text-shadow:
+                0 0 10px rgba(0, 0, 0, 0.95),
+                0 3px 0 rgba(0, 0, 0, 0.9),
+                0 0 18px rgba(0, 0, 0, 0.9);
+        }
+
+        .fullscreen-shell {
+            display: grid;
+            width: 100%;
+            height: 100%;
+            background-color: var(--banner-bg);
+            background-image: var(--banner-gradient);
+            background-repeat: no-repeat;
+            background-size: 100% 100%;
+            color: var(--banner-text);
+        }
+
+        .fullscreen-card {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: 16px;
+            width: 100%;
+            height: 100%;
+            padding: 18px 22px;
+        }
+
+        .fullscreen-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+        }
+
+        .fullscreen-chip {
+            display: inline-flex;
+            align-items: center;
+            min-height: 32px;
+            padding: 0 14px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            color: var(--banner-text);
+            text-shadow:
+                0 0 8px rgba(0, 0, 0, 0.95),
+                0 2px 0 rgba(0, 0, 0, 0.9);
+        }
+
+        .fullscreen-counter {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 68px;
+            min-height: 32px;
+            padding: 0 12px;
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            color: var(--banner-text-soft);
+            text-shadow:
+                0 0 8px rgba(0, 0, 0, 0.95),
+                0 2px 0 rgba(0, 0, 0, 0.9);
+        }
+
+        .fullscreen-main {
+            display: grid;
+            grid-template-rows: auto auto 1fr;
+            min-height: 0;
+            gap: 16px;
+        }
+
+        .fullscreen-headline {
+            margin: 0;
+            font-size: var(--fullscreen-title-size);
+            font-weight: 700;
+            line-height: 0.96;
+            letter-spacing: -0.04em;
+            text-wrap: balance;
+            text-shadow:
+                0 0 12px rgba(0, 0, 0, 0.95),
+                0 3px 0 rgba(0, 0, 0, 0.9),
+                0 0 28px rgba(0, 0, 0, 0.92);
+        }
+
+        .fullscreen-meta {
+            min-height: 1em;
+            font-size: var(--fullscreen-meta-size);
+            color: var(--banner-text-soft);
+            letter-spacing: 0.12em;
+            line-height: 1.6;
+            text-shadow:
+                0 0 8px rgba(0, 0, 0, 0.95),
+                0 2px 0 rgba(0, 0, 0, 0.9);
+        }
+
+        .fullscreen-body {
+            min-height: 0;
+            font-size: var(--fullscreen-body-size);
+            line-height: 1.34;
+            color: var(--banner-text);
+            white-space: pre-wrap;
+            overflow: hidden;
+            text-shadow:
+                0 0 10px rgba(0, 0, 0, 0.95),
+                0 2px 0 rgba(0, 0, 0, 0.9),
+                0 0 22px rgba(0, 0, 0, 0.9);
+        }
+
+        .fullscreen-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            font-size: 12px;
+            letter-spacing: 0.1em;
+            color: var(--banner-text-dim);
+            text-shadow:
+                0 0 8px rgba(0, 0, 0, 0.95),
+                0 2px 0 rgba(0, 0, 0, 0.9);
+        }
+
+        .measure-shell {
+            position: fixed;
+            top: -9999px;
+            left: -9999px;
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        .measure-shell .fullscreen-shell {
+            position: relative;
+            width: var(--frame-width);
+            height: var(--frame-height);
+        }
+    </style>
+</head>
+<body>
+    <div class="frame" id="frame" data-mode="ticker" data-visible="false">
+        <section class="ticker-shell" id="tickerShell" aria-live="polite">
+            <div class="ticker-window" id="tickerWindow">
+                <div class="ticker-track" id="tickerTrack"></div>
+            </div>
+        </section>
+
+        <section class="fullscreen-shell" id="fullscreenShell" aria-live="polite">
+            <div class="fullscreen-card">
+                <header class="fullscreen-header">
+                    <span class="fullscreen-chip" id="fullscreenChip">Alert</span>
+                    <span class="fullscreen-counter" id="fullscreenCounter"></span>
+                </header>
+                <div class="fullscreen-main">
+                    <h1 class="fullscreen-headline" id="fullscreenHeadline"></h1>
+                    <div class="fullscreen-meta" id="fullscreenMeta"></div>
+                    <div class="fullscreen-body" id="fullscreenBody"></div>
+                </div>
+                <footer class="fullscreen-footer">
+                    <span id="fullscreenFeed"></span>
+                    <span id="fullscreenExpires"></span>
+                </footer>
+            </div>
+        </section>
+    </div>
+
+    <div class="measure-shell" aria-hidden="true">
+        <section class="fullscreen-shell" id="measureShell">
+            <div class="fullscreen-card">
+                <header class="fullscreen-header">
+                    <span class="fullscreen-chip" id="measureChip"></span>
+                    <span class="fullscreen-counter" id="measureCounter"></span>
+                </header>
+                <div class="fullscreen-main">
+                    <h1 class="fullscreen-headline" id="measureHeadline"></h1>
+                    <div class="fullscreen-meta" id="measureMeta"></div>
+                    <div class="fullscreen-body" id="measureBody"></div>
+                </div>
+                <footer class="fullscreen-footer">
+                    <span id="measureFeed"></span>
+                    <span id="measureExpires"></span>
+                </footer>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1';
+        const PAGE_MS = 6000;
+
+        const frame = document.getElementById('frame');
+        const tickerWindow = document.getElementById('tickerWindow');
+        const tickerTrack = document.getElementById('tickerTrack');
+        const fullscreenChip = document.getElementById('fullscreenChip');
+        const fullscreenCounter = document.getElementById('fullscreenCounter');
+        const fullscreenHeadline = document.getElementById('fullscreenHeadline');
+        const fullscreenMeta = document.getElementById('fullscreenMeta');
+        const fullscreenBody = document.getElementById('fullscreenBody');
+        const fullscreenFeed = document.getElementById('fullscreenFeed');
+        const fullscreenExpires = document.getElementById('fullscreenExpires');
+        const measureHeadline = document.getElementById('measureHeadline');
+        const measureMeta = document.getElementById('measureMeta');
+        const measureBody = document.getElementById('measureBody');
+        const measureFeed = document.getElementById('measureFeed');
+        const measureExpires = document.getElementById('measureExpires');
+
+        const state = {
+            signature: '',
+            pages: [],
+            pageIndex: 0,
+            pageTimer: null,
+            payload: null,
+            stream: null,
+            audioPeer: null,
+            audioRetryCount: 0,
+            audioElement: null,
+            audioReconnectTimer: null,
+            unloading: false,
+            tickerDormantSignature: '',
+            tickerScroller: null,
+            tickerQueue: [],
+            tickerCurrentKey: '',
+            tickerLeadKey: '',
+            tickerPlayedKeys: [],
+        };
+
+        const ASPECT_RESOLUTIONS = {
+            '16:9': { width: 1920, height: 1080 },
+            '4:3': { width: 1440, height: 1080 },
+            '3:2': { width: 1620, height: 1080 },
+        };
+
+        class TickerScroller {
+            constructor(viewport, track, speedProvider, onFinished) {
+                this.viewport = viewport;
+                this.track = track;
+                this.speedProvider = speedProvider;
+                this.onFinished = onFinished;
+                this.raf = null;
+                this.trackOffset = 0;
+                this.entriesWidth = 0;
+                this.entryOffset = 0;
+                this.lastTimestamp = null;
+                this.state = 'idle';
+                this.entriesEl = null;
+                this.maxPasses = Number.POSITIVE_INFINITY;
+                this.completedPasses = 0;
+                this.boundTick = (timestamp) => this.tick(timestamp);
+            }
+
+            setMessage(text, maxPasses) {
+                this.stop();
+                const entries = document.createElement('div');
+                entries.className = 'ticker-entries';
+                entries.textContent = text;
+                this.track.append(entries);
+                this.entriesEl = entries;
+                this.entriesWidth = entries.scrollWidth;
+                this.maxPasses = maxPasses;
+                this.completedPasses = 0;
+                this.loadPass();
+                this.start();
+            }
+
+            loadPass() {
+                const viewportWidth = this.viewport.offsetWidth;
+                this.trackOffset = viewportWidth;
+                this.entryOffset = 0;
+                this.lastTimestamp = null;
+                this.track.style.left = `${viewportWidth}px`;
+                if (this.entriesEl) {
+                    this.entriesEl.style.marginLeft = '0px';
+                }
+                this.state = 'scrolling';
+            }
+
+            advancePass() {
+                this.completedPasses += 1;
+                if (this.maxPasses !== Number.POSITIVE_INFINITY && this.completedPasses >= this.maxPasses) {
+                    this.stop();
+                    if (this.onFinished) {
+                        this.onFinished();
+                    }
+                    return;
+                }
+                this.loadPass();
+            }
+
+            tick(timestamp) {
+                if (!this.entriesEl) {
+                    this.raf = requestAnimationFrame(this.boundTick);
+                    return;
+                }
+
+                const delta = this.lastTimestamp === null ? 0 : timestamp - this.lastTimestamp;
+                this.lastTimestamp = timestamp;
+                const speedPxPerMs = this.speedProvider();
+
+                if (this.state === 'scrolling') {
+                    this.trackOffset -= speedPxPerMs * delta;
+                    this.track.style.left = `${this.trackOffset}px`;
+
+                    if (this.trackOffset <= 0) {
+                        this.entryOffset = 0;
+                        this.lastTimestamp = null;
+                        this.state = 'held';
+                    }
+                } else if (this.state === 'held') {
+                    this.entryOffset -= speedPxPerMs * delta;
+                    this.entriesEl.style.marginLeft = `${this.entryOffset}px`;
+
+                    const rightEdge = this.trackOffset + this.entryOffset + this.entriesWidth;
+                    if (rightEdge <= 0) {
+                        this.lastTimestamp = null;
+                        this.advancePass();
+                    }
+                }
+
+                if (this.raf !== null) {
+                    this.raf = requestAnimationFrame(this.boundTick);
+                }
+            }
+
+            start() {
+                if (this.raf !== null) {
+                    cancelAnimationFrame(this.raf);
+                }
+                this.raf = requestAnimationFrame(this.boundTick);
+            }
+
+            stop() {
+                if (this.raf !== null) {
+                    cancelAnimationFrame(this.raf);
+                    this.raf = null;
+                }
+                this.track.innerHTML = '';
+                this.track.style.left = '0px';
+                this.trackOffset = 0;
+                this.entriesWidth = 0;
+                this.entryOffset = 0;
+                this.lastTimestamp = null;
+                this.state = 'idle';
+                this.entriesEl = null;
+            }
+        }
+
+        function parseAspect(value) {
+            const normalized = String(value || '').trim().replace(/x|\//g, ':');
+            return ASPECT_RESOLUTIONS[normalized] ? normalized : '16:9';
+        }
+
+        function parseQuery() {
+            const params = new URLSearchParams(window.location.search);
+            const rawType = String(params.get('type') || 'ticker').trim().toLowerCase();
+            const scroll = Number.parseInt(params.get('scroll') || '1', 10);
+            const speed = Number.parseFloat(params.get('speed') || '240');
+            const aspectKey = parseAspect(params.get('aspect'));
+            const audio = String(params.get('audio') || '').trim().toLowerCase();
+
+            return {
+                feed: String(params.get('feed') || '').trim(),
+                aspectKey,
+                aspect: ASPECT_RESOLUTIONS[aspectKey],
+                type: rawType === 'fullscreen' ? 'fullscreen' : 'ticker',
+                scroll: Number.isFinite(scroll) && scroll >= 0 ? scroll : 1,
+                speed: Number.isFinite(speed) && speed > 0 ? speed : 30,
+                audio: ['1', 'true', 'yes', 'on'].includes(audio),
+            };
+        }
+
+        const query = parseQuery();
+
+        function applyViewportScale() {
+            const viewportWidth = Math.max(window.innerWidth || document.documentElement.clientWidth || 1920, 320);
+            const viewportHeight = Math.max(window.innerHeight || document.documentElement.clientHeight || 1080, 240);
+            const scale = Math.min(viewportWidth / query.aspect.width, viewportHeight / query.aspect.height);
+
+            document.documentElement.style.setProperty('--frame-width', `${query.aspect.width}px`);
+            document.documentElement.style.setProperty('--frame-height', `${query.aspect.height}px`);
+            document.documentElement.style.setProperty('--frame-scale', `${scale}`);
+        }
+
+        function applyFrameSettings() {
+            applyViewportScale();
+            frame.dataset.mode = query.type;
+            syncMetrics();
+        }
+
+        function syncMetrics() {
+            const renderHeight = query.aspect.height;
+            const bannerHeight = Math.round(renderHeight * 0.0888888889);
+
+            document.documentElement.style.setProperty('--banner-height', `${bannerHeight}px`);
+            frame.style.setProperty('--ticker-font-size', `${Math.max(56, Math.round(bannerHeight * 0.60))}px`);
+            frame.style.setProperty('--fullscreen-title-size', `${Math.max(72, Math.round(renderHeight * 0.15))}px`);
+            frame.style.setProperty('--fullscreen-body-size', `${Math.max(28, Math.round(renderHeight * 0.06))}px`);
+            frame.style.setProperty('--fullscreen-meta-size', `${Math.max(18, Math.round(renderHeight * 0.026))}px`);
+
+            if (state.payload && query.type === 'fullscreen' && state.payload.active) {
+                state.pages = buildPages(state.payload.alerts || []);
+                state.pageIndex = Math.min(state.pageIndex, Math.max(0, state.pages.length - 1));
+                renderFullscreenPage();
+                restartPageCycle();
+            }
+        }
+
+        function applyAccent(color, gradientStops) {
+            const colors = Array.isArray(gradientStops)
+                ? gradientStops.map((stop) => String(stop || '').trim()).filter(Boolean)
+                : [];
+            let gradient = 'none';
+
+            if (colors.length === 1) {
+                gradient = `linear-gradient(180deg, ${colors[0]} 0%, ${colors[0]} 100%)`;
+            } else if (colors.length > 1) {
+                gradient = `linear-gradient(180deg, ${colors[colors.length - 1]} 0%, ${colors[0]} 50%, ${colors[colors.length - 1]} 100%)`;
+            }
+
+            frame.style.setProperty('--banner-bg', color || '#ff6600');
+            frame.style.setProperty('--banner-gradient', gradient);
+            frame.style.setProperty('--banner-text', '#ffffff');
+            frame.style.setProperty('--banner-text-soft', 'rgba(255, 255, 255, 0.82)');
+            frame.style.setProperty('--banner-text-dim', 'rgba(255, 255, 255, 0.68)');
+        }
+
+        function setVisible(visible) {
+            frame.dataset.visible = visible ? 'true' : 'false';
+        }
+
+        function stopTicker() {
+            if (state.tickerScroller) {
+                state.tickerScroller.stop();
+            }
+            state.tickerQueue = [];
+            state.tickerCurrentKey = '';
+            state.tickerLeadKey = '';
+            state.tickerPlayedKeys = [];
+        }
+
+        function tickerPixelsPerMs() {
+            return Math.max(0.06, query.speed / 1000);
+        }
+
+        function startTicker(text) {
+            const content = String(text || '').trim();
+            if (!content) {
+                return;
+            }
+            const maxPasses = query.scroll === 0 ? Number.POSITIVE_INFINITY : Math.max(1, query.scroll);
+            if (!state.tickerScroller) {
+                state.tickerScroller = new TickerScroller(
+                    tickerWindow,
+                    tickerTrack,
+                    tickerPixelsPerMs,
+                    () => {
+                        playNextTickerItem();
+                    },
+                );
+            }
+            state.tickerScroller.setMessage(content, maxPasses);
+        }
+
+        function tickerAlertKey(alert) {
+            return String(
+                alert.identifier
+                || alert.display_id
+                || alert.received_at
+                || `${alert.headline || ''}|${alert.expires_at || ''}`
+            ).trim();
+        }
+
+        function buildTickerMessage(alert) {
+            if (alert.message) {
+                return alert.message;
+            }
+            return [alert.headline, alert.area_text, alert.expires_display ? `Until ${alert.expires_display}` : '']
+                .map((part) => String(part || '').trim())
+                .filter(Boolean)
+                .join('. ');
+        }
+
+        function buildTickerItems(payload) {
+            return (payload.alerts || [])
+                .map((alert) => ({
+                    key: tickerAlertKey(alert),
+                    text: buildTickerMessage(alert),
+                    backgroundColor: alert.background_color || payload.primary_color || '#ff6600',
+                    backgroundGradient: alert.background_gradient || payload.primary_gradient || [],
+                }))
+                .filter((item) => item.key && item.text);
+        }
+
+        function playNextTickerItem() {
+            const next = state.tickerQueue.shift();
+
+            if (!next) {
+                state.tickerCurrentKey = '';
+                state.tickerDormantSignature = state.signature;
+                setVisible(false);
+                return;
+            }
+
+            state.tickerCurrentKey = next.key;
+            if (!state.tickerPlayedKeys.includes(next.key)) {
+                state.tickerPlayedKeys.push(next.key);
+            }
+            applyAccent(next.backgroundColor, next.backgroundGradient);
+            startTicker(next.text);
+        }
+
+        function buildMeta(alert) {
+            const parts = [];
+            if (alert.issuer) parts.push(alert.issuer);
+            if (alert.area_text) parts.push(alert.area_text);
+            if (alert.display_id) parts.push(alert.display_id);
+            return parts.join(' • ');
+        }
+
+        function buildBodyText(alert) {
+            return [alert.description, alert.instruction].filter(Boolean).join('\n\n') || alert.message || '';
+        }
+
+        function paginateAlert(alert) {
+            const bodyText = buildBodyText(alert);
+            const words = bodyText.split(/\s+/).filter(Boolean);
+            const pages = [];
+            let current = '';
+
+            measureHeadline.textContent = alert.headline || 'Alert';
+            measureMeta.textContent = buildMeta(alert);
+            measureFeed.textContent = `${(state.payload?.feed_name || state.payload?.feed_id || '')} · ${(alert.severity || 'Alert')}`;
+            measureExpires.textContent = alert.expires_display ? `Until ${alert.expires_display}` : '';
+
+            for (const word of words) {
+                const candidate = current ? `${current} ${word}` : word;
+                measureBody.textContent = candidate;
+                if (measureBody.scrollHeight > measureBody.clientHeight + 1 && current) {
+                    pages.push(current);
+                    current = word;
+                    measureBody.textContent = current;
+                } else {
+                    current = candidate;
+                }
+            }
+
+            if (current) {
+                pages.push(current);
+            }
+
+            return pages.length ? pages : [''];
+        }
+
+        function buildPages(alerts) {
+            const pages = [];
+            for (const alert of alerts) {
+                const chunks = paginateAlert(alert);
+                for (const chunk of chunks) {
+                    pages.push({
+                        ...alert,
+                        meta: buildMeta(alert),
+                        body: chunk,
+                    });
+                }
+            }
+            return pages;
+        }
+
+        function clearPageCycle() {
+            if (state.pageTimer) {
+                window.clearInterval(state.pageTimer);
+                state.pageTimer = null;
+            }
+        }
+
+        function restartPageCycle() {
+            clearPageCycle();
+            if (state.pages.length <= 1) {
+                return;
+            }
+            state.pageTimer = window.setInterval(() => {
+                state.pageIndex = (state.pageIndex + 1) % state.pages.length;
+                renderFullscreenPage();
+            }, PAGE_MS);
+        }
+
+        function renderFullscreenPage() {
+            const page = state.pages[state.pageIndex];
+            if (!page) {
+                return;
+            }
+            applyAccent(
+                page.background_color || state.payload.primary_color || '#ff6600',
+                page.background_gradient || state.payload.primary_gradient || [],
+            );
+            fullscreenChip.textContent = page.severity === 'Unknown' ? 'Alert' : page.severity;
+            fullscreenCounter.textContent = `${state.pageIndex + 1} / ${state.pages.length}`;
+            fullscreenHeadline.textContent = page.headline || 'Alert';
+            fullscreenMeta.textContent = page.meta || '';
+            fullscreenBody.textContent = page.body || '';
+            fullscreenFeed.textContent = `${(state.payload.feed_name || state.payload.feed_id || '')} · ${(page.severity || 'Alert')}`;
+            fullscreenExpires.textContent = page.expires_display ? `Until ${page.expires_display}` : '';
+        }
+
+        function renderIdle() {
+            setVisible(false);
+            stopTicker();
+            clearPageCycle();
+            state.pages = [];
+            state.pageIndex = 0;
+        }
+
+        function renderTicker(payload, signatureChanged) {
+            const items = buildTickerItems(payload);
+            const firstItem = items[0] || null;
+            const currentStillPresent = items.some((item) => item.key === state.tickerCurrentKey);
+            const leadChanged = Boolean(state.tickerLeadKey) && firstItem && firstItem.key !== state.tickerLeadKey;
+
+            if (!firstItem) {
+                renderIdle();
+                return;
+            }
+
+            if (!signatureChanged && state.tickerCurrentKey) {
+                return;
+            }
+
+            if (!state.tickerCurrentKey) {
+                state.tickerLeadKey = firstItem.key;
+                state.tickerPlayedKeys = [];
+                state.tickerQueue = items.slice(1);
+                state.tickerScroller?.stop();
+                playNextTickerItem();
+                return;
+            }
+
+            if (!currentStillPresent || (leadChanged && state.tickerCurrentKey === state.tickerLeadKey)) {
+                state.tickerLeadKey = firstItem.key;
+                state.tickerPlayedKeys = [];
+                state.tickerQueue = items.slice(1);
+                state.tickerScroller?.stop();
+                playNextTickerItem();
+                return;
+            }
+
+            state.tickerLeadKey = firstItem.key;
+            state.tickerQueue = items.filter((item) => item.key !== state.tickerCurrentKey && !state.tickerPlayedKeys.includes(item.key));
+
+            if (!state.tickerScroller || state.tickerScroller.state === 'idle') {
+                playNextTickerItem();
+            }
+        }
+
+        function renderFullscreen(payload, signatureChanged) {
+            if (signatureChanged) {
+                state.pages = buildPages(payload.alerts || []);
+                state.pageIndex = 0;
+                restartPageCycle();
+            }
+            renderFullscreenPage();
+        }
+
+        function renderPayload(payload) {
+            const signatureChanged = payload.signature !== state.signature;
+            state.signature = payload.signature;
+            state.payload = payload;
+
+            if (signatureChanged) {
+                state.tickerDormantSignature = '';
+            }
+
+            if (!payload.active || !(payload.alerts || []).length) {
+                renderIdle();
+                return;
+            }
+
+            setVisible(true);
+            if (query.type === 'fullscreen') {
+                renderFullscreen(payload, signatureChanged);
+                stopTicker();
+            } else {
+                renderTicker(payload, signatureChanged);
+                clearPageCycle();
+            }
+        }
+
+        function streamUrl() {
+            const requestUrl = new URL(`${API_BASE}/banner/stream`, window.location.origin);
+            if (query.feed) {
+                requestUrl.searchParams.set('feed', query.feed);
+            }
+            return requestUrl;
+        }
+
+        function closeStream() {
+            if (state.stream) {
+                state.stream.close();
+                state.stream = null;
+            }
+        }
+
+        function closeAudioStream() {
+            if (state.audioReconnectTimer) {
+                window.clearTimeout(state.audioReconnectTimer);
+                state.audioReconnectTimer = null;
+            }
+            if (state.audioPeer) {
+                state.audioPeer.ontrack = null;
+                state.audioPeer.onconnectionstatechange = null;
+                state.audioPeer.close();
+                state.audioPeer = null;
+            }
+            if (state.audioElement) {
+                state.audioElement.pause();
+                state.audioElement.srcObject = null;
+                state.audioElement = null;
+            }
+        }
+
+        function handleStreamPayload(event) {
+            try {
+                const payload = JSON.parse(event.data || '{}');
+                renderPayload(payload);
+            } catch {
+                renderIdle();
+                console.error('Invalid banner data stream.');
+            }
+        }
+
+        function connectStream() {
+            if (!('EventSource' in window)) {
+                renderIdle();
+                console.error('This browser does not support the live banner stream.');
+                return;
+            }
+
+            closeStream();
+            const source = new EventSource(streamUrl());
+            state.stream = source;
+            source.addEventListener('banner', handleStreamPayload);
+            source.onerror = () => {
+                if (!state.payload) {
+                    renderIdle();
+                }
+            };
+        }
+
+        function connectAudioStream() {
+            if (!query.audio || !query.feed || !('RTCPeerConnection' in window)) {
+                return;
+            }
+
+            closeAudioStream();
+
+            const pc = new RTCPeerConnection();
+            state.audioPeer = pc;
+            const audio = new Audio();
+            audio.autoplay = true;
+            audio.playsInline = true;
+            state.audioElement = audio;
+
+            pc.addTransceiver('audio', { direction: 'recvonly' });
+            pc.ontrack = (event) => {
+                const [stream] = event.streams;
+                if (!stream) {
+                    return;
+                }
+                audio.srcObject = stream;
+                const playPromise = audio.play();
+                if (playPromise && typeof playPromise.catch === 'function') {
+                    playPromise.catch(() => console.error('Unable to autoplay banner WebRTC audio.'));
+                }
+            };
+
+            pc.onconnectionstatechange = () => {
+                if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+                    scheduleAudioReconnect();
+                }
+            };
+
+            pc.createOffer()
+                .then((offer) => pc.setLocalDescription(offer))
+                .then(() => fetch(`${API_BASE}/banner/webrtc/offer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        feed_id: query.feed,
+                        sdp: pc.localDescription?.sdp || '',
+                        require_opus: false,
+                    }),
+                }))
+                .then((response) => {
+                    if (!response.ok) {
+                        throw new Error(`Banner WebRTC failed: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then((answer) => pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp }))
+                .then(() => {
+                    state.audioRetryCount = 0;
+                })
+                .catch((error) => {
+                    console.error(error);
+                    scheduleAudioReconnect();
+                });
+        }
+
+        function scheduleAudioReconnect() {
+            if (!query.audio || state.unloading || state.audioReconnectTimer) {
+                return;
+            }
+            if (state.audioPeer) {
+                state.audioPeer.ontrack = null;
+                state.audioPeer.onconnectionstatechange = null;
+                state.audioPeer.close();
+                state.audioPeer = null;
+            }
+            const delay = Math.min(1000 * (2 ** state.audioRetryCount), 10000);
+            state.audioRetryCount += 1;
+            state.audioReconnectTimer = window.setTimeout(() => {
+                state.audioReconnectTimer = null;
+                connectAudioStream();
+            }, delay);
+        }
+
+        applyFrameSettings();
+        window.addEventListener('resize', applyViewportScale);
+        window.addEventListener('beforeunload', () => {
+            state.unloading = true;
+            closeStream();
+            closeAudioStream();
+        });
+        connectStream();
+        connectAudioStream();
+    </script>
+</body>
+</html>

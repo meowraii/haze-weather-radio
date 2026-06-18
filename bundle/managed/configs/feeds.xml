@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feeds>
+
+  <feed id="sk-0001" enabled="true" timezone="America/Regina">
+
+    <playout routine="true" same="true"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="true">
+          <blocklist>
+            <severity>Minor</severity>
+            <severity>Unknown</severity>
+            <certainty>Unknown</certainty>
+            <certainty>Past</certainty>
+            <naads_event>fog</naads_event>
+            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
+          </blocklist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <languages>
+      <lang code="en-CA" interval="0"/>
+      <!-- <lang code="fr-CA" interval="0"/> -->
+    </languages>
+
+    <description>
+      <lang code="en-CA"
+            text="This is an automated broadcast, servicing the city of Saskatoon with the latest weather alerts and forecasts originating from Environment Canada."
+            suffix="This service is not affiliated with Environment Canada."/>
+      <lang code="fr-CA"
+            text="Ceci est une diffusion automatisée desservant la ville de Saskatoon avec les dernières alertes météorologiques et prévisions provenant d'Environnement Canada."
+            suffix="Ce service n'est pas affilié à Environnement Canada."/>
+    </description>
+
+    <!--
+      glossary of location identifiers:
+
+      The data provider in the parentheses denotes which APIs of said providers can be used with the location identifier.
+      For example, the citypage ID can be used to pull data from the ECCC API, but not the NWS or TWC APIs.
+
+      citypage: ECCC ID for the city page weather product. ex: SK-40 for Saskatoon. (ECCC)
+      nws_zone: NWS County/Zone code for the forecast zone. ex: GAZ033 for north Fulton County, GA. (NWS)
+      nws_county: NWS County code for the forecast county. ex: GAC121 for Fulton County, GA. (NWS)
+      same: the six digit location code used in SAME alerts.
+      same_fips: In the US, the six digit SAME location code is derived from the FIPS code. ex: 013121 for Fulton County, GA.
+      same_clc: In Canada, the six digit SAME location code is derived from the Canadian Location Code. ex: 065522 for Saskatoon.
+                - NOTE: Mexico uses the 000000 SAME code for all Early Earthquake Warnings on SASMEX.
+      iata: IATA station code for the location. ex: CYXE for Saskatoon Airport. KIND for Indianapolis Airport. (ECCC, NWS, TWC)
+      geocode: lat/lon geocode for the location on the TWC API. 52.1,-106.6 for Saskatoon. not to be confused with the geocodes used in CAP alerts, which are a different format. (TWC)
+
+      id:              Environment Canada City Page ID, NWS County/Zone code, or IATA station ID.
+      source:          eccc | nws | twc
+      name_override:   Override when the source API omits the location name.
+      region:
+        - id:            Environment Canada Canadian Location Code, US SAME FIPS code, or any six-digit code that your country uses to identify forecast regions.
+          source:        eccc | nws | twc
+          derive_forecast: ID of the location to derive forecast data from. This places the region in the forecast package of the feed and will be read on air.
+    -->
+    <locations>
+      <coverage>
+        <region id="065100" source="eccc" derive_forecast="sk-40"/>
+        <region id="065400" source="eccc" derive_forecast="sk-1"/>
+        <region id="065500" source="eccc" derive_forecast="sk-37"/>
+      </coverage>
+
+      <observationLocations>
+        <location id="sk-40" source="eccc"/>
+        <location id="sk-1" source="eccc"/>
+        <location id="sk-37" source="eccc"/>
+        <location id="sk-49" source="eccc"/>
+        <location id="sk-2" source="eccc"/>
+        <location id="sk-6" source="eccc"/>
+        <location id="sk-23" source="eccc"/>
+        <location id="sk-35" source="eccc"/>
+        <location id="sk-26" source="eccc"/>
+      </observationLocations>
+
+      <airQualityLocations>
+        <location id="HAHJJ" source="eccc"/>
+      </airQualityLocations>
+
+      <climateLocations>
+        <location id="VSSK40V" source="eccc"/>
+      </climateLocations>
+
+    </locations>
+
+    <transmitter_metadata>
+      <transmitter>
+        <site_name>Saskatoon</site_name>
+        <callsign>XLF322</callsign>
+        <relationship>primary</relationship>
+        <frequency_mhz>162.550</frequency_mhz>
+      </transmitter>
+    </transmitter_metadata>
+  </feed>
+</feeds>

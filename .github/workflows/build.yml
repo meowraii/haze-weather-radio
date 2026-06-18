@@ -1,0 +1,159 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/go/go.mod
+          check-latest: true
+          cache: true
+          cache-dependency-path: services/go/go.sum
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test Go services
+        working-directory: services/go
+        run: go test ./...
+
+      - name: Test Rust workspace
+        run: cargo test --workspace
+
+  windows-bundle:
+    name: Build Windows Bundle
+    runs-on: windows-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/go/go.mod
+          check-latest: true
+          cache: true
+          cache-dependency-path: services/go/go.sum
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Haze bundle
+        shell: pwsh
+        run: ./scripts/build-haze.ps1 -Profile release
+
+      - name: Upload Haze bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Haze_UAP-Windows-x86_64-Portable-${{ github.sha }}
+          path: dist/Haze_UAP-Windows-x86_64-Portable
+          if-no-files-found: error
+
+  linux-bundle:
+    name: Build Linux Bundle
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/go/go.mod
+          check-latest: true
+          cache: true
+          cache-dependency-path: services/go/go.sum
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Haze bundle
+        run: bash scripts/build-haze.sh --profile release
+
+      - name: Upload Haze bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Haze_UAP-Linux-x86_64-Portable-${{ github.sha }}
+          path: dist/Haze_UAP-Linux-x86_64-Portable
+          if-no-files-found: error
+
+  freebsd-bundle:
+    name: Build FreeBSD Bundle
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and test in FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.2"
+          usesh: true
+          prepare: |
+            pkg install -y bash ca_root_nss curl rust pkgconf
+            GO_VERSION="$(awk '/^go / { print $2; exit }' services/go/go.mod)"
+            fetch -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.freebsd-amd64.tar.gz"
+            rm -rf /usr/local/go
+            tar -C /usr/local -xzf /tmp/go.tar.gz
+          run: |
+            export PATH="/usr/local/go/bin:${PATH}"
+            go version
+            rustc --version
+            cargo --version
+            cd services/go
+            go test ./...
+            cd ../..
+            cargo test --workspace
+            bash scripts/build-haze.sh --profile release
+
+      - name: Upload FreeBSD Haze bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Haze_UAP-FreeBSD-x86_64-Portable-${{ github.sha }}
+          path: dist/Haze_UAP-FreeBSD-x86_64-Portable
+          if-no-files-found: error

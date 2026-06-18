@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Public status and feed access for Haze Weather Radio">
+    <title>Haze Weather Radio</title>
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+    <div class="app-shell public-app-shell">
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <img class="brand-mark brand-mark-light" src="/assets/haze-alerting.svg" alt="Haze Alerting Platform">
+                <img class="brand-mark brand-mark-dark" src="/assets/haze-alerting-dark.svg" alt="" aria-hidden="true">
+            </div>
+
+            <nav class="sidebar-section" aria-label="Navigation">
+                <a class="sidebar-link" href="/" data-public-link="home">
+                    <i data-lucide="house" width="15" height="15"></i>
+                    Home
+                </a>
+                <a class="sidebar-link" href="/feeds" data-public-link="feeds">
+                    <i data-lucide="radio" width="15" height="15"></i>
+                    Feeds
+                </a>
+                <a class="sidebar-link" href="/alerts" data-public-link="alerts" id="publicAlertsLink" hidden>
+                    <i data-lucide="bell-ring" width="15" height="15"></i>
+                    Alerts
+                </a>
+                <a class="sidebar-link" id="adminLink" href="/admin">
+                    <i data-lucide="shield" width="15" height="15"></i>
+                    Admin Login
+                </a>
+            </nav>
+        </aside>
+
+        <div class="main-wrap">
+            <main class="dashboard public-dashboard">
+                <section class="section-block" id="publicSummary">
+                    <div class="section-hd">
+                        <span>Status</span>
+                    </div>
+                    <div class="section-body overview-grid">
+                        <div class="overview-main">
+                            <div class="overview-hero">
+                                <h1 id="publicHeroTitle">Haze Weather Radio</h1>
+                                <p id="publicHeroSubtitle">Loading system status…</p>
+                            </div>
+                            <div id="publicSummaryCards" class="summary-grid"></div>
+                        </div>
+                        <aside class="overview-side">
+                            <div class="overview-note">
+                                <p class="overview-note-label">Admin</p>
+                                <p id="adminHint">Open the admin panel for protected feeds and station controls.</p>
+                            </div>
+                            <div class="overview-note tls-notice" id="publicTlsNotice" hidden>
+                                <p class="overview-note-label">HTTPS</p>
+                                <p id="publicTlsNoticeText">Checking domain and certificate status.</p>
+                            </div>
+                        </aside>
+                    </div>
+                </section>
+
+                <section class="section-block" id="publicFeedsSection">
+                    <p id="publicFeedNotice" class="status-banner">Checking feed access…</p>
+                    <div class="feed-grid" id="publicFeedsGrid"></div>
+
+                </section>
+
+                <section class="section-block" id="publicAlertsSection" hidden>
+                    <p id="publicAlertsNotice" class="status-banner">Checking alert archive…</p>
+                    <div class="alerts-archive-tabs public-alert-tabs" role="tablist" aria-label="Alert archive">
+                        <button class="tab active" type="button" data-public-alert-tab="accepted">Accepted Alerts</button>
+                        <button class="tab" type="button" data-public-alert-tab="rejected">Rejected Alerts</button>
+                        <button class="tab" type="button" data-public-alert-tab="expired">Expired Alerts</button>
+                    </div>
+                    <div id="publicAlertsList" class="alerts-archive-list public-alert-list"></div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script type="module" src="/assets/js/public.js?v=20260616-webrtc10"></script>
+</body>
+</html>

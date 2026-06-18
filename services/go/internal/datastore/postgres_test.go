@@ -1,0 +1,133 @@
+package datastore
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestEncodeCAPXMLArchiveRoundTrips(t *testing.T) {
+	raw := []byte(`<alert><identifier>urn:test</identifier><info><event>thunderstorm</event></info></alert>`)
+
+	archive, err := EncodeCAPXMLArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeCAPXMLArchive(archive.Compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, raw) {
+		t.Fatalf("decoded archive mismatch: %q", decoded)
+	}
+	hash := sha256.Sum256(raw)
+	if archive.SHA256Hex != hex.EncodeToString(hash[:]) {
+		t.Fatalf("sha256 = %q", archive.SHA256Hex)
+	}
+	if archive.RawBytes != len(raw) || archive.ZstdBytes != len(archive.Compressed) {
+		t.Fatalf("sizes = %#v", archive)
+	}
+}
+
+func TestPostgresConfigResolvesDSNEnv(t *testing.T) {
+	t.Setenv("HAZE_TEST_POSTGRES_DSN", "postgres://haze:test@localhost/haze")
+	cfg := PostgresConfig{Enabled: true, DSNEnv: "HAZE_TEST_POSTGRES_DSN"}
+
+	if got := cfg.resolvedDSN(); got != os.Getenv("HAZE_TEST_POSTGRES_DSN") {
+		t.Fatalf("dsn = %q", got)
+	}
+}
+
+func TestSQLiteDSNAppliesStartupPragmas(t *testing.T) {
+	dsn := sqliteDSN("runtime/state/haze.db", 30*time.Second)
+	for _, want := range []string{
+		"_pragma=busy_timeout%3D30000",
+		"_pragma=journal_mode%28WAL%29",
+		"_pragma=synchronous%28NORMAL%29",
+		"_pragma=foreign_keys%28ON%29",
+		"_pragma=temp_store%28MEMORY%29",
+	} {
+		if !strings.Contains(dsn, want) {
+			t.Fatalf("dsn %q missing %q", dsn, want)
+		}
+	}
+
+	withExistingQuery := sqliteDSN("runtime/state/haze.db?cache=shared", time.Second)
+	if !strings.Contains(withExistingQuery, "?cache=shared&") {
+		t.Fatalf("existing query was not preserved: %q", withExistingQuery)
+	}
+}
+
+func TestParseStoreTime(t *testing.T) {
+	parsed := parseStoreTime("2026-06-16T15:04:05-06:00")
+	if parsed == nil {
+		t.Fatal("time did not parse")
+	}
+	if parsed.UTC().Format(time.RFC3339) != "2026-06-16T21:04:05Z" {
+		t.Fatalf("parsed = %s", parsed.UTC().Format(time.RFC3339))
+	}
+	if parseStoreTime("not a time") != nil {
+		t.Fatal("bad time parsed")
+	}
+}
+
+func TestSQLiteStoreRoundTripsPayloadsAndArchive(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(ctx, SQLiteConfig{Path: filepath.Join("runtime", "state", "haze.db")}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	observation := map[string]any{"station": map[string]any{"en": "Saskatoon"}, "value": 24}
+	if err := store.UpsertObservation(ctx, ObservationRecord{Source: "eccc", LocationID: "sk-40", StationID: "CYXE", ObservedAtRaw: "2026-06-16T21:04:05Z", Payload: observation}); err != nil {
+		t.Fatalf("UpsertObservation: %v", err)
+	}
+	var loadedObservation map[string]any
+	ok, err := store.ObservationPayload(ctx, "eccc", "sk-40", &loadedObservation)
+	if err != nil || !ok {
+		t.Fatalf("ObservationPayload ok=%v err=%v", ok, err)
+	}
+	if loadedObservation["value"].(float64) != 24 {
+		t.Fatalf("loaded observation = %#v", loadedObservation)
+	}
+
+	aqhi := map[string]any{"aqhi": 3, "location": map[string]any{"en": "Saskatoon"}}
+	if err := store.StoreProductPayload(ctx, ProductPayloadRecord{Kind: "air_quality", Source: "eccc", ID: "sk-40", Payload: aqhi}); err != nil {
+		t.Fatalf("StoreProductPayload: %v", err)
+	}
+	var loadedAQHI map[string]any
+	ok, err = store.ProductPayload(ctx, "air_quality", "eccc", "sk-40", &loadedAQHI)
+	if err != nil || !ok {
+		t.Fatalf("ProductPayload ok=%v err=%v", ok, err)
+	}
+	if loadedAQHI["aqhi"].(float64) != 3 {
+		t.Fatalf("loaded aqhi = %#v", loadedAQHI)
+	}
+
+	if err := store.StoreTextProduct(ctx, TextProductRecord{Source: "nws", ID: "wwv", Text: "Space weather quiet."}); err != nil {
+		t.Fatalf("StoreTextProduct: %v", err)
+	}
+	text, ok, err := store.TextProduct(ctx, "nws", "wwv")
+	if err != nil || !ok || text != "Space weather quiet." {
+		t.Fatalf("TextProduct text=%q ok=%v err=%v", text, ok, err)
+	}
+
+	rawCAP := `<alert><identifier>urn:test:sqlite</identifier><sender>test</sender><sent>2026-06-16T21:04:05Z</sent><status>Actual</status><msgType>Alert</msgType><scope>Public</scope><info><event>thunderstorm</event><headline>test alert</headline></info></alert>`
+	if err := store.StoreCAPArchive(ctx, CAPArchiveRecord{AlertID: "urn:test:sqlite", FeedID: "sk-0001", Bucket: "accepted", Status: "accepted", Event: "SVR", RawXML: rawCAP}); err != nil {
+		t.Fatalf("StoreCAPArchive: %v", err)
+	}
+	rows, err := store.ListCAPArchives(ctx, "accepted", time.Time{})
+	if err != nil {
+		t.Fatalf("ListCAPArchives: %v", err)
+	}
+	if len(rows) != 1 || rows[0].RawXML != rawCAP {
+		t.Fatalf("rows = %#v", rows)
+	}
+}

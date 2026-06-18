@@ -1,0 +1,331 @@
+package playlist
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+type bridgeClient struct {
+	conn            net.Conn
+	events          chan map[string]any
+	pendingProducts map[string]chan productResult
+	pendingSynth    map[string]chan synthResult
+	mu              sync.Mutex
+}
+
+type productResult struct {
+	Product renderedProduct
+	Err     error
+}
+
+type synthResult struct {
+	Path string
+	Err  error
+}
+
+type renderedProduct struct {
+	ID        string `json:"id"`
+	FeedID    string `json:"feed_id"`
+	PackageID string `json:"package_id"`
+	Title     string `json:"title"`
+	Text      string `json:"text"`
+	ReaderID  string `json:"reader_id"`
+	Language  string `json:"language"`
+}
+
+type synthJob struct {
+	ID         string
+	Text       string
+	ReaderID   string
+	Language   string
+	Timezone   string
+	OutputPath string
+}
+
+func connectBridge(ctx context.Context, addr string) (*bridgeClient, error) {
+	if strings.TrimSpace(addr) == "" {
+		return nil, fmt.Errorf("missing host event bridge address")
+	}
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	client := &bridgeClient{
+		conn:            conn,
+		events:          make(chan map[string]any, 256),
+		pendingProducts: map[string]chan productResult{},
+		pendingSynth:    map[string]chan synthResult{},
+	}
+	go client.readLoop()
+	return client, nil
+}
+
+func (c *bridgeClient) Close() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	return c.conn.Close()
+}
+
+func (c *bridgeClient) Events() <-chan map[string]any {
+	return c.events
+}
+
+func (c *bridgeClient) Publish(message map[string]any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := message["timestamp"]; !ok {
+		message["timestamp"] = time.Now().UTC()
+	}
+	return json.NewEncoder(c.conn).Encode(message)
+}
+
+func (c *bridgeClient) RenderProduct(ctx context.Context, requestID string, feedID string, packageID string) (renderedProduct, error) {
+	ch := make(chan productResult, 1)
+	c.mu.Lock()
+	c.pendingProducts[requestID] = ch
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.pendingProducts, requestID)
+		c.mu.Unlock()
+	}()
+	if err := c.Publish(map[string]any{
+		"type":    "product.render.request",
+		"source":  serviceID,
+		"subject": requestID,
+		"data": map[string]any{
+			"request_id": requestID,
+			"feed_id":    feedID,
+			"package_id": packageID,
+			"pkg_id":     packageID,
+		},
+	}); err != nil {
+		return renderedProduct{}, err
+	}
+	select {
+	case <-ctx.Done():
+		return renderedProduct{}, ctx.Err()
+	case result := <-ch:
+		return result.Product, result.Err
+	}
+}
+
+func (c *bridgeClient) Synthesize(ctx context.Context, job synthJob) (string, error) {
+	if strings.TrimSpace(job.ID) == "" {
+		job.ID = fmt.Sprintf("tts-%d", time.Now().UnixNano())
+	}
+	ch := make(chan synthResult, 1)
+	c.mu.Lock()
+	c.pendingSynth[job.ID] = ch
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.pendingSynth, job.ID)
+		c.mu.Unlock()
+	}()
+	if job.OutputPath != "" {
+		if err := os.MkdirAll(filepath.Dir(job.OutputPath), 0o755); err != nil {
+			return "", err
+		}
+	}
+	if err := c.Publish(map[string]any{
+		"type":    "tts.synthesize",
+		"source":  serviceID,
+		"subject": job.ID,
+		"data": map[string]any{
+			"job_id":      job.ID,
+			"text":        job.Text,
+			"reader_id":   job.ReaderID,
+			"language":    job.Language,
+			"timezone":    job.Timezone,
+			"output_path": job.OutputPath,
+		},
+	}); err != nil {
+		return "", err
+	}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case result := <-ch:
+		return result.Path, result.Err
+	}
+}
+
+func (c *bridgeClient) readLoop() {
+	defer close(c.events)
+	scanner := bufio.NewScanner(c.conn)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var message map[string]any
+		if err := json.Unmarshal([]byte(line), &message); err != nil {
+			continue
+		}
+		if c.handleProductResult(message) || c.handleSynthResult(message) {
+			continue
+		}
+		select {
+		case c.events <- message:
+		default:
+		}
+	}
+	c.mu.Lock()
+	for id, ch := range c.pendingProducts {
+		ch <- productResult{Err: fmt.Errorf("event bridge closed while waiting for %s", id)}
+		delete(c.pendingProducts, id)
+	}
+	for id, ch := range c.pendingSynth {
+		ch <- synthResult{Err: fmt.Errorf("event bridge closed while waiting for %s", id)}
+		delete(c.pendingSynth, id)
+	}
+	c.mu.Unlock()
+}
+
+func (c *bridgeClient) handleProductResult(message map[string]any) bool {
+	msgType := stringAt(message, "type")
+	if msgType != "product.rendered" && msgType != "product.render.failed" {
+		return false
+	}
+	data := mapAt(message, "data")
+	requestID := firstText(message, data, "request_id", "subject")
+	if requestID == "" {
+		return true
+	}
+	c.mu.Lock()
+	ch := c.pendingProducts[requestID]
+	c.mu.Unlock()
+	if ch == nil {
+		return true
+	}
+	if msgType == "product.render.failed" {
+		ch <- productResult{Err: fmt.Errorf("product render failed: %s", stringAt(data, "error"))}
+		return true
+	}
+	raw, err := json.Marshal(data["product"])
+	if err != nil {
+		ch <- productResult{Err: err}
+		return true
+	}
+	var product renderedProduct
+	if err := json.Unmarshal(raw, &product); err != nil {
+		ch <- productResult{Err: err}
+		return true
+	}
+	ch <- productResult{Product: product}
+	return true
+}
+
+func (c *bridgeClient) handleSynthResult(message map[string]any) bool {
+	msgType := stringAt(message, "type")
+	if msgType != "tts.synthesized" && msgType != "tts.failed" {
+		return false
+	}
+	data := mapAt(message, "data")
+	jobID := firstText(message, data, "job_id", "subject")
+	if jobID == "" {
+		return true
+	}
+	c.mu.Lock()
+	ch := c.pendingSynth[jobID]
+	c.mu.Unlock()
+	if ch == nil {
+		return true
+	}
+	if msgType == "tts.failed" {
+		ch <- synthResult{Err: fmt.Errorf("TTS failed: %s", stringAt(data, "error"))}
+		return true
+	}
+	ch <- synthResult{Path: stringAt(data, "output_path")}
+	return true
+}
+
+func stringAt(source map[string]any, key string) string {
+	if source == nil {
+		return ""
+	}
+	switch value := source[key].(type) {
+	case string:
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+}
+
+func mapAt(source map[string]any, key string) map[string]any {
+	if source == nil {
+		return nil
+	}
+	if value, ok := source[key].(map[string]any); ok {
+		return value
+	}
+	return nil
+}
+
+func firstText(message map[string]any, data map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := stringAt(message, key); value != "" {
+			return value
+		}
+		if value := stringAt(data, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstValue(message map[string]any, data map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if message != nil {
+			if value, ok := message[key]; ok && value != nil {
+				return value
+			}
+		}
+		if data != nil {
+			if value, ok := data[key]; ok && value != nil {
+				return value
+			}
+		}
+	}
+	return nil
+}
+
+func stringListAny(value any) []string {
+	switch typed := value.(type) {
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text := strings.TrimSpace(fmt.Sprint(item))
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text := strings.TrimSpace(item)
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case string:
+		if text := strings.TrimSpace(typed); text != "" {
+			return []string{text}
+		}
+	}
+	return nil
+}

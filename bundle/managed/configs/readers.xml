@@ -1,0 +1,12 @@
+<Readers>
+    <reader id="00" provider="piper">
+        <gender>male</gender>
+        <language>en-US</language>
+        <voice_id>en_US-hfc_male-medium</voice_id>
+    </reader>
+    <reader id="01" provider="piper">
+        <gender>female</gender>
+        <language>en-US</language>
+        <voice_id>en_US-lessac-low</voice_id>
+    </reader>
+</Readers>

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ivr>
+  <defaults provider="fast"
+            language="en-CA"
+            rate="0"
+            volume="100"
+            sentence_silence="0.15"
+            cache_ttl="24h">
+    <line key="one_moment">One moment.</line>
+    <line key="enter_code">Enter your weather code, followed by pound.</line>
+    <line key="no_entry">No entry was received. Goodbye.</line>
+    <line key="goodbye">Goodbye.</line>
+  </defaults>
+
+  <menu id="entry" timeout="8s" retries="2">
+    <line key="main">This is the Canada TeleMET weather service. 1 For service in English, 2 for French, 3 for Spanish, 4 to listen to a Canada RadioMET broadcast. 5 for the NOAA Geophysical Alert Message, or 0 to yell at an operator.</line>
+    <option digit="1" action="language" language="en-CA" next="location_code"/>
+    <option digit="2" action="language" language="fr-CA" next="location_code"/>
+    <option digit="3" action="language" language="es" next="location_code"/>
+    <option digit="4" action="broadcast" packages="alerts,current_conditions,air_quality,forecast,geophysical_alert" next="broadcast_menu"/>
+    <option digit="5" action="product" packages="geophysical_alert"/>
+    <option digit="0" action="operator" next="operator"/>
+  </menu>
+
+  <menu id="language_select" timeout="8s" retries="2">
+    <line key="main">1 for English. 2 for French. 3 for Spanish.</line>
+  </menu>
+
+  <menu id="location_code" timeout="10s" retries="2">
+    <line key="main">Enter your weather code, followed by pound.</line>
+  </menu>
+
+  <menu id="location_menu" timeout="8s" retries="2">
+    <line key="main">You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, or 4 to listen to a corresponding, 10 minute Canada RadioMET broadcast.</line>
+    <option digit="1" action="product" packages="current_conditions"/>
+    <option digit="2" action="product" packages="forecast"/>
+    <option digit="3" action="product" packages="air_quality"/>
+    <option digit="4" action="broadcast" packages="alerts,current_conditions,air_quality,forecast,geophysical_alert" next="broadcast_menu"/>
+  </menu>
+
+  <menu id="weather_product" cache_ttl="10m">
+    <line key="unavailable">Weather is unavailable for that code.</line>
+  </menu>
+
+  <menu id="broadcast_menu" timeout="8s" retries="1">
+    <line key="main">The Canada RadioMET broadcast is not available by telephone yet.</line>
+  </menu>
+
+  <menu id="geophysical_alert" timeout="8s" retries="1">
+    <line key="main">NOAA Geophysical Alert Message.</line>
+    <option digit="5" action="product" packages="geophysical_alert"/>
+  </menu>
+
+  <menu id="operator" timeout="8s" retries="1" transfer_uri="">
+    <line key="main">Operator transfer is not configured.</line>
+  </menu>
+
+  <menu id="error" timeout="8s" retries="2">
+    <line key="invalid_code">No match. Try again.</line>
+    <line key="uncovered_code">Known location, but no Haze feed covers it.</line>
+    <line key="unavailable">Weather is unavailable for that code.</line>
+    <line key="timeout">No entry. Goodbye.</line>
+  </menu>
+</ivr>

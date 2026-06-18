@@ -1,0 +1,34 @@
+<Webhooks> <!--webhooks for discord-->
+    <Webhook enabled="true" feed-id="cwxr-sk01"> <!-- the feed ID that the webhook will log for. has to be an enabled feed on this haze instance -->
+        <EmbedAudio enabled="true" codec="libopus" /> <!-- if enabled, will attempt to attach an audio file to the webhook message. takes any codec that ffmpeg supports. -->
+        <Username>Saskatoon WXR</Username> <!-- name on discord -->
+        <IconURL></IconURL> <!-- icon on discord -->
+        <LogTestAlerts>true</LogTestAlerts> <!-- log RWT, RMT, and DMO -->
+        <LogAdminAlerts>true</LogAdminAlerts> <!-- log NMN, ADR, TXP, TXF, and TXO -->
+        <WebhookURL>${HAZE_DISCORD_WEBHOOK_REDACTED}</WebhookURL> <!-- what webhook to send the alerts to -->
+    </Webhook>
+    <Webhook enabled="true" feed-id="cwxr-sk02"> <!-- the feed ID that the webhook will log for. has to be an enabled feed on this haze instance -->
+        <EmbedAudio enabled="true" codec="libopus" /> <!-- if enabled, will attempt to attach an audio file to the webhook message. takes any codec that ffmpeg supports. -->
+        <Username>Regina WXR</Username> <!-- name on discord -->
+        <IconURL></IconURL> <!-- icon on discord -->
+        <LogTestAlerts>true</LogTestAlerts> <!-- log RWT, RMT, and DMO -->
+        <LogAdminAlerts>true</LogAdminAlerts> <!-- log NMN, ADR, TXP, TXF, and TXO -->
+        <WebhookURL>${HAZE_DISCORD_WEBHOOK_REDACTED}</WebhookURL> <!-- what webhook to send the alerts to -->
+    </Webhook>
+    <Webhook enabled="true" feed-id="cwxr-ab01"> <!-- the feed ID that the webhook will log for. has to be an enabled feed on this haze instance -->
+        <EmbedAudio enabled="true" codec="libopus" /> <!-- if enabled, will attempt to attach an audio file to the webhook message. takes any codec that ffmpeg supports. -->
+        <Username>Wabamun WXR</Username> <!-- name on discord -->
+        <IconURL></IconURL> <!-- icon on discord -->
+        <LogTestAlerts>true</LogTestAlerts> <!-- log RWT, RMT, and DMO -->
+        <LogAdminAlerts>true</LogAdminAlerts> <!-- log NMN, ADR, TXP, TXF, and TXO -->
+        <WebhookURL>${HAZE_DISCORD_WEBHOOK_REDACTED}</WebhookURL> <!-- what webhook to send the alerts to -->
+    </Webhook>
+    <Webhook enabled="true" feed-id="cwxr-mb01"> <!-- the feed ID that the webhook will log for. has to be an enabled feed on this haze instance -->
+        <EmbedAudio enabled="true" codec="libopus" /> <!-- if enabled, will attempt to attach an audio file to the webhook message. takes any codec that ffmpeg supports. -->
+        <Username>Winnipeg WXR</Username> <!-- name on discord -->
+        <IconURL></IconURL> <!-- icon on discord -->
+        <LogTestAlerts>true</LogTestAlerts> <!-- log RWT, RMT, and DMO -->
+        <LogAdminAlerts>true</LogAdminAlerts> <!-- log NMN, ADR, TXP, TXF, and TXO -->
+        <WebhookURL>${HAZE_DISCORD_WEBHOOK_REDACTED}</WebhookURL> <!-- what webhook to send the alerts to -->
+    </Webhook>
+</Webhooks>

@@ -1,0 +1,380 @@
+package webgateway
+
+import (
+	"bufio"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/argon2"
+)
+
+const sessionCookieName = "haze_admin_session"
+
+// AuthManager owns in-memory admin sessions for the Go web gateway.
+type AuthManager struct {
+	enabled      bool
+	secureCookie bool
+	password     []byte
+	passwordHash string
+	ttl          time.Duration
+	mu           sync.Mutex
+	sessions     map[string]time.Time
+	revoked      map[string]time.Time
+}
+
+// NewAuthManager creates an authentication manager from config and environment.
+func NewAuthManager(config Config) *AuthManager {
+	ttlSeconds := config.Webpanel.Authentication.SessionTTLSeconds
+	if ttlSeconds <= 0 {
+		ttlSeconds = 12 * 60 * 60
+	}
+	enabled := true
+	if config.Webpanel.Authentication.Enabled != nil {
+		enabled = *config.Webpanel.Authentication.Enabled
+	}
+	return &AuthManager{
+		enabled:      enabled,
+		secureCookie: config.Webpanel.Authentication.SecureCookies || config.Webpanel.TLS.Enabled,
+		password:     []byte(os.Getenv("ADMIN_PASSWD")),
+		passwordHash: strings.TrimSpace(os.Getenv("ADMIN_PASSWD_HASH")),
+		ttl:          time.Duration(ttlSeconds) * time.Second,
+		sessions:     make(map[string]time.Time),
+		revoked:      make(map[string]time.Time),
+	}
+}
+
+func (a *AuthManager) Enabled() bool {
+	return a != nil && a.enabled
+}
+
+func (a *AuthManager) Configured() bool {
+	if a == nil || !a.enabled {
+		return true
+	}
+	return len(a.password) > 0 || a.passwordHash != ""
+}
+
+func (a *AuthManager) Login(password string) (string, error) {
+	if a == nil || !a.enabled {
+		return "", nil
+	}
+	if a.passwordHash != "" {
+		ok, err := verifyArgon2IDPHC(a.passwordHash, password)
+		if err != nil {
+			return "", errors.New("operator password hash is invalid")
+		}
+		if !ok {
+			return "", errors.New("incorrect password")
+		}
+	} else if len(a.password) == 0 {
+		return "", errors.New("operator password is not configured")
+	} else if subtle.ConstantTimeCompare([]byte(password), a.password) != 1 {
+		return "", errors.New("incorrect password")
+	}
+	token, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	token, err = a.signSessionToken(token, time.Now())
+	if err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	a.sessions[token] = time.Now().Add(a.ttl)
+	a.mu.Unlock()
+	return token, nil
+}
+
+func (a *AuthManager) Logout(token string) {
+	if a == nil || token == "" {
+		return
+	}
+	a.mu.Lock()
+	delete(a.sessions, token)
+	if expires, ok := a.sessionTokenExpiry(token); ok && expires.After(time.Now()) {
+		a.revoked[tokenDigest(token)] = expires
+	}
+	a.cleanupRevokedLocked(time.Now())
+	a.mu.Unlock()
+}
+
+func (a *AuthManager) Authenticated(request *http.Request) bool {
+	if a == nil || !a.enabled {
+		return true
+	}
+	return a.ValidToken(tokenFromRequest(request))
+}
+
+func (a *AuthManager) ValidToken(token string) bool {
+	if a == nil || !a.enabled {
+		return true
+	}
+	if token == "" {
+		return false
+	}
+	now := time.Now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cleanupRevokedLocked(now)
+	if _, revoked := a.revoked[tokenDigest(token)]; revoked {
+		return false
+	}
+	if expires, ok := a.sessionTokenExpiry(token); ok {
+		return expires.After(now)
+	}
+	expires, ok := a.sessions[token]
+	if !ok {
+		return false
+	}
+	if !expires.After(now) {
+		delete(a.sessions, token)
+		return false
+	}
+	return true
+}
+
+func (a *AuthManager) SetCookie(writer http.ResponseWriter, token string) {
+	if a == nil || !a.enabled || token == "" {
+		return
+	}
+	http.SetCookie(writer, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(a.ttl.Seconds()),
+		SameSite: http.SameSiteLaxMode,
+		Secure:   a.secureCookie,
+	})
+}
+
+type adminSessionClaims struct {
+	Subject    string `json:"sub"`
+	IssuedAt   int64  `json:"iat"`
+	ExpiresAt  int64  `json:"exp"`
+	SessionID  string `json:"sid"`
+	TokenNonce string `json:"nonce"`
+}
+
+func (a *AuthManager) signSessionToken(sessionID string, issuedAt time.Time) (string, error) {
+	nonce, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	claims := adminSessionClaims{
+		Subject:    "admin",
+		IssuedAt:   issuedAt.Unix(),
+		ExpiresAt:  issuedAt.Add(a.ttl).Unix(),
+		SessionID:  sessionID,
+		TokenNonce: nonce,
+	}
+	raw, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	encodedPayload := base64.RawURLEncoding.EncodeToString(raw)
+	signature := a.signTokenPayload(encodedPayload)
+	return "haze1." + encodedPayload + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func (a *AuthManager) sessionTokenExpiry(token string) (time.Time, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] != "haze1" {
+		return time.Time{}, false
+	}
+	actual, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return time.Time{}, false
+	}
+	expected := a.signTokenPayload(parts[1])
+	if subtle.ConstantTimeCompare(actual, expected) != 1 {
+		return time.Time{}, false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims adminSessionClaims
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return time.Time{}, false
+	}
+	if claims.Subject != "admin" || claims.ExpiresAt <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(claims.ExpiresAt, 0), true
+}
+
+func (a *AuthManager) signTokenPayload(encodedPayload string) []byte {
+	mac := hmac.New(sha256.New, a.sessionSigningKey())
+	_, _ = mac.Write([]byte(encodedPayload))
+	return mac.Sum(nil)
+}
+
+func (a *AuthManager) sessionSigningKey() []byte {
+	if secret := strings.TrimSpace(os.Getenv("ADMIN_SESSION_SECRET")); secret != "" {
+		sum := sha256.Sum256([]byte("haze-admin-session-secret:" + secret))
+		return sum[:]
+	}
+	if a.passwordHash != "" {
+		sum := sha256.Sum256([]byte("haze-admin-session-hash:" + a.passwordHash))
+		return sum[:]
+	}
+	sum := sha256.Sum256(append([]byte("haze-admin-session-password:"), a.password...))
+	return sum[:]
+}
+
+func tokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func (a *AuthManager) cleanupRevokedLocked(now time.Time) {
+	for digest, expires := range a.revoked {
+		if !expires.After(now) {
+			delete(a.revoked, digest)
+		}
+	}
+}
+
+func tokenFromRequest(request *http.Request) string {
+	if token := strings.TrimSpace(request.URL.Query().Get("token")); token != "" {
+		return token
+	}
+	if header := strings.TrimSpace(request.Header.Get("Authorization")); header != "" {
+		const prefix = "Bearer "
+		if strings.HasPrefix(strings.ToLower(header), strings.ToLower(prefix)) {
+			return strings.TrimSpace(header[len(prefix):])
+		}
+	}
+	if cookie, err := request.Cookie(sessionCookieName); err == nil {
+		return strings.TrimSpace(cookie.Value)
+	}
+	return ""
+}
+
+func randomToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func verifyArgon2IDPHC(encoded string, password string) (bool, error) {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 || parts[1] != "argon2id" {
+		return false, fmt.Errorf("unsupported password hash")
+	}
+	params, err := parseArgon2Params(parts[3])
+	if err != nil {
+		return false, err
+	}
+	salt, err := decodePHCBase64(parts[4])
+	if err != nil {
+		return false, err
+	}
+	expected, err := decodePHCBase64(parts[5])
+	if err != nil {
+		return false, err
+	}
+	actual := argon2.IDKey(
+		[]byte(password),
+		salt,
+		params.time,
+		params.memory,
+		uint8(params.parallelism),
+		uint32(len(expected)),
+	)
+	return subtle.ConstantTimeCompare(actual, expected) == 1, nil
+}
+
+type argon2Params struct {
+	memory      uint32
+	time        uint32
+	parallelism uint32
+}
+
+func parseArgon2Params(raw string) (argon2Params, error) {
+	params := argon2Params{}
+	for _, field := range strings.Split(raw, ",") {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		parsed, err := strconv.ParseUint(value, 10, 32)
+		if err != nil {
+			return params, err
+		}
+		switch key {
+		case "m":
+			params.memory = uint32(parsed)
+		case "t":
+			params.time = uint32(parsed)
+		case "p":
+			params.parallelism = uint32(parsed)
+		}
+	}
+	if params.memory == 0 || params.time == 0 || params.parallelism == 0 || params.parallelism > 255 {
+		return params, fmt.Errorf("invalid argon2id parameters")
+	}
+	return params, nil
+}
+
+func decodePHCBase64(value string) ([]byte, error) {
+	return base64.RawStdEncoding.DecodeString(value)
+}
+
+// LoadDotEnv loads simple KEY=VALUE entries without overriding existing env.
+func LoadDotEnv(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		_ = os.Setenv(key, trimEnvValue(value))
+	}
+	return scanner.Err()
+}
+
+func trimEnvValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		quote := value[0]
+		if (quote == '"' || quote == '\'') && value[len(value)-1] == quote {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
+}

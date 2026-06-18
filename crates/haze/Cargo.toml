@@ -1,0 +1,29 @@
+[package]
+name = "haze"
+description = "Haze Weather Radio host application"
+build = "build.rs"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.5", features = ["derive"] }
+ctrlc = { version = "3.5", features = ["termination"] }
+dunce = "1.0"
+quick-xml = { version = "0.38", features = ["serialize"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+tempfile = "3.23"

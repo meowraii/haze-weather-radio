@@ -1,4 +1,114 @@
 version: 26.06.02
+daemon_settings_file: runtime/state/daemonSettings.json
+
+storage:
+  sqlite:
+    enabled: true
+    path: runtime/state/haze.db
+    auto_migrate: true
+    busy_timeout: "30s"
+    max_open_conns: 1
+  postgres:
+    enabled: false
+    dsn_env: HAZE_POSTGRES_DSN
+    auto_migrate: true
+    max_conns: 8
+    timeout: "5s"
+    app_name: "haze-weather-radio"
+
+services:
+  rust:
+    playout:
+      enabled: true
+      alert_poll: "500ms"
+      ffmpeg: "ffmpeg"
+  go:
+    enabled: true
+    web_gateway:
+      enabled: true
+    data_ingest:
+      enabled: true
+      interval: "45m"
+      timeout: "20s"
+    cap_ingest:
+      enabled: true
+      source_id: "go-cap"
+      source: "naads"
+      interval: "30s"
+      timeout: "15s"
+    tts:
+      enabled: true
+      readers: "managed/configs/readers.xml"
+      dictionary: "managed/dictionary.json"
+      provider: "auto"
+      language: "en-CA"
+      timezone: "Local"
+      out_dir: "runtime/audio/tts"
+      timeout: "60s"
+      piper_executable: "piper"
+      piper_voices_dir: "managed/voices/piper"
+    product_render:
+      enabled: true
+      refresh: "5m"
+      cleanup:
+        enabled: true
+        hour: 3
+        minute: 0
+    playlist:
+      enabled: true
+      tick: "500ms"
+      lookahead: "2m"
+      max_queued: 3
+      out_dir: "runtime/audio/playlist"
+      fixed_tolerance_s: 4
+      routine_estimate_s: 35
+    ivr:
+      enabled: true
+      mode: sip-edge # sip-edge or provider-webhook
+      prompts_file: "managed/configs/ivr.xml"
+      http:
+        enabled: true
+        addr: "127.0.0.1:8096"
+      sip:
+        enabled: true
+        listen: "0.0.0.0:5060"
+        public_host: ""
+        allowed_sources: []
+        auth:
+          enabled: false
+          username: "haze"
+          password_env: HAZE_IVR_SIP_PASSWORD
+      rtp:
+        port_min: 30000
+        port_max: 39999
+      cache:
+        dir: "runtime/ivr/cache"
+        ttl: "10m"
+        phone_sample_rate: 8000
+        phone_codec: "pcmu"
+        max_entries: 5000
+        stampede_waiters: 64
+        refresh_on_startup: false
+        prewarm_codes: ["06040"]
+      default_language: "en-CA"
+      default_reader_id: ""
+      default_packages: ["current_conditions", "forecast"]
+      broadcast_packages: ["alerts", "current_conditions", "air_quality", "forecast", "geophysical_alert"]
+      max_call_seconds: 240
+      digit_timeout_seconds: 8
+      render_timeout: "25s"
+      max_concurrent_calls: 256
+      max_render_inflight: 8
+  daemon:
+    enabled: true
+    scheduler:
+      enabled: true
+    alert_queue:
+      enabled: false
+      interval_ms: 500
+    playlist:
+      enabled: false
+      interval_ms: 750
 
 logging:
   level: INFO
@@ -16,10 +126,10 @@ logging:
     enabled: true
 
 playout:
-  sample_rate: 24000
+  sample_rate: 48000
   channels: 1
   pacing:
-    package_gap_s: 0.35
+    package_gap_s: 1
   station_id_schedule:
     enabled: true
     minutes: [0, 15, 30, 45]
@@ -43,7 +153,7 @@ playout:
     - air_quality
     - forecast
     - climate_summary
-    # - eccc_discussion
+    - eccc_discussion
     - geophysical_alert
     - user_bulletin
 
@@ -86,12 +196,14 @@ wx_on_demand: # haze can accept a POST request from external applications with a
 webpanel:
   enabled: true
   host: "0.0.0.0"
-  port: 6444
+  port: 8086
   public:
     enabled: true
     host: "0.0.0.0"
-    port: 8080
+    port: 8086
     site_name: "Haze Weather Radio"
+    alerts_archive:
+      access: public # disabled, public
     feeds:
       access: public # disabled, public, auth_required
       webrtc:
@@ -99,46 +211,44 @@ webpanel:
   admin:
     enabled: true
     host: "0.0.0.0"
-    port: 6444
+    port: 8086
+  tls:
+    enabled: false
+    mode: acme # acme or manual
+    domains: [] # example: ["radio.example.com"]
+    email: "" # optional Let's Encrypt account email
+    cache_dir: runtime/tls/acme
+    cert_file: "" # manual mode only
+    key_file: "" # manual mode only
+    redirect_http: true
+    hsts: false # only enable after HTTPS is stable for your domain
+    staging: false # use Let's Encrypt staging while testing ACME setup
+    http_challenge:
+      enabled: true
+      host: "0.0.0.0"
+      port: 80 # Let's Encrypt HTTP-01 must be reachable from the internet on external port 80
   receiver:
     enabled: true
     base_path: /api/receiver/v1
     require_tls: false
-    challenge_ttl_seconds: 60
-    cookie_ttl_seconds: 30
-    credential_ttl_seconds: 31536000
-    credentials_path: managed/receiver_credentials.json
     transmitter_defaults:
       bandwidth_khz: 12.5
       deviation_hz: 5000
       preemphasis: none
-    pairing_tokens:
-      # Generate a long random token, set it in the environment, and give it to hazeReceiver.py once.
-      # Example receiver command:
-      #   python hazeReceiver.py --server https://haze-host:6444 --feed-id sk-0001 --pair-token-env HAZE_RECEIVER_PAIR_TOKEN
-      - id: sk-0001-install
-        enabled: true
-        token_env: HAZE_RECEIVER_PAIR_TOKEN
-        feed_ids: ["sk-0001"]
-  cors:
-    allow_origins: ["*"]
-    allow_methods: ["GET", "POST", "PUT"]
-    allow_headers: ["*"]
-  rest_api:
-    base_path: /api/v1/
   authentication:
-    enabled: true # if disabled, the panel will be read-only and the REST API will only accept requests from 127.0.0.1 without authentication. this is because you probably don't want to grant everyone on the intranet the ability to air their own weather alerts. that would be bad.
+    enabled: true # protect the operator panel and WebSocket commands.
     session_ttl_seconds: 43200
     login_rate_limit: 8
     login_rate_window_seconds: 300
     secure_cookies: false # set true when the admin panel is served only over HTTPS.
     max_audio_upload_bytes: 52428800
     # !! PASSWORD IS NOW CONFIGURED IN THE .env FILE !!
-    # Prefer ADMIN_PASSWD_HASH with an Argon2 hash generated by pwdlib.PasswordHash.recommended().
+    # Prefer ADMIN_PASSWD_HASH with an Argon2id PHC string.
     # Plain ADMIN_PASSWD remains supported for local/development deployments.
     # blank to autogenerate a random one time password on startup and print it in the logs.
 
 feeds_file: ./managed/configs/feeds.xml
+outputs_file: ./managed/configs/output.xml
 
 cap:
   cap_cp:

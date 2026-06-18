@@ -1,0 +1,503 @@
+package ivr
+
+import (
+	"encoding/csv"
+	"encoding/xml"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Options are command-line/runtime settings for the IVR edge service.
+type Options struct {
+	ConfigPath string
+	BridgeAddr string
+	HTTPAddr   string
+	SIPAddr    string
+	CacheDir   string
+}
+
+type rootConfig struct {
+	FeedsFile string `yaml:"feeds_file"`
+	Services  struct {
+		Go struct {
+			IVR Config `yaml:"ivr"`
+		} `yaml:"go"`
+	} `yaml:"services"`
+}
+
+// Config controls the scalable telephone IVR edge.
+type Config struct {
+	Enabled             *bool         `yaml:"enabled"`
+	Mode                string        `yaml:"mode"`
+	HTTP                httpConfig    `yaml:"http"`
+	SIP                 sipConfig     `yaml:"sip"`
+	RTP                 rtpConfig     `yaml:"rtp"`
+	Cache               cacheConfig   `yaml:"cache"`
+	PromptsFile         string        `yaml:"prompts_file"`
+	DefaultLanguage     string        `yaml:"default_language"`
+	DefaultReaderID     string        `yaml:"default_reader_id"`
+	DefaultPackages     []string      `yaml:"default_packages"`
+	BroadcastPackages   []string      `yaml:"broadcast_packages"`
+	MaxCallSeconds      int           `yaml:"max_call_seconds"`
+	DigitTimeoutSeconds int           `yaml:"digit_timeout_seconds"`
+	RenderTimeout       time.Duration `yaml:"-"`
+	RenderTimeoutRaw    string        `yaml:"render_timeout"`
+	MaxConcurrentCalls  int           `yaml:"max_concurrent_calls"`
+	MaxRenderInflight   int           `yaml:"max_render_inflight"`
+}
+
+type httpConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Addr    string `yaml:"addr"`
+}
+
+type sipConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	Listen         string   `yaml:"listen"`
+	PublicHost     string   `yaml:"public_host"`
+	AllowedSources []string `yaml:"allowed_sources"`
+	Auth           struct {
+		Enabled     bool   `yaml:"enabled"`
+		Username    string `yaml:"username"`
+		PasswordEnv string `yaml:"password_env"`
+	} `yaml:"auth"`
+}
+
+type rtpConfig struct {
+	PortMin int `yaml:"port_min"`
+	PortMax int `yaml:"port_max"`
+}
+
+type cacheConfig struct {
+	Dir              string   `yaml:"dir"`
+	TTL              string   `yaml:"ttl"`
+	PrewarmCodes     []string `yaml:"prewarm_codes"`
+	PhoneSampleRate  int      `yaml:"phone_sample_rate"`
+	PhoneCodec       string   `yaml:"phone_codec"`
+	MaxEntries       int      `yaml:"max_entries"`
+	StampedeWaiters  int      `yaml:"stampede_waiters"`
+	RefreshOnStartup bool     `yaml:"refresh_on_startup"`
+}
+
+type loadedConfig struct {
+	Root              rootConfig
+	IVR               Config
+	BaseDir           string
+	Feeds             []feedXML
+	ForecastLocations map[string]locationRecord
+	CLCs              map[string]locationRecord
+	Geocodes          map[string]locationRecord
+	NWS               map[string]locationRecord
+	Prompts           PromptConfig
+}
+
+type feedsXML struct {
+	Feeds []feedXML `xml:"feed"`
+}
+
+type feedXML struct {
+	ID         string `xml:"id,attr"`
+	EnabledRaw string `xml:"enabled,attr"`
+	Timezone   string `xml:"timezone,attr"`
+	Languages  struct {
+		Langs []struct {
+			Code string `xml:"code,attr"`
+		} `xml:"lang"`
+	} `xml:"languages"`
+	Locations struct {
+		Coverage struct {
+			Regions []coverageRegionXML `xml:"region"`
+		} `xml:"coverage"`
+		ObservationLocations struct {
+			Locations []feedLocationXML `xml:"location"`
+		} `xml:"observationLocations"`
+	} `xml:"locations"`
+	Transmitter struct {
+		Transmitters []transmitterXML `xml:"transmitter"`
+	} `xml:"transmitter_metadata"`
+}
+
+type transmitterXML struct {
+	SiteName     string                  `xml:"site_name"`
+	Callsign     string                  `xml:"callsign"`
+	Relationship string                  `xml:"relationship"`
+	FrequencyMHz transmitterFrequencyXML `xml:"frequency_mhz"`
+	HostName     string                  `xml:"host_name"`
+}
+
+type transmitterFrequencyXML struct {
+	GPCLK string `xml:"gpclk,attr"`
+	Value string `xml:",chardata"`
+}
+
+type coverageRegionXML struct {
+	ID             string                 `xml:"id,attr"`
+	Source         string                 `xml:"source,attr"`
+	Name           string                 `xml:"name,attr"`
+	DeriveForecast string                 `xml:"derive_forecast,attr"`
+	Subregions     []coverageSubregionXML `xml:"subregion"`
+}
+
+type coverageSubregionXML struct {
+	ID string `xml:"id,attr"`
+}
+
+type feedLocationXML struct {
+	ID           string `xml:"id,attr"`
+	Source       string `xml:"source,attr"`
+	NameOverride string `xml:"name_override,attr"`
+}
+
+type locationRecord struct {
+	Code      string `json:"code"`
+	Source    string `json:"source"`
+	Name      string `json:"name"`
+	Province  string `json:"province,omitempty"`
+	FeedID    string `json:"feed_id,omitempty"`
+	Forecast  string `json:"forecast_id,omitempty"`
+	StationID string `json:"station_id,omitempty"`
+}
+
+func loadConfig(path string, overrides Options) (loadedConfig, error) {
+	if strings.TrimSpace(path) == "" {
+		path = "config.yaml"
+	}
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return loadedConfig{}, err
+	}
+	var root rootConfig
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return loadedConfig{}, err
+	}
+	baseDir := filepath.Dir(filepath.Clean(path))
+	cfg := root.Services.Go.IVR
+	normalizeIVRConfig(&cfg)
+	if overrides.HTTPAddr != "" {
+		cfg.HTTP.Addr = overrides.HTTPAddr
+	}
+	if overrides.SIPAddr != "" {
+		cfg.SIP.Listen = overrides.SIPAddr
+	}
+	if overrides.CacheDir != "" {
+		cfg.Cache.Dir = overrides.CacheDir
+	}
+	feeds, err := loadFeeds(resolvePath(baseDir, fallbackText(root.FeedsFile, "managed/configs/feeds.xml")))
+	if err != nil {
+		return loadedConfig{}, err
+	}
+	prompts, err := loadPromptConfig(resolvePath(baseDir, cfg.PromptsFile))
+	if err != nil {
+		return loadedConfig{}, err
+	}
+	return loadedConfig{
+		Root:              root,
+		IVR:               cfg,
+		BaseDir:           baseDir,
+		Feeds:             feeds,
+		ForecastLocations: loadForecastLocations(resolvePath(baseDir, "managed/csv/FORECAST_LOCATIONS.csv")),
+		CLCs:              loadCommaCSV(resolvePath(baseDir, "managed/csv/CLC_Base_Zone.csv"), "CLC", "NAME", "PROVINCE_C", "clc"),
+		Geocodes:          loadCommaCSV(resolvePath(baseDir, "managed/csv/CAP-CP_Geocodes.csv"), "CAPCPGCODE", "NAME", "PROVINCE_C", "capcp_geocode"),
+		NWS:               loadPipeCSV(resolvePath(baseDir, "managed/csv/NWS_ZONE_COUNTY_CORRELATION.csv")),
+		Prompts:           prompts,
+	}, nil
+}
+
+func normalizeIVRConfig(cfg *Config) {
+	if cfg.Mode == "" {
+		cfg.Mode = "sip-edge"
+	}
+	if cfg.HTTP.Addr == "" {
+		cfg.HTTP.Addr = "127.0.0.1:8096"
+	}
+	if cfg.SIP.Listen == "" {
+		cfg.SIP.Listen = "0.0.0.0:5060"
+	}
+	if cfg.RTP.PortMin == 0 {
+		cfg.RTP.PortMin = 30000
+	}
+	if cfg.RTP.PortMax == 0 {
+		cfg.RTP.PortMax = 39999
+	}
+	if cfg.Cache.Dir == "" {
+		cfg.Cache.Dir = "runtime/ivr/cache"
+	}
+	if cfg.Cache.TTL == "" {
+		cfg.Cache.TTL = "10m"
+	}
+	if cfg.Cache.PhoneSampleRate == 0 {
+		cfg.Cache.PhoneSampleRate = 8000
+	}
+	if cfg.Cache.PhoneCodec == "" {
+		cfg.Cache.PhoneCodec = "pcmu"
+	}
+	if cfg.Cache.StampedeWaiters == 0 {
+		cfg.Cache.StampedeWaiters = 64
+	}
+	if cfg.PromptsFile == "" {
+		cfg.PromptsFile = "managed/configs/ivr.xml"
+	}
+	if cfg.DefaultLanguage == "" {
+		cfg.DefaultLanguage = "en-CA"
+	}
+	if len(cfg.DefaultPackages) == 0 {
+		cfg.DefaultPackages = []string{"current_conditions", "forecast"}
+	}
+	if len(cfg.BroadcastPackages) == 0 {
+		cfg.BroadcastPackages = []string{"alerts", "current_conditions", "air_quality", "forecast", "geophysical_alert"}
+	}
+	if cfg.MaxCallSeconds == 0 {
+		cfg.MaxCallSeconds = 240
+	}
+	if cfg.DigitTimeoutSeconds == 0 {
+		cfg.DigitTimeoutSeconds = 8
+	}
+	if cfg.RenderTimeoutRaw == "" {
+		cfg.RenderTimeoutRaw = "25s"
+	}
+	timeout, err := time.ParseDuration(cfg.RenderTimeoutRaw)
+	if err != nil || timeout <= 0 {
+		timeout = 25 * time.Second
+	}
+	cfg.RenderTimeout = timeout
+	if cfg.MaxConcurrentCalls == 0 {
+		cfg.MaxConcurrentCalls = 256
+	}
+	if cfg.MaxRenderInflight == 0 {
+		cfg.MaxRenderInflight = 8
+	}
+}
+
+func (cfg loadedConfig) enabled() bool {
+	if cfg.IVR.Enabled == nil {
+		return false
+	}
+	return *cfg.IVR.Enabled
+}
+
+func (cfg loadedConfig) cacheDir() string {
+	return resolvePath(cfg.BaseDir, cfg.IVR.Cache.Dir)
+}
+
+func (cfg loadedConfig) cacheTTL() time.Duration {
+	ttl, err := time.ParseDuration(cfg.IVR.Cache.TTL)
+	if err != nil || ttl <= 0 {
+		return 10 * time.Minute
+	}
+	return ttl
+}
+
+func loadFeeds(path string) ([]feedXML, error) {
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	var parsed feedsXML
+	if err := xml.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("parse feeds XML: %w", err)
+	}
+	return parsed.Feeds, nil
+}
+
+func loadForecastLocations(path string) map[string]locationRecord {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return map[string]locationRecord{}
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	_, _ = reader.Read()
+	header, err := reader.Read()
+	if err != nil {
+		return map[string]locationRecord{}
+	}
+	codeIndex := csvIndex(header, "CODE")
+	nameIndex := csvIndex(header, "NAME")
+	provIndex := csvIndex(header, "PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2")
+	out := map[string]locationRecord{}
+	for {
+		row, err := reader.Read()
+		if err != nil {
+			break
+		}
+		if codeIndex < 0 || nameIndex < 0 || len(row) <= maxInt(codeIndex, nameIndex) {
+			continue
+		}
+		code := strings.Trim(strings.TrimSpace(row[codeIndex]), `"`)
+		if code == "" {
+			continue
+		}
+		province := ""
+		if provIndex >= 0 && len(row) > provIndex {
+			province = strings.Trim(strings.TrimSpace(row[provIndex]), `"`)
+		}
+		if _, exists := out[code]; !exists {
+			out[code] = locationRecord{
+				Code:     code,
+				Source:   "eccc_forecast",
+				Name:     strings.Trim(strings.TrimSpace(row[nameIndex]), `"`),
+				Province: province,
+				Forecast: cityPageFromForecastCode(code),
+			}
+		}
+	}
+	return out
+}
+
+func loadCommaCSV(path string, codeHeader string, nameHeader string, provinceHeader string, source string) map[string]locationRecord {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return map[string]locationRecord{}
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	header, err := reader.Read()
+	if err != nil {
+		return map[string]locationRecord{}
+	}
+	codeIndex := csvIndex(header, codeHeader)
+	nameIndex := csvIndex(header, nameHeader)
+	provIndex := csvIndex(header, provinceHeader)
+	out := map[string]locationRecord{}
+	for {
+		row, err := reader.Read()
+		if err != nil {
+			break
+		}
+		if codeIndex < 0 || nameIndex < 0 || len(row) <= maxInt(codeIndex, nameIndex) {
+			continue
+		}
+		code := strings.Trim(strings.TrimSpace(row[codeIndex]), `"`)
+		if code == "" {
+			continue
+		}
+		province := ""
+		if provIndex >= 0 && len(row) > provIndex {
+			province = strings.Trim(strings.TrimSpace(row[provIndex]), `"`)
+		}
+		out[code] = locationRecord{
+			Code:     code,
+			Source:   source,
+			Name:     strings.Trim(strings.TrimSpace(row[nameIndex]), `"`),
+			Province: province,
+		}
+	}
+	return out
+}
+
+func loadPipeCSV(path string) map[string]locationRecord {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return map[string]locationRecord{}
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.Comma = '|'
+	reader.FieldsPerRecord = -1
+	header, err := reader.Read()
+	if err != nil {
+		return map[string]locationRecord{}
+	}
+	zoneIndex := csvIndex(header, "STATE+ZONE")
+	nameIndex := csvIndex(header, "ZONE_NAME")
+	countyIndex := csvIndex(header, "COUNTY_NAME")
+	fipsIndex := csvIndex(header, "FIPS/SAME")
+	stateIndex := csvIndex(header, "STATE")
+	out := map[string]locationRecord{}
+	for {
+		row, err := reader.Read()
+		if err != nil {
+			break
+		}
+		if zoneIndex >= 0 && len(row) > zoneIndex {
+			code := strings.ToUpper(strings.TrimSpace(row[zoneIndex]))
+			if code != "" {
+				out[code] = locationRecord{Code: code, Source: "nws_zone", Name: valueAt(row, nameIndex), Province: valueAt(row, stateIndex), Forecast: code}
+			}
+		}
+		if fipsIndex >= 0 && len(row) > fipsIndex {
+			code := strings.TrimSpace(row[fipsIndex])
+			if code != "" {
+				out[code] = locationRecord{Code: code, Source: "nws_same", Name: valueAt(row, countyIndex), Province: valueAt(row, stateIndex)}
+			}
+		}
+	}
+	return out
+}
+
+func csvIndex(header []string, name string) int {
+	for index, value := range header {
+		if strings.EqualFold(strings.TrimSpace(value), name) {
+			return index
+		}
+	}
+	return -1
+}
+
+func valueAt(row []string, index int) string {
+	if index < 0 || index >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[index])
+}
+
+func maxInt(values ...int) int {
+	max := values[0]
+	for _, value := range values[1:] {
+		if value > max {
+			max = value
+		}
+	}
+	return max
+}
+
+func cityPageFromForecastCode(code string) string {
+	code = strings.TrimLeft(strings.TrimSpace(code), "0")
+	if code == "" {
+		return ""
+	}
+	number, err := strconv.Atoi(code)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("sk-%d", number)
+}
+
+func resolvePath(base string, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return filepath.Clean(base)
+	}
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(base, value))
+}
+
+func fallbackText(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return strings.TrimSpace(fallback)
+	}
+	return strings.TrimSpace(value)
+}
+
+func xmlBool(raw string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on", "enabled":
+		return true
+	case "0", "false", "no", "off", "disabled":
+		return false
+	default:
+		return fallback
+	}
+}

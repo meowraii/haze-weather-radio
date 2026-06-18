@@ -1,0 +1,527 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- custom config for Canada Weather Radio Service -->
+<feeds>
+
+  <feed id="cwxr-sk01" enabled="true" timezone="America/Regina">
+
+    <playout routine="true" same="true"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="true">
+          <blocklist>
+            <severity>Minor</severity>
+            <severity>Unknown</severity>
+            <certainty>Unknown</certainty>
+            <certainty>Past</certainty>
+            <naads_event>fog</naads_event>
+            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
+          </blocklist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <languages>
+      <lang code="en-CA" interval="0"/>
+      <!-- <lang code="fr-CA" interval="0"/> -->
+    </languages>
+
+    <description>
+      <lang code="en-CA"
+            text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
+            suffix="We do not imply any association with Environment Canada."/>
+    </description>
+
+    <!--
+      glossary of location identifiers:
+
+      The data provider in the parentheses denotes which APIs of said providers can be used with the location identifier.
+      For example, the citypage ID can be used to pull data from the ECCC API, but not the NWS or TWC APIs.
+
+      citypage: ECCC ID for the city page weather product. ex: SK-40 for Saskatoon. (ECCC)
+      nws_zone: NWS County/Zone code for the forecast zone. ex: GAZ033 for north Fulton County, GA. (NWS)
+      nws_county: NWS County code for the forecast county. ex: GAC121 for Fulton County, GA. (NWS)
+      same: the six digit location code used in SAME alerts.
+      same_fips: In the US, the six digit SAME location code is derived from the FIPS code. ex: 013121 for Fulton County, GA.
+      same_clc: In Canada, the six digit SAME location code is derived from the Canadian Location Code. ex: 065522 for Saskatoon.
+                - NOTE: Mexico uses the 000000 SAME code for all Early Earthquake Warnings on SASMEX.
+      iata: IATA station code for the location. ex: CYXE for Saskatoon Airport. KIND for Indianapolis Airport. (ECCC, NWS, TWC)
+      geocode: lat/lon geocode for the location on the TWC API. 52.1,-106.6 for Saskatoon. not to be confused with the geocodes used in CAP alerts, which are a different format. (TWC)
+
+      id:              Environment Canada City Page ID, NWS County/Zone code, or IATA station ID.
+      source:          eccc | nws | twc
+      name_override:   Override when the source API omits the location name.
+      region:
+        - id:            Environment Canada Canadian Location Code, US SAME FIPS code, or any six-digit code that your country uses to identify forecast regions.
+          source:        eccc | nws | twc
+          derive_forecast: ID of the location to derive forecast data from. This places the region in the forecast package of the feed and will be read on air.
+    -->
+    <locations>
+      <coverage>
+        <region id="065100" source="eccc" derive_forecast="sk-40"/>
+        <region id="065400" source="eccc" derive_forecast="sk-1"/>
+        <region id="065500" source="eccc" derive_forecast="sk-37">
+          <subregion id="065522"/>
+          <subregion id="065521"/>
+        </region>
+      </coverage>
+
+      <observationLocations>
+        <location id="sk-40" source="eccc"/>
+        <location id="sk-1" source="eccc"/>
+        <location id="sk-37" source="eccc"/>
+        <location id="sk-49" source="eccc"/>
+        <location id="sk-2" source="eccc"/>
+        <location id="sk-6" source="eccc"/>
+        <location id="sk-23" source="eccc"/>
+        <location id="sk-35" source="eccc"/>
+        <location id="sk-26" source="eccc"/>
+      </observationLocations>
+
+      <airQualityLocations>
+        <location id="HAHJJ" source="eccc"/>
+      </airQualityLocations>
+
+      <climateLocations>
+        <location id="VSSK40V" source="eccc"/>
+      </climateLocations>
+
+    </locations>
+
+    <transmitter_metadata> <!-- mostly for identification. -->
+        <transmitter>
+            <site_name>Saskatoon</site_name>
+            <callsign>XLF322</callsign>
+            <relationship>primary</relationship> <!-- primary | secondary/repeater | unknown -->
+            <frequency_mhz>162.550</frequency_mhz>
+        </transmitter>
+    </transmitter_metadata>
+
+    <output>
+      <stream enabled="true">
+        <type>icecast</type>
+        <host>icecast.rai.blue</host>
+        <port>8001</port>
+        <username>source</username>
+        <password>S4yg3x2008</password>
+        <ssl>false</ssl>
+        <format>opus</format>
+        <bitrate_kbps>32</bitrate_kbps>
+      </stream>
+
+      <udp enabled="false">
+        <ip>172.16.1.37</ip>
+        <port>8898</port>
+        <format>mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
+      </udp>
+
+      <rtp enabled="false">
+        <ip>172.16.1.37</ip>
+        <port>8899</port>
+        <format>rtp_mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
+      </rtp>
+
+      <rtmp enabled="false">
+        <url>rtmp://localhost/live/stream</url>
+        <format>flv</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </rtmp>
+
+      <srt enabled="false">
+        <url>srt://localhost:12345</url>
+        <format>mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </srt>
+
+      <rtsp enabled="false">
+        <url>rtsp://localhost:8554/stream</url>
+        <format>rtsp</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </rtsp>
+
+      <audio_device enabled="true"/>
+
+    </output>
+
+  </feed>
+ 
+  <feed id="cwxr-sk02" enabled="true" timezone="America/Regina">
+
+    <playout routine="true" same="true"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="true">
+          <blocklist>
+            <severity>Minor</severity>
+            <severity>Unknown</severity>
+            <certainty>Unknown</certainty>
+            <certainty>Past</certainty>
+            <naads_event>fog</naads_event>
+            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
+          </blocklist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <languages>
+      <lang code="en-CA" interval="0"/>
+      <!-- <lang code="fr-CA" interval="0"/> -->
+    </languages>
+
+    <description>
+      <lang code="en-CA"
+            text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
+            suffix="We do not imply any association with Environment Canada."/>
+    </description>
+
+    <locations>
+      <coverage>
+        <region id="062100" source="eccc" derive_forecast="sk-32"/>
+        <region id="062200" source="eccc" derive_forecast="sk-24"/>
+        <region id="062300" source="eccc" derive_forecast="sk-43"/>
+      </coverage>
+
+      <observationLocations>
+        <location id="sk-32" source="eccc"/>
+        <location id="sk-24" source="eccc"/>
+        <location id="sk-49" source="eccc"/>
+        <location id="sk-43" source="eccc"/>
+      </observationLocations>
+
+      <airQualityLocations>
+        <location id="HAIMP" source="eccc"/>
+      </airQualityLocations>
+
+      <climateLocations>
+        <location id="VSSK32V" source="eccc"/>
+      </climateLocations>
+
+    </locations>
+
+    <transmitter_metadata> <!-- mostly for identification. -->
+        <transmitter>
+            <site_name>Regina</site_name>
+            <callsign>XLM537</callsign>
+            <relationship>primary</relationship> <!-- primary | secondary/repeater | unknown -->
+            <frequency_mhz>162.550</frequency_mhz>
+        </transmitter>
+    </transmitter_metadata>
+
+    <output>
+      <stream enabled="true">
+        <type>icecast</type>
+        <host>icecast.rai.blue</host>
+        <port>8001</port>
+        <username>source</username>
+        <password>S4yg3x2008</password>
+        <ssl>false</ssl>
+        <format>opus</format>
+        <bitrate_kbps>32</bitrate_kbps>
+      </stream>
+
+      <udp enabled="false">
+        <ip>172.16.1.37</ip>
+        <port>8898</port>
+        <format>mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
+      </udp>
+
+      <rtp enabled="false">
+        <ip>172.16.1.37</ip>
+        <port>8899</port>
+        <format>rtp_mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
+      </rtp>
+
+      <rtmp enabled="false">
+        <url>rtmp://localhost/live/stream</url>
+        <format>flv</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </rtmp>
+
+      <srt enabled="false">
+        <url>srt://localhost:12345</url>
+        <format>mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </srt>
+
+      <rtsp enabled="false">
+        <url>rtsp://localhost:8554/stream</url>
+        <format>rtsp</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </rtsp>
+
+      <audio_device enabled="false"/>
+
+    </output>
+
+  </feed>
+
+  <feed id="cwxr-ab01" enabled="true" timezone="America/Edmonton">
+
+    <playout routine="true" same="true"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="true">
+          <blocklist>
+            <severity>Minor</severity>
+            <severity>Unknown</severity>
+            <certainty>Unknown</certainty>
+            <certainty>Past</certainty>
+            <naads_event>fog</naads_event>
+            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
+          </blocklist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <languages>
+      <lang code="en-CA" interval="0"/>
+      <!-- <lang code="fr-CA" interval="0"/> -->
+    </languages>
+
+    <description>
+      <lang code="en-CA"
+            text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
+            suffix="We do not imply any association with Environment Canada."/>
+    </description>
+
+    <locations>
+      <coverage>
+        <region id="076200" source="eccc" derive_forecast="ab-68"/>
+        <region id="076500" source="eccc" derive_forecast="ab-48"/>
+        <region id="076400" source="eccc" derive_forecast="ab-50"/>
+      </coverage>
+
+      <observationLocations>
+        <location id="ab-68" source="eccc"/>
+        <location id="ab-22" source="eccc"/>
+        <location id="ab-50" source="eccc"/>
+        <location id="ab-48" source="eccc"/>
+      </observationLocations>
+
+      <airQualityLocations>
+        <location id="IAFYX" source="eccc"/>
+		<location id="IABOA" source="eccc"/>
+		<location id="IAGHN" source="eccc"/>
+      </airQualityLocations>
+
+      <climateLocations>
+        <location id="VSAB22V" source="eccc"/>
+      </climateLocations>
+
+    </locations>
+
+    <transmitter_metadata> <!-- mostly for identification. -->
+        <transmitter>
+            <site_name>Highvale</site_name>
+            <callsign>VBU829</callsign>
+            <relationship>primary</relationship> <!-- primary | secondary/repeater | unknown -->
+            <frequency_mhz>162.475</frequency_mhz>
+        </transmitter>
+    </transmitter_metadata>
+
+    <output>
+      <stream enabled="true">
+        <type>icecast</type>
+        <host>icecast.rai.blue</host>
+        <port>8001</port>
+        <username>source</username>
+        <password>S4yg3x2008</password>
+        <ssl>false</ssl>
+        <format>opus</format>
+        <bitrate_kbps>32</bitrate_kbps>
+      </stream>
+
+      <udp enabled="false">
+        <ip>172.16.1.37</ip>
+        <port>8898</port>
+        <format>mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
+      </udp>
+
+      <rtp enabled="false">
+        <ip>172.16.1.37</ip>
+        <port>8899</port>
+        <format>rtp_mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
+      </rtp>
+
+      <rtmp enabled="false">
+        <url>rtmp://localhost/live/stream</url>
+        <format>flv</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </rtmp>
+
+      <srt enabled="false">
+        <url>srt://localhost:12345</url>
+        <format>mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </srt>
+
+      <rtsp enabled="false">
+        <url>rtsp://localhost:8554/stream</url>
+        <format>rtsp</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </rtsp>
+
+      <audio_device enabled="false"/>
+
+    </output>
+
+  </feed>
+  
+  <feed id="cwxr-mb01" enabled="true" timezone="America/Winnipeg">
+
+    <playout routine="true" same="true"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="true">
+          <blocklist>
+            <severity>Minor</severity>
+            <severity>Unknown</severity>
+            <certainty>Unknown</certainty>
+            <certainty>Past</certainty>
+            <naads_event>fog</naads_event>
+            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
+          </blocklist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <languages>
+      <lang code="en-CA" interval="0"/>
+      <!-- <lang code="fr-CA" interval="0"/> -->
+    </languages>
+
+    <description>
+      <lang code="en-CA"
+            text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
+            suffix="We do not imply any association with Environment Canada."/>
+    </description>
+
+    <locations>
+      <coverage>
+        <region id="052100" source="eccc" derive_forecast="mb-36"/>
+        <region id="052200" source="eccc" derive_forecast="mb-14"/>
+        <region id="052400" source="eccc" derive_forecast="mb-9"/>
+        <region id="052600" source="eccc" derive_forecast="mb-13">
+          <subregion id="052323" />
+        </region>
+        <region id="052300" source="eccc" derive_forecast="mb-65">
+          <subregion id="052323" />
+          <subregion id="052340" />
+          <subregion id="052310" />
+        </region>
+      </coverage>
+
+      <observationLocations>
+        <location id="mb-36" source="eccc"/>
+        <location id="mb-6" source="eccc"/>
+        <location id="mb-62" source="eccc"/>
+        <location id="mb-13" source="eccc"/>
+        <location id="mb-11" source="eccc"/>
+        <location id="mb-65" source="eccc"/>
+        <location id="mb-29" source="eccc"/>
+      </observationLocations>
+
+      <airQualityLocations>
+        <location id="GBEIN" source="eccc"/>
+      </airQualityLocations>
+
+      <climateLocations>
+        <location id="VSMB36V" source="eccc"/>
+      </climateLocations>
+
+    </locations>
+
+    <transmitter_metadata> <!-- mostly for identification. -->
+        <transmitter>
+            <site_name>Highvale</site_name>
+            <callsign>VBU829</callsign>
+            <relationship>primary</relationship> <!-- primary | secondary/repeater | unknown -->
+            <frequency_mhz>162.475</frequency_mhz>
+        </transmitter>
+    </transmitter_metadata>
+
+    <output>
+      <stream enabled="true">
+        <type>icecast</type>
+        <host>icecast.rai.blue</host>
+        <port>8001</port>
+        <username>source</username>
+        <password>S4yg3x2008</password>
+        <ssl>false</ssl>
+        <format>opus</format>
+        <bitrate_kbps>32</bitrate_kbps>
+      </stream>
+
+      <udp enabled="false">
+        <ip>172.16.1.37</ip>
+        <port>8898</port>
+        <format>mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
+      </udp>
+
+      <rtp enabled="false">
+        <ip>172.16.1.37</ip>
+        <port>8899</port>
+        <format>rtp_mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>libopus</acodec>
+      </rtp>
+
+      <rtmp enabled="false">
+        <url>rtmp://localhost/live/stream</url>
+        <format>flv</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </rtmp>
+
+      <srt enabled="false">
+        <url>srt://localhost:12345</url>
+        <format>mpegts</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </srt>
+
+      <rtsp enabled="false">
+        <url>rtsp://localhost:8554/stream</url>
+        <format>rtsp</format>
+        <bitrate_kbps>32</bitrate_kbps>
+        <acodec>aac</acodec>
+      </rtsp>
+
+      <audio_device enabled="false"/>
+
+    </output>
+
+  </feed>
+
+
+</feeds>

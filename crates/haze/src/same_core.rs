@@ -1,0 +1,495 @@
+use std::f32::consts::TAU;
+
+use thiserror::Error;
+
+pub const SAMPLE_RATE: u32 = 48_000;
+pub const MARK_FREQ_HZ: f32 = 6250.0 / 3.0;
+pub const SPACE_FREQ_HZ: f32 = 3125.0 / 2.0;
+pub const BIT_DURATION_S: f32 = 6.0 / 3125.0;
+
+const PREAMBLE_BYTE: u8 = 0xAB;
+const PREAMBLE_LEN: usize = 16;
+const SEQUENCE_AMPLITUDE: f32 = 0.45;
+const INTER_BURST_S: f32 = 1.0;
+const BURST_LEAD_S: f32 = 0.100;
+const PRE_ATTN_S: f32 = 1.0;
+const EOM_LEAD_S: f32 = 1.0;
+const EOM_TAIL_S: f32 = 0.8;
+const ATTN_DEFAULT_S: f32 = 8.0;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SameError {
+    #[error("originator must be exactly 3 ASCII characters")]
+    InvalidOriginator,
+    #[error("event must be exactly 3 ASCII characters")]
+    InvalidEvent,
+    #[error("duration must be exactly 4 ASCII digits")]
+    InvalidDuration,
+    #[error("at least one location is required")]
+    MissingLocation,
+    #[error("location code must be 6 ASCII digits")]
+    InvalidLocation,
+    #[error("issue time must be JJJHHMM ASCII digits")]
+    InvalidIssueTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SameHeader {
+    originator: String,
+    event: String,
+    locations: Vec<String>,
+    duration: String,
+    callsign: String,
+    issue_time: String,
+}
+
+impl SameHeader {
+    /// Create a validated SAME header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any field violates SAME header formatting.
+    pub fn new(
+        originator: impl Into<String>,
+        event: impl Into<String>,
+        locations: impl IntoIterator<Item = impl Into<String>>,
+        duration: impl Into<String>,
+        callsign: impl Into<String>,
+        issue_time: impl Into<String>,
+    ) -> Result<Self, SameError> {
+        let originator = originator.into();
+        let event = event.into();
+        let locations: Vec<String> = locations.into_iter().map(Into::into).collect();
+        let duration = duration.into();
+        let callsign = callsign.into();
+        let issue_time = issue_time.into();
+
+        validate_exact_ascii(&originator, 3)
+            .then_some(())
+            .ok_or(SameError::InvalidOriginator)?;
+        validate_exact_ascii(&event, 3)
+            .then_some(())
+            .ok_or(SameError::InvalidEvent)?;
+        validate_digits(&duration, 4)
+            .then_some(())
+            .ok_or(SameError::InvalidDuration)?;
+        if locations.is_empty() {
+            return Err(SameError::MissingLocation);
+        }
+        for location in &locations {
+            validate_digits(location, 6)
+                .then_some(())
+                .ok_or(SameError::InvalidLocation)?;
+        }
+        validate_digits(&issue_time, 7)
+            .then_some(())
+            .ok_or(SameError::InvalidIssueTime)?;
+
+        Ok(Self {
+            originator,
+            event,
+            locations,
+            duration,
+            callsign,
+            issue_time,
+        })
+    }
+
+    #[must_use]
+    pub fn encoded(&self) -> String {
+        let location = self.locations.join("-");
+        let callsign = fixed_callsign(&self.callsign);
+        format!(
+            "ZCZC-{}-{}-{}+{}-{}-{}-",
+            self.originator, self.event, location, self.duration, self.issue_time, callsign
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToneType {
+    Wxr,
+    Eas,
+    Npas,
+    EggTimer,
+    Quebec,
+}
+
+#[derive(Debug, Clone)]
+pub struct SameAudio {
+    pub sample_rate: u32,
+    pub samples: Vec<f32>,
+}
+
+impl SameAudio {
+    #[must_use]
+    pub fn to_pcm16le(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.samples.len() * 2);
+        for sample in &self.samples {
+            let clamped = sample.clamp(-1.0, 1.0);
+            let value = (clamped * i16::MAX as f32) as i16;
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+}
+
+#[must_use]
+pub fn generate_same_header_sequence(
+    header: &SameHeader,
+    tone_type: Option<ToneType>,
+) -> SameAudio {
+    let mut audio = generate_same_header_attention_sequence(header, tone_type);
+    audio.samples.extend(eom_sequence().samples);
+    audio
+}
+
+#[must_use]
+pub fn generate_same_header_attention_sequence(
+    header: &SameHeader,
+    tone_type: Option<ToneType>,
+) -> SameAudio {
+    let mut samples = Vec::new();
+    samples.extend(silence(BURST_LEAD_S));
+    samples.extend(triple_burst(&header_burst(header)));
+
+    if let Some(tone_type) = tone_type {
+        samples.extend(silence(PRE_ATTN_S));
+        samples.extend(attention_tone(tone_type, ATTN_DEFAULT_S));
+    }
+
+    for sample in &mut samples {
+        *sample *= SEQUENCE_AMPLITUDE;
+    }
+
+    SameAudio {
+        sample_rate: SAMPLE_RATE,
+        samples,
+    }
+}
+
+#[must_use]
+pub fn eom_sequence() -> SameAudio {
+    let mut samples = Vec::new();
+    samples.extend(silence(EOM_LEAD_S));
+    samples.extend(triple_burst(&eom_burst()));
+    samples.extend(silence(EOM_TAIL_S));
+    for sample in &mut samples {
+        *sample *= SEQUENCE_AMPLITUDE;
+    }
+    SameAudio {
+        sample_rate: SAMPLE_RATE,
+        samples,
+    }
+}
+
+#[must_use]
+pub fn header_burst(header: &SameHeader) -> Vec<f32> {
+    let mut data = Vec::with_capacity(PREAMBLE_LEN + header.encoded().len());
+    data.extend(std::iter::repeat_n(PREAMBLE_BYTE, PREAMBLE_LEN));
+    data.extend(header.encoded().as_bytes());
+    afsk_encode(&data)
+}
+
+#[must_use]
+pub fn eom_burst() -> Vec<f32> {
+    let mut data = Vec::with_capacity(PREAMBLE_LEN + 4);
+    data.extend(std::iter::repeat_n(PREAMBLE_BYTE, PREAMBLE_LEN));
+    data.extend(b"NNNN");
+    afsk_encode(&data)
+}
+
+#[must_use]
+pub fn afsk_encode(data: &[u8]) -> Vec<f32> {
+    let bit_samples = (SAMPLE_RATE as f32 * BIT_DURATION_S).round() as usize;
+    let mut samples = Vec::with_capacity(data.len() * 8 * bit_samples);
+    for byte in data {
+        for bit_index in 0..8 {
+            let bit = (byte >> bit_index) & 1;
+            let frequency = if bit == 1 {
+                MARK_FREQ_HZ
+            } else {
+                SPACE_FREQ_HZ
+            };
+            samples.extend(sine(frequency, bit_samples));
+        }
+    }
+    samples
+}
+
+#[must_use]
+pub fn attention_tone(tone_type: ToneType, duration_s: f32) -> Vec<f32> {
+    match tone_type {
+        ToneType::Wxr => sine_duration(1050.0, duration_s),
+        ToneType::Quebec => mix_tones(&[1050.0, 650.0], duration_s),
+        ToneType::Eas => {
+            let mut tone = mix_tones(&[853.0, 960.0], duration_s);
+            apply_fade_in_place(&mut tone, 0.006);
+            apply_fade_out_place(&mut tone, 0.006);
+            tone
+        }
+        ToneType::Npas => npas_tone(duration_s),
+        ToneType::EggTimer => egg_timer_tone(duration_s),
+    }
+}
+
+fn npas_tone(duration_s: f32) -> Vec<f32> {
+    let segment_len = (SAMPLE_RATE as f32 * 0.5).round() as usize;
+    let total = (duration_s.max(0.0) * SAMPLE_RATE as f32).round() as usize;
+    let mut samples = Vec::with_capacity(total);
+    let mut segment = 0usize;
+    while samples.len() < total {
+        let freqs = if segment.is_multiple_of(2) {
+            [932.33, 1046.50, 3135.96]
+        } else {
+            [440.00, 659.26, 3135.96]
+        };
+        let take = segment_len.min(total - samples.len());
+        let mut chunk = mix_tones_for_samples(&freqs, take);
+        apply_fade_in_place(&mut chunk, 0.003);
+        apply_fade_out_place(&mut chunk, 0.003);
+        samples.extend(chunk);
+        segment += 1;
+    }
+    let clean = samples.clone();
+    soft_saturate_in_place(&mut samples, 1.85, 0.32);
+    match_reference_level(&mut samples, &clean);
+    samples
+}
+
+fn egg_timer_tone(duration_s: f32) -> Vec<f32> {
+    let total = (duration_s.max(0.0) * SAMPLE_RATE as f32).round() as usize;
+    let tone_len = (SAMPLE_RATE as f32 * 0.070).round() as usize;
+    let inter_len = (SAMPLE_RATE as f32 * 0.055).round() as usize;
+    let gap_len = (SAMPLE_RATE as f32 * 0.500).round() as usize;
+    let burst_period = tone_len + inter_len;
+    let cycle_len = (burst_period * 4) + gap_len;
+    let mut samples = vec![0.0; total];
+    for (index, sample) in samples.iter_mut().enumerate().take(total) {
+        let pos = index % cycle_len;
+        if pos / burst_period < 4 && pos % burst_period < tone_len {
+            *sample = (TAU * 2055.0 * index as f32 / SAMPLE_RATE as f32).sin() / 1.40;
+        }
+    }
+    for cycle_start in (0..total).step_by(cycle_len.max(1)) {
+        for burst in 0..4 {
+            let start = cycle_start + (burst * burst_period);
+            let end = (start + tone_len).min(total);
+            if start < end {
+                apply_fade_in_place(&mut samples[start..end], 0.006);
+                apply_fade_out_place(&mut samples[start..end], 0.006);
+            }
+        }
+    }
+    samples
+}
+
+fn triple_burst(burst: &[f32]) -> Vec<f32> {
+    let gap = silence(INTER_BURST_S);
+    let mut samples = Vec::with_capacity((burst.len() * 3) + (gap.len() * 2));
+    samples.extend_from_slice(burst);
+    samples.extend_from_slice(&gap);
+    samples.extend_from_slice(burst);
+    samples.extend_from_slice(&gap);
+    samples.extend_from_slice(burst);
+    samples
+}
+
+fn sine_duration(freq_hz: f32, duration_s: f32) -> Vec<f32> {
+    let sample_count = (duration_s.max(0.0) * SAMPLE_RATE as f32).round() as usize;
+    sine(freq_hz, sample_count)
+}
+
+fn sine(freq_hz: f32, sample_count: usize) -> Vec<f32> {
+    (0..sample_count)
+        .map(|index| (TAU * freq_hz * index as f32 / SAMPLE_RATE as f32).sin())
+        .collect()
+}
+
+fn mix_tones(freqs: &[f32], duration_s: f32) -> Vec<f32> {
+    let sample_count = (duration_s.max(0.0) * SAMPLE_RATE as f32).round() as usize;
+    mix_tones_for_samples(freqs, sample_count)
+}
+
+fn mix_tones_for_samples(freqs: &[f32], sample_count: usize) -> Vec<f32> {
+    let divisor = freqs.len().max(1) as f32;
+    (0..sample_count)
+        .map(|index| {
+            freqs
+                .iter()
+                .map(|freq| (TAU * *freq * index as f32 / SAMPLE_RATE as f32).sin())
+                .sum::<f32>()
+                / divisor
+        })
+        .collect()
+}
+
+fn apply_fade_in_place(samples: &mut [f32], duration_s: f32) {
+    let fade_samples = ((SAMPLE_RATE as f32 * duration_s).round() as usize).min(samples.len());
+    if fade_samples == 0 {
+        return;
+    }
+    let denom = (fade_samples - 1).max(1) as f32;
+    for (index, sample) in samples.iter_mut().take(fade_samples).enumerate() {
+        *sample *= index as f32 / denom;
+    }
+}
+
+fn apply_fade_out_place(samples: &mut [f32], duration_s: f32) {
+    let fade_samples = ((SAMPLE_RATE as f32 * duration_s).round() as usize).min(samples.len());
+    if fade_samples == 0 {
+        return;
+    }
+    let denom = (fade_samples - 1).max(1) as f32;
+    let start = samples.len() - fade_samples;
+    for index in 0..fade_samples {
+        samples[start + index] *= 1.0 - (index as f32 / denom);
+    }
+}
+
+fn soft_saturate_in_place(samples: &mut [f32], drive: f32, blend: f32) {
+    if samples.is_empty() || drive <= 1.0 || blend <= 0.0 {
+        return;
+    }
+    let peak = samples
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0, f32::max);
+    if peak <= 0.0 {
+        return;
+    }
+    for sample in samples {
+        let clean = *sample / peak;
+        let saturated = (clean * drive).tanh();
+        *sample = (((1.0 - blend) * clean) + (blend * saturated)) * peak;
+    }
+}
+
+fn match_reference_level(samples: &mut [f32], reference: &[f32]) {
+    if samples.is_empty() || reference.is_empty() {
+        return;
+    }
+    let reference_rms = rms(reference);
+    let sample_rms = rms(samples);
+    if reference_rms > 0.0 && sample_rms > 0.0 {
+        let scale = reference_rms / sample_rms;
+        for sample in samples.iter_mut() {
+            *sample *= scale;
+        }
+    }
+    let reference_peak = reference
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0, f32::max);
+    let sample_peak = samples
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0, f32::max);
+    if reference_peak > 0.0 && sample_peak > reference_peak {
+        let scale = reference_peak / sample_peak;
+        for sample in samples {
+            *sample *= scale;
+        }
+    }
+}
+
+fn rms(samples: &[f32]) -> f32 {
+    let mean_square = samples
+        .iter()
+        .map(|sample| f64::from(*sample) * f64::from(*sample))
+        .sum::<f64>()
+        / samples.len().max(1) as f64;
+    mean_square.sqrt() as f32
+}
+
+fn silence(duration_s: f32) -> Vec<f32> {
+    vec![0.0; (duration_s.max(0.0) * SAMPLE_RATE as f32).round() as usize]
+}
+
+fn fixed_callsign(value: &str) -> String {
+    let normalized = value.replace('-', "/");
+    let mut output: String = normalized.chars().take(8).collect();
+    while output.len() < 8 {
+        output.push(' ');
+    }
+    output
+}
+
+fn validate_exact_ascii(value: &str, len: usize) -> bool {
+    value.len() == len && value.is_ascii()
+}
+
+fn validate_digits(value: &str, len: usize) -> bool {
+    value.len() == len && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_header_string() {
+        let header = SameHeader::new("WXR", "RWT", ["065100"], "0015", "EC-GC-CA", "1661200")
+            .expect("valid header");
+
+        assert_eq!(
+            header.encoded(),
+            "ZCZC-WXR-RWT-065100+0015-1661200-EC/GC/CA-"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_location() {
+        let err = SameHeader::new("WXR", "RWT", ["ABC"], "0015", "EC", "1661200")
+            .expect_err("bad location should fail");
+
+        assert_eq!(err, SameError::InvalidLocation);
+    }
+
+    #[test]
+    fn afsk_generates_lsb_first_samples() {
+        let samples = afsk_encode(&[0b0000_0001]);
+        let bit_samples = (SAMPLE_RATE as f32 * BIT_DURATION_S).round() as usize;
+
+        assert_eq!(samples.len(), bit_samples * 8);
+        assert!(samples[1].abs() > 0.0);
+    }
+
+    #[test]
+    fn eom_sequence_produces_pcm() {
+        let audio = eom_sequence();
+        let pcm = audio.to_pcm16le();
+
+        assert_eq!(audio.sample_rate, SAMPLE_RATE);
+        assert_eq!(pcm.len(), audio.samples.len() * 2);
+    }
+
+    #[test]
+    fn attention_tones_include_quebec_and_restored_egg_timer() {
+        let duration_s = 1.0;
+        let quebec = attention_tone(ToneType::Quebec, duration_s);
+        let egg_timer = attention_tone(ToneType::EggTimer, duration_s);
+
+        assert_eq!(quebec.len(), SAMPLE_RATE as usize);
+        assert_eq!(egg_timer.len(), SAMPLE_RATE as usize);
+        assert!(quebec.iter().any(|sample| sample.abs() > 0.0));
+        assert!(egg_timer.iter().any(|sample| sample.abs() > 0.0));
+        assert_eq!(egg_timer[0], 0.0);
+        let silence_index = (SAMPLE_RATE as f32 * 0.080).round() as usize;
+        assert!(egg_timer[silence_index].abs() < 0.001);
+    }
+
+    #[test]
+    fn same_sequence_uses_reduced_attention_amplitude() {
+        let header = SameHeader::new("WXR", "RWT", ["065100"], "0015", "EC-GC-CA", "1661200")
+            .expect("valid header");
+        let audio = generate_same_header_attention_sequence(&header, Some(ToneType::Wxr));
+
+        let peak = audio
+            .samples
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0, f32::max);
+        assert!(peak <= SEQUENCE_AMPLITUDE + 0.001);
+    }
+}

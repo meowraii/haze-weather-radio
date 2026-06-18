@@ -1,0 +1,36 @@
+[package]
+name = "haze-playout"
+description = "Rust playout engine for Haze Weather Radio"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "haze-playout-rs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+cpal = "0.16"
+dunce = "1.0"
+haze-media = { path = "../haze-media" }
+hound = "3.5"
+quick-xml = { version = "0.38", features = ["serialize"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+tokio = { version = "1.48", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[features]
+default = []
+ffmpeg-rsmpeg = ["haze-media/ffmpeg-rsmpeg"]
+
+[dev-dependencies]
+tempfile = "3.23"

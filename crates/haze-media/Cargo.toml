@@ -1,0 +1,17 @@
+[package]
+name = "haze-media"
+description = "Unified media primitives and FFmpeg backend boundary for Haze Weather Radio"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[features]
+default = []
+ffmpeg-rsmpeg = ["dep:rsmpeg", "rsmpeg/link_system_ffmpeg"]
+
+[dependencies]
+anyhow = "1.0"
+hound = "3.5"
+rsmpeg = { version = "0.18.0", default-features = false, features = ["ffmpeg8"], optional = true }
+thiserror = "2.0"
