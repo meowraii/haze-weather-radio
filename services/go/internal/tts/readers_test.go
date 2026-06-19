@@ -73,6 +73,14 @@ func TestNormalizeProviderFastAliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeProviderKokoroAliases(t *testing.T) {
+	for _, provider := range []string{"kokoro", "kokoro-tts", "sherpa", "sherpa-onnx"} {
+		if got := NormalizeProvider(provider); got != "kokoro" {
+			t.Fatalf("NormalizeProvider(%q) = %q", provider, got)
+		}
+	}
+}
+
 func TestSelectReaderPrefersExplicitReaderID(t *testing.T) {
 	readers := []Reader{
 		{ID: "00", Provider: "auto", Gender: "male", Language: "en-ca"},

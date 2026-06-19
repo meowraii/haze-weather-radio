@@ -110,6 +110,11 @@ fn main() {
                         }
                     }
                 }
+                for library in go_sherpa_runtime_libraries(&go_root) {
+                    if let Some(name) = library.file_name().and_then(|name| name.to_str()) {
+                        binaries.push((name.to_string(), library));
+                    }
+                }
             }
         }
 
@@ -370,5 +375,66 @@ fn main() {
                 runtime_libraries: libraries,
             })
         }
+    }
+
+    fn go_sherpa_runtime_libraries(go_root: &Path) -> Vec<PathBuf> {
+        let target_os =
+            env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|_| env::consts::OS.to_string());
+        let target_arch =
+            env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| env::consts::ARCH.to_string());
+        let module = match target_os.as_str() {
+            "windows" => "github.com/k2-fsa/sherpa-onnx-go-windows",
+            "linux" => "github.com/k2-fsa/sherpa-onnx-go-linux",
+            "macos" => "github.com/k2-fsa/sherpa-onnx-go-macos",
+            _ => return Vec::new(),
+        };
+        let triple = match (target_os.as_str(), target_arch.as_str()) {
+            ("windows", "x86_64") => "x86_64-pc-windows-gnu",
+            ("windows", "x86") => "i686-pc-windows-gnu",
+            ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+            ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+            ("linux", "arm") => "arm-unknown-linux-gnueabihf",
+            ("macos", "x86_64") => "x86_64-apple-darwin",
+            ("macos", "aarch64") => "aarch64-apple-darwin",
+            _ => return Vec::new(),
+        };
+        let Some(module_dir) = go_module_dir(go_root, module) else {
+            return Vec::new();
+        };
+        let lib_dir = module_dir.join("lib").join(triple);
+        let Ok(entries) = std::fs::read_dir(lib_dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && is_sherpa_runtime_library(path))
+            .collect()
+    }
+
+    fn go_module_dir(go_root: &Path, module: &str) -> Option<PathBuf> {
+        let output = Command::new("go")
+            .current_dir(go_root)
+            .args(["list", "-m", "-f", "{{.Dir}}", module])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            return None;
+        }
+        Some(PathBuf::from(path))
+    }
+
+    fn is_sherpa_runtime_library(path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        name.ends_with(".dll")
+            || name.ends_with(".so")
+            || name.contains(".so.")
+            || name.ends_with(".dylib")
     }
 }

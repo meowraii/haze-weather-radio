@@ -86,8 +86,8 @@ func NormalizeProvider(provider string) string {
 		return "f5tts"
 	case "chatterbox", "chatterbox-tts", "chatterboxtts":
 		return "chatterbox"
-	case "kokoro", "sherpa", "sherpa-onnx":
-		return strings.ToLower(strings.TrimSpace(provider))
+	case "kokoro", "kokoro-tts", "kokorotts", "sherpa", "sherpa-onnx":
+		return "kokoro"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
 	}

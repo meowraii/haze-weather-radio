@@ -118,6 +118,57 @@ function Test-OpusPkgConfig {
     return $LASTEXITCODE -eq 0
 }
 
+function Copy-SherpaOnnxRuntimeLibraries {
+    param(
+        [Parameter(Mandatory = $true)][string] $DestinationDir
+    )
+
+    $GoOS = (go env GOOS 2>$null).Trim()
+    $GoArch = (go env GOARCH 2>$null).Trim()
+    if ([string]::IsNullOrWhiteSpace($GoOS) -or [string]::IsNullOrWhiteSpace($GoArch)) {
+        return
+    }
+
+    $Module = switch ($GoOS) {
+        "windows" { "github.com/k2-fsa/sherpa-onnx-go-windows" }
+        "linux" { "github.com/k2-fsa/sherpa-onnx-go-linux" }
+        "darwin" { "github.com/k2-fsa/sherpa-onnx-go-macos" }
+        default { "" }
+    }
+    if ([string]::IsNullOrWhiteSpace($Module)) {
+        return
+    }
+
+    $Triple = switch ("$GoOS/$GoArch") {
+        "windows/amd64" { "x86_64-pc-windows-gnu" }
+        "windows/386" { "i686-pc-windows-gnu" }
+        "linux/amd64" { "x86_64-unknown-linux-gnu" }
+        "linux/arm64" { "aarch64-unknown-linux-gnu" }
+        "linux/arm" { "arm-unknown-linux-gnueabihf" }
+        "darwin/amd64" { "x86_64-apple-darwin" }
+        "darwin/arm64" { "aarch64-apple-darwin" }
+        default { "" }
+    }
+    if ([string]::IsNullOrWhiteSpace($Triple)) {
+        return
+    }
+
+    $ModuleDir = (go list -m -f "{{.Dir}}" $Module 2>$null).Trim()
+    if ([string]::IsNullOrWhiteSpace($ModuleDir)) {
+        return
+    }
+    $LibDir = Join-Path $ModuleDir (Join-Path "lib" $Triple)
+    if (-not (Test-Path -LiteralPath $LibDir -PathType Container)) {
+        return
+    }
+
+    Get-ChildItem -LiteralPath $LibDir -File | Where-Object {
+        $_.Extension -in @(".dll", ".so", ".dylib") -or $_.Name -like "*.so.*"
+    } | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $DestinationDir -Force
+    }
+}
+
 if ($RunningOnWindows -and (Test-Path (Join-Path $Clang64Bin "x86_64-w64-mingw32-clang.exe")) -and (Test-Path (Join-Path $Clang64Bin "pkg-config.exe"))) {
     $env:Path = "$Clang64Bin;$MsysUsrBin;$env:Path"
     $env:CGO_ENABLED = "1"
@@ -164,6 +215,7 @@ try {
             }
         }
     }
+    Copy-SherpaOnnxRuntimeLibraries -DestinationDir $BinFull
     Write-Host "Built Go services in $BinFull"
 } finally {
     Pop-Location

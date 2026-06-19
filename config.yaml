@@ -51,6 +51,11 @@ services:
       piper_workers: 1
       piper_prewarm: true
       piper_cuda: false
+      kokoro_model_dir: "managed/voices/kokoro"
+      kokoro_runtime_provider: "cpu" # cpu, cuda, or coreml
+      kokoro_threads: 2
+      kokoro_speed: 1.0
+      kokoro_length_scale: 1.0
     product_render:
       enabled: true
       refresh: "5m"

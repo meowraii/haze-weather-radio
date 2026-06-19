@@ -35,7 +35,7 @@ func main() {
 func run() error {
 	readersPath := flag.String("readers", filepath.Join("managed", "configs", "readers.xml"), "readers.xml path")
 	dictionaryPath := flag.String("dictionary", envOrDefault("HAZE_TTS_DICTIONARY", filepath.Join("managed", "dictionary.json")), "dictionary.json path")
-	providerID := flag.String("provider", "auto", "provider to use: auto, piper, sapi5, espeak, f5tts, or chatterbox")
+	providerID := flag.String("provider", "auto", "provider to use: auto, piper, kokoro, sapi5, espeak, f5tts, or chatterbox")
 	readerID := flag.String("reader-id", "", "reader id from readers.xml")
 	lang := flag.String("lang", "en-CA", "requested language")
 	timezone := flag.String("timezone", envOrDefault("HAZE_TTS_TIMEZONE", "Local"), "timezone for spoken timestamps")
@@ -45,6 +45,11 @@ func run() error {
 	piperWorkers := flag.Int("piper-workers", envIntOrDefault("HAZE_PIPER_WORKERS", 1), "Piper worker processes per voice")
 	piperPrewarm := flag.Bool("piper-prewarm", envBoolOrDefault("HAZE_PIPER_PREWARM", true), "prewarm Piper worker voices on service startup")
 	piperCUDA := flag.Bool("piper-cuda", envBoolOrDefault("HAZE_PIPER_CUDA", false), "use CUDA for Piper workers when available")
+	kokoroModelDir := flag.String("kokoro-model-dir", envOrDefault("HAZE_KOKORO_MODEL_DIR", filepath.Join("managed", "voices", "kokoro")), "Kokoro model directory")
+	kokoroRuntimeProvider := flag.String("kokoro-runtime-provider", envOrDefault("HAZE_KOKORO_PROVIDER", "cpu"), "Kokoro sherpa-onnx provider: cpu, cuda, or coreml")
+	kokoroThreads := flag.Int("kokoro-threads", envIntOrDefault("HAZE_KOKORO_THREADS", 0), "Kokoro neural network worker threads")
+	kokoroSpeed := flag.Float64("kokoro-speed", envFloatOrDefault("HAZE_KOKORO_SPEED", 1.0), "Kokoro default generation speed")
+	kokoroLengthScale := flag.Float64("kokoro-length-scale", envFloatOrDefault("HAZE_KOKORO_LENGTH_SCALE", 1.0), "Kokoro model length scale")
 	text := flag.String("text", "", "text to synthesize")
 	out := flag.String("out", "", "output WAV path")
 	listVoices := flag.Bool("list-voices", false, "list provider voices as JSON")
@@ -53,7 +58,15 @@ func run() error {
 	outDir := flag.String("out-dir", filepath.Join("managed", "audio", "tts"), "default service output directory")
 	timeout := flag.Duration("timeout", 60*time.Second, "synthesis timeout")
 	flag.Parse()
-	setTTSRuntimeEnv(*piperExe, *piperVoicesDir)
+	setTTSRuntimeEnv(ttsRuntimeEnv{
+		PiperExe:              *piperExe,
+		PiperVoicesDir:        *piperVoicesDir,
+		KokoroModelDir:        *kokoroModelDir,
+		KokoroRuntimeProvider: *kokoroRuntimeProvider,
+		KokoroThreads:         *kokoroThreads,
+		KokoroSpeed:           *kokoroSpeed,
+		KokoroLengthScale:     *kokoroLengthScale,
+	})
 
 	if *service {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -580,6 +593,18 @@ func envIntOrDefault(key string, fallback int) int {
 	return parsed
 }
 
+func envFloatOrDefault(key string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	var parsed float64
+	if _, err := fmt.Sscanf(value, "%f", &parsed); err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
 func envBoolOrDefault(key string, fallback bool) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
 	case "":
@@ -600,12 +625,37 @@ func maxInt(left int, right int) int {
 	return right
 }
 
-func setTTSRuntimeEnv(piperExe string, piperVoicesDir string) {
-	if strings.TrimSpace(piperExe) != "" {
-		_ = os.Setenv("HAZE_PIPER_EXE", strings.TrimSpace(piperExe))
+type ttsRuntimeEnv struct {
+	PiperExe              string
+	PiperVoicesDir        string
+	KokoroModelDir        string
+	KokoroRuntimeProvider string
+	KokoroThreads         int
+	KokoroSpeed           float64
+	KokoroLengthScale     float64
+}
+
+func setTTSRuntimeEnv(options ttsRuntimeEnv) {
+	if strings.TrimSpace(options.PiperExe) != "" {
+		_ = os.Setenv("HAZE_PIPER_EXE", strings.TrimSpace(options.PiperExe))
 	}
-	if strings.TrimSpace(piperVoicesDir) != "" {
-		_ = os.Setenv("HAZE_PIPER_VOICES_DIR", strings.TrimSpace(piperVoicesDir))
+	if strings.TrimSpace(options.PiperVoicesDir) != "" {
+		_ = os.Setenv("HAZE_PIPER_VOICES_DIR", strings.TrimSpace(options.PiperVoicesDir))
+	}
+	if strings.TrimSpace(options.KokoroModelDir) != "" {
+		_ = os.Setenv("HAZE_KOKORO_MODEL_DIR", strings.TrimSpace(options.KokoroModelDir))
+	}
+	if strings.TrimSpace(options.KokoroRuntimeProvider) != "" {
+		_ = os.Setenv("HAZE_KOKORO_PROVIDER", strings.TrimSpace(options.KokoroRuntimeProvider))
+	}
+	if options.KokoroThreads > 0 {
+		_ = os.Setenv("HAZE_KOKORO_THREADS", fmt.Sprintf("%d", options.KokoroThreads))
+	}
+	if options.KokoroSpeed > 0 {
+		_ = os.Setenv("HAZE_KOKORO_SPEED", fmt.Sprintf("%g", options.KokoroSpeed))
+	}
+	if options.KokoroLengthScale > 0 {
+		_ = os.Setenv("HAZE_KOKORO_LENGTH_SCALE", fmt.Sprintf("%g", options.KokoroLengthScale))
 	}
 }
 
@@ -676,8 +726,8 @@ func providerCandidates(providers map[string]tts.Provider, providerID string) ([
 		return candidates, nil
 	}
 	if normalized == "" || normalized == "auto" {
-		candidates := make([]tts.Provider, 0, 2)
-		for _, id := range []string{"piper", "sapi5", "espeak"} {
+		candidates := make([]tts.Provider, 0, 4)
+		for _, id := range []string{"piper", "kokoro", "sapi5", "espeak"} {
 			if provider := providers[id]; provider != nil {
 				candidates = append(candidates, provider)
 			}

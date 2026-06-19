@@ -7,9 +7,13 @@ require (
 	github.com/go-ole/go-ole v1.3.0
 	github.com/gotranspile/g722 v0.0.0-20240123003956-384a1bb16a19
 	github.com/hraban/opus v0.0.0-20251117090126-c76ea7e21bf3
+	github.com/jackc/pgx/v5 v5.10.0
+	github.com/k2-fsa/sherpa-onnx-go v1.13.3
+	github.com/klauspost/compress v1.18.6
 	github.com/pion/webrtc/v4 v4.2.15
 	golang.org/x/crypto v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/sqlite v1.52.0
 )
 
 require (
@@ -17,9 +21,10 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.10.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
+	github.com/k2-fsa/sherpa-onnx-go-linux v1.13.3 // indirect
+	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.3 // indirect
+	github.com/k2-fsa/sherpa-onnx-go-windows v1.13.3 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
@@ -38,6 +43,7 @@ require (
 	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pion/turn/v5 v5.0.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
@@ -47,5 +53,4 @@ require (
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.52.0 // indirect
 )

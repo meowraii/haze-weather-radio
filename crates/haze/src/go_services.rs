@@ -116,6 +116,11 @@ struct TtsConfig {
     piper_workers: Option<usize>,
     piper_prewarm: Option<bool>,
     piper_cuda: Option<bool>,
+    kokoro_model_dir: Option<String>,
+    kokoro_runtime_provider: Option<String>,
+    kokoro_threads: Option<usize>,
+    kokoro_speed: Option<f32>,
+    kokoro_length_scale: Option<f32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -579,6 +584,35 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                 }
                 if let Some(cuda) = tts.piper_cuda {
                     args.extend(["--piper-cuda".to_string(), cuda.to_string()]);
+                }
+                if let Some(model_dir) = tts
+                    .kokoro_model_dir
+                    .as_ref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    args.extend(["--kokoro-model-dir".to_string(), model_dir.to_string()]);
+                }
+                if let Some(provider) = tts
+                    .kokoro_runtime_provider
+                    .as_ref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    args.extend([
+                        "--kokoro-runtime-provider".to_string(),
+                        provider.to_string(),
+                    ]);
+                }
+                if let Some(threads) = tts.kokoro_threads {
+                    args.extend(["--kokoro-threads".to_string(), threads.to_string()]);
+                }
+                if let Some(speed) = tts.kokoro_speed {
+                    args.extend(["--kokoro-speed".to_string(), speed.to_string()]);
+                }
+                if let Some(length_scale) = tts.kokoro_length_scale {
+                    args.extend([
+                        "--kokoro-length-scale".to_string(),
+                        length_scale.to_string(),
+                    ]);
                 }
                 specs.push(ServiceSpec {
                     id: "aux:tts",

@@ -130,6 +130,38 @@ copy_bundle_dir() {
   fi
 }
 
+copy_sherpa_onnx_runtime_libraries() {
+  local destination="$1"
+  local goos goarch module triple module_dir lib_dir
+  goos="$(go env GOOS 2>/dev/null || true)"
+  goarch="$(go env GOARCH 2>/dev/null || true)"
+  case "$goos" in
+    windows) module="github.com/k2-fsa/sherpa-onnx-go-windows" ;;
+    linux) module="github.com/k2-fsa/sherpa-onnx-go-linux" ;;
+    darwin) module="github.com/k2-fsa/sherpa-onnx-go-macos" ;;
+    *) return 0 ;;
+  esac
+  case "$goos/$goarch" in
+    windows/amd64) triple="x86_64-pc-windows-gnu" ;;
+    windows/386) triple="i686-pc-windows-gnu" ;;
+    linux/amd64) triple="x86_64-unknown-linux-gnu" ;;
+    linux/arm64) triple="aarch64-unknown-linux-gnu" ;;
+    linux/arm) triple="arm-unknown-linux-gnueabihf" ;;
+    darwin/amd64) triple="x86_64-apple-darwin" ;;
+    darwin/arm64) triple="aarch64-apple-darwin" ;;
+    *) return 0 ;;
+  esac
+  module_dir="$(go list -m -f '{{.Dir}}' "$module" 2>/dev/null || true)"
+  if [[ -z "$module_dir" ]]; then
+    return 0
+  fi
+  lib_dir="$module_dir/lib/$triple"
+  if [[ ! -d "$lib_dir" ]]; then
+    return 0
+  fi
+  find "$lib_dir" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) -exec cp -f -- {} "$destination/" \;
+}
+
 cd "$root/services/go"
 export GOCACHE="$root/target/go-build-cache"
 export GOTMPDIR="$root/target/go-tmp"
@@ -166,6 +198,8 @@ chmod +x \
   "$bin_full/haze-product-render" \
   "$bin_full/haze-playlist" \
   "$bin_full/haze-ivr"
+
+copy_sherpa_onnx_runtime_libraries "$bin_full"
 
 for bundled_dir in webroot managed audio; do
   copy_bundle_dir "$bundled_dir"
