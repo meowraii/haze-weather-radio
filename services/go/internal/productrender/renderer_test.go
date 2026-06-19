@@ -651,7 +651,7 @@ func TestSpecialtyProductsRenderStoredPayloads(t *testing.T) {
     "expires_at": "2099-06-18T23:00:00Z"
   }]
 }`,
-			want: []string{"The Environment Canada Thunderstorm outlook", "For the areas in and around the Saskatoon area, the main convective hazard is expected to be a minor risk of isolated thunderstorms.", "30 millimeters of rain, 1 centimeter of hail, and gusts up to 70 kilometers per hour may be associated with this hazard."},
+			want: []string{"Environment Canada thunderstorm outlook", "For the Saskatoon area, isolated thunderstorms are possible.", "Overall convective risk is minor.", "A tornado risk is also indicated.", "Potential associated hazards include 30 millimeters of rain, 1 centimeter of hail, and gusts up to 70 kilometers per hour."},
 		},
 		{
 			name: "metnotes",
@@ -880,6 +880,14 @@ func TestNormalizeDiscussionForSpeechLowersUppercaseProse(t *testing.T) {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("discussion cleanup leaked %q:\n%s", unwanted, got)
 		}
+	}
+}
+
+func TestNormalizeDiscussionForSpeechPreservesParagraphBreaks(t *testing.T) {
+	got := normalizeDiscussionForSpeech("SOUTHERN SK...TSTMS OVER SRN SK.\n\nNEXT SYSTEM BRINGS 20-40 MM QPF.")
+	want := "southern Saskatchewan...thunderstorms over southern Saskatchewan.\n\nnext system brings 20 to 40 millimetres quantitative precipitation forecast."
+	if got != want {
+		t.Fatalf("discussion paragraph cleanup = %q, want %q", got, want)
 	}
 }
 

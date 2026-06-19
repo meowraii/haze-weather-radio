@@ -937,26 +937,29 @@ func thunderstormOutlookHeader(item map[string]any, timezone string, now time.Ti
 	validAt := specialtyString(item, "valid_at", "en")
 	expiresAt := specialtyString(item, "expires_at", "en")
 	day := thunderstormDayLabel(validAt, timezone, now)
-	parts := []string{"The Environment Canada Thunderstorm outlook"}
+	title := "Environment Canada thunderstorm outlook"
 	if day != "" {
-		parts[0] += " for " + day
+		title += " for " + day
 	}
+	parts := []string{sentence(title)}
 	if publishedText := thunderstormPublishedText(published, timezone); publishedText != "" {
-		parts = append(parts, "published "+publishedText)
+		parts = append(parts, sentence("Published "+publishedText))
 	}
 	if validText := thunderstormValidityText(validAt, expiresAt, timezone); validText != "" {
-		parts = append(parts, "valid "+validText)
+		parts = append(parts, sentence("Valid "+validText))
 	}
-	return sentence(strings.Join(parts, ", "))
+	return strings.Join(parts, " ")
 }
 
 func thunderstormHazardText(item map[string]any, site string, lang string) string {
 	risk := fallbackText(thunderstormRiskLabel(item["risk"]), "minor")
 	coverage := fallbackText(readableSpecialtyToken(specialtyString(item, "thunderstorm", lang)), "isolated")
-	phenomenon := "thunderstorms"
-	text := fmt.Sprintf("For the areas in and around the %s area, the main convective hazard is expected to be a %s risk of %s %s", site, risk, coverage, phenomenon)
+	text := fmt.Sprintf("For the %s area, %s thunderstorms are possible. Overall convective risk is %s.", site, coverage, risk)
+	if specialtyBool(item, "tornado") {
+		text += " A tornado risk is also indicated."
+	}
 	if hazards := thunderstormAssociatedHazards(item); hazards != "" {
-		text += ". " + hazards + " may be associated with this hazard"
+		text += " Potential associated hazards include " + hazards + "."
 	}
 	return sentence(text)
 }
@@ -1485,6 +1488,37 @@ func normalizeDiscussionForSpeech(text string) string {
 	if text == "" {
 		return ""
 	}
+	paragraphs := speechParagraphs(text)
+	for index, paragraph := range paragraphs {
+		paragraphs[index] = normalizeDiscussionParagraph(paragraph)
+	}
+	return strings.Join(nonEmptyStrings(paragraphs), "\n\n")
+}
+
+func speechParagraphs(text string) []string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	paragraphs := []string{}
+	current := []string{}
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		paragraphs = append(paragraphs, strings.Join(current, " "))
+		current = nil
+	}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			flush()
+			continue
+		}
+		current = append(current, line)
+	}
+	flush()
+	return paragraphs
+}
+
+func normalizeDiscussionParagraph(text string) string {
 	text = discussionEndSignaturePattern.ReplaceAllString(text, "")
 	text = discussionRangeUnitPattern.ReplaceAllStringFunc(text, func(raw string) string {
 		matches := discussionRangeUnitPattern.FindStringSubmatch(raw)
@@ -1505,6 +1539,16 @@ func normalizeDiscussionForSpeech(text string) string {
 	}
 	text = normalizeDiscussionUppercaseProse(text)
 	return strings.Join(strings.Fields(text), " ")
+}
+
+func nonEmptyStrings(values []string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, strings.TrimSpace(value))
+		}
+	}
+	return out
 }
 
 func normalizeDiscussionUppercaseProse(text string) string {
