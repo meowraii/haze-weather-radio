@@ -13,7 +13,19 @@ func TestNormalizeTextExpandsISOTimestampInRequestedTimezone(t *testing.T) {
 		"America/Regina",
 	)
 
-	want := "Issued 11:08 PM Central Standard Time."
+	want := "Issued 11 oh 8 P.M. Central Standard Time."
+	if got != want {
+		t.Fatalf("normalized = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeTextExpandsClockTimesForSpeech(t *testing.T) {
+	got := NormalizeText(
+		"Valid from 9:00 PM through 10:05 PM. Updated at 3 PM and again at 7 a.m.",
+		Dictionary{},
+		"UTC",
+	)
+	want := "Valid from 9 o'clock P.M. through 10 oh 5 P.M. Updated at 3 P.M. and again at 7 A.M."
 	if got != want {
 		t.Fatalf("normalized = %q, want %q", got, want)
 	}
@@ -54,7 +66,7 @@ func TestNormalizeTextSpellsUnknownAcronyms(t *testing.T) {
 
 func TestNormalizeTextDoesNotSpellOrdinaryUppercaseWords(t *testing.T) {
 	got := NormalizeText("SEVERE THUNDERSTORM WATCH for CITY OF SASKATOON at 3 PM.", Dictionary{}, "UTC")
-	want := "SEVERE THUNDERSTORM WATCH for CITY OF SASKATOON at 3 PM."
+	want := "SEVERE THUNDERSTORM WATCH for CITY OF SASKATOON at 3 P.M."
 	if got != want {
 		t.Fatalf("normalized = %q, want %q", got, want)
 	}

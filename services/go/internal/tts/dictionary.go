@@ -6,14 +6,17 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 )
 
 var (
-	isoTimestampPattern = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})\b`)
-	acronymPattern      = regexp.MustCompile(`\b[A-Z]{2,8}\b`)
+	isoTimestampPattern  = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})\b`)
+	acronymPattern       = regexp.MustCompile(`\b[A-Z]{2,8}\b`)
+	clockTimePattern     = regexp.MustCompile(`(?i)\b([0-2]?\d):([0-5]\d)\s*([AP])\.?\s*M\.?`)
+	plainMeridiemPattern = regexp.MustCompile(`(?i)\b([0-2]?\d)\s*([AP])\.?\s*M\.?`)
 )
 
 var acronymAlwaysSpell = map[string]struct{}{
@@ -168,6 +171,7 @@ func NormalizeText(text string, dictionary Dictionary, timezone string) string {
 	for _, entry := range dictionary.entries {
 		text = replaceDictionaryEntry(text, entry)
 	}
+	text = expandClockExpressions(text)
 	text = expandAcronyms(text)
 	return normalizeWhitespace(text)
 }
@@ -210,6 +214,50 @@ func expandISOTimestamps(text string, timezone string) string {
 		}
 		return spokenClockTime(parsed.In(loc))
 	})
+}
+
+func expandClockExpressions(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	text = clockTimePattern.ReplaceAllStringFunc(text, func(raw string) string {
+		matches := clockTimePattern.FindStringSubmatch(raw)
+		if len(matches) != 4 {
+			return raw
+		}
+		hour, hourErr := strconv.Atoi(matches[1])
+		minute, minuteErr := strconv.Atoi(matches[2])
+		if hourErr != nil || minuteErr != nil || hour < 1 || hour > 12 {
+			return raw
+		}
+		meridiem := spokenMeridiem(matches[3])
+		switch {
+		case minute == 0:
+			return strconv.Itoa(hour) + " o'clock " + meridiem
+		case minute < 10:
+			return strconv.Itoa(hour) + " oh " + strconv.Itoa(minute) + " " + meridiem
+		default:
+			return strconv.Itoa(hour) + " " + strconv.Itoa(minute) + " " + meridiem
+		}
+	})
+	return plainMeridiemPattern.ReplaceAllStringFunc(text, func(raw string) string {
+		matches := plainMeridiemPattern.FindStringSubmatch(raw)
+		if len(matches) != 3 {
+			return raw
+		}
+		hour, err := strconv.Atoi(matches[1])
+		if err != nil || hour < 1 || hour > 12 {
+			return raw
+		}
+		return strconv.Itoa(hour) + " " + spokenMeridiem(matches[2])
+	})
+}
+
+func spokenMeridiem(value string) string {
+	if strings.EqualFold(value, "A") {
+		return "A.M."
+	}
+	return "P.M."
 }
 
 func parseTimestamp(raw string) (time.Time, error) {
