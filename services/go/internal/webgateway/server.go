@@ -91,6 +91,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/banner/stream", s.bannerStream)
 		mux.HandleFunc("/api/v1/banner/audio", s.bannerAudio)
 		mux.HandleFunc("/api/v1/banner/webrtc/offer", s.bannerWebRTCOffer)
+		mux.HandleFunc("/api/v1/alerts/archive/cap.xml", s.alertsArchiveCAPXML)
 		mux.HandleFunc("/api/v1/wx-on-demand/generate", s.wxOnDemandGenerate)
 		mux.HandleFunc("/api/v1/wx-on-demand/packages", s.wxOnDemandPackages)
 		mux.HandleFunc("/api/v1/wx-on-demand/readers", s.wxOnDemandReaders)
@@ -653,7 +654,7 @@ func contentSecurityPolicy(path string) string {
 		"font-src 'self' https://fonts.gstatic.com",
 		"img-src 'self' data:",
 		"connect-src 'self' ws: wss: stun: stuns: turn: turns:",
-		"media-src 'self' blob:",
+		"media-src 'self' blob: http: https:",
 		"object-src 'none'",
 		"base-uri 'self'",
 		"frame-ancestors 'self'",

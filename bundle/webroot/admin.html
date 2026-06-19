@@ -91,6 +91,12 @@
         .breakin-file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; }
         .breakin-file-row input[type="file"] { min-width: 0; }
         .breakin-empty { padding: 12px; color: var(--muted); font-size: 13px; }
+        .alert-card h3 { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px; }
+        .alert-card-id { color: var(--muted); font-family: var(--mono-font); font-size: 11.5px; font-weight: 400; line-height: 1.35; text-decoration: none; }
+        .alert-card-id:hover { color: var(--accent); text-decoration: underline; }
+        .alert-preview-panel { margin-top: 8px; padding: 7px; border: 1px solid var(--border-deep); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg) 36%, transparent); box-shadow: var(--bevel-sunken); }
+        .alert-preview-player { display: block; width: 100%; min-height: 34px; }
+        .alert-details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
         @media (min-width: 900px) {
             .daemon-page { padding: 12px 14px 32px; }
@@ -847,7 +853,7 @@
                             <section id="breakinMicPanel" class="section-block breakin-source-panel active">
                                 <div class="section-hd">
                                     <span>Microphone</span>
-                                    <span class="section-hd-sub">PCM is streamed to the gateway and queued when stopped.</span>
+                                    <span class="section-hd-sub">PCM is streamed live to the target feed priority lane.</span>
                                 </div>
                                 <div class="section-body breakin-source-panel active">
                                     <div class="breakin-form-grid">
@@ -870,7 +876,7 @@
                                     </dl>
                                     <div class="breakin-actions">
                                         <button id="breakinStartMic" class="btn-primary" type="button"><i data-lucide="mic" width="15" height="15"></i> Start</button>
-                                        <button id="breakinStopMic" class="btn-action" type="button" disabled><i data-lucide="square" width="15" height="15"></i> Stop &amp; Queue</button>
+                                        <button id="breakinStopMic" class="btn-action" type="button" disabled><i data-lucide="square" width="15" height="15"></i> Stop</button>
                                         <button id="breakinCancelMic" class="btn-danger" type="button" disabled><i data-lucide="x" width="15" height="15"></i> Cancel</button>
                                     </div>
                                 </div>

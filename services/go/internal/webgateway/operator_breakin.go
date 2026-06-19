@@ -3,7 +3,6 @@ package webgateway
 import (
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -34,9 +33,7 @@ type operatorBreakInSession struct {
 	SampleRate  int
 	Channels    int
 	PrerollPath string
-	PCMRel      string
-	PCMPath     string
-	File        *os.File
+	Publisher   *events.HostBridgePublisher
 	Bytes       int64
 	Chunks      int
 	StartedAt   time.Time
@@ -165,25 +162,11 @@ func (s *wsSession) appendOperatorBreakInChunk(payload map[string]any) (map[stri
 
 func (s *wsSession) finishOperatorBreakIn(payload map[string]any) (map[string]any, error) {
 	id := strings.TrimSpace(stringValue(payload, "session_id"))
-	item, err := s.server.breakIn.finish(s.configPath, id)
+	result, err := s.server.breakIn.finish(id)
 	if err != nil {
 		return nil, err
 	}
-	if bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR")); bridgeAddr != "" {
-		publisher := events.NewHostBridgePublisher(bridgeAddr)
-		_ = publisher.Publish(events.Event{
-			Type:    "operator.breakin.queued",
-			Source:  "haze-web",
-			Subject: item.AlertID,
-			Data: map[string]any{
-				"alert_id": item.AlertID,
-				"feed_ids": item.FeedIDs,
-				"title":    item.Header,
-			},
-		})
-		_ = publisher.Close()
-	}
-	return map[string]any{"queued": true, "item": item}, nil
+	return result, nil
 }
 
 func (s *wsSession) queueOperatorBreakInURL(payload map[string]any) (map[string]any, error) {
@@ -229,21 +212,17 @@ func (s *wsSession) cancelOperatorBreakIn(payload map[string]any) (map[string]an
 func (m *OperatorBreakInManager) start(configPath string, feedIDs []string, title string, sampleRate int, channels int, prerollPath string) (map[string]any, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
+	if bridgeAddr == "" {
+		return nil, fmt.Errorf("event bridge is not available")
+	}
 	id := safeID(fmt.Sprintf("breakin-%d", time.Now().UTC().UnixNano()))
 	if id == "" {
 		return nil, fmt.Errorf("unable to create break-in session id")
 	}
-	rel := filepath.ToSlash(filepath.Join(operatorBreakInDir, id+".pcm16le"))
-	path := resolveConfigPath(configPath, rel)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return nil, err
-	}
 	alertID := safeID("operator_breakin_" + id)
-	m.sessions[id] = &operatorBreakInSession{
+	publisher := events.NewHostBridgePublisher(bridgeAddr)
+	session := &operatorBreakInSession{
 		ID:          id,
 		AlertID:     alertID,
 		FeedIDs:     append([]string(nil), feedIDs...),
@@ -251,16 +230,47 @@ func (m *OperatorBreakInManager) start(configPath string, feedIDs []string, titl
 		SampleRate:  sampleRate,
 		Channels:    channels,
 		PrerollPath: prerollPath,
-		PCMRel:      rel,
-		PCMPath:     path,
-		File:        file,
+		Publisher:   publisher,
 		StartedAt:   time.Now().UTC(),
+	}
+	if err := publishOperatorBreakInEvent(session, "operator.breakin.start", nil); err != nil {
+		_ = publisher.Close()
+		return nil, err
+	}
+	m.sessions[id] = &operatorBreakInSession{
+		ID:          session.ID,
+		AlertID:     session.AlertID,
+		FeedIDs:     session.FeedIDs,
+		Title:       session.Title,
+		SampleRate:  session.SampleRate,
+		Channels:    session.Channels,
+		PrerollPath: session.PrerollPath,
+		Publisher:   session.Publisher,
+		StartedAt:   session.StartedAt,
+	}
+	if prerollPath != "" {
+		preroll, err := operatorBreakInWAVFromRelPath(configPath, prerollPath)
+		if err != nil {
+			delete(m.sessions, id)
+			_ = publisher.Close()
+			return nil, err
+		}
+		if err := publishOperatorBreakInPCM(session, preroll.PCM, preroll.SampleRate, preroll.Channels); err != nil {
+			delete(m.sessions, id)
+			_ = publisher.Close()
+			return nil, err
+		}
+		session.Bytes += int64(len(preroll.PCM))
+		session.Chunks++
+		m.sessions[id].Bytes = session.Bytes
+		m.sessions[id].Chunks = session.Chunks
 	}
 	return map[string]any{
 		"session_id":    id,
 		"alert_id":      alertID,
 		"feed_ids":      feedIDs,
 		"max_pcm_bytes": operatorBreakInMaxPCMBytes,
+		"live":          true,
 	}, nil
 }
 
@@ -277,13 +287,13 @@ func (m *OperatorBreakInManager) appendChunk(id string, data []byte) (map[string
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	session := m.sessions[id]
-	if session == nil || session.File == nil {
+	if session == nil || session.Publisher == nil {
 		return nil, fmt.Errorf("break-in session is not active")
 	}
 	if session.Bytes+int64(len(data)) > operatorBreakInMaxPCMBytes {
 		return nil, fmt.Errorf("break-in audio exceeds maximum duration")
 	}
-	if _, err := session.File.Write(data); err != nil {
+	if err := publishOperatorBreakInPCM(session, data, session.SampleRate, session.Channels); err != nil {
 		return nil, err
 	}
 	session.Bytes += int64(len(data))
@@ -291,87 +301,29 @@ func (m *OperatorBreakInManager) appendChunk(id string, data []byte) (map[string
 	return map[string]any{"session_id": id, "bytes": session.Bytes, "chunks": session.Chunks}, nil
 }
 
-func (m *OperatorBreakInManager) finish(configPath string, id string) (sameQueueItem, error) {
+func (m *OperatorBreakInManager) finish(id string) (map[string]any, error) {
 	m.mu.Lock()
 	session := m.sessions[id]
 	if session == nil {
 		m.mu.Unlock()
-		return sameQueueItem{}, fmt.Errorf("break-in session is not active")
+		return nil, fmt.Errorf("break-in session is not active")
 	}
 	delete(m.sessions, id)
 	m.mu.Unlock()
-	if session.File != nil {
-		if err := session.File.Close(); err != nil {
-			return sameQueueItem{}, err
-		}
-		session.File = nil
-	}
-	if session.Bytes == 0 {
-		_ = os.Remove(session.PCMPath)
-		return sameQueueItem{}, fmt.Errorf("break-in audio is empty")
-	}
-	audioRel := session.PCMRel
-	audioPath := session.PCMPath
-	sampleRate := session.SampleRate
-	channels := session.Channels
-	if session.PrerollPath != "" {
-		preroll, err := operatorBreakInWAVFromRelPath(configPath, session.PrerollPath)
-		if err != nil {
-			return sameQueueItem{}, err
-		}
-		combinedRel := filepath.ToSlash(filepath.Join(operatorBreakInDir, session.ID+"-with-preroll.pcm16le"))
-		combinedPath := resolveConfigPath(configPath, combinedRel)
-		if err := combineOperatorBreakInAudio(combinedPath, preroll.PCM, preroll.SampleRate, preroll.Channels, session.PCMPath, session.SampleRate, session.Channels); err != nil {
-			return sameQueueItem{}, err
-		}
-		if info, err := os.Stat(combinedPath); err == nil {
-			session.Bytes = info.Size()
-		}
-		audioRel = combinedRel
-		audioPath = combinedPath
-		sampleRate = preroll.SampleRate
-		channels = preroll.Channels
-		_ = os.Remove(session.PCMPath)
-	}
-	outputs, err := outputTargetsForFeeds(configPath, session.FeedIDs)
+	err := publishOperatorBreakInEvent(session, "operator.breakin.finish", nil)
+	_ = session.Publisher.Close()
 	if err != nil {
-		return sameQueueItem{}, err
+		return nil, err
 	}
-	queueID := safeID("000_" + session.AlertID)
-	item := sameQueueItem{
-		ID:           queueID,
-		AlertID:      session.AlertID,
-		Type:         "operator_breakin",
-		Status:       "pending",
-		CreatedAt:    time.Now().UTC(),
-		FeedIDs:      session.FeedIDs,
-		Header:       session.Title,
-		Event:        "OPR",
-		AudioPath:    audioRel,
-		ManifestPath: filepath.ToSlash(filepath.Join(alertQueueDir, queueID+".json")),
-		Format:       "pcm_s16le",
-		SampleRate:   sampleRate,
-		Channels:     channels,
-		AudioBytes:   int(session.Bytes),
-		Source:       "operator-breakin",
-		Priority:     "operator",
-		Outputs:      outputs,
-	}
-	if info, err := os.Stat(audioPath); err == nil {
-		item.AudioBytes = int(info.Size())
-	}
-	raw, err := json.MarshalIndent(item, "", "  ")
-	if err != nil {
-		return sameQueueItem{}, err
-	}
-	manifestPath := resolveConfigPath(configPath, item.ManifestPath)
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
-		return sameQueueItem{}, err
-	}
-	if err := writeFileAtomic(manifestPath, append(raw, '\n'), 0o600); err != nil {
-		return sameQueueItem{}, err
-	}
-	return item, nil
+	return map[string]any{
+		"live":       true,
+		"finished":   true,
+		"session_id": session.ID,
+		"alert_id":   session.AlertID,
+		"feed_ids":   session.FeedIDs,
+		"bytes":      session.Bytes,
+		"chunks":     session.Chunks,
+	}, nil
 }
 
 func (m *OperatorBreakInManager) cancel(id string) error {
@@ -385,11 +337,44 @@ func (m *OperatorBreakInManager) cancel(id string) error {
 	if session == nil {
 		return fmt.Errorf("break-in session is not active")
 	}
-	if session.File != nil {
-		_ = session.File.Close()
+	if session.Publisher != nil {
+		_ = publishOperatorBreakInEvent(session, "operator.breakin.cancel", nil)
+		_ = session.Publisher.Close()
 	}
-	_ = os.Remove(session.PCMPath)
 	return nil
+}
+
+func publishOperatorBreakInPCM(session *operatorBreakInSession, pcm []byte, sampleRate int, channels int) error {
+	return publishOperatorBreakInEvent(session, "operator.breakin.chunk", map[string]any{
+		"data":        base64.StdEncoding.EncodeToString(pcm),
+		"sample_rate": sampleRate,
+		"channels":    channels,
+		"bytes":       len(pcm),
+	})
+}
+
+func publishOperatorBreakInEvent(session *operatorBreakInSession, eventType string, extra map[string]any) error {
+	if session == nil || session.Publisher == nil {
+		return fmt.Errorf("break-in session is not active")
+	}
+	data := map[string]any{
+		"session_id":  session.ID,
+		"alert_id":    session.AlertID,
+		"feed_ids":    session.FeedIDs,
+		"title":       session.Title,
+		"sample_rate": session.SampleRate,
+		"channels":    session.Channels,
+		"source":      "operator-breakin",
+	}
+	for key, value := range extra {
+		data[key] = value
+	}
+	return session.Publisher.Publish(events.Event{
+		Type:    eventType,
+		Source:  "haze-web",
+		Subject: session.ID,
+		Data:    data,
+	})
 }
 
 type wavPCM struct {

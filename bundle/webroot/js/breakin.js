@@ -256,12 +256,12 @@ async function startMic() {
     };
     sourceNode.connect(processorNode);
     processorNode.connect(audioContext.destination);
-    flushTimer = window.setInterval(flushPCM, 450);
+    flushTimer = window.setInterval(flushPCM, 100);
     elapsedTimer = window.setInterval(() => {
         elapsedEl.textContent = elapsedLabel(session?.startedAt);
     }, 250);
     setRecordingUI(true);
-    setStatus('Microphone break-in recording.', 'pending');
+    setStatus('Live microphone break-in on air.', 'pending');
 }
 
 function stopCaptureNodes() {
@@ -286,12 +286,12 @@ async function stopMicAndQueue() {
     stopCaptureNodes();
     flushPCM();
     await sendChain;
-    setStatus('Finalizing priority queue item...', 'pending');
+    setStatus('Ending live break-in...', 'pending');
     const result = await panelClient.command('operator_breakin.finish', { session_id: activeSession.id }, 15000);
     session = null;
     setRecordingUI(false);
     await loadFeeds();
-    setStatus(`Operator break-in queued for ${result?.item?.feed_ids?.length || selectedFeedIDs().length} feed(s).`, 'ok');
+    setStatus(`Live break-in ended for ${result?.feed_ids?.length || selectedFeedIDs().length} feed(s).`, 'ok');
 }
 
 async function cancelMic() {

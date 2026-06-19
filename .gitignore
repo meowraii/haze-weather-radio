@@ -3,6 +3,11 @@ dist/
 runtime/
 target/
 services/go/target/
+/audio/
+/data/
+/logs/
+/managed/
+/webroot/
 
 # Local build artifacts
 services/go/*.exe

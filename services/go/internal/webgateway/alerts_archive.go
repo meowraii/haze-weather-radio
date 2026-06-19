@@ -2,8 +2,10 @@ package webgateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -114,6 +116,8 @@ func handleAlertsArchiveAction(configPath string, payload map[string]any) (map[s
 	switch action {
 	case "rebroadcast", "rebroadcast_without_same":
 		return rebroadcastArchivedAlert(configPath, payload, action == "rebroadcast")
+	case "preview_same":
+		return previewArchivedAlertSAME(configPath, payload)
 	case "delete":
 		id := strings.TrimSpace(stringValue(payload, "id"))
 		feedID := strings.TrimSpace(stringValue(payload, "feed_id"))
@@ -196,33 +200,48 @@ func archiveRecordPayload(record archiveCAPRecord, bucket string) map[string]any
 		Event:    fallbackString(info.Event, info.Headline),
 	}})
 	return map[string]any{
-		"id":                  fallbackString(record.ID, record.Alert.Identifier),
-		"feed_id":             record.FeedID,
-		"bucket":              bucket,
-		"status":              fallbackString(record.Status, bucket),
-		"reason":              record.Reason,
-		"updated_at":          record.UpdatedAt,
-		"sender":              record.Alert.Sender,
-		"sent":                record.Alert.Sent,
-		"message_type":        record.Alert.MessageType,
-		"headline":            alerttext.NormalizeHeadline(fallbackString(info.Headline, info.Event)),
-		"event":               info.Event,
-		"severity":            info.Severity,
-		"urgency":             info.Urgency,
-		"certainty":           info.Certainty,
-		"effective":           info.Effective,
-		"onset":               info.Onset,
-		"expires":             info.Expires,
-		"description":         info.Description,
-		"instruction":         info.Instruction,
-		"areas":               areas,
-		"area_text":           alerttext.JoinParts(areas),
-		"audio_url":           audio.URL,
-		"audio_mime_type":     audio.MimeType,
-		"message":             message,
-		"background_color":    visual[0],
-		"background_gradient": visual,
+		"id":                     fallbackString(record.ID, record.Alert.Identifier),
+		"feed_id":                record.FeedID,
+		"bucket":                 bucket,
+		"status":                 fallbackString(record.Status, bucket),
+		"reason":                 record.Reason,
+		"updated_at":             record.UpdatedAt,
+		"sender":                 record.Alert.Sender,
+		"sent":                   record.Alert.Sent,
+		"message_type":           record.Alert.MessageType,
+		"headline":               alerttext.NormalizeHeadline(fallbackString(info.Headline, info.Event)),
+		"event":                  info.Event,
+		"severity":               info.Severity,
+		"urgency":                info.Urgency,
+		"certainty":              info.Certainty,
+		"effective":              info.Effective,
+		"onset":                  info.Onset,
+		"expires":                info.Expires,
+		"description":            info.Description,
+		"instruction":            info.Instruction,
+		"areas":                  areas,
+		"area_text":              alerttext.JoinParts(areas),
+		"audio_url":              audio.URL,
+		"audio_mime_type":        audio.MimeType,
+		"cap_xml_url":            archiveCAPXMLURL(record),
+		"same_preview_available": archiveSAMEPreviewAvailable(record.Alert),
+		"message":                message,
+		"background_color":       visual[0],
+		"background_gradient":    visual,
 	}
+}
+
+func archiveCAPXMLURL(record archiveCAPRecord) string {
+	id := fallbackString(record.ID, record.Alert.Identifier)
+	if id == "" {
+		return ""
+	}
+	query := url.Values{}
+	query.Set("id", id)
+	if record.FeedID != "" {
+		query.Set("feed_id", record.FeedID)
+	}
+	return "/api/v1/alerts/archive/cap.xml?" + query.Encode()
 }
 
 func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAME bool) (map[string]any, error) {
@@ -303,6 +322,67 @@ func archiveSAMEAllowed(alert capingest.Alert, now time.Time) bool {
 		limit = 30 * time.Minute
 	}
 	return now.Sub(anchor) <= limit
+}
+
+func archiveSAMEPreviewAvailable(alert capingest.Alert) bool {
+	if strings.EqualFold(alert.MessageType, "Cancel") {
+		return false
+	}
+	info := chooseArchiveInfo(alert)
+	return sameEventFromCAP(info) != "" && len(sameLocationsFromCAP(info)) > 0
+}
+
+func previewArchivedAlertSAME(configPath string, payload map[string]any) (map[string]any, error) {
+	id := strings.TrimSpace(stringValue(payload, "id"))
+	feedID := strings.TrimSpace(stringValue(payload, "feed_id"))
+	if id == "" {
+		return nil, fmt.Errorf("alert id is required")
+	}
+	record, ok := findArchiveAlert(configPath, id, feedID)
+	if !ok {
+		return nil, fmt.Errorf("alert %s was not found", id)
+	}
+	info := chooseArchiveInfo(record.Alert)
+	event := sameEventFromCAP(info)
+	locations := sameLocationsFromCAP(info)
+	if event == "" || len(locations) == 0 {
+		return nil, fmt.Errorf("alert cannot be mapped to SAME cleanly")
+	}
+	request := sameGenerateRequest{
+		Originator: "WXR",
+		Event:      event,
+		Locations:  locations,
+		Duration:   sameDurationFromCAP(info),
+		Callsign:   sameCallsignFromConfig(configPath, record.FeedID),
+		Tone:       "WXR",
+	}
+	result, err := runSameGenerator(configPath, request)
+	if err != nil {
+		return nil, err
+	}
+	audioBase64 := strings.TrimSpace(stringPayload(result, "audio_base64", ""))
+	if audioBase64 == "" {
+		return nil, fmt.Errorf("SAME generator returned no audio payload")
+	}
+	pcm, err := base64.StdEncoding.DecodeString(audioBase64)
+	if err != nil {
+		return nil, fmt.Errorf("decode SAME preview audio: %w", err)
+	}
+	sampleRate := intPayload(result, "sample_rate", 48000)
+	channels := intPayload(result, "channels", 1)
+	wav := wavFromPCM16(pcm, sampleRate, channels)
+	capAudio := archiveBroadcastAudio(record.Alert)
+	return map[string]any{
+		"same_audio_wav_base64": base64.StdEncoding.EncodeToString(wav),
+		"same_audio_mime_type":  "audio/wav",
+		"sample_rate":           sampleRate,
+		"channels":              channels,
+		"header":                stringPayload(result, "header", ""),
+		"event":                 event,
+		"locations":             locations,
+		"audio_url":             capAudio.URL,
+		"audio_mime_type":       capAudio.MimeType,
+	}, nil
 }
 
 func queueArchiveSAME(configPath string, record archiveCAPRecord) (sameQueueItem, error) {

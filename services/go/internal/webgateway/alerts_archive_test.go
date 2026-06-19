@@ -2,8 +2,11 @@ package webgateway
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +51,78 @@ func TestArchiveSAMEAllowedSuppressesCancellationsAndStaleWarnings(t *testing.T)
 	}
 	if archiveSAMEAllowed(warning, time.Date(2026, 6, 15, 22, 29, 0, 0, time.UTC)) {
 		t.Fatal("stale severe thunderstorm warning should not be eligible for SAME")
+	}
+}
+
+func TestArchiveRecordPayloadIncludesCAPXMLURLAndSAMEPreviewFlag(t *testing.T) {
+	alert := parseArchiveTestAlert(t, archiveTestCAP("urn:test:svr", "Alert", "yellow warning - severe thunderstorm - in effect", "2099-06-15T21:30:00-06:00", false))
+	payload := archiveRecordPayload(archiveCAPRecord{
+		ID:     "urn:test:svr",
+		FeedID: "sk-0001",
+		Status: "accepted",
+		Alert:  alert,
+	}, "accepted")
+
+	if got := strings.TrimSpace(payload["cap_xml_url"].(string)); !strings.Contains(got, "/api/v1/alerts/archive/cap.xml?") || !strings.Contains(got, "feed_id=sk-0001") {
+		t.Fatalf("cap_xml_url was not populated correctly: %q", got)
+	}
+	if available, _ := payload["same_preview_available"].(bool); !available {
+		t.Fatal("SAME preview should be available for a mappable warning")
+	}
+}
+
+func TestAlertsArchiveCAPXMLRequiresAuthAndServesStoredXML(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(`webpanel:
+  authentication:
+    enabled: true
+storage:
+  sqlite:
+    enabled: true
+    path: runtime/state/haze.db
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(Config{}, configPath, dir)
+	authEnabled := true
+	authConfig := Config{}
+	authConfig.Webpanel.Authentication.Enabled = &authEnabled
+	server.auth = NewAuthManager(authConfig)
+	server.auth.password = []byte("secret")
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawCAP := archiveTestCAP("urn:test:xml", "Alert", "yellow warning - severe thunderstorm - in effect", "2099-06-15T21:30:00-06:00", false)
+	if err := withArchiveStore(configPath, func(ctx context.Context, store datastore.Store) error {
+		return store.StoreCAPArchive(ctx, datastore.CAPArchiveRecord{
+			AlertID: "urn:test:xml",
+			FeedID:  "sk-0001",
+			Status:  "accepted",
+			RawXML:  rawCAP,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	unauthorized := httptest.NewRecorder()
+	server.alertsArchiveCAPXML(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/alerts/archive/cap.xml?id=urn:test:xml&feed_id=sk-0001", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized status, got %d", unauthorized.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/alerts/archive/cap.xml?id=urn:test:xml&feed_id=sk-0001&token="+token, nil)
+	response := httptest.NewRecorder()
+	server.alertsArchiveCAPXML(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); !strings.Contains(got, "application/cap+xml") {
+		t.Fatalf("unexpected content type %q", got)
+	}
+	if !strings.Contains(response.Body.String(), "<identifier>urn:test:xml</identifier>") {
+		t.Fatal("served CAP XML did not contain the archived alert")
 	}
 }
 

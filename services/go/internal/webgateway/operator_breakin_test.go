@@ -1,16 +1,38 @@
 package webgateway
 
 import (
+	"bufio"
 	"encoding/json"
-	"os"
+	"net"
 	"path/filepath"
 	"testing"
 )
 
-func TestOperatorBreakInFinishWritesAlertQueueItem(t *testing.T) {
+func TestOperatorBreakInPublishesLiveEvents(t *testing.T) {
 	dir := t.TempDir()
 	writePanelFixture(t, dir)
 	configPath := filepath.Join(dir, "config.yaml")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	t.Setenv("HAZE_HOST_BRIDGE_ADDR", listener.Addr().String())
+	received := make(chan map[string]any, 4)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		scanner := bufio.NewScanner(conn)
+		for scanner.Scan() {
+			var event map[string]any
+			if err := json.Unmarshal(scanner.Bytes(), &event); err == nil {
+				received <- event
+			}
+		}
+	}()
 	manager := NewOperatorBreakInManager()
 
 	started, err := manager.start(configPath, []string{"sk-0001"}, "Desk Mic", 48000, 1, "")
@@ -24,29 +46,19 @@ func TestOperatorBreakInFinishWritesAlertQueueItem(t *testing.T) {
 	if _, err := manager.appendChunk(sessionID, []byte{0x00, 0x00, 0x10, 0x00}); err != nil {
 		t.Fatal(err)
 	}
-	item, err := manager.finish(configPath, sessionID)
+	result, err := manager.finish(sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Type != "operator_breakin" || item.Status != "pending" || item.Priority != "operator" {
-		t.Fatalf("unexpected manifest item: %#v", item)
+	if live, _ := result["live"].(bool); !live {
+		t.Fatalf("finish result did not report live mode: %#v", result)
 	}
-	if item.AudioBytes != 4 {
-		t.Fatalf("audio bytes = %d, want 4", item.AudioBytes)
-	}
-	if _, err := os.Stat(resolveConfigPath(configPath, item.AudioPath)); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(resolveConfigPath(configPath, item.ManifestPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var manifest sameQueueItem
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	if manifest.ID != item.ID || manifest.Header != "Desk Mic" {
-		t.Fatalf("unexpected persisted manifest: %#v", manifest)
+	wantTypes := []string{"operator.breakin.start", "operator.breakin.chunk", "operator.breakin.finish"}
+	for _, want := range wantTypes {
+		event := <-received
+		if event["type"] != want {
+			t.Fatalf("event type = %v, want %s", event["type"], want)
+		}
 	}
 }
 

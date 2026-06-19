@@ -21,6 +21,7 @@ const SOURCE_ID: &str = "haze-playout";
 const ALERT_QUEUE_DIR: &str = "runtime/queues/alerts";
 const PCM_CHUNK_MS: u32 = 20;
 const MEDIA_PUBLISH_CHUNK_MS: u32 = 200;
+const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 2500;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Options {
@@ -62,6 +63,34 @@ struct PcmPublish {
 }
 
 #[derive(Debug, Clone)]
+enum BreakInCommand {
+    Start {
+        id: String,
+        title: String,
+    },
+    Chunk {
+        id: String,
+        pcm: Vec<u8>,
+        sample_rate: u32,
+        channels: u16,
+    },
+    Finish {
+        id: String,
+    },
+    Cancel {
+        id: String,
+    },
+}
+
+#[derive(Debug)]
+struct LiveBreakIn {
+    id: String,
+    title: String,
+    buffer: VecDeque<u8>,
+    finishing: bool,
+}
+
+#[derive(Debug, Clone)]
 enum ItemSource {
     Playlist,
     Generated,
@@ -76,6 +105,7 @@ enum ItemSource {
 struct FeedHandle {
     feed: FeedConfig,
     audio_tx: mpsc::Sender<AudioItem>,
+    breakin_tx: mpsc::Sender<BreakInCommand>,
     request_tx: mpsc::Sender<PackageRequest>,
     control_tx: mpsc::Sender<PlayoutControl>,
 }
@@ -255,6 +285,12 @@ async fn dispatch_event(
             let action = bridge::first_text(&event, data, &["action"]);
             dispatch_control(handles, feed_id, action).await;
         }
+        "operator.breakin.start"
+        | "operator.breakin.chunk"
+        | "operator.breakin.finish"
+        | "operator.breakin.cancel" => {
+            dispatch_breakin(handles, event).await;
+        }
         _ => {}
     }
 }
@@ -294,6 +330,106 @@ async fn dispatch_control(handles: &HashMap<String, FeedHandle>, feed_id: &str, 
     }
 }
 
+async fn dispatch_breakin(handles: &HashMap<String, FeedHandle>, event: Value) {
+    let data = bridge::data(&event);
+    let session_id = fallback_text(
+        bridge::first_text(&event, data, &["session_id", "subject"]),
+        "operator-breakin",
+    );
+    let command = match bridge::string_at(&event, "type") {
+        "operator.breakin.start" => BreakInCommand::Start {
+            id: session_id,
+            title: fallback_text(
+                bridge::first_text(&Value::Null, data, &["title", "header"]),
+                "Operator Break-in",
+            ),
+        },
+        "operator.breakin.chunk" => {
+            let encoded = bridge::first_text(&Value::Null, data, &["data", "pcm"]);
+            let Ok(pcm) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+                return;
+            };
+            if pcm.is_empty() {
+                return;
+            }
+            BreakInCommand::Chunk {
+                id: session_id,
+                pcm,
+                sample_rate: u32_at(data, "sample_rate", 48_000),
+                channels: u16_at(data, "channels", 1),
+            }
+        }
+        "operator.breakin.finish" => BreakInCommand::Finish { id: session_id },
+        "operator.breakin.cancel" => BreakInCommand::Cancel { id: session_id },
+        _ => return,
+    };
+    let targets = feed_targets_from_event(&event);
+    for handle in matching_feed_handles(handles, &targets) {
+        let _ = handle.breakin_tx.send(command.clone()).await;
+    }
+}
+
+fn feed_targets_from_event(event: &Value) -> Vec<String> {
+    let data = bridge::data(event);
+    let mut out = Vec::new();
+    for source in [data, event] {
+        if let Some(feed_id) = source.get("feed_id").and_then(Value::as_str) {
+            if !feed_id.trim().is_empty() {
+                out.push(feed_id.trim().to_string());
+            }
+        }
+        if let Some(values) = source.get("feed_ids").and_then(Value::as_array) {
+            for value in values {
+                if let Some(feed_id) = value.as_str() {
+                    if !feed_id.trim().is_empty() {
+                        out.push(feed_id.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn matching_feed_handles<'a>(
+    handles: &'a HashMap<String, FeedHandle>,
+    targets: &[String],
+) -> Vec<&'a FeedHandle> {
+    if targets.is_empty() || targets.iter().any(|target| target == "*") {
+        return handles.values().collect();
+    }
+    targets
+        .iter()
+        .filter_map(|target| handles.get(target))
+        .collect()
+}
+
+fn u32_at(value: &Value, key: &str, fallback: u32) -> u32 {
+    value
+        .get(key)
+        .and_then(|value| {
+            value
+                .as_u64()
+                .and_then(|raw| u32::try_from(raw).ok())
+                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse().ok()))
+        })
+        .unwrap_or(fallback)
+}
+
+fn u16_at(value: &Value, key: &str, fallback: u16) -> u16 {
+    value
+        .get(key)
+        .and_then(|value| {
+            value
+                .as_u64()
+                .and_then(|raw| u16::try_from(raw).ok())
+                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse().ok()))
+        })
+        .unwrap_or(fallback)
+}
+
 impl FeedHandle {
     fn spawn(
         cfg: Arc<LoadedConfig>,
@@ -303,6 +439,7 @@ impl FeedHandle {
     ) -> Self {
         let (audio_tx, audio_rx) = mpsc::channel(32);
         let (priority_tx, priority_rx) = mpsc::channel(32);
+        let (breakin_tx, breakin_rx) = mpsc::channel(128);
         let (request_tx, request_rx) = mpsc::channel(32);
         let (control_tx, control_rx) = mpsc::channel(16);
 
@@ -340,6 +477,7 @@ impl FeedHandle {
                 feed: feed.clone(),
                 audio_rx,
                 priority_rx,
+                breakin_rx,
                 control_rx,
                 sinks: Vec::new(),
                 after_current_action: String::new(),
@@ -351,6 +489,7 @@ impl FeedHandle {
         Self {
             feed,
             audio_tx,
+            breakin_tx,
             request_tx,
             control_tx,
         }
@@ -363,6 +502,7 @@ struct FeedRunner {
     feed: FeedConfig,
     audio_rx: mpsc::Receiver<AudioItem>,
     priority_rx: mpsc::Receiver<AudioItem>,
+    breakin_rx: mpsc::Receiver<BreakInCommand>,
     control_rx: mpsc::Receiver<PlayoutControl>,
     sinks: Vec<Box<dyn Sink>>,
     after_current_action: String,
@@ -407,6 +547,7 @@ impl FeedRunner {
         let mut pending: Option<AudioItem> = None;
         let mut priority_pending = VecDeque::<AudioItem>::new();
         let mut deferred_routine = VecDeque::<AudioItem>::new();
+        let mut live_breakin: Option<LiveBreakIn> = None;
         let mut out = vec![0u8; chunk.len()];
         let mut position = 0usize;
         let mut gap_until = Instant::now();
@@ -417,6 +558,71 @@ impl FeedRunner {
                     self.apply_control(&control.action, current.is_some());
                     if clears_deferred_routine(&control.action) {
                         deferred_routine.clear();
+                    }
+                }
+                Some(command) = self.breakin_rx.recv() => {
+                    match command {
+                        BreakInCommand::Start { id, title } => {
+                            if let Some(done) = live_breakin.take() {
+                                complete_live_breakin(&self.client, &self.cfg, &self.feed.id, &done, true).await;
+                            }
+                            if let Some(item) = current.take() {
+                                interrupt_item(&self.client, &self.feed.id, &item).await;
+                                if item.is_alert() {
+                                    finish_item(&self.client, &self.feed.id, &item).await;
+                                } else {
+                                    deferred_routine.push_front(item);
+                                }
+                            }
+                            if let Some(item) = pending.take() {
+                                if item.is_alert() {
+                                    priority_pending.push_front(item);
+                                } else {
+                                    deferred_routine.push_back(item);
+                                }
+                            }
+                            position = 0;
+                            gap_until = Instant::now();
+                            let live = LiveBreakIn {
+                                id,
+                                title,
+                                buffer: VecDeque::new(),
+                                finishing: false,
+                            };
+                            start_live_breakin(&self.client, &self.cfg, &self.feed.id, &live).await;
+                            live_breakin = Some(live);
+                        }
+                        BreakInCommand::Chunk { id, pcm, sample_rate, channels } => {
+                            if let Some(live) = live_breakin.as_mut().filter(|live| live.id == id) {
+                                let pcm = normalize_pcm(
+                                    Pcm {
+                                        sample_rate,
+                                        channels: channels.max(1),
+                                        data: pcm,
+                                    },
+                                    self.cfg.root.playout.sample_rate,
+                                    self.cfg.root.playout.channels,
+                                );
+                                live.buffer.extend(pcm.data);
+                                trim_live_breakin_buffer(
+                                    live,
+                                    self.cfg.root.playout.sample_rate,
+                                    self.cfg.root.playout.channels,
+                                );
+                            }
+                        }
+                        BreakInCommand::Finish { id } => {
+                            if let Some(live) = live_breakin.as_mut().filter(|live| live.id == id) {
+                                live.finishing = true;
+                            }
+                        }
+                        BreakInCommand::Cancel { id } => {
+                            if live_breakin.as_ref().is_some_and(|live| live.id == id) {
+                                if let Some(done) = live_breakin.take() {
+                                    complete_live_breakin(&self.client, &self.cfg, &self.feed.id, &done, true).await;
+                                }
+                            }
+                        }
                     }
                 }
                 _ = ticker.tick() => {
@@ -441,7 +647,7 @@ impl FeedRunner {
                             accept_item(&self.client, &self.feed.id, &item).await;
                             priority_pending.push_back(item);
                         }
-                        if !priority_pending.is_empty()
+                        if live_breakin.is_none() && !priority_pending.is_empty()
                             && current.as_ref().is_some_and(|item| !item.is_alert())
                         {
                             if let Some(item) = current.take() {
@@ -458,7 +664,7 @@ impl FeedRunner {
                             position = 0;
                             gap_until = Instant::now();
                         }
-                        if !priority_pending.is_empty()
+                        if live_breakin.is_none() && !priority_pending.is_empty()
                             && pending.as_ref().is_some_and(|item| !item.is_alert())
                         {
                             if let Some(item) = pending.take() {
@@ -466,7 +672,7 @@ impl FeedRunner {
                             }
                             gap_until = Instant::now();
                         }
-                        if current.is_none() && pending.is_none() && !self.paused {
+                        if live_breakin.is_none() && current.is_none() && pending.is_none() && !self.paused {
                             if let Some(item) = priority_pending.pop_front() {
                                 pending = Some(item);
                             } else if let Some(item) = deferred_routine.pop_front() {
@@ -476,7 +682,7 @@ impl FeedRunner {
                                 pending = Some(item);
                             }
                         }
-                        if current.is_none() && !self.paused && Instant::now() >= gap_until {
+                        if live_breakin.is_none() && current.is_none() && !self.paused && Instant::now() >= gap_until {
                             if let Some(item) = pending.as_ref() {
                                 if item.not_before.is_none_or(|not_before| now >= not_before) {
                                     current = pending.take();
@@ -489,7 +695,13 @@ impl FeedRunner {
                         }
 
                         out.fill(0);
-                        if let Some(item) = current.as_ref() {
+                        let mut breakin_drained = false;
+                        if let Some(live) = live_breakin.as_mut() {
+                            drain_live_breakin_buffer(live, &mut out);
+                            if live.finishing && live.buffer.is_empty() {
+                                breakin_drained = true;
+                            }
+                        } else if let Some(item) = current.as_ref() {
                             let end = position.saturating_add(chunk.len());
                             if end <= item.pcm.len() {
                                 out.copy_from_slice(&item.pcm[position..end]);
@@ -499,6 +711,11 @@ impl FeedRunner {
                             }
                             position = end;
                         }
+                        let completed_breakin = if breakin_drained {
+                            live_breakin.take()
+                        } else {
+                            None
+                        };
 
                         for sink in &mut self.sinks {
                             if let Err(err) = sink.write(&out) {
@@ -519,8 +736,11 @@ impl FeedRunner {
                                 );
                             }
                         }
+                        if let Some(done) = completed_breakin {
+                            complete_live_breakin(&self.client, &self.cfg, &self.feed.id, &done, false).await;
+                        }
 
-                        if current.as_ref().is_some_and(|item| position >= item.pcm.len()) {
+                        if live_breakin.is_none() && current.as_ref().is_some_and(|item| position >= item.pcm.len()) {
                             if let Some(item) = current.take() {
                                 finish_item(&self.client, &self.feed.id, &item).await;
                                 gap_until = Instant::now() + item.gap_after;
@@ -706,6 +926,116 @@ async fn interrupt_item(client: &BridgeClient, feed_id: &str, item: &AudioItem) 
             }
         }))
         .await;
+}
+
+async fn start_live_breakin(
+    client: &BridgeClient,
+    cfg: &LoadedConfig,
+    feed_id: &str,
+    live: &LiveBreakIn,
+) {
+    tracing::info!("[{}] Operator break-in started: {}", feed_id, live.title);
+    update_runtime(cfg, feed_id, &live.title).await;
+    let _ = client
+        .publish(json!({
+            "type": "alert.playout.started",
+            "source": SOURCE_ID,
+            "feed_ids": [feed_id],
+            "queue_id": live.id,
+            "header": live.title,
+            "event": "OPR",
+            "data": {
+                "feed_id": feed_id,
+                "queue_id": live.id,
+                "header": live.title,
+                "event": "OPR",
+                "source": "operator-breakin",
+            }
+        }))
+        .await;
+    let _ = client
+        .publish(json!({
+            "type": "operator.breakin.playout.started",
+            "source": SOURCE_ID,
+            "feed_id": feed_id,
+            "queue_id": live.id,
+            "title": live.title,
+            "data": {
+                "feed_id": feed_id,
+                "session_id": live.id,
+                "title": live.title,
+            }
+        }))
+        .await;
+}
+
+async fn complete_live_breakin(
+    client: &BridgeClient,
+    cfg: &LoadedConfig,
+    feed_id: &str,
+    live: &LiveBreakIn,
+    cancelled: bool,
+) {
+    tracing::info!("[{}] Operator break-in ended: {}", feed_id, live.title);
+    update_runtime(cfg, feed_id, "Idle").await;
+    let _ = client
+        .publish(json!({
+            "type": "alert.playout.completed",
+            "source": SOURCE_ID,
+            "feed_ids": [feed_id],
+            "queue_id": live.id,
+            "header": live.title,
+            "event": "OPR",
+            "data": {
+                "feed_id": feed_id,
+                "queue_id": live.id,
+                "header": live.title,
+                "event": "OPR",
+                "source": "operator-breakin",
+                "cancelled": cancelled,
+            }
+        }))
+        .await;
+    let _ = client
+        .publish(json!({
+            "type": "operator.breakin.playout.completed",
+            "source": SOURCE_ID,
+            "feed_id": feed_id,
+            "queue_id": live.id,
+            "title": live.title,
+            "data": {
+                "feed_id": feed_id,
+                "session_id": live.id,
+                "title": live.title,
+                "cancelled": cancelled,
+            }
+        }))
+        .await;
+}
+
+fn drain_live_breakin_buffer(live: &mut LiveBreakIn, out: &mut [u8]) {
+    let mut offset = 0usize;
+    while offset < out.len() {
+        let Some(byte) = live.buffer.pop_front() else {
+            break;
+        };
+        out[offset] = byte;
+        offset += 1;
+    }
+}
+
+fn trim_live_breakin_buffer(live: &mut LiveBreakIn, sample_rate: u32, channels: u16) {
+    let max_bytes = usize::try_from(
+        sample_rate
+            .saturating_mul(u32::from(channels.max(1)))
+            .saturating_mul(2)
+            .saturating_mul(LIVE_BREAKIN_MAX_BUFFER_MS)
+            / 1000,
+    )
+    .unwrap_or(usize::MAX);
+    while live.buffer.len() > max_bytes {
+        let _ = live.buffer.pop_front();
+    }
 }
 
 fn clears_deferred_routine(action: &str) -> bool {

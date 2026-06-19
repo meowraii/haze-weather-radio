@@ -77,20 +77,75 @@ function metaItems(record) {
     return items;
 }
 
+function findArchiveRecord(id, feedID) {
+    const records = [
+        ...recordsForTab('accepted'),
+        ...recordsForTab('rejected'),
+        ...recordsForTab('expired'),
+    ];
+    return records.find((record) => {
+        if ((record.id || '') !== id) return false;
+        return !feedID || (record.feed_id || '') === feedID;
+    }) || null;
+}
+
+function archiveRecordForCard(card) {
+    if (!card) return null;
+    return findArchiveRecord(card.dataset.alertId || '', card.dataset.feedId || '');
+}
+
+function releasePreviewURL(audio) {
+    const url = audio?.dataset?.objectUrl || '';
+    if (url) {
+        URL.revokeObjectURL(url);
+        delete audio.dataset.objectUrl;
+    }
+}
+
+function previewPlayer(card) {
+    const panel = card?.querySelector('.alert-preview-panel');
+    const audio = panel?.querySelector('audio');
+    if (!panel || !audio) return null;
+    panel.hidden = false;
+    return audio;
+}
+
+function base64ToBlob(value, type) {
+    const binary = atob(value || '');
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+    }
+    return new Blob([bytes], { type });
+}
+
 function alertCard(record) {
     const id = record.id || '';
     const feedID = record.feed_id || '';
     const headline = record.headline || record.event || 'Weather Alert';
     const areas = Array.isArray(record.areas) ? record.areas.join('; ') : '';
+    const identifier = record.cap_xml_url
+        ? `<a class="alert-card-id" href="${escapeHtml(record.cap_xml_url)}" target="_blank" rel="noopener noreferrer" title="Open CAP XML">${escapeHtml(id)}</a>`
+        : `<span class="alert-card-id">${escapeHtml(id)}</span>`;
     const meta = metaItems(record).map(([key, value]) => `
         <span><b>${escapeHtml(key)}</b>${escapeHtml(value)}</span>
     `).join('');
+    const capAudioButton = record.audio_url ? `
+                <button class="btn-action" type="button" data-archive-action="preview_cap_audio">
+                    <i data-lucide="circle-play" width="13" height="13"></i>
+                    CAP Audio
+                </button>` : '';
+    const samePreviewButton = record.same_preview_available ? `
+                <button class="btn-action" type="button" data-archive-action="preview_same_audio">
+                    <i data-lucide="audio-lines" width="13" height="13"></i>
+                    SAME Preview
+                </button>` : '';
     return `
         <article class="alert-card" data-alert-id="${escapeHtml(id)}" data-feed-id="${escapeHtml(feedID)}">
             <div class="alert-card-main">
                 <div class="alert-card-head">
                     <div>
-                        <h3>${escapeHtml(headline)}</h3>
+                        <h3><span>${escapeHtml(headline)}</span>${identifier}</h3>
                         <p>${escapeHtml(areas || record.sender || 'No area text available')}</p>
                     </div>
                     <span class="alert-card-time">${escapeHtml(formatDateTime(record.updated_at || record.sent))}</span>
@@ -107,14 +162,15 @@ function alertCard(record) {
                             <h4>Instruction</h4>
                             <p>${escapeHtml(record.instruction || 'No instruction provided.')}</p>
                         </section>
-                        <section>
-                            <h4>Identifier</h4>
-                            <p>${escapeHtml(id)}</p>
-                        </section>
                     </div>
                 </details>
+                <div class="alert-preview-panel" hidden>
+                    <audio class="alert-preview-player" controls preload="none"></audio>
+                </div>
             </div>
             <div class="alert-card-actions">
+                ${capAudioButton}
+                ${samePreviewButton}
                 <button class="btn-action" type="button" data-archive-action="rebroadcast">
                     <i data-lucide="radio" width="13" height="13"></i>
                     Rebroadcast
@@ -176,6 +232,64 @@ async function runAction(action, payload = {}) {
     await loadArchive();
 }
 
+async function previewCAPAudio(card) {
+    const record = archiveRecordForCard(card);
+    if (!record?.audio_url) {
+        setStatus('This archived alert does not include CAP audio.', 'err');
+        return;
+    }
+    const audio = previewPlayer(card);
+    if (!audio) return;
+    releasePreviewURL(audio);
+    audio.onended = null;
+    audio.src = record.audio_url;
+    audio.load();
+    setStatus('Previewing CAP audio.', 'ok');
+    try {
+        await audio.play();
+    } catch {
+        setStatus('CAP audio is ready. Press play in the preview control.', 'ok');
+    }
+}
+
+async function previewSAMEAudio(card) {
+    const record = archiveRecordForCard(card);
+    if (!record) return;
+    const audio = previewPlayer(card);
+    if (!audio) return;
+    setStatus('Generating SAME preview...', 'pending');
+    const result = await panelClient.command('alerts.archive.action', {
+        action: 'preview_same',
+        id: record.id || '',
+        feed_id: record.feed_id || '',
+    }, 25000);
+    const blob = base64ToBlob(result.same_audio_wav_base64, result.same_audio_mime_type || 'audio/wav');
+    const objectURL = URL.createObjectURL(blob);
+    releasePreviewURL(audio);
+    audio.dataset.objectUrl = objectURL;
+    audio.onended = null;
+    audio.src = objectURL;
+    if (result.audio_url) {
+        audio.onended = async () => {
+            releasePreviewURL(audio);
+            audio.onended = null;
+            audio.src = result.audio_url;
+            try {
+                await audio.play();
+            } catch {
+                setStatus('SAME finished. CAP audio is ready in the preview control.', 'ok');
+            }
+        };
+    }
+    audio.load();
+    setStatus(result.audio_url ? 'Previewing SAME, then CAP audio.' : 'Previewing SAME audio.', 'ok');
+    try {
+        await audio.play();
+    } catch {
+        setStatus('SAME preview is ready. Press play in the preview control.', 'ok');
+    }
+}
+
 function makeDoubleClickConfirm(button, callback) {
     let armed = false;
     let timer = null;
@@ -216,6 +330,20 @@ function bindActionDelegates() {
         const id = card?.dataset.alertId || '';
         const feedID = card?.dataset.feedId || '';
         if (!id) return;
+        if (action === 'preview_cap_audio') {
+            previewCAPAudio(card).catch((error) => setStatus(error.message || 'CAP audio preview failed.', 'err'));
+            return;
+        }
+        if (action === 'preview_same_audio') {
+            button.disabled = true;
+            previewSAMEAudio(card).catch((error) => {
+                setStatus(error.message || 'SAME preview failed.', 'err');
+            }).finally(() => {
+                button.disabled = false;
+                window.lucide?.createIcons();
+            });
+            return;
+        }
         if (button.dataset.confirming === '1') {
             button.dataset.confirming = '0';
             button.disabled = true;
