@@ -125,6 +125,12 @@ function Initialize-Clang64BuildEnvironment {
             throw "required MSYS2 CLANG64 tool not found: $RequiredPath"
         }
     }
+    foreach ($RequiredRuntime in @("libunwind.dll")) {
+        $RequiredPath = Join-Path $Clang64Bin $RequiredRuntime
+        if (-not (Test-Path -LiteralPath $RequiredPath -PathType Leaf)) {
+            throw "required MSYS2 CLANG64 runtime DLL not found: $RequiredPath. Install mingw-w64-clang-x86_64-libunwind."
+        }
+    }
 
     $Clang = Join-Path $Clang64Bin "x86_64-w64-mingw32-clang.exe"
     $Clangxx = Join-Path $Clang64Bin "x86_64-w64-mingw32-clang++.exe"
@@ -276,16 +282,79 @@ function Copy-Clang64RuntimeDependencies {
         $Current = $Queue.Dequeue()
         foreach ($DllName in (Get-PeImportedDllNames -Path $Current)) {
             $Source = Join-Path $Clang64Bin $DllName
-            if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+            if (Test-Path -LiteralPath $Source -PathType Leaf) {
+                Copy-Item -LiteralPath $Source -Destination $DestinationDir -Force
+                $FullSource = [System.IO.Path]::GetFullPath($Source)
+                if (-not $Seen.ContainsKey($FullSource)) {
+                    $Seen[$FullSource] = $true
+                    $Queue.Enqueue($FullSource)
+                }
                 continue
             }
-            Copy-Item -LiteralPath $Source -Destination $DestinationDir -Force
-            $FullSource = [System.IO.Path]::GetFullPath($Source)
-            if (-not $Seen.ContainsKey($FullSource)) {
-                $Seen[$FullSource] = $true
-                $Queue.Enqueue($FullSource)
+            $Bundled = Join-Path $DestinationDir $DllName
+            if (Test-Path -LiteralPath $Bundled -PathType Leaf) {
+                $FullBundled = [System.IO.Path]::GetFullPath($Bundled)
+                if (-not $Seen.ContainsKey($FullBundled)) {
+                    $Seen[$FullBundled] = $true
+                    $Queue.Enqueue($FullBundled)
+                }
             }
         }
+    }
+}
+
+function Test-WindowsSystemDll {
+    param(
+        [Parameter(Mandatory = $true)][string] $Name
+    )
+
+    if ($Name -match "^(api-ms-win-|ext-ms-win-)") {
+        return $true
+    }
+    foreach ($Directory in @(
+        (Join-Path $env:SystemRoot "System32"),
+        (Join-Path $env:SystemRoot "SysWOW64")
+    )) {
+        if (Test-Path -LiteralPath (Join-Path $Directory $Name) -PathType Leaf) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Assert-PortableRuntimeDependencies {
+    param(
+        [Parameter(Mandatory = $true)][string[]] $Directories
+    )
+
+    if (-not (Test-RunningOnWindows)) {
+        return
+    }
+
+    $Missing = New-Object System.Collections.Generic.List[string]
+    foreach ($Directory in $Directories) {
+        if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
+            continue
+        }
+        $Available = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        Get-ChildItem -LiteralPath $Directory -Filter "*.dll" -File -ErrorAction SilentlyContinue | ForEach-Object {
+            [void] $Available.Add($_.Name)
+        }
+        $Binaries = @()
+        $Binaries += @(Get-ChildItem -LiteralPath $Directory -Filter "*.exe" -File -ErrorAction SilentlyContinue)
+        $Binaries += @(Get-ChildItem -LiteralPath $Directory -Filter "*.dll" -File -ErrorAction SilentlyContinue)
+        foreach ($Binary in $Binaries) {
+            foreach ($DllName in (Get-PeImportedDllNames -Path $Binary.FullName)) {
+                if ($Available.Contains($DllName) -or (Test-WindowsSystemDll -Name $DllName)) {
+                    continue
+                }
+                $Missing.Add("$($Binary.Name) imports $DllName, but $DllName is not bundled in $Directory")
+            }
+        }
+    }
+    if ($Missing.Count -gt 0) {
+        $Joined = [string]::Join([Environment]::NewLine, ($Missing | Sort-Object -Unique))
+        throw "Missing portable runtime DLL dependencies:$([Environment]::NewLine)$Joined"
     }
 }
 
@@ -355,6 +424,7 @@ try {
         "libopus-0.dll",
         "libopusfile-0.dll",
         "libogg-0.dll",
+        "libunwind.dll",
         "opus.dll",
         "swresample-6.dll",
         "swscale-9.dll"
@@ -403,6 +473,7 @@ try {
         if ($ServiceEntryPoints.Count -gt 0) {
             Copy-Clang64RuntimeDependencies -EntryPoints $ServiceEntryPoints -DestinationDir $BinFull
         }
+        Assert-PortableRuntimeDependencies -Directories @($OutFull, $BinFull)
     }
 
     foreach ($Item in @("config.yaml")) {
