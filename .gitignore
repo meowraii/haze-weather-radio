@@ -14,6 +14,7 @@ audio/alerts/
 runtime/*
 voices/*
 managed/voices/piper/
+bundle/managed/voices/piper/**/*.onnx
 managed/venvs/
 logs/*
 twc.yaml
