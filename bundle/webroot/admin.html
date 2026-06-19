@@ -61,6 +61,36 @@
         .daemon-runtime-controls { display: flex; align-items: center; gap: 4px; }
         .daemon-service-btn { justify-content: center; min-height: 24px; width: 26px; padding: 3px; }
         .brand-home-link { display: inline-flex; align-items: center; color: inherit; text-decoration: none; }
+        .breakin-page { padding: 10px 14px 34px; }
+        .breakin-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 340px); gap: 10px; align-items: start; }
+        .breakin-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+        .breakin-side { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 76px; }
+        .breakin-feed-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        .breakin-feed-table th,
+        .breakin-feed-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+        .breakin-feed-table th { position: sticky; top: 0; z-index: 1; background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 600; }
+        .breakin-feed-table td { color: var(--text); font-size: 12.5px; }
+        .breakin-feed-table th:first-child,
+        .breakin-feed-table td:first-child { width: 34px; text-align: center; }
+        .breakin-feed-table input[type="checkbox"],
+        .breakin-source-tabs input[type="radio"] { accent-color: var(--accent); }
+        .breakin-source-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+        .breakin-source-tabs label { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 6px 8px; border: 1px solid var(--border-deep); border-radius: var(--radius-sm); background: linear-gradient(180deg, var(--surface-raised-top), var(--surface-raised-bot)); box-shadow: var(--bevel-raised); color: var(--text); font-size: 12.5px; cursor: pointer; }
+        .breakin-source-panel { display: none; }
+        .breakin-source-panel.active { display: flex; flex-direction: column; gap: 8px; }
+        .breakin-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+        .breakin-wide { grid-column: 1 / -1; }
+        .breakin-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+        .breakin-actions button { justify-content: center; min-height: 31px; }
+        .breakin-meter { height: 10px; overflow: hidden; border: 1px solid var(--border-deep); border-radius: var(--radius-sm); background: var(--bg); box-shadow: var(--bevel-sunken); }
+        .breakin-meter span { display: block; width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-ok), var(--accent-warn)); transition: width .08s linear; }
+        .breakin-recording { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+        .breakin-recording div { min-width: 0; padding: 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg) 38%, transparent); box-shadow: var(--bevel-sunken); }
+        .breakin-recording dt { color: var(--muted); font-size: 11px; line-height: 1.2; }
+        .breakin-recording dd { margin: 2px 0 0; color: var(--text); font-family: var(--mono-font); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .breakin-file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; }
+        .breakin-file-row input[type="file"] { min-width: 0; }
+        .breakin-empty { padding: 12px; color: var(--muted); font-size: 13px; }
 
         @media (min-width: 900px) {
             .daemon-page { padding: 12px 14px 32px; }
@@ -92,6 +122,12 @@
             .daemon-page .daemon-service-btn { justify-content: center; min-height: 24px; width: 26px; padding: 3px; }
             .daemon-page .daemon-actions { gap: 6px; margin-top: 8px; }
             .daemon-page .compact-code { max-height: 60px; padding: 6px 8px; overflow: auto; font-size: 11px; }
+        }
+
+        @media (max-width: 920px) {
+            .breakin-grid,
+            .breakin-form-grid { grid-template-columns: 1fr; }
+            .breakin-side { position: static; }
         }
 
         @media (max-width: 1180px) {
@@ -146,6 +182,10 @@
                 <a class="sidebar-link" href="#/playlist" data-view="playlist">
                     <i data-lucide="list-music" width="15" height="15"></i>
                     Playlist
+                </a>
+                <a class="sidebar-link" href="#/breakin" data-view="breakin">
+                    <i data-lucide="mic-vocal" width="15" height="15"></i>
+                    Operator Break-in
                 </a>
                 <a class="sidebar-link" href="#/alerts" data-view="alerts">
                     <i data-lucide="bell-ring" width="15" height="15"></i>
@@ -728,6 +768,161 @@
                                         </select>
                                     </label>
                                     <button class="btn-primary" id="playlistInsertButton" type="button">Insert</button>
+                                </div>
+                            </section>
+                        </aside>
+                    </div>
+                </main>
+            </div>
+
+            <div class="view" data-view="breakin">
+                <header class="topbar">
+                    <div class="topbar-inner">
+                        <div class="topbar-title">
+                            <p class="topbar-eyebrow">Priority Playout</p>
+                            <h1>Operator Break-in</h1>
+                            <p>Route operator audio directly into selected feed alert priority queues.</p>
+                        </div>
+                        <div class="metric-strip">
+                            <article class="metric-card">
+                                <p>Selected</p>
+                                <strong id="breakinSelectedMetric">0</strong>
+                            </article>
+                            <article class="metric-card">
+                                <p>Source</p>
+                                <strong id="breakinSourceMetric">Mic</strong>
+                            </article>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="dashboard breakin-page">
+                    <p id="breakinStatusBanner" class="status-banner">Loading feeds...</p>
+
+                    <div class="breakin-grid">
+                        <div class="breakin-main">
+                            <section class="section-block">
+                                <div class="section-hd">
+                                    <span>Target Feeds</span>
+                                    <span class="section-hd-sub">Selected feeds receive a pending alert-priority queue item.</span>
+                                    <div class="section-hd-actions">
+                                        <button id="breakinSelectAll" class="btn-action" type="button">All</button>
+                                        <button id="breakinSelectNone" class="btn-action" type="button">None</button>
+                                    </div>
+                                </div>
+                                <div class="section-body pad-none">
+                                    <table class="breakin-feed-table">
+                                        <thead>
+                                            <tr>
+                                                <th></th>
+                                                <th>Feed</th>
+                                                <th>Mode</th>
+                                                <th>Queue</th>
+                                                <th>Current</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="breakinFeedRows">
+                                            <tr><td colspan="5" class="breakin-empty">Loading feeds...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+
+                            <section class="section-block">
+                                <div class="section-hd"><span>Source</span></div>
+                                <div class="section-body breakin-source-tabs">
+                                    <label>
+                                        <input type="radio" name="breakinSource" value="mic" checked>
+                                        <i data-lucide="mic" width="15" height="15"></i>
+                                        Microphone
+                                    </label>
+                                    <label>
+                                        <input type="radio" name="breakinSource" value="url">
+                                        <i data-lucide="radio" width="15" height="15"></i>
+                                        Stream URL
+                                    </label>
+                                </div>
+                            </section>
+
+                            <section id="breakinMicPanel" class="section-block breakin-source-panel active">
+                                <div class="section-hd">
+                                    <span>Microphone</span>
+                                    <span class="section-hd-sub">PCM is streamed to the gateway and queued when stopped.</span>
+                                </div>
+                                <div class="section-body breakin-source-panel active">
+                                    <div class="breakin-form-grid">
+                                        <label class="daemon-field breakin-wide">
+                                            <span>Title</span>
+                                            <input id="breakinTitle" type="text" value="Operator Break-in">
+                                        </label>
+                                        <label class="daemon-field breakin-wide">
+                                            <span>Preroll</span>
+                                            <select id="breakinPrerollSelect">
+                                                <option value="">None</option>
+                                            </select>
+                                        </label>
+                                    </div>
+                                    <div class="breakin-meter" aria-hidden="true"><span id="breakinMeterFill"></span></div>
+                                    <dl class="breakin-recording">
+                                        <div><dt>Status</dt><dd id="breakinRecordState">Idle</dd></div>
+                                        <div><dt>Elapsed</dt><dd id="breakinElapsed">00:00</dd></div>
+                                        <div><dt>Sent</dt><dd id="breakinSentBytes">0 KB</dd></div>
+                                    </dl>
+                                    <div class="breakin-actions">
+                                        <button id="breakinStartMic" class="btn-primary" type="button"><i data-lucide="mic" width="15" height="15"></i> Start</button>
+                                        <button id="breakinStopMic" class="btn-action" type="button" disabled><i data-lucide="square" width="15" height="15"></i> Stop &amp; Queue</button>
+                                        <button id="breakinCancelMic" class="btn-danger" type="button" disabled><i data-lucide="x" width="15" height="15"></i> Cancel</button>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section id="breakinUrlPanel" class="section-block breakin-source-panel">
+                                <div class="section-hd">
+                                    <span>Stream URL</span>
+                                    <span class="section-hd-sub">HTTP or HTTPS audio is queued through the alert priority path.</span>
+                                </div>
+                                <div class="section-body breakin-source-panel active">
+                                    <label class="daemon-field">
+                                        <span>Title</span>
+                                        <input id="breakinUrlTitle" type="text" value="Operator Break-in Stream">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Audio stream URL</span>
+                                        <input id="breakinStreamUrl" type="url" placeholder="https://example.com/live.mp3">
+                                    </label>
+                                    <div class="breakin-actions">
+                                        <button id="breakinQueueUrl" class="btn-primary" type="button"><i data-lucide="radio" width="15" height="15"></i> Queue Stream</button>
+                                    </div>
+                                </div>
+                            </section>
+                        </div>
+
+                        <aside class="breakin-side">
+                            <section class="section-block" style="margin-top:0">
+                                <div class="section-hd"><span>Upload Preroll</span></div>
+                                <div class="section-body">
+                                    <div class="breakin-file-row">
+                                        <label class="daemon-field">
+                                            <span>PCM16 WAV</span>
+                                            <input id="breakinUploadFile" type="file" accept=".wav,audio/wav,audio/x-wav">
+                                        </label>
+                                        <button id="breakinUploadPreroll" class="btn-action" type="button"><i data-lucide="upload" width="15" height="15"></i></button>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="section-block">
+                                <div class="section-hd"><span>Generate Tone</span></div>
+                                <div class="section-body breakin-form-grid">
+                                    <label class="daemon-field">
+                                        <span>Hz</span>
+                                        <input id="breakinToneHz" type="number" min="200" max="3000" value="1050">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>ms</span>
+                                        <input id="breakinToneMs" type="number" min="100" max="5000" value="850">
+                                    </label>
+                                    <button id="breakinGenerateTone" class="btn-action breakin-wide" type="button"><i data-lucide="audio-lines" width="15" height="15"></i> Generate</button>
                                 </div>
                             </section>
                         </aside>

@@ -6,6 +6,7 @@ import { initSameView } from './same.js';
 import { initWxView } from './wx.js';
 import { initDaemonView } from './daemon.js';
 import { initPlaylistView } from './playlist.js';
+import { initBreakInView } from './breakin.js';
 import { initAlertsArchiveView } from './alerts.js';
 import { initAutomationsView } from './automations.js';
 import { initDictionaryView } from './dictionary.js';
@@ -20,7 +21,7 @@ const refreshButton = document.getElementById('refreshButton');
 
 let healthState = { auth_required: true };
 let dashboardInitialized = false;
-const viewInit = { same: false, automations: false, wx: false, daemon: false, playlist: false, alerts: false, dictionary: false };
+const viewInit = { same: false, automations: false, wx: false, daemon: false, playlist: false, breakin: false, alerts: false, dictionary: false };
 
 session.importUrlToken();
 initTheme(themeToggle);
@@ -133,6 +134,10 @@ function navigate(view) {
     if (view === 'playlist' && !viewInit.playlist) {
         viewInit.playlist = true;
         initPlaylistView();
+    }
+    if (view === 'breakin' && !viewInit.breakin) {
+        viewInit.breakin = true;
+        initBreakInView();
     }
     if (view === 'alerts' && !viewInit.alerts) {
         viewInit.alerts = true;

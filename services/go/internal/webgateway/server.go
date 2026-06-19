@@ -26,6 +26,7 @@ type Server struct {
 	receiver   *ReceiverManager
 	media      *MediaHub
 	bannerHub  *BannerHub
+	breakIn    *OperatorBreakInManager
 }
 
 // WebSurface controls which routes a gateway instance exposes.
@@ -63,6 +64,7 @@ func NewServerWithSurface(config Config, configPath string, webroot string, surf
 		receiver:   NewReceiverManager(config, configPath, mediaHub),
 		media:      mediaHub,
 		bannerHub:  bannerHub,
+		breakIn:    NewOperatorBreakInManager(),
 	}
 }
 
@@ -197,6 +199,7 @@ func (s *Server) websocket(writer http.ResponseWriter, request *http.Request) {
 		configPath: s.configPath,
 		startedAt:  s.startedAt,
 		media:      s.media,
+		server:     s,
 	}
 	_ = session.send(ctx, "hello", map[string]any{
 		"service": "haze-web",
@@ -279,6 +282,7 @@ type wsSession struct {
 	startedAt          time.Time
 	lastStateSignature string
 	media              *MediaHub
+	server             *Server
 }
 
 func (s *wsSession) send(ctx context.Context, messageType string, data map[string]any) error {
@@ -469,6 +473,22 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 		return s.airSame(payload)
 	case "alert.broadcast":
 		return s.broadcastAlert(payload)
+	case "operator_breakin.prerolls":
+		return s.listOperatorBreakInPrerolls()
+	case "operator_breakin.upload_preroll":
+		return s.uploadOperatorBreakInPreroll(payload)
+	case "operator_breakin.generate_tone":
+		return s.generateOperatorBreakInTone(payload)
+	case "operator_breakin.start":
+		return s.startOperatorBreakIn(payload)
+	case "operator_breakin.chunk":
+		return s.appendOperatorBreakInChunk(payload)
+	case "operator_breakin.finish":
+		return s.finishOperatorBreakIn(payload)
+	case "operator_breakin.url":
+		return s.queueOperatorBreakInURL(payload)
+	case "operator_breakin.cancel":
+		return s.cancelOperatorBreakIn(payload)
 	case "same.upload_audio":
 		return nil, fmt.Errorf("SAME media upload is not available in this gateway yet")
 	case "wx.generate":
@@ -612,7 +632,7 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		writer.Header().Set("Referrer-Policy", "no-referrer")
-		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=(), payment=()")
 		writer.Header().Set("Content-Security-Policy", contentSecurityPolicy(request.URL.Path))
 		if s.config.Webpanel.TLS.HSTS && requestIsHTTPS(request) {
 			writer.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
