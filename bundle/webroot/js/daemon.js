@@ -235,13 +235,61 @@ function renderRuntime(runtime) {
     }
     runtimeList.innerHTML = services.map((service) => `
         <article class="daemon-runtime-item">
-            <div>
+            <div class="daemon-runtime-main">
                 <strong>${escapeHtml(service.id || 'managed service')}</strong>
-                <span>${escapeHtml(service.executable || service.last_error || 'no executable detail')}</span>
+                <span>${escapeHtml(runtimeDetail(service))}</span>
             </div>
-            <span class="daemon-status" data-state="${escapeHtml(service.status || 'unknown')}">${escapeHtml(service.status || 'unknown')}</span>
+            <div class="daemon-runtime-controls">
+                <span class="daemon-status" data-state="${escapeHtml(service.status || 'unknown')}">${escapeHtml(service.status || 'unknown')}</span>
+                <button class="btn-ghost daemon-service-btn" type="button" title="Start service" aria-label="Start ${escapeHtml(service.id || 'service')}" data-service-action="start" data-service-id="${escapeHtml(service.id || '')}" ${serviceRunning(service) ? 'disabled' : ''}>
+                    <i data-lucide="play" width="12" height="12"></i>
+                </button>
+                <button class="btn-ghost daemon-service-btn" type="button" title="Restart service" aria-label="Restart ${escapeHtml(service.id || 'service')}" data-service-action="restart" data-service-id="${escapeHtml(service.id || '')}">
+                    <i data-lucide="rotate-cw" width="12" height="12"></i>
+                </button>
+                <button class="btn-ghost daemon-service-btn" type="button" title="Stop service" aria-label="Stop ${escapeHtml(service.id || 'service')}" data-service-action="stop" data-service-id="${escapeHtml(service.id || '')}" ${serviceStopped(service) ? 'disabled' : ''}>
+                    <i data-lucide="square" width="12" height="12"></i>
+                </button>
+            </div>
         </article>
     `).join('');
+    window.lucide?.createIcons();
+}
+
+function runtimeDetail(service) {
+    const parts = [];
+    if (service.pid) parts.push(`pid ${service.pid}`);
+    if (service.restart_count) parts.push(`${service.restart_count} restarts`);
+    if (service.desired && service.desired !== service.status) parts.push(`desired ${service.desired}`);
+    if (parts.length) return parts.join(' | ');
+    return service.executable || service.last_error || 'no executable detail';
+}
+
+function serviceRunning(service) {
+    return ['running', 'restarting'].includes(String(service.status || '').toLowerCase());
+}
+
+function serviceStopped(service) {
+    return ['stopped', 'missing'].includes(String(service.status || '').toLowerCase());
+}
+
+async function controlService(serviceID, action, button) {
+    if (!serviceID || !action) return;
+    const previous = statusBanner.textContent;
+    button.disabled = true;
+    statusBanner.textContent = `${action[0].toUpperCase()}${action.slice(1)} requested for ${serviceID}.`;
+    statusBanner.dataset.state = 'pending';
+    try {
+        await panelClient.command('daemon.service.control', { service_id: serviceID, action }, 5000);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await loadSettings();
+        statusBanner.textContent = `${action[0].toUpperCase()}${action.slice(1)} requested for ${serviceID}.`;
+        statusBanner.dataset.state = 'ok';
+    } catch (error) {
+        statusBanner.textContent = error.message || previous || 'Service control failed.';
+        statusBanner.dataset.state = 'err';
+        button.disabled = false;
+    }
 }
 
 function updateMetrics(pendingRestart = false) {
@@ -318,6 +366,14 @@ export function initDaemonView() {
     formEl.addEventListener('change', () => {
         currentSettings = collectSettings();
         updateMetrics();
+    });
+    runtimeList.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-service-action]');
+        if (!button) return;
+        controlService(button.dataset.serviceId, button.dataset.serviceAction, button).catch((error) => {
+            statusBanner.textContent = error.message || 'Service control failed.';
+            statusBanner.dataset.state = 'err';
+        });
     });
     window.addEventListener('haze:admin-state', (event) => {
         if (event.detail?.daemon?.effective) {

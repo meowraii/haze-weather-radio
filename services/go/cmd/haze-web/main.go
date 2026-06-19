@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/processguard"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/webgateway"
 )
 
@@ -76,6 +77,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = processguard.WithParent(ctx)
 
 	go func() {
 		<-ctx.Done()

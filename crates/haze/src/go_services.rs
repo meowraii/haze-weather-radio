@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::json;
+use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
 use crate::ServiceHostConfig;
@@ -17,6 +18,8 @@ const DEFAULT_SETTINGS_FILE: &str = "runtime/state/daemonSettings.json";
 const STATUS_FILE: &str = "runtime/state/goServiceRuntime.json";
 const EMBEDDED_BIN_DIR: &str = "bin";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+const MIN_RESTART_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_RESTART_BACKOFF: Duration = Duration::from_secs(30);
 
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/go_assets.rs"));
@@ -163,7 +166,7 @@ struct IvrCacheConfig {
     dir: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ServiceSpec {
     id: &'static str,
     kind: &'static str,
@@ -173,16 +176,26 @@ struct ServiceSpec {
 }
 
 #[derive(Debug)]
-struct ManagedChild {
-    id: &'static str,
-    child: Child,
+struct ManagedService {
+    spec: ServiceSpec,
+    child: Option<Child>,
+    desired: DesiredState,
+    restart_count: u64,
+    next_restart: Option<Instant>,
 }
 
 /// Owns managed service child processes for the lifetime of the daemon.
 pub(crate) struct GoServiceSupervisor {
-    children: Vec<ManagedChild>,
+    host: ServiceHostConfig,
+    services: Vec<ManagedService>,
     status_path: PathBuf,
     statuses: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DesiredState {
+    Running,
+    Stopped,
 }
 
 impl GoServiceSupervisor {
@@ -206,41 +219,73 @@ impl GoServiceSupervisor {
         }
         stop_previous_managed_services(&status_path);
 
+        let specs = service_specs(&root, host);
         let mut supervisor = Self {
-            children: Vec::new(),
+            host: host.clone(),
+            services: specs
+                .into_iter()
+                .map(|spec| ManagedService {
+                    spec,
+                    child: None,
+                    desired: DesiredState::Running,
+                    restart_count: 0,
+                    next_restart: None,
+                })
+                .collect(),
             status_path,
             statuses: BTreeMap::new(),
         };
 
-        let specs = service_specs(&root, host);
-        for spec in specs {
-            supervisor.start_one(spec, host);
+        for index in 0..supervisor.services.len() {
+            supervisor.start_service(index, "startup");
         }
         supervisor.write_status();
         Ok(supervisor)
     }
 
-    fn start_one(&mut self, spec: ServiceSpec, host: &ServiceHostConfig) {
-        let Some(executable) =
-            resolve_executable(host, spec.configured_executable.as_deref(), spec.binary).or_else(
-                || {
-                    extract_embedded_executable(host, spec.binary)
-                        .ok()
-                        .flatten()
-                },
-            )
-        else {
+    fn start_service(&mut self, index: usize, reason: &str) -> bool {
+        let Some(service) = self.services.get(index) else {
+            return false;
+        };
+        if service.child.is_some() || service.desired != DesiredState::Running {
+            return false;
+        }
+        let spec = service.spec.clone();
+        let Some(executable) = resolve_executable(
+            &self.host,
+            spec.configured_executable.as_deref(),
+            spec.binary,
+        )
+        .or_else(|| {
+            extract_embedded_executable(&self.host, spec.binary)
+                .ok()
+                .flatten()
+        }) else {
             let error = format!("managed service binary not found: {}", spec.binary);
             warn!("[{}] {error}", service_label(spec.id));
-            self.set_status(spec.id, "missing", None, Some(error));
-            return;
+            if let Some(service) = self.services.get_mut(index) {
+                service.restart_count = service.restart_count.saturating_add(1);
+                service.next_restart =
+                    Some(Instant::now() + restart_backoff(service.restart_count));
+            }
+            self.set_status(
+                spec.id,
+                spec.kind,
+                "missing",
+                DesiredState::Running,
+                None,
+                Some(error),
+            );
+            return true;
         };
 
         let mut command = Command::new(&executable);
         configure_managed_process(&mut command);
         command
             .args(&spec.args)
-            .current_dir(&host.runtime_dir)
+            .current_dir(&self.host.runtime_dir)
+            .env("HAZE_PARENT_PID", std::process::id().to_string())
+            .env("HAZE_MANAGED_SERVICE_ID", spec.id)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -260,36 +305,66 @@ impl GoServiceSupervisor {
                     service_label(spec.id),
                     executable.display()
                 );
+                let restart_count = self.services[index].restart_count;
                 self.statuses.insert(
                     spec.id.to_string(),
                     json!({
                         "id": spec.id,
                         "kind": spec.kind,
                         "status": "running",
+                        "desired": "running",
                         "pid": pid,
                         "executable": executable,
                         "args": spec.args,
                         "embedded": embedded_binary(spec.binary).is_some(),
+                        "restart_count": restart_count,
+                        "start_reason": reason,
                         "started_at_unix": unix_now(),
                     }),
                 );
-                self.children.push(ManagedChild { id: spec.id, child });
+                if let Some(service) = self.services.get_mut(index) {
+                    service.child = Some(child);
+                    service.next_restart = None;
+                }
+                true
             }
             Err(err) => {
                 let detail = format!("failed to start {}: {err}", service_label(spec.id));
                 warn!("{detail}");
-                self.set_status(spec.id, "failed", None, Some(detail));
+                self.set_status(
+                    spec.id,
+                    spec.kind,
+                    "failed",
+                    DesiredState::Running,
+                    None,
+                    Some(detail),
+                );
+                if let Some(service) = self.services.get_mut(index) {
+                    service.restart_count = service.restart_count.saturating_add(1);
+                    service.next_restart =
+                        Some(Instant::now() + restart_backoff(service.restart_count));
+                }
+                true
             }
         }
     }
 
-    fn set_status(&mut self, id: &str, status: &str, pid: Option<u32>, last_error: Option<String>) {
+    fn set_status(
+        &mut self,
+        id: &str,
+        kind: &str,
+        status: &str,
+        desired: DesiredState,
+        pid: Option<u32>,
+        last_error: Option<String>,
+    ) {
         self.statuses.insert(
             id.to_string(),
             json!({
                 "id": id,
-                "kind": "managed",
+                "kind": kind,
                 "status": status,
+                "desired": desired_status(desired),
                 "pid": pid,
                 "last_error": last_error,
                 "updated_at_unix": unix_now(),
@@ -299,93 +374,244 @@ impl GoServiceSupervisor {
 
     pub(crate) fn poll_children(&mut self) {
         let mut changed = false;
-        let mut running = Vec::with_capacity(self.children.len());
-        for mut child in self.children.drain(..) {
-            match child.child.try_wait() {
+        for index in 0..self.services.len() {
+            let spec = self.services[index].spec.clone();
+            let desired = self.services[index].desired;
+            let restart_count = self.services[index].restart_count;
+            let Some(child) = self.services[index].child.as_mut() else {
+                continue;
+            };
+            match child.try_wait() {
                 Ok(Some(status)) => {
-                    let state = if status.success() { "exited" } else { "failed" };
-                    let detail = format!("{} exited with {status}", service_label(child.id));
-                    warn!("[{}] exited with {status}", service_label(child.id));
+                    let pid = child.id();
+                    self.services[index].child = None;
+                    let state = if desired == DesiredState::Running {
+                        "restarting"
+                    } else if status.success() {
+                        "stopped"
+                    } else {
+                        "failed"
+                    };
+                    let detail = format!("{} exited with {status}", service_label(spec.id));
+                    if desired == DesiredState::Running {
+                        warn!(
+                            "[{}] exited with {status}; scheduling restart",
+                            service_label(spec.id)
+                        );
+                        self.services[index].restart_count =
+                            self.services[index].restart_count.saturating_add(1);
+                        self.services[index].next_restart = Some(
+                            Instant::now() + restart_backoff(self.services[index].restart_count),
+                        );
+                    } else {
+                        info!("[{}] exited with {status}", service_label(spec.id));
+                    }
                     self.statuses.insert(
-                        child.id.to_string(),
+                        spec.id.to_string(),
                         json!({
-                            "id": child.id,
-                            "kind": "managed",
+                            "id": spec.id,
+                            "kind": spec.kind,
                             "status": state,
-                            "pid": child.child.id(),
-                            "last_error": if status.success() { None::<String> } else { Some(detail) },
+                            "desired": desired_status(desired),
+                            "pid": pid,
+                            "restart_count": self.services[index].restart_count,
+                            "last_error": if desired == DesiredState::Running || !status.success() { Some(detail) } else { None::<String> },
                             "exited_at_unix": unix_now(),
                         }),
                     );
                     changed = true;
                 }
-                Ok(None) => running.push(child),
+                Ok(None) => {}
                 Err(err) => {
-                    let detail = format!("failed to inspect {}: {err}", service_label(child.id));
+                    let pid = child.id();
+                    let detail = format!("failed to inspect {}: {err}", service_label(spec.id));
                     warn!(
                         "[{}] failed to inspect service: {err}",
-                        service_label(child.id)
+                        service_label(spec.id)
                     );
                     self.statuses.insert(
-                        child.id.to_string(),
+                        spec.id.to_string(),
                         json!({
-                            "id": child.id,
-                            "kind": "managed",
+                            "id": spec.id,
+                            "kind": spec.kind,
                             "status": "unknown",
-                            "pid": child.child.id(),
+                            "desired": desired_status(desired),
+                            "pid": pid,
+                            "restart_count": restart_count,
                             "last_error": detail,
                             "updated_at_unix": unix_now(),
                         }),
                     );
-                    running.push(child);
                     changed = true;
                 }
             }
         }
-        self.children = running;
+        let now = Instant::now();
+        for index in 0..self.services.len() {
+            if self.services[index].child.is_none()
+                && self.services[index].desired == DesiredState::Running
+                && self.services[index]
+                    .next_restart
+                    .is_none_or(|deadline| deadline <= now)
+            {
+                changed |= self.start_service(index, "auto_restart");
+            }
+        }
         if changed {
             self.write_status();
         }
     }
 
+    pub(crate) fn handle_control_event(&mut self, event: &Value) -> bool {
+        if event.get("type").and_then(Value::as_str) != Some("service.control") {
+            return false;
+        }
+        let data = event.get("data").and_then(Value::as_object);
+        let service_id = data
+            .and_then(|data| data.get("service_id").or_else(|| data.get("id")))
+            .and_then(Value::as_str)
+            .or_else(|| event.get("subject").and_then(Value::as_str))
+            .unwrap_or_default()
+            .trim();
+        let action = data
+            .and_then(|data| data.get("action"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        if service_id.is_empty() || action.is_empty() {
+            return false;
+        }
+        let Some(index) = self
+            .services
+            .iter()
+            .position(|service| service.spec.id == service_id)
+        else {
+            warn!("service control requested unknown service {service_id}");
+            return false;
+        };
+        let changed = match action.as_str() {
+            "start" => self.start_controlled(index),
+            "stop" => self.stop_controlled(index),
+            "restart" => self.restart_controlled(index),
+            _ => {
+                warn!("service control requested unsupported action {action}");
+                false
+            }
+        };
+        if changed {
+            self.write_status();
+        }
+        changed
+    }
+
+    fn start_controlled(&mut self, index: usize) -> bool {
+        self.services[index].desired = DesiredState::Running;
+        self.services[index].next_restart = None;
+        if self.services[index].child.is_some() {
+            return false;
+        }
+        self.start_service(index, "operator_start")
+    }
+
+    fn stop_controlled(&mut self, index: usize) -> bool {
+        self.services[index].desired = DesiredState::Stopped;
+        self.services[index].next_restart = None;
+        self.stop_service(index, "stopped", "operator_stop")
+    }
+
+    fn restart_controlled(&mut self, index: usize) -> bool {
+        self.services[index].desired = DesiredState::Running;
+        self.services[index].next_restart = None;
+        let stopped = self.stop_service(index, "restarting", "operator_restart");
+        let started = self.start_service(index, "operator_restart");
+        stopped || started
+    }
+
+    fn stop_service(&mut self, index: usize, final_status: &str, reason: &str) -> bool {
+        let spec = self.services[index].spec.clone();
+        let Some(mut child) = self.services[index].child.take() else {
+            self.statuses.insert(
+                spec.id.to_string(),
+                json!({
+                    "id": spec.id,
+                    "kind": spec.kind,
+                    "status": if final_status == "restarting" { "restarting" } else { "stopped" },
+                    "desired": desired_status(self.services[index].desired),
+                    "pid": None::<u32>,
+                    "restart_count": self.services[index].restart_count,
+                    "control_reason": reason,
+                    "updated_at_unix": unix_now(),
+                }),
+            );
+            return true;
+        };
+        info!("stopping {} ({reason})", service_label(spec.id));
+        if let Err(err) = terminate_child_tree(&mut child) {
+            warn!("[{}] failed to stop service: {err}", service_label(spec.id));
+        }
+        let status = wait_for_child_exit(&mut child, SHUTDOWN_GRACE);
+        self.statuses.insert(
+            spec.id.to_string(),
+            json!({
+                "id": spec.id,
+                "kind": spec.kind,
+                "status": final_status,
+                "desired": desired_status(self.services[index].desired),
+                "pid": child.id(),
+                "exit_status": status.map(|status| status.to_string()),
+                "restart_count": self.services[index].restart_count,
+                "control_reason": reason,
+                "stopped_at_unix": unix_now(),
+            }),
+        );
+        true
+    }
+
     pub(crate) fn shutdown(&mut self) {
         self.poll_children();
         let mut changed = false;
-        for mut child in self.children.drain(..) {
-            match child.child.try_wait() {
+        for index in 0..self.services.len() {
+            self.services[index].desired = DesiredState::Stopped;
+            let spec = self.services[index].spec.clone();
+            let Some(mut child) = self.services[index].child.take() else {
+                continue;
+            };
+            match child.try_wait() {
                 Ok(Some(status)) => {
                     info!(
                         "[{}] exited during shutdown with {status}",
-                        service_label(child.id)
+                        service_label(spec.id)
                     );
                     self.statuses.insert(
-                        child.id.to_string(),
+                        spec.id.to_string(),
                         json!({
-                            "id": child.id,
-                            "kind": "managed",
+                            "id": spec.id,
+                            "kind": spec.kind,
                             "status": if status.success() { "exited" } else { "failed" },
-                            "pid": child.child.id(),
+                            "desired": "stopped",
+                            "pid": child.id(),
+                            "restart_count": self.services[index].restart_count,
                             "exited_at_unix": unix_now(),
                         }),
                     );
                 }
                 Ok(None) => {
-                    info!("stopping {}", service_label(child.id));
-                    if let Err(err) = terminate_child_tree(&mut child.child) {
-                        warn!(
-                            "[{}] failed to stop service: {err}",
-                            service_label(child.id)
-                        );
+                    info!("stopping {}", service_label(spec.id));
+                    if let Err(err) = terminate_child_tree(&mut child) {
+                        warn!("[{}] failed to stop service: {err}", service_label(spec.id));
                     }
-                    let status = wait_for_child_exit(&mut child.child, SHUTDOWN_GRACE);
+                    let status = wait_for_child_exit(&mut child, SHUTDOWN_GRACE);
                     self.statuses.insert(
-                        child.id.to_string(),
+                        spec.id.to_string(),
                         json!({
-                            "id": child.id,
-                            "kind": "managed",
+                            "id": spec.id,
+                            "kind": spec.kind,
                             "status": "stopped",
-                            "pid": child.child.id(),
+                            "desired": "stopped",
+                            "pid": child.id(),
                             "exit_status": status.map(|status| status.to_string()),
+                            "restart_count": self.services[index].restart_count,
                             "stopped_at_unix": unix_now(),
                         }),
                     );
@@ -393,15 +619,17 @@ impl GoServiceSupervisor {
                 Err(err) => {
                     warn!(
                         "[{}] failed to inspect service: {err}",
-                        service_label(child.id)
+                        service_label(spec.id)
                     );
                     self.statuses.insert(
-                        child.id.to_string(),
+                        spec.id.to_string(),
                         json!({
-                            "id": child.id,
-                            "kind": "managed",
+                            "id": spec.id,
+                            "kind": spec.kind,
                             "status": "unknown",
-                            "pid": child.child.id(),
+                            "desired": "stopped",
+                            "pid": child.id(),
+                            "restart_count": self.services[index].restart_count,
                             "last_error": format!("failed to inspect managed service: {err}"),
                             "updated_at_unix": unix_now(),
                         }),
@@ -442,6 +670,19 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Option<std::proc
             Err(_) => return None,
         }
     }
+}
+
+fn desired_status(desired: DesiredState) -> &'static str {
+    match desired {
+        DesiredState::Running => "running",
+        DesiredState::Stopped => "stopped",
+    }
+}
+
+fn restart_backoff(restart_count: u64) -> Duration {
+    let exponent = restart_count.saturating_sub(1).min(5);
+    let seconds = MIN_RESTART_BACKOFF.as_secs().saturating_mul(1 << exponent);
+    Duration::from_secs(seconds).min(MAX_RESTART_BACKOFF)
 }
 
 impl Drop for GoServiceSupervisor {

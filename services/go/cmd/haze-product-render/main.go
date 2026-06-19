@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/processguard"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/productrender"
 )
 
@@ -28,6 +29,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = processguard.WithParent(ctx)
 
 	return productrender.Run(ctx, productrender.Options{
 		ConfigPath: *configPath,

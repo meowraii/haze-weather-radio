@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/playlist"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/processguard"
 )
 
 func main() {
@@ -31,6 +32,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = processguard.WithParent(ctx)
 	return playlist.Run(ctx, playlist.Options{
 		ConfigPath: *configPath,
 		BridgeAddr: *bridgeAddr,

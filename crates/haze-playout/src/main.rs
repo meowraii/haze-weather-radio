@@ -4,6 +4,7 @@ mod engine;
 mod sinks;
 
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -31,12 +32,23 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
     init_tracing();
-    engine::run(engine::Options {
+    let options = engine::Options {
         config_path: args.config,
         bridge_addr: args.bridge,
         alert_poll: parse_duration_ms(&args.alert_poll, Duration::from_millis(500)),
-    })
-    .await
+    };
+    match parent_pid() {
+        Some(pid) => {
+            tokio::select! {
+                result = engine::run(options) => result,
+                () = wait_for_parent_exit(pid) => {
+                    tracing::info!("haze parent process {pid} exited; shutting down playout");
+                    Ok(())
+                }
+            }
+        }
+        None => engine::run(options).await,
+    }
 }
 
 fn init_tracing() {
@@ -78,4 +90,43 @@ fn parse_duration_ms(raw: &str, fallback: Duration) -> Duration {
         .parse::<u64>()
         .map(Duration::from_millis)
         .unwrap_or(fallback)
+}
+
+fn parent_pid() -> Option<u32> {
+    std::env::var("HAZE_PARENT_PID")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|pid| *pid > 0)
+}
+
+async fn wait_for_parent_exit(pid: u32) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        if !parent_alive(pid) {
+            return;
+        }
+    }
+}
+
+#[cfg(windows)]
+fn parent_alive(pid: u32) -> bool {
+    let Ok(output) = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+    else {
+        return false;
+    };
+    output.status.success() && String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+}
+
+#[cfg(not(windows))]
+fn parent_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }

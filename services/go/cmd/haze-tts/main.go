@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/processguard"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/tts"
 )
 
@@ -72,6 +73,7 @@ func run() error {
 	if *service {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
+		ctx = processguard.WithParent(ctx)
 		return runService(ctx, serviceConfig{
 			BridgeAddr:   *bridge,
 			Readers:      *readersPath,

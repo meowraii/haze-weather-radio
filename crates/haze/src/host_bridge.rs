@@ -16,6 +16,7 @@ const CAP_REPLAY_LIMIT: usize = 512;
 pub(crate) struct HostBridge {
     addr: String,
     sender: Sender<Value>,
+    events: Option<Receiver<Value>>,
 }
 
 impl HostBridge {
@@ -33,6 +34,7 @@ impl HostBridge {
             .to_string();
         let (sender, receiver) = mpsc::channel::<Value>();
         let (client_sender, client_receiver) = mpsc::channel::<SyncSender<Vec<u8>>>();
+        let (event_sender, event_receiver) = mpsc::channel::<Value>();
 
         thread::spawn(move || {
             let mut clients: Vec<SyncSender<Vec<u8>>> = Vec::new();
@@ -47,6 +49,7 @@ impl HostBridge {
                 }
                 match receiver.recv() {
                     Ok(message) => {
+                        let _ = event_sender.send(message.clone());
                         let Ok(mut raw) = serde_json::to_vec(&message) else {
                             continue;
                         };
@@ -106,7 +109,11 @@ impl HostBridge {
             }
         });
 
-        Ok(Self { addr, sender })
+        Ok(Self {
+            addr,
+            sender,
+            events: Some(event_receiver),
+        })
     }
 
     pub(crate) fn addr(&self) -> &str {
@@ -115,6 +122,12 @@ impl HostBridge {
 
     pub(crate) fn publisher(&self) -> Sender<Value> {
         self.sender.clone()
+    }
+
+    pub(crate) fn take_events(&mut self) -> Receiver<Value> {
+        self.events
+            .take()
+            .expect("host bridge events can only be taken once")
     }
 }
 

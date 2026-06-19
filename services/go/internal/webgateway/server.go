@@ -397,6 +397,8 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 			return nil, fmt.Errorf("settings payload is required")
 		}
 		return writeDaemonSettings(s.configPath, settings)
+	case "daemon.service.control":
+		return s.publishServiceControl(payload)
 	case "dictionary.get":
 		return loadDictionaryPayload(s.configPath)
 	case "dictionary.save":
@@ -508,6 +510,40 @@ func (s *wsSession) publishPlaylistCommand(eventType string, payload map[string]
 		result["playlist"] = playlist
 	}
 	return result, nil
+}
+
+func (s *wsSession) publishServiceControl(payload map[string]any) (any, error) {
+	serviceID := strings.TrimSpace(firstNonBlank(stringValue(payload, "service_id"), stringValue(payload, "id")))
+	action := strings.ToLower(strings.TrimSpace(stringValue(payload, "action")))
+	if serviceID == "" {
+		return nil, fmt.Errorf("service_id is required")
+	}
+	if action != "start" && action != "stop" && action != "restart" {
+		return nil, fmt.Errorf("unsupported service action %q", action)
+	}
+	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
+	if bridgeAddr == "" {
+		return nil, fmt.Errorf("event bridge is not available")
+	}
+	publisher := events.NewHostBridgePublisher(bridgeAddr)
+	defer publisher.Close()
+	if err := publisher.Publish(events.Event{
+		Type:    "service.control",
+		Source:  "haze-web",
+		Subject: serviceID,
+		Data: map[string]any{
+			"service_id": serviceID,
+			"action":     action,
+		},
+	}); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"accepted":   true,
+		"event":      "service.control",
+		"service_id": serviceID,
+		"action":     action,
+	}, nil
 }
 
 func (s *wsSession) panelState() (map[string]any, error) {

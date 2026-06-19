@@ -10,7 +10,7 @@ mod signals;
 use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
@@ -101,9 +101,10 @@ pub fn run(args: DaemonArgs) -> Result<()> {
     }
 
     let _log_guard = init_tracing(args.log_level.as_deref(), &layout.runtime_dir);
-    let host_bridge = host_bridge::HostBridge::start()?;
+    let mut host_bridge = host_bridge::HostBridge::start()?;
     env::set_var("HAZE_HOST_BRIDGE_ADDR", host_bridge.addr());
     env::set_var("HAZE_LOG_BRIDGE_ADDR", host_bridge.addr());
+    let service_events = host_bridge.take_events();
 
     let host = ServiceHostConfig {
         app_dir: layout.app_dir,
@@ -130,6 +131,7 @@ pub fn run(args: DaemonArgs) -> Result<()> {
         &mut daemon_services,
         &mut go_services,
         host_bridge.publisher(),
+        service_events,
     )
 }
 
@@ -137,9 +139,15 @@ fn wait_for_shutdown(
     daemon_services: &mut daemon_services::DaemonServices,
     go_services: &mut go_services::GoServiceSupervisor,
     publisher: Sender<Value>,
+    service_events: Receiver<Value>,
 ) -> Result<()> {
     info!("Haze host services running");
     while !signals::shutdown_requested() {
+        while let Ok(event) = service_events.try_recv() {
+            if go_services.handle_control_event(&event) {
+                go_services.poll_children();
+            }
+        }
         go_services.poll_children();
         thread::sleep(Duration::from_millis(250));
     }

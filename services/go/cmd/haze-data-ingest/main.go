@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/dataingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/processguard"
 )
 
 func main() {
@@ -30,6 +31,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = processguard.WithParent(ctx)
 
 	return dataingest.Run(ctx, dataingest.Options{
 		ConfigPath: *configPath,

@@ -13,6 +13,7 @@ import (
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/processguard"
 )
 
 const defaultNAADSURL = "https://rss.naad-adna.pelmorex.com/"
@@ -46,6 +47,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = processguard.WithParent(ctx)
 
 	publisher := events.Publisher(events.NewJSONLPublisher(os.Stdout))
 	if bridgeAddr := os.Getenv("HAZE_HOST_BRIDGE_ADDR"); bridgeAddr != "" {

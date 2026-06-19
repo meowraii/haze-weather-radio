@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/ivr"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/processguard"
 )
 
 func main() {
@@ -29,6 +30,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = processguard.WithParent(ctx)
 
 	return ivr.Run(ctx, ivr.Options{
 		ConfigPath: *configPath,
