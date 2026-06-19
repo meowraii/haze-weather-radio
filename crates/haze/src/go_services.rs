@@ -1226,7 +1226,13 @@ fn extract_embedded_support_libraries(bin_dir: &Path) -> Result<()> {
 fn embedded_support_library_names() -> &'static [&'static str] {
     #[cfg(windows)]
     {
-        &["libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll"]
+        &[
+            "libopus-0.dll",
+            "libopusfile-0.dll",
+            "libogg-0.dll",
+            "sherpa-onnx-c-api.dll",
+            "sherpa-onnx-cxx-api.dll",
+        ]
     }
     #[cfg(not(windows))]
     {

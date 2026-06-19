@@ -427,6 +427,8 @@ try {
         "libogg-0.dll",
         "libunwind.dll",
         "opus.dll",
+        "sherpa-onnx-c-api.dll",
+        "sherpa-onnx-cxx-api.dll",
         "swresample-6.dll",
         "swscale-9.dll"
     )
