@@ -1,24 +1,66 @@
-.github/*
-!.github/workflows/
-!.github/workflows/**
-.vscode/
-target/
+# Haze generated runtime and release outputs
 dist/
+runtime/
+target/
+services/go/target/
+
+# Local build artifacts
 services/go/*.exe
-data/*
-data/alertsRegistry.json
-audio/_uploads
-audio/_previews
-audio/static
-audio/alerts/
-runtime/*
-voices/*
-managed/voices/piper/
-bundle/managed/voices/piper/**/*.onnx
-managed/venvs/
-logs/*
-twc.yaml
+services/go/*.dll
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Local secrets and operator-only overrides
 .env
-managed/configs/webhooks.xml
-managed/configs/feeds.xml
-managed/configs/cwxr-feeds.xml
+.env.*
+!.env.example
+twc.yaml
+*.local.yaml
+*.local.yml
+*.local.json
+
+# Generated logs, temp files, and process state
+*.log
+*.tmp
+*.temp
+*.bak
+*.pid
+*.pidfile
+
+# Downloaded/generated model binaries. Keep small metadata and curated prompts tracked.
+bundle/managed/voices/**/*.onnx
+bundle/managed/voices/**/*.onnx.data
+bundle/managed/voices/**/*.bin
+bundle/managed/voices/**/*.pt
+bundle/managed/voices/**/*.pth
+bundle/managed/voices/**/*.safetensors
+bundle/managed/voices/**/*.gguf
+bundle/managed/voices/**/*.tar
+bundle/managed/voices/**/*.tar.gz
+bundle/managed/voices/**/*.tar.bz2
+bundle/managed/voices/**/*.zip
+
+# Python scratch from helper scripts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# JavaScript scratch if frontend tooling is used locally
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
