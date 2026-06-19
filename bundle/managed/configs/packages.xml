@@ -2,7 +2,7 @@
 <Packages version="1">
   <defaults>
     <enabled>true</enabled>
-    <reader_id>00</reader_id>
+    <reader_id>000</reader_id>
   </defaults>
 
   <package id="date_time" enabled="true">
@@ -10,7 +10,7 @@
   </package>
 
   <package id="station_id" enabled="true">
-    <reader_id>00</reader_id>
+    <reader_id>000</reader_id>
   </package>
 
   <package id="current_conditions" enabled="true" />
@@ -20,7 +20,7 @@
   </package>
 
   <package id="air_quality" enabled="true">
-    <reader_id>00</reader_id>
+    <reader_id>000</reader_id>
   </package>
 
   <package id="climate_summary" enabled="true">
@@ -28,7 +28,7 @@
   </package>
 
   <package id="thunderstorm_outlook" enabled="true">
-    <reader_id>00</reader_id>
+    <reader_id>000</reader_id>
   </package>
 
   <package id="metnotes" enabled="true" />

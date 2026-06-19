@@ -155,7 +155,7 @@ copy_bundle_dir() {
       local rel="${file#"$target"/}"
       mkdir -p "$(dirname -- "$preserve_dir/$rel")"
       cp -p -- "$file" "$preserve_dir/$rel"
-    done < <(find "$target" -type f -name '*.onnx' -print0)
+    done < <(find "$target" \( -type f -name '*.onnx' -o -path "$target/voices/kokoro/*" -type f \) -print0)
   fi
   rm -rf "$target"
   cp -a "$source" "$target"

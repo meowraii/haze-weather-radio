@@ -130,7 +130,7 @@ services:
           - "01119" # Halifax
           - "02024" # St. John's
       default_language: "en-CA"
-      default_reader_id: ""
+      default_reader_id: "000"
       default_packages: ["current_conditions", "forecast"]
       broadcast_packages: ["alerts", "current_conditions", "air_quality", "forecast", "geophysical_alert"]
       max_call_seconds: 660

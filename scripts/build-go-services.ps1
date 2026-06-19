@@ -59,11 +59,15 @@ function Copy-BundleDirectory {
     }
     $PreserveDir = $null
     if ($Name -eq "managed" -and (Test-Path -LiteralPath $Target -PathType Container)) {
-        $OnnxFiles = @(Get-ChildItem -LiteralPath $Target -Filter "*.onnx" -Recurse -File -ErrorAction SilentlyContinue)
-        if ($OnnxFiles.Count -gt 0) {
+        $PreserveFiles = @(Get-ChildItem -LiteralPath $Target -Filter "*.onnx" -Recurse -File -ErrorAction SilentlyContinue)
+        $KokoroTarget = Join-Path $Target "voices/kokoro"
+        if (Test-Path -LiteralPath $KokoroTarget -PathType Container) {
+            $PreserveFiles += @(Get-ChildItem -LiteralPath $KokoroTarget -Recurse -File -ErrorAction SilentlyContinue)
+        }
+        if ($PreserveFiles.Count -gt 0) {
             $PreserveDir = Join-Path ([System.IO.Path]::GetTempPath()) ("haze-preserve-onnx-" + [System.Guid]::NewGuid().ToString("N"))
             $TargetFull = [System.IO.Path]::GetFullPath($Target).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-            foreach ($File in $OnnxFiles) {
+            foreach ($File in $PreserveFiles) {
                 $Relative = $File.FullName.Substring($TargetFull.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
                 $Backup = Join-Path $PreserveDir $Relative
                 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Backup) | Out-Null
@@ -77,7 +81,7 @@ function Copy-BundleDirectory {
     Copy-Item -LiteralPath $Source -Destination $Target -Recurse -Force
     if ($PreserveDir -and (Test-Path -LiteralPath $PreserveDir -PathType Container)) {
         $PreserveFull = [System.IO.Path]::GetFullPath($PreserveDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-        Get-ChildItem -LiteralPath $PreserveDir -Filter "*.onnx" -Recurse -File | ForEach-Object {
+        Get-ChildItem -LiteralPath $PreserveDir -Recurse -File | ForEach-Object {
             $Relative = $_.FullName.Substring($PreserveFull.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
             $Restored = Join-Path $Target $Relative
             if (-not (Test-Path -LiteralPath $Restored)) {
