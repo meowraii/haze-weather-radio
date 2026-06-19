@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ var requiredMenus = []string{
 	"entry",
 	"language_select",
 	"location_code",
+	"location_number",
 	"location_menu",
 	"weather_product",
 	"broadcast_menu",
@@ -23,8 +25,9 @@ var requiredMenus = []string{
 }
 
 var requiredMenuLines = map[string][]string{
-	"entry":             {"main"},
+	"entry":             {"main", "main_single_language"},
 	"location_code":     {"main"},
+	"location_number":   {"main", "search_unavailable"},
 	"location_menu":     {"main"},
 	"weather_product":   {"unavailable"},
 	"broadcast_menu":    {"main"},
@@ -92,6 +95,12 @@ type PromptConfig struct {
 	Menus    map[string]promptMenu
 }
 
+type staticPromptLine struct {
+	MenuID  string
+	LineKey string
+	Values  map[string]string
+}
+
 func loadPromptConfig(path string) (PromptConfig, error) {
 	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
@@ -157,6 +166,19 @@ func normalizePromptConfig(parsed promptConfigXML) (PromptConfig, error) {
 			}
 		}
 	}
+	for menuID, menu := range cfg.Menus {
+		for _, option := range menu.Options {
+			if option.Action != "menu" {
+				continue
+			}
+			if strings.TrimSpace(option.Next) == "" {
+				return PromptConfig{}, fmt.Errorf("IVR XML menu %q option %q has menu action without next menu", menuID, option.Digit)
+			}
+			if _, ok := cfg.Menus[option.Next]; !ok {
+				return PromptConfig{}, fmt.Errorf("IVR XML menu %q option %q references missing menu %q", menuID, option.Digit, option.Next)
+			}
+		}
+	}
 	return cfg, nil
 }
 
@@ -166,18 +188,52 @@ func defaultPromptConfig() PromptConfig {
 			TTSProfile: TTSProfile{Provider: "fast", Language: "en-CA", VolumeRaw: "100", CacheTTLRaw: "24h"},
 			Lines: []promptLine{
 				{Key: "one_moment", Text: "One moment."},
-				{Key: "enter_code", Text: "Enter your weather code, followed by pound."},
+				{Key: "enter_code", Text: "Enter your province, or enter a former Hello Weather location code."},
 				{Key: "no_entry", Text: "No entry was received. Goodbye."},
 				{Key: "goodbye", Text: "Goodbye."},
 			},
 		},
 		Menus: []promptMenu{
-			{ID: "entry", Lines: []promptLine{{Key: "main", Text: "This is the Canada TeleMET weather service. 1 For service in English, 2 for French, 3 for Spanish, 4 to listen to a Canada RadioMET broadcast. 5 for the NOAA Geophysical Alert Message, or 0 to yell at an operator."}}},
+			{ID: "entry", Lines: []promptLine{
+				{Key: "main", Text: "This is the {telephone_service_name}. {language_options}, or press star for your NOAA Geophysical Alert Message."},
+				{Key: "main_single_language", Text: "Enter your province, or enter a former Hello Weather location code."},
+			}, Options: []menuOption{
+				{Digit: "1", Action: "language", Language: "en-CA", Next: "location_code"},
+				{Digit: "2", Action: "language", Language: "fr-CA", Next: "location_code"},
+				{Digit: "3", Action: "language", Language: "es", Next: "location_code"},
+				{Digit: "0", Action: "product", Packages: "geophysical_alert"},
+				{Digit: "*", Action: "product", Packages: "geophysical_alert"},
+			}},
 			{ID: "language_select", Lines: []promptLine{{Key: "main", Text: "1 for English. 2 for French. 3 for Spanish."}}},
-			{ID: "location_code", Lines: []promptLine{{Key: "main", Text: "Enter your weather code, followed by pound."}}},
-			{ID: "location_menu", Lines: []promptLine{{Key: "main", Text: "You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indicies, or 4 to listen to a corresponding, 10 minute Canada RadioMET broadcast."}}},
+			{ID: "location_code", Lines: []promptLine{{Key: "main", Text: "Enter your province, or enter a former Hello Weather location code."}}},
+			{ID: "location_number", Lines: []promptLine{
+				{Key: "main", Text: "Enter your location number. Press star to search for a location."},
+				{Key: "search_unavailable", Text: "Location search is not available yet."},
+			}},
+			{ID: "location_menu", Lines: []promptLine{
+				{Key: "main", Text: "You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for the weather discussion, 7 for specialty products, or 0 to listen to a corresponding, 10 minute {radio_service_name} broadcast."},
+				{Key: "main_no_broadcast", Text: "You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for the weather discussion, or 7 for specialty products."},
+			}, Options: []menuOption{
+				{Digit: "1", Action: "product", Packages: "current_conditions"},
+				{Digit: "2", Action: "product", Packages: "forecast"},
+				{Digit: "3", Action: "product", Packages: "air_quality"},
+				{Digit: "4", Action: "product", Packages: "climate_summary"},
+				{Digit: "5", Action: "product", Packages: "thunderstorm_outlook"},
+				{Digit: "6", Action: "product", Packages: "eccc_discussion"},
+				{Digit: "7", Action: "menu", Next: "specialty_menu"},
+				{Digit: "0", Action: "broadcast", Packages: "alerts,current_conditions,air_quality,forecast,geophysical_alert", Next: "broadcast_menu"},
+			}},
+			{ID: "specialty_menu", Lines: []promptLine{
+				{Key: "main", Text: "Specialty products. 1 for meteorological notes, 2 for river conditions, 3 for recent precipitation analysis, 4 for coastal flooding risk, or 5 for hurricane track information. Press pound to return to the previous menu."},
+			}, Options: []menuOption{
+				{Digit: "1", Action: "product", Packages: "metnotes"},
+				{Digit: "2", Action: "product", Packages: "hydrometric"},
+				{Digit: "3", Action: "product", Packages: "precipitation_analysis"},
+				{Digit: "4", Action: "product", Packages: "coastal_flood"},
+				{Digit: "5", Action: "product", Packages: "hurricane_tracks"},
+			}},
 			{ID: "weather_product", Lines: []promptLine{{Key: "unavailable", Text: "Weather is unavailable for that code."}}},
-			{ID: "broadcast_menu", Lines: []promptLine{{Key: "main", Text: "The Canada RadioMET broadcast is not available by telephone yet."}}},
+			{ID: "broadcast_menu", Lines: []promptLine{{Key: "main", Text: "{radio_service_name} broadcast. Press pound to return to the previous menu."}}},
 			{ID: "geophysical_alert", Lines: []promptLine{{Key: "main", Text: "NOAA Geophysical Alert Message."}}},
 			{ID: "operator", Lines: []promptLine{{Key: "main", Text: "Operator transfer is not configured."}}},
 			{ID: "error", Lines: []promptLine{{Key: "invalid_code", Text: "No match. Try again."}, {Key: "timeout", Text: "No entry. Goodbye."}}},
@@ -218,19 +274,27 @@ func (cfg PromptConfig) Menu(id string) (promptMenu, bool) {
 }
 
 func (cfg PromptConfig) MenuLine(menuID string, key string, values map[string]string) string {
-	menu, ok := cfg.Menu(menuID)
-	if ok {
-		key = strings.ToLower(strings.TrimSpace(key))
-		for _, line := range menu.Lines {
-			if line.Key == key && line.Text != "" {
-				return renderPromptText(line.Text, values)
-			}
-		}
+	if text, ok := cfg.Line(menuID, key); ok {
+		return renderPromptText(text, values)
 	}
 	if text := cfg.Lines[strings.ToLower(strings.TrimSpace(key))]; text != "" {
 		return renderPromptText(text, values)
 	}
 	return ""
+}
+
+func (cfg PromptConfig) Line(menuID string, key string) (string, bool) {
+	menu, ok := cfg.Menu(menuID)
+	if !ok {
+		return "", false
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	for _, line := range menu.Lines {
+		if line.Key == key && line.Text != "" {
+			return line.Text, true
+		}
+	}
+	return "", false
 }
 
 func (cfg PromptConfig) Option(menuID string, digit string) (menuOption, bool) {
@@ -254,12 +318,90 @@ func (cfg PromptConfig) TTSForMenu(menuID string) TTSProfile {
 	return cfg.Defaults
 }
 
+func (cfg PromptConfig) StaticPromptLines() []staticPromptLine {
+	seen := map[string]struct{}{}
+	out := []staticPromptLine{}
+	add := func(menuID string, lineKey string, text string) {
+		menuID = strings.ToLower(strings.TrimSpace(menuID))
+		lineKey = strings.ToLower(strings.TrimSpace(lineKey))
+		if lineKey == "" || strings.TrimSpace(text) == "" {
+			return
+		}
+		if promptLineGeneratesOnDemand(text) {
+			return
+		}
+		key := menuID + "/" + lineKey
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, staticPromptLine{
+			MenuID:  menuID,
+			LineKey: lineKey,
+			Values:  staticPromptValues(text),
+		})
+	}
+	defaultKeys := make([]string, 0, len(cfg.Lines))
+	for key := range cfg.Lines {
+		defaultKeys = append(defaultKeys, key)
+	}
+	sort.Strings(defaultKeys)
+	for _, key := range defaultKeys {
+		add("", key, cfg.Lines[key])
+	}
+	menuIDs := make([]string, 0, len(cfg.Menus))
+	for menuID := range cfg.Menus {
+		menuIDs = append(menuIDs, menuID)
+	}
+	sort.Strings(menuIDs)
+	for _, menuID := range menuIDs {
+		menu := cfg.Menus[menuID]
+		for _, line := range menu.Lines {
+			add(menuID, line.Key, line.Text)
+		}
+	}
+	return out
+}
+
+func promptLineGeneratesOnDemand(text string) bool {
+	return strings.Contains(text, "{location}") || strings.Contains(text, "{province}")
+}
+
 func renderPromptText(text string, values map[string]string) string {
 	text = cleanPromptText(text)
 	for key, value := range values {
 		text = strings.ReplaceAll(text, "{"+key+"}", strings.TrimSpace(value))
 	}
 	return strings.Join(strings.Fields(text), " ")
+}
+
+func staticPromptValues(text string) map[string]string {
+	values := map[string]string{}
+	if strings.Contains(text, "{location}") {
+		values["location"] = "your selected location"
+	}
+	if strings.Contains(text, "{province}") {
+		values["province"] = "your province"
+	}
+	if strings.Contains(text, "{code}") {
+		values["code"] = "your weather code"
+	}
+	if strings.Contains(text, "{feed_id}") {
+		values["feed_id"] = "your feed"
+	}
+	if strings.Contains(text, "{lang}") {
+		values["lang"] = "your language"
+	}
+	if strings.Contains(text, "{language_options}") {
+		values["language_options"] = "1 for service in English"
+	}
+	if strings.Contains(text, "{telephone_service_name}") {
+		values["telephone_service_name"] = "Haze Weather Telephone"
+	}
+	if strings.Contains(text, "{radio_service_name}") {
+		values["radio_service_name"] = "Haze Weather Radio"
+	}
+	return values
 }
 
 func cleanPromptText(text string) string {

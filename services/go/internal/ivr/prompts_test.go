@@ -65,6 +65,16 @@ func TestLoadPromptConfigRejectsMissingRequiredLine(t *testing.T) {
 	}
 }
 
+func TestStaticPromptLinesExcludeDynamicPrompts(t *testing.T) {
+	cfg := defaultPromptConfig()
+	lines := cfg.StaticPromptLines()
+	for _, line := range lines {
+		if line.MenuID == "location_menu" && line.LineKey == "main" {
+			t.Fatal("location menu should be generated on demand, not at startup")
+		}
+	}
+}
+
 func validPromptXML() string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <ivr>
@@ -73,6 +83,7 @@ func validPromptXML() string {
   </defaults>
   <menu id="entry">
     <line key="main">Entry.</line>
+    <line key="main_single_language">Entry single language.</line>
     <option digit="1" action="language" language="en-CA" next="location_code"/>
   </menu>
   <menu id="language_select">
@@ -80,6 +91,10 @@ func validPromptXML() string {
   </menu>
   <menu id="location_code">
     <line key="main">Enter code.</line>
+  </menu>
+  <menu id="location_number">
+    <line key="main">Enter location number for {province}.</line>
+    <line key="search_unavailable">Search unavailable.</line>
   </menu>
   <menu id="location_menu">
     <line key="main">You have reached {location}.</line>

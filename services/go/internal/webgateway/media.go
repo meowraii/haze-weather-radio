@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -43,8 +44,9 @@ const (
 )
 
 type WebRTCAnswerOptions struct {
-	DisableG722 bool
-	RequireOpus bool
+	DisableG722    bool
+	RequireOpus    bool
+	PreferredCodec string
 }
 
 type opusFrameEncoder interface {
@@ -67,6 +69,12 @@ type MediaHub struct {
 	last        map[string]PCMChunk
 	lastAt      map[string]time.Time
 	seenLogged  map[string]bool
+	guard       map[string]pcmGuardState
+}
+
+type pcmGuardState struct {
+	consecutiveMuted int
+	lastLogAt        time.Time
 }
 
 func NewMediaHub(addr string) *MediaHub {
@@ -77,6 +85,7 @@ func NewMediaHub(addr string) *MediaHub {
 		last:        map[string]PCMChunk{},
 		lastAt:      map[string]time.Time{},
 		seenLogged:  map[string]bool{},
+		guard:       map[string]pcmGuardState{},
 	}
 	if hub.addr != "" {
 		go hub.run(context.Background())
@@ -221,14 +230,11 @@ func newWebRTCPeerConnection(configuration webrtc.Configuration) (*webrtc.PeerCo
 
 func preferredWebRTCAudioCodec(offerSDP string, options WebRTCAnswerOptions) (webRTCAudioCodec, error) {
 	upper := strings.ToUpper(offerSDP)
+	if preferred, ok := parseWebRTCAudioCodec(options.PreferredCodec); ok {
+		return requiredWebRTCAudioCodec(upper, preferred)
+	}
 	if options.RequireOpus {
-		if !strings.Contains(upper, "OPUS/48000") {
-			return webRTCAudioOpus, errors.New("receiver requires Opus but the offer did not include Opus")
-		}
-		if !opusBackendAvailable() {
-			return webRTCAudioOpus, errors.New("receiver requires Opus but this gateway was built without an Opus encoder")
-		}
-		return webRTCAudioOpus, nil
+		return requiredWebRTCAudioCodec(upper, webRTCAudioOpus)
 	}
 	if opusBackendAvailable() && strings.Contains(upper, "OPUS/48000") {
 		return webRTCAudioOpus, nil
@@ -237,6 +243,46 @@ func preferredWebRTCAudioCodec(offerSDP string, options WebRTCAnswerOptions) (we
 		return webRTCAudioG722, nil
 	}
 	return webRTCAudioPCMU, nil
+}
+
+func parseWebRTCAudioCodec(value string) (webRTCAudioCodec, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return webRTCAudioOpus, false
+	case "opus":
+		return webRTCAudioOpus, true
+	case "g722", "g.722":
+		return webRTCAudioG722, true
+	case "pcmu", "mulaw", "ulaw", "u-law":
+		return webRTCAudioPCMU, true
+	default:
+		return webRTCAudioOpus, false
+	}
+}
+
+func requiredWebRTCAudioCodec(upperOfferSDP string, codec webRTCAudioCodec) (webRTCAudioCodec, error) {
+	switch codec {
+	case webRTCAudioOpus:
+		if !strings.Contains(upperOfferSDP, "OPUS/48000") {
+			return webRTCAudioOpus, errors.New("receiver requires Opus but the offer did not include Opus")
+		}
+		if !opusBackendAvailable() {
+			return webRTCAudioOpus, errors.New("receiver requires Opus but this gateway was built without an Opus encoder")
+		}
+		return webRTCAudioOpus, nil
+	case webRTCAudioG722:
+		if !strings.Contains(upperOfferSDP, "G722/8000") && !strings.Contains(upperOfferSDP, " G722") {
+			return webRTCAudioG722, errors.New("receiver requires G.722 but the offer did not include G.722")
+		}
+		return webRTCAudioG722, nil
+	case webRTCAudioPCMU:
+		if !strings.Contains(upperOfferSDP, "PCMU/8000") {
+			return webRTCAudioPCMU, errors.New("receiver requires PCMU but the offer did not include PCMU")
+		}
+		return webRTCAudioPCMU, nil
+	default:
+		return webRTCAudioOpus, errors.New("unsupported requested WebRTC audio codec")
+	}
 }
 
 func offeredAudioPayloadType(offerSDP string, codec webRTCAudioCodec) uint8 {
@@ -380,16 +426,29 @@ func decodePCMBridgeEvent(raw []byte) (PCMChunk, bool) {
 	if duration <= 0 {
 		duration = webrtcFrameDuration
 	}
-	return PCMChunk{
+	chunk := PCMChunk{
 		FeedID:     feedID,
 		SampleRate: sampleRate,
 		Channels:   channels,
 		Duration:   duration,
 		Data:       pcm,
-	}, true
+	}
+	chunk, ok, _ := validatePCMChunk(chunk)
+	return chunk, ok
 }
 
 func (h *MediaHub) publish(chunk PCMChunk) {
+	chunk, ok, reason := validatePCMChunk(chunk)
+	if !ok {
+		if reason != "" {
+			log.Printf("media bridge rejected PCM for feed %s: %s", chunk.FeedID, reason)
+		}
+		return
+	}
+	staticLike := pcmLooksLikeStatic(chunk.Data)
+	if staticLike {
+		chunk.Data = silencePCMBytes(len(chunk.Data))
+	}
 	now := time.Now()
 	h.mu.Lock()
 	if h.last == nil {
@@ -401,6 +460,21 @@ func (h *MediaHub) publish(chunk PCMChunk) {
 	if h.seenLogged == nil {
 		h.seenLogged = map[string]bool{}
 	}
+	if h.guard == nil {
+		h.guard = map[string]pcmGuardState{}
+	}
+	guard := h.guard[chunk.FeedID]
+	if staticLike {
+		guard.consecutiveMuted++
+		if guard.consecutiveMuted == 1 || now.Sub(guard.lastLogAt) >= 30*time.Second {
+			log.Printf("media bridge muted suspicious receiver PCM for feed %s (%d bytes, %d consecutive chunk(s))", chunk.FeedID, len(chunk.Data), guard.consecutiveMuted)
+			guard.lastLogAt = now
+		}
+	} else if guard.consecutiveMuted > 0 {
+		log.Printf("media bridge receiver PCM recovered for feed %s after %d muted chunk(s)", chunk.FeedID, guard.consecutiveMuted)
+		guard.consecutiveMuted = 0
+	}
+	h.guard[chunk.FeedID] = guard
 	h.last[chunk.FeedID] = chunk
 	h.lastAt[chunk.FeedID] = now
 	if !h.seenLogged[chunk.FeedID] {
@@ -422,6 +496,97 @@ func (h *MediaHub) publish(chunk PCMChunk) {
 		}
 	}
 	h.mu.Unlock()
+}
+
+func validatePCMChunk(chunk PCMChunk) (PCMChunk, bool, string) {
+	chunk.FeedID = strings.TrimSpace(chunk.FeedID)
+	if chunk.FeedID == "" {
+		return chunk, false, "missing feed_id"
+	}
+	if len(chunk.Data) == 0 {
+		return chunk, false, "empty PCM payload"
+	}
+	if chunk.SampleRate <= 0 {
+		chunk.SampleRate = opusSampleRate
+	}
+	if chunk.SampleRate < 8000 || chunk.SampleRate > 96000 {
+		return chunk, false, fmt.Sprintf("unsupported sample rate %d", chunk.SampleRate)
+	}
+	if chunk.Channels <= 0 {
+		chunk.Channels = 1
+	}
+	if chunk.Channels > 8 {
+		return chunk, false, fmt.Sprintf("unsupported channel count %d", chunk.Channels)
+	}
+	bytesPerFrame := chunk.Channels * 2
+	if len(chunk.Data) < bytesPerFrame {
+		return chunk, false, "PCM payload is shorter than one frame"
+	}
+	if remainder := len(chunk.Data) % bytesPerFrame; remainder != 0 {
+		chunk.Data = chunk.Data[:len(chunk.Data)-remainder]
+	}
+	if len(chunk.Data) == 0 {
+		return chunk, false, "PCM payload has no aligned frames"
+	}
+	maxBytes := chunk.SampleRate * chunk.Channels * 2 * 2
+	if len(chunk.Data) > maxBytes {
+		return chunk, false, fmt.Sprintf("PCM payload is too large (%d bytes)", len(chunk.Data))
+	}
+	if chunk.Duration <= 0 {
+		chunk.Duration = webrtcFrameDuration
+	}
+	if chunk.Duration > 2*time.Second {
+		return chunk, false, fmt.Sprintf("PCM duration is too large (%s)", chunk.Duration)
+	}
+	return chunk, true, ""
+}
+
+func pcmLooksLikeStatic(data []byte) bool {
+	sampleCount := len(data) / 2
+	if sampleCount < 160 {
+		return false
+	}
+	var sumSquares float64
+	var diffTotal int64
+	var peakCount int
+	var zeroCrossings int
+	previous := int16(binary.LittleEndian.Uint16(data[0:2]))
+	for offset := 0; offset+1 < len(data); offset += 2 {
+		sample := int16(binary.LittleEndian.Uint16(data[offset : offset+2]))
+		absSample := int(sample)
+		if absSample < 0 {
+			absSample = -absSample
+		}
+		if absSample >= 32000 {
+			peakCount++
+		}
+		sumSquares += float64(sample) * float64(sample)
+		if offset > 0 {
+			if (sample < 0 && previous > 0) || (sample > 0 && previous < 0) {
+				zeroCrossings++
+			}
+			diff := int(sample) - int(previous)
+			if diff < 0 {
+				diff = -diff
+			}
+			diffTotal += int64(diff)
+		}
+		previous = sample
+	}
+	rms := math.Sqrt(sumSquares/float64(sampleCount)) / 32768.0
+	peakRatio := float64(peakCount) / float64(sampleCount)
+	zeroCrossingRatio := float64(zeroCrossings) / float64(sampleCount-1)
+	meanDiff := float64(diffTotal) / float64(sampleCount-1) / 65536.0
+	return peakRatio > 0.65 ||
+		(rms > 0.45 && zeroCrossingRatio > 0.32 && meanDiff > 0.35) ||
+		(rms > 0.80 && peakRatio > 0.10 && meanDiff > 0.25)
+}
+
+func silencePCMBytes(length int) []byte {
+	if length <= 0 {
+		return nil
+	}
+	return make([]byte, length)
 }
 
 func (h *MediaHub) HasRecentPCM(feedID string, maxAge time.Duration) bool {

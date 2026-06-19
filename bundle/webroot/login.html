@@ -7,13 +7,17 @@
     <title>Haze Weather Radio Sign In</title>
     <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/assets/styles.css">
+    <link rel="stylesheet" href="/assets/layout.css">
+    <style>.brand-home-link{display:inline-flex;align-items:center;color:inherit;text-decoration:none}</style>
 </head>
 <body class="login-body">
     <main class="login-page">
         <section class="login-panel" aria-labelledby="loginTitle">
             <header class="login-header">
-                <img class="login-mark brand-mark-light" src="/assets/haze-alerting.svg" alt="Haze Alerting Platform">
-                <img class="login-mark brand-mark-dark" src="/assets/haze-alerting-dark.svg" alt="" aria-hidden="true">
+                <a class="brand-home-link" href="/" aria-label="Open public page">
+                    <img class="login-mark brand-mark-light" src="/assets/haze-alerting.svg" alt="Haze Alerting Platform">
+                    <img class="login-mark brand-mark-dark" src="/assets/haze-alerting-dark.svg" alt="" aria-hidden="true">
+                </a>
                 <div class="login-title-block">
                     <h1 id="loginTitle">Haze Weather Radio</h1>
                     <p id="loginSubtitle">Haze Weather Radio</p>

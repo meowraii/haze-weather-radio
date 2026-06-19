@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"os"
+
+	"github.com/gotranspile/g722"
 )
 
 type wavPCM struct {
@@ -70,16 +72,86 @@ func writePCMUFromWAV(wavPath string, pcmuPath string, targetRate int) error {
 	if err != nil {
 		return err
 	}
+	return writePCMUFromPCM(wav, pcmuPath, targetRate)
+}
+
+func writeG722FromWAV(wavPath string, g722Path string) error {
+	wav, err := readWAVPCM16(wavPath)
+	if err != nil {
+		return err
+	}
+	return writeG722FromPCM(wav, g722Path)
+}
+
+func writeTelephoneAudioFromWAV(wavPath string, pcmuPath string, g722Path string, targetRate int) error {
+	wav, err := readWAVPCM16(wavPath)
+	if err != nil {
+		return err
+	}
+	if err := writePCMUFromPCM(wav, pcmuPath, targetRate); err != nil {
+		return err
+	}
+	return writeG722FromPCM(wav, g722Path)
+}
+
+func writeTelephoneAudioFromPCMFile(pcmPath string, sampleRate int, channels int, wavPath string, pcmuPath string, g722Path string, targetRate int) error {
+	raw, err := os.ReadFile(pcmPath)
+	if err != nil {
+		return err
+	}
+	pcm, err := pcm16LE(raw, sampleRate, channels)
+	if err != nil {
+		return err
+	}
+	mono := monoSamples(pcm.Samples, pcm.Channels)
+	monoPCM := wavPCM{SampleRate: pcm.SampleRate, Channels: 1, Samples: mono}
+	if err := writeWAV(wavPath, monoPCM.SampleRate, monoPCM.Samples); err != nil {
+		return err
+	}
+	if err := writePCMUFromPCM(monoPCM, pcmuPath, targetRate); err != nil {
+		return err
+	}
+	return writeG722FromPCM(monoPCM, g722Path)
+}
+
+func pcm16LE(raw []byte, sampleRate int, channels int) (wavPCM, error) {
+	if sampleRate <= 0 {
+		return wavPCM{}, fmt.Errorf("pcm sample rate is required")
+	}
+	if channels <= 0 {
+		channels = 1
+	}
+	if len(raw) == 0 || len(raw)%2 != 0 {
+		return wavPCM{}, fmt.Errorf("pcm data must be non-empty 16-bit little-endian samples")
+	}
+	samples := make([]int16, len(raw)/2)
+	for index := range samples {
+		samples[index] = int16(binary.LittleEndian.Uint16(raw[index*2 : index*2+2]))
+	}
+	return wavPCM{SampleRate: sampleRate, Channels: channels, Samples: samples}, nil
+}
+
+func writePCMUFromPCM(pcm wavPCM, pcmuPath string, targetRate int) error {
 	if targetRate <= 0 {
 		targetRate = 8000
 	}
-	mono := monoSamples(wav.Samples, wav.Channels)
-	resampled := resampleLinear(mono, wav.SampleRate, targetRate)
+	mono := monoSamples(pcm.Samples, pcm.Channels)
+	resampled := resampleLinear(mono, pcm.SampleRate, targetRate)
 	out := make([]byte, len(resampled))
 	for index, sample := range resampled {
 		out[index] = linearToULaw(sample)
 	}
 	return os.WriteFile(pcmuPath, out, 0o644)
+}
+
+func writeG722FromPCM(pcm wavPCM, g722Path string) error {
+	mono := monoSamples(pcm.Samples, pcm.Channels)
+	resampled := resampleLinear(mono, pcm.SampleRate, sipG722SampleRate)
+	out := encodeG722Samples(g722.NewEncoder(g722.Rate64000, 0), resampled)
+	if len(out) == 0 {
+		out = g722SilenceFrame()
+	}
+	return os.WriteFile(g722Path, out, 0o644)
 }
 
 func monoSamples(samples []int16, channels int) []int16 {
@@ -143,19 +215,34 @@ func linearToULaw(sample int16) byte {
 	const bias = 0x84
 	const clip = 32635
 	pcm := int(sample)
-	mask := 0xFF
+	sign := 0
 	if pcm < 0 {
+		sign = 0x80
 		pcm = -pcm
-		mask = 0x7F
 	}
 	if pcm > clip {
 		pcm = clip
 	}
 	pcm += bias
-	segment := 7
-	for expMask := 0x4000; (pcm&expMask) == 0 && segment > 0; expMask >>= 1 {
-		segment--
+	exponent := 7
+	for mask := 0x4000; exponent > 0 && pcm&mask == 0; exponent-- {
+		mask >>= 1
 	}
-	mantissa := (pcm >> (segment + 3)) & 0x0F
-	return byte(^((segment << 4) | mantissa) & mask)
+	mantissa := (pcm >> (exponent + 3)) & 0x0F
+	return ^byte(sign | (exponent << 4) | mantissa)
+}
+
+func encodeG722Samples(encoder *g722.Encoder, samples []int16) []byte {
+	if len(samples)%2 != 0 {
+		padded := make([]int16, len(samples)+1)
+		copy(padded, samples)
+		samples = padded
+	}
+	out := make([]byte, len(samples))
+	n := encoder.Encode(out, samples)
+	return out[:n]
+}
+
+func g722SilenceFrame() []byte {
+	return encodeG722Samples(g722.NewEncoder(g722.Rate64000, 0), make([]int16, sipG722FrameSamples))
 }

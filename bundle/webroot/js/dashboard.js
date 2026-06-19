@@ -3,12 +3,9 @@ import { createControlClient, panelClient } from './lib/ws-client.js';
 const heroTitle = document.getElementById('heroTitle');
 const heroSubtitle = document.getElementById('heroSubtitle');
 const summaryCards = document.getElementById('summaryCards');
+const adminBuildInfo = document.getElementById('adminBuildInfo');
 const feedsGrid = document.getElementById('feedsGrid');
-const eventsList = document.getElementById('eventsList');
-const logsView = document.getElementById('logsView');
-const datapoolView = document.getElementById('datapoolView');
-const configView = document.getElementById('configView');
-const logSourceSelect = document.getElementById('logSourceSelect');
+const homeStatusBanner = document.getElementById('homeStatusBanner');
 const rwtButton = document.getElementById('rwtButton');
 const tlsNotice = document.getElementById('tlsNotice');
 const tlsNoticeText = document.getElementById('tlsNoticeText');
@@ -30,8 +27,10 @@ function escapeHtml(value) {
     }[char]));
 }
 
-function setCodeBlock(element, value) {
-    element.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+function setHomeStatus(text, state = '') {
+    if (!homeStatusBanner) return;
+    homeStatusBanner.textContent = text;
+    homeStatusBanner.dataset.state = state;
 }
 
 function formatUptime(seconds) {
@@ -44,24 +43,40 @@ function formatUptime(seconds) {
 function renderSummary(summary) {
     const enabled = summary.enabled_feed_count ?? 0;
     const total = summary.feed_count ?? 0;
-    heroTitle.textContent = `${enabled} of ${total} feed${total !== 1 ? 's' : ''} online`;
-    heroSubtitle.textContent = `${summary.data_pool_key_count ?? 0} data pool keys · uptime ${formatUptime(summary.uptime_seconds)}`;
-
     const totalQueue = (summary.feeds || []).reduce((n, f) => n + (f.alert_queue_depth || 0), 0);
+    if (heroTitle) {
+        heroTitle.textContent = `${enabled} of ${total} feed${total !== 1 ? 's' : ''} online`;
+    }
+    if (heroSubtitle) {
+        heroSubtitle.textContent = `${summary.data_pool_key_count ?? 0} data pool keys · uptime ${formatUptime(summary.uptime_seconds)}`;
+    }
 
     const cards = [
-        ['Feeds online', `${enabled}/${total}`],
-        ['Alert queue', totalQueue],
-        ['Weather keys', summary.data_pool_key_count ?? 0],
+        ['Site', summary.name || 'Haze Weather Radio'],
+        ['Operator', summary.operator || 'unconfigured'],
+        ['IP Address', summary.ip_address || 'unknown'],
+        ['Hostname', summary.hostname || 'unknown'],
+        ['Feeds', `${enabled}/${total}`],
         ['Uptime', formatUptime(summary.uptime_seconds)],
     ];
 
     summaryCards.innerHTML = cards.map(([label, value]) => `
-        <article class="metric-card">
-            <p>${escapeHtml(label)}</p>
+        <div class="public-status-item">
+            <span>${escapeHtml(label)}:</span>
             <strong>${escapeHtml(value)}</strong>
-        </article>
+        </div>
     `).join('');
+    if (adminBuildInfo) {
+        adminBuildInfo.innerHTML = [
+            ['Version', summary.version || 'dev'],
+            ['Commit', summary.git_commit || 'unknown'],
+            ['System', [summary.os || 'unknown', summary.architecture || 'unknown'].join(' / ')],
+            ['Weather keys', summary.data_pool_key_count ?? 0],
+            ['Alert queue', totalQueue],
+        ].map(([label, value]) => `
+            <span><b>${escapeHtml(label)}:</b><em>${escapeHtml(value)}</em></span>
+        `).join('');
+    }
     renderTLSNotice(summary.tls || {});
 }
 
@@ -86,72 +101,105 @@ function populateWxFeedSelect(feeds) {
     if (prev && feeds.some((f) => f.id === prev)) sel.value = prev;
 }
 
+function arrayValue(value) {
+    return Array.isArray(value) ? value : [];
+}
+
+function compactList(values, fallback, limit = 3) {
+    const items = arrayValue(values).map((item) => String(item || '').trim()).filter(Boolean);
+    if (!items.length) return fallback;
+    const shown = items.slice(0, limit);
+    const rest = items.length - shown.length;
+    return rest > 0 ? `${shown.join(', ')} +${rest}` : shown.join(', ');
+}
+
+function coverageNames(feed) {
+    const regions = arrayValue(feed.coverage_regions)
+        .map((region) => region?.name || region?.id || '')
+        .filter(Boolean);
+    if (regions.length) return compactList(regions, 'No coverage regions', 3);
+    const count = Number(feed.location_count || 0);
+    return count ? `${count} locations` : 'No configured locations';
+}
+
 function renderFeeds(feeds) {
     populateWxFeedSelect(feeds);
 
     if (!feeds.length) {
-        feedsGrid.innerHTML = '<article class="feed-card empty">No feeds configured.</article>';
+        feedsGrid.innerHTML = '<article class="admin-feed-empty">No feeds configured.</article>';
+        setHomeStatus('No feeds configured.', 'warn');
         return;
     }
 
+    const enabledCount = feeds.filter((feed) => feed.enabled !== false).length;
+    const queued = feeds.reduce((total, feed) => total + Number(feed.alert_queue_depth || 0), 0);
+    setHomeStatus(`${enabledCount}/${feeds.length} enabled · ${queued} queued alert${queued === 1 ? '' : 's'}`);
+
     feedsGrid.innerHTML = feeds.map((feed) => {
         const runtime = feed.runtime || {};
-        const playlist = (feed.playlist_items || []).slice(0, 6).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
-        const outputs = (feed.outputs || []).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join('');
+        const feedId = String(feed.id || '');
+        const enabled = feed.enabled !== false;
+        const playlist = arrayValue(feed.playlist_items).slice(0, 3).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+        const outputs = arrayValue(feed.outputs).slice(0, 4).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join('');
+        const outputOverflow = arrayValue(feed.outputs).length > 4 ? `<span class="tag muted">+${arrayValue(feed.outputs).length - 4}</span>` : '';
+        const transmitter = feed.transmitter || {};
+        const siteNames = compactList(transmitter.site_names, transmitter.site_name || feed.name || feedId, 2);
+        const languages = compactList(feed.languages, 'en-CA', 3);
+        const coverage = coverageNames(feed);
         const latestAlert = runtime.last_alert_event
             ? `${runtime.last_alert_event} · ${runtime.last_alert_severity || 'n/a'}`
             : 'No queued alert activity yet';
+        const listenHref = `/listen?feed=${encodeURIComponent(feedId)}`;
 
         return `
-            <article class="feed-card">
-                <div class="feed-topline">
-                    <div>
-                        <p class="feed-id">${escapeHtml(feed.id)}</p>
-                        <h3>${escapeHtml(feed.name)}</h3>
+            <article class="admin-feed-card" data-enabled="${enabled}">
+                <div class="admin-feed-main">
+                    <div class="admin-feed-title">
+                        <div class="admin-feed-idline">
+                            <span>${escapeHtml(feedId)}</span>
+                            <span class="admin-feed-pill" data-state="${enabled ? 'on' : 'off'}">${enabled ? 'enabled' : 'disabled'}</span>
+                        </div>
+                        <h3 title="${escapeHtml(siteNames)}">${escapeHtml(siteNames)}</h3>
                     </div>
-                    <span class="queue-chip" data-active="${feed.alert_queue_depth > 0}">Queue ${escapeHtml(feed.alert_queue_depth)}</span>
+                    <div class="admin-feed-meta">
+                        <span class="tag">${escapeHtml(feed.timezone || 'Local')}</span>
+                        <span class="tag">${escapeHtml(languages)}</span>
+                        <span class="tag">${escapeHtml(coverage)}</span>
+                        ${outputs || '<span class="tag muted">No outputs</span>'}${outputOverflow}
+                    </div>
                 </div>
-                <div class="feed-meta">
-                    <span class="tag">${escapeHtml(feed.timezone)}</span>
-                    <span class="tag">${escapeHtml(feed.location_count)} locations</span>
-                    <span class="tag">${escapeHtml((feed.languages || []).join(', '))}</span>
+
+                <div class="admin-feed-detail">
+                    <dl class="admin-feed-live">
+                        <div>
+                            <dt>Now playing</dt>
+                            <dd title="${escapeHtml(runtime.now_playing || 'Idle')}">${escapeHtml(runtime.now_playing || 'Idle')}</dd>
+                        </div>
+                        <div>
+                            <dt>Latest alert</dt>
+                            <dd title="${escapeHtml(latestAlert)}">${escapeHtml(latestAlert)}</dd>
+                        </div>
+                    </dl>
+                    <div class="admin-feed-playlist">
+                        <p>Next playlist items</p>
+                        <ol>${playlist || '<li>No playlist entries generated yet.</li>'}</ol>
+                    </div>
                 </div>
-                <div class="tag-row">${outputs || '<span class="tag muted">No outputs</span>'}</div>
-                <dl class="feed-stats">
-                    <div>
-                        <dt>Now Playing</dt>
-                        <dd>${escapeHtml(runtime.now_playing || 'Idle')}</dd>
+
+                <div class="admin-feed-side">
+                    <div class="admin-feed-queue" data-active="${Number(feed.alert_queue_depth || 0) > 0}">
+                        <strong>${escapeHtml(feed.alert_queue_depth || 0)}</strong>
+                        <span>queued</span>
                     </div>
-                    <div>
-                        <dt>Latest Alert</dt>
-                        <dd>${escapeHtml(latestAlert)}</dd>
+                    <div class="admin-feed-actions">
+                        <a class="btn-action btn-link" href="#/same">Alert</a>
+                        <a class="btn-action btn-link" href="#/wx">WX</a>
+                        <a class="btn-action btn-link" href="${escapeHtml(listenHref)}">Listen</a>
                     </div>
-                </dl>
-                <div class="playlist-block">
-                    <p>Playlist Snapshot</p>
-                    <ul>${playlist || '<li>No playlist entries generated yet.</li>'}</ul>
                 </div>
             </article>
         `;
     }).join('');
-}
-
-function renderEvents(events) {
-    if (!events.length) {
-        eventsList.innerHTML = '<article class="event-item empty">No runtime events captured yet.</article>';
-        return;
-    }
-
-    eventsList.innerHTML = events.slice().reverse().map((event) => `
-        <article class="event-item">
-            <div class="event-head">
-                <span class="event-kind">${escapeHtml(event.kind)}</span>
-                <time>${escapeHtml(event.timestamp)}</time>
-            </div>
-            <p>${escapeHtml(event.message)}</p>
-            ${event.feed_id ? `<span class="event-feed">${escapeHtml(event.feed_id)}</span>` : ''}
-        </article>
-    `).join('');
 }
 
 function formatDateTime(value) {
@@ -181,7 +229,7 @@ async function confirmAuthBeforeRedirect() {
     try {
         const state = await client.request('auth_check', {}, 5000);
         if (state.authenticated) {
-            setCodeBlock(logsView, 'Live panel connection verified.');
+            setHomeStatus('Live panel connection verified.', 'ok');
             return true;
         }
     } catch {
@@ -192,7 +240,7 @@ async function confirmAuthBeforeRedirect() {
         authCloseCheckPending = false;
     }
     panelClient.close();
-    setCodeBlock(logsView, 'Panel session expired. Sign in again from the login page.');
+    setHomeStatus('Panel session expired. Sign in again from the login page.', 'err');
     return false;
 }
 
@@ -205,10 +253,6 @@ function renderDashboardState(payload) {
     const summary = payload.summary || {};
     renderSummary(summary);
     renderFeeds(summary.feeds || []);
-    renderEvents(payload.events || []);
-    setCodeBlock(logsView, (payload.logs?.lines || []).join('\n'));
-    setCodeBlock(datapoolView, payload.datapool || {});
-    setCodeBlock(configView, payload.config || {});
     updateLastConnected(payload.last_connected);
     window.dispatchEvent(new CustomEvent('haze:admin-state', { detail: payload }));
     stateWaiters.forEach((resolve) => resolve(payload));
@@ -217,15 +261,16 @@ function renderDashboardState(payload) {
 
 function connectDashboardSocket(force = false) {
     if (!lastDashboardState) {
-        heroTitle.textContent = 'Waiting for panel data';
-        heroSubtitle.textContent = 'Opening live websocket...';
+        if (heroTitle) heroTitle.textContent = 'Waiting for panel data';
+        if (heroSubtitle) heroSubtitle.textContent = 'Opening live websocket...';
         summaryCards.innerHTML = '';
-        feedsGrid.innerHTML = '<article class="feed-card empty">Waiting for feed data.</article>';
-        setCodeBlock(logsView, 'Connecting to live panel stream...');
+        if (adminBuildInfo) adminBuildInfo.innerHTML = '';
+        feedsGrid.innerHTML = '<article class="admin-feed-empty">Waiting for feed data.</article>';
+        setHomeStatus('Connecting to live panel stream...', 'pending');
     }
     panelClient.params = {
-        source: logSourceSelect.value || 'app',
-        lines: '120',
+        source: 'app',
+        lines: '0',
     };
     if (force) {
         panelClient.close();
@@ -237,7 +282,7 @@ function connectDashboardSocket(force = false) {
             if (lastDashboardState) return;
             panelClient.command('state', {}, 5000)
                 .then((payload) => renderDashboardState(payload))
-                .catch(() => setCodeBlock(logsView, 'Connected, waiting for the first panel snapshot...'));
+                .catch(() => setHomeStatus('Connected, waiting for the first panel snapshot...', 'pending'));
         }, 1200);
     }
 }
@@ -247,7 +292,7 @@ function requestFreshStateAfterRecovery() {
         .then((payload) => renderDashboardState(payload))
         .catch(() => {
             if (!lastDashboardState) {
-                setCodeBlock(logsView, 'Connected, waiting for the first panel snapshot...');
+                setHomeStatus('Connected, waiting for the first panel snapshot...', 'pending');
             }
         });
 }
@@ -299,16 +344,11 @@ export function initDashboard() {
         }
     });
 
-    logSourceSelect.addEventListener('change', () => {
-        setCodeBlock(logsView, 'Switching log source...');
-        refreshDashboard({ force: true });
-    });
-
     if (!socketEventsBound) {
         socketEventsBound = true;
         panelClient.addEventListener('open', (event) => {
             if (event.detail?.recovered) {
-                setCodeBlock(logsView, 'Live panel connection recovered. Refreshing state...');
+                setHomeStatus('Live panel connection recovered. Refreshing state...', 'ok');
                 requestFreshStateAfterRecovery();
             }
             panelClient.request('auth_check', {}, 5000)
@@ -319,10 +359,10 @@ export function initDashboard() {
         });
         panelClient.addEventListener('reconnecting', (event) => {
             const seconds = Math.max(1, Math.round((event.detail?.delay || 1000) / 1000));
-            setCodeBlock(logsView, `Live panel connection interrupted. Reconnecting in ${seconds}s...`);
+            setHomeStatus(`Live panel connection interrupted. Reconnecting in ${seconds}s...`, 'warn');
         });
         panelClient.addEventListener('recovered', () => {
-            setCodeBlock(logsView, 'Live panel websocket recovered.');
+            setHomeStatus('Live panel websocket recovered.', 'ok');
         });
         panelClient.addEventListener('admin_state', (event) => renderDashboardState(event.detail || {}));
         panelClient.addEventListener('auth_state', (event) => {
@@ -330,14 +370,14 @@ export function initDashboard() {
         });
         panelClient.addEventListener('close', (event) => {
             if (event.detail?.code === 1008) {
-                setCodeBlock(logsView, 'Panel session check required. Verifying...');
+                setHomeStatus('Panel session check required. Verifying...', 'warn');
                 confirmAuthBeforeRedirect();
             } else if (event.detail?.reconnecting) {
-                setCodeBlock(logsView, 'Live panel connection closed. Reconnecting...');
+                setHomeStatus('Live panel connection closed. Reconnecting...', 'warn');
             }
         });
         panelClient.addEventListener('error', () => {
-            setCodeBlock(logsView, 'Live panel connection interrupted. Reconnecting...');
+            setHomeStatus('Live panel connection interrupted. Reconnecting...', 'err');
         });
     }
 

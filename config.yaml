@@ -47,6 +47,10 @@ services:
       timeout: "60s"
       piper_executable: "piper"
       piper_voices_dir: "managed/voices/piper"
+      piper_mode: "auto" # auto, worker, or cli
+      piper_workers: 1
+      piper_prewarm: true
+      piper_cuda: false
     product_render:
       enabled: true
       refresh: "5m"
@@ -72,12 +76,23 @@ services:
       sip:
         enabled: true
         listen: "0.0.0.0:5060"
-        public_host: ""
+        public_host: "71.17.68.130"
         allowed_sources: []
         auth:
           enabled: false
           username: "haze"
           password_env: HAZE_IVR_SIP_PASSWORD
+        registration:
+          enabled: true
+          server: "ca.voip.ms:5060"
+          domain: "ca.voip.ms"
+          username: "529289_TeleWeather"
+          auth_username: "529289_TeleWeather"
+          password_env: HAZE_IVR_SIP_REGISTER_PASSWORD
+          from_user: "529289_TeleWeather"
+          contact_user: "529289_TeleWeather"
+          expires: 300
+          retry_seconds: 30
       rtp:
         port_min: 30000
         port_max: 39999
@@ -85,16 +100,35 @@ services:
         dir: "runtime/ivr/cache"
         ttl: "10m"
         phone_sample_rate: 8000
-        phone_codec: "pcmu"
+        phone_codec: "g722"
         max_entries: 5000
         stampede_waiters: 64
-        refresh_on_startup: false
-        prewarm_codes: ["06040"]
+        refresh_on_startup: true
+        prewarm_codes:
+          - "08074" # Vancouver
+          - "08085" # Victoria
+          - "07052" # Calgary
+          - "07050" # Edmonton
+          - "06040" # Saskatoon
+          - "06032" # Regina
+          - "05038" # Winnipeg
+          - "04143" # Toronto
+          - "04024" # Mississauga
+          - "04004" # Brampton
+          - "04077" # Hamilton
+          - "04082" # Kitchener-Waterloo
+          - "04137" # London
+          - "04118" # Ottawa, Kanata-Orleans
+          - "04052" # Ottawa, Richmond-Metcalfe
+          - "03147" # Montreal
+          - "03133" # Quebec
+          - "01119" # Halifax
+          - "02024" # St. John's
       default_language: "en-CA"
       default_reader_id: ""
       default_packages: ["current_conditions", "forecast"]
       broadcast_packages: ["alerts", "current_conditions", "air_quality", "forecast", "geophysical_alert"]
-      max_call_seconds: 240
+      max_call_seconds: 660
       digit_timeout_seconds: 8
       render_timeout: "25s"
       max_concurrent_calls: 256
@@ -153,6 +187,12 @@ playout:
     - air_quality
     - forecast
     - climate_summary
+    - thunderstorm_outlook
+    - metnotes
+    - hydrometric
+    - coastal_flood
+    - hurricane_tracks
+    - precipitation_analysis
     - eccc_discussion
     - geophysical_alert
     - user_bulletin
@@ -161,6 +201,10 @@ operator:
   on_air_name: [
     text: "Canada RadioMET",
     pronunciation: "all hazards, canada radio met"
+  ]
+  telephone_name: [
+    text: "Canada TeleWeather",
+    pronunciation: "canada tele weather"
   ]
   operator_name: [
     text: "@meowraii",

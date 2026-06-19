@@ -8,17 +8,23 @@ mod same_core;
 mod signals;
 
 use std::env;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use chrono::Local;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
-use tracing::info;
+use tracing::{info, Event, Level, Subscriber};
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
+use tracing_subscriber::fmt::time::FormatTime;
+use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
@@ -157,10 +163,11 @@ fn init_tracing(log_level: Option<&str>, runtime_dir: &Path) -> Option<WorkerGua
     let console_layer = tracing_subscriber::fmt::layer()
         .with_ansi(true)
         .with_target(false)
-        .compact();
+        .event_format(ConsoleEventFormatter);
     let file_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .with_target(true)
+        .with_timer(LocalSystemTime)
         .with_writer(file_writer);
 
     match tracing_subscriber::registry()
@@ -171,6 +178,60 @@ fn init_tracing(log_level: Option<&str>, runtime_dir: &Path) -> Option<WorkerGua
     {
         Ok(()) => Some(guard),
         Err(_) => None,
+    }
+}
+
+struct LocalSystemTime;
+
+impl FormatTime for LocalSystemTime {
+    fn format_time(&self, writer: &mut Writer<'_>) -> fmt::Result {
+        write!(writer, "{}", Local::now().format("%Y-%m-%d %-I:%M:%S %p"))
+    }
+}
+
+struct BlueLocalSystemTime;
+
+impl FormatTime for BlueLocalSystemTime {
+    fn format_time(&self, writer: &mut Writer<'_>) -> fmt::Result {
+        write!(
+            writer,
+            "\x1b[34m{}\x1b[0m",
+            Local::now().format("%Y-%m-%d %-I:%M:%S %p")
+        )
+    }
+}
+
+struct ConsoleEventFormatter;
+
+impl<S, N> FormatEvent<S, N> for ConsoleEventFormatter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        let level = event.metadata().level();
+
+        BlueLocalSystemTime.format_time(&mut writer)?;
+        write!(writer, "  {level:<5} ")?;
+
+        match *level {
+            Level::INFO => write!(writer, "\x1b[90m")?,
+            Level::ERROR => write!(writer, "\x1b[1m")?,
+            _ => {}
+        }
+
+        ctx.format_fields(writer.by_ref(), event)?;
+
+        if matches!(*level, Level::INFO | Level::ERROR) {
+            write!(writer, "\x1b[0m")?;
+        }
+
+        writeln!(writer)
     }
 }
 

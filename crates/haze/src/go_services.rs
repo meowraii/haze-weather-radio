@@ -112,6 +112,10 @@ struct TtsConfig {
     timeout: Option<String>,
     piper_executable: Option<String>,
     piper_voices_dir: Option<String>,
+    piper_mode: Option<String>,
+    piper_workers: Option<usize>,
+    piper_prewarm: Option<bool>,
+    piper_cuda: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -559,6 +563,22 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     .filter(|value| !value.trim().is_empty())
                 {
                     args.extend(["--piper-voices-dir".to_string(), voices_dir.to_string()]);
+                }
+                if let Some(mode) = tts
+                    .piper_mode
+                    .as_ref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    args.extend(["--piper-mode".to_string(), mode.to_string()]);
+                }
+                if let Some(workers) = tts.piper_workers {
+                    args.extend(["--piper-workers".to_string(), workers.to_string()]);
+                }
+                if let Some(prewarm) = tts.piper_prewarm {
+                    args.extend(["--piper-prewarm".to_string(), prewarm.to_string()]);
+                }
+                if let Some(cuda) = tts.piper_cuda {
+                    args.extend(["--piper-cuda".to_string(), cuda.to_string()]);
                 }
                 specs.push(ServiceSpec {
                     id: "aux:tts",

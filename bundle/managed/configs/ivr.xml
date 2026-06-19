@@ -7,19 +7,19 @@
             sentence_silence="0.15"
             cache_ttl="24h">
     <line key="one_moment">One moment.</line>
-    <line key="enter_code">Enter your weather code, followed by pound.</line>
+    <line key="enter_code">Enter your province, or enter a former Hello Weather location code.</line>
     <line key="no_entry">No entry was received. Goodbye.</line>
     <line key="goodbye">Goodbye.</line>
   </defaults>
 
   <menu id="entry" timeout="8s" retries="2">
-    <line key="main">This is the Canada TeleMET weather service. 1 For service in English, 2 for French, 3 for Spanish, 4 to listen to a Canada RadioMET broadcast. 5 for the NOAA Geophysical Alert Message, or 0 to yell at an operator.</line>
+    <line key="main">This is the {telephone_service_name}. {language_options}, or press star for your NOAA Geophysical Alert Message.</line>
+    <line key="main_single_language">Enter your province, or enter a former Hello Weather location code.</line>
     <option digit="1" action="language" language="en-CA" next="location_code"/>
     <option digit="2" action="language" language="fr-CA" next="location_code"/>
     <option digit="3" action="language" language="es" next="location_code"/>
-    <option digit="4" action="broadcast" packages="alerts,current_conditions,air_quality,forecast,geophysical_alert" next="broadcast_menu"/>
-    <option digit="5" action="product" packages="geophysical_alert"/>
-    <option digit="0" action="operator" next="operator"/>
+    <option digit="0" action="product" packages="geophysical_alert"/>
+    <option digit="*" action="product" packages="geophysical_alert"/>
   </menu>
 
   <menu id="language_select" timeout="8s" retries="2">
@@ -27,15 +27,34 @@
   </menu>
 
   <menu id="location_code" timeout="10s" retries="2">
-    <line key="main">Enter your weather code, followed by pound.</line>
+    <line key="main">Enter your province, or enter a former Hello Weather location code.</line>
+  </menu>
+
+  <menu id="location_number" timeout="8s" retries="2">
+    <line key="main">Enter your location number. Press star to search for a location.</line>
+    <line key="search_unavailable">Location search is not available yet.</line>
   </menu>
 
   <menu id="location_menu" timeout="8s" retries="2">
-    <line key="main">You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, or 4 to listen to a corresponding, 10 minute Canada RadioMET broadcast.</line>
+    <line key="main">You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for the weather discussion, 7 for specialty products, or 0 to listen to a corresponding, 10 minute {radio_service_name} broadcast.</line>
+    <line key="main_no_broadcast">You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for the weather discussion, or 7 for specialty products.</line>
     <option digit="1" action="product" packages="current_conditions"/>
     <option digit="2" action="product" packages="forecast"/>
     <option digit="3" action="product" packages="air_quality"/>
-    <option digit="4" action="broadcast" packages="alerts,current_conditions,air_quality,forecast,geophysical_alert" next="broadcast_menu"/>
+    <option digit="4" action="product" packages="climate_summary"/>
+    <option digit="5" action="product" packages="thunderstorm_outlook"/>
+    <option digit="6" action="product" packages="eccc_discussion"/>
+    <option digit="7" action="menu" next="specialty_menu"/>
+    <option digit="0" action="broadcast" packages="alerts,current_conditions,air_quality,forecast,geophysical_alert" next="broadcast_menu"/>
+  </menu>
+
+  <menu id="specialty_menu" timeout="8s" retries="2">
+    <line key="main">Specialty products. 1 for meteorological notes, 2 for river conditions, 3 for recent precipitation analysis, 4 for coastal flooding risk, or 5 for hurricane track information. Press pound to return to the previous menu.</line>
+    <option digit="1" action="product" packages="metnotes"/>
+    <option digit="2" action="product" packages="hydrometric"/>
+    <option digit="3" action="product" packages="precipitation_analysis"/>
+    <option digit="4" action="product" packages="coastal_flood"/>
+    <option digit="5" action="product" packages="hurricane_tracks"/>
   </menu>
 
   <menu id="weather_product" cache_ttl="10m">
@@ -43,12 +62,12 @@
   </menu>
 
   <menu id="broadcast_menu" timeout="8s" retries="1">
-    <line key="main">The Canada RadioMET broadcast is not available by telephone yet.</line>
+    <line key="main">{radio_service_name} broadcast. Press pound to return to the previous menu.</line>
   </menu>
 
   <menu id="geophysical_alert" timeout="8s" retries="1">
     <line key="main">NOAA Geophysical Alert Message.</line>
-    <option digit="5" action="product" packages="geophysical_alert"/>
+    <option digit="0" action="product" packages="geophysical_alert"/>
   </menu>
 
   <menu id="operator" timeout="8s" retries="1" transfer_uri="">

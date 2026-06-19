@@ -158,7 +158,7 @@ function setPath(object, dotted, value) {
 function renderToggle(path, label, description) {
     const checked = getPath(currentSettings, path, false);
     return `
-        <label class="daemon-toggle">
+        <label class="daemon-toggle" title="${escapeHtml(description)}">
             <input type="checkbox" data-setting="${escapeHtml(path)}" ${checked ? 'checked' : ''}>
             <span class="daemon-toggle-ui"></span>
             <span>

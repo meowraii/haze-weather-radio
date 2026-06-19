@@ -2,9 +2,8 @@ import { PanelClient } from './lib/ws-client.js';
 
 const API_BASE = '/api/public/v1';
 
-const heroTitle = document.getElementById('publicHeroTitle');
-const heroSubtitle = document.getElementById('publicHeroSubtitle');
 const summaryCards = document.getElementById('publicSummaryCards');
+const buildInfo = document.getElementById('publicBuildInfo');
 const feedsGrid = document.getElementById('publicFeedsGrid');
 const adminLink = document.getElementById('adminLink');
 const adminHint = document.getElementById('adminHint');
@@ -13,16 +12,21 @@ const alertsNotice = document.getElementById('publicAlertsNotice');
 const alertsList = document.getElementById('publicAlertsList');
 const alertsLink = document.getElementById('publicAlertsLink');
 const publicSummarySection = document.getElementById('publicSummary');
+const publicAboutSection = document.getElementById('publicAboutSection');
 const publicFeedsSection = document.getElementById('publicFeedsSection');
+const publicListenSection = document.getElementById('publicListenSection');
+const listenNotice = document.getElementById('publicListenNotice');
+const listenPanel = document.getElementById('publicListenPanel');
 const publicAlertsSection = document.getElementById('publicAlertsSection');
 const publicTlsNotice = document.getElementById('publicTlsNotice');
 const publicTlsNoticeText = document.getElementById('publicTlsNoticeText');
 
 let summaryState = null;
 const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
-const currentPage = currentPath === '/feeds'
+const currentPage = currentPath === '/feeds' || currentPath === '/listen'
     ? 'feeds'
-    : (currentPath === '/alerts' || currentPath === '/alerts/archive' ? 'alerts' : 'home');
+    : (currentPath === '/about' ? 'about' : (currentPath === '/alerts' || currentPath === '/alerts/archive' ? 'alerts' : 'home'));
+const isListenPage = currentPath === '/listen';
 const publicClient = new PanelClient({
     base: API_BASE,
     stream: true,
@@ -31,10 +35,34 @@ const publicClient = new PanelClient({
 let lastSummarySignature = '';
 let lastFeedsSignature = '';
 let lastAlertsSignature = '';
+let lastListenSignature = '';
 let lastNoticeText = '';
 let activeAlertTab = 'accepted';
 const feedPlayers = new Map();
+const feedPreferences = new Map();
 window.hazeFeedPlayers = feedPlayers;
+
+const WEBRTC_CODECS = [
+    ['auto', 'Auto'],
+    ['opus', 'Opus'],
+    ['g722', 'G.722'],
+    ['pcmu', 'PCMU'],
+];
+const HTTP_CODECS = [
+    ['pcm16', 'PCM16 / WAV'],
+    ['opus', 'Opus / Ogg'],
+    ['webm_opus', 'Opus / WebM'],
+    ['aac', 'AAC / ADTS'],
+    ['m4a', 'AAC / fragmented MP4'],
+    ['mp3', 'MP3'],
+    ['vorbis', 'Vorbis / Ogg'],
+    ['flac', 'FLAC'],
+    ['ogg_flac', 'FLAC / Ogg'],
+    ['ulaw', 'G.711 u-law'],
+    ['alaw', 'G.711 A-law'],
+    ['raw_pcm16', 'Raw PCM16'],
+];
+const HTTP_CODEC_VALUES = new Set(HTTP_CODECS.map(([value]) => value));
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -63,8 +91,14 @@ function applyPageLayout() {
     if (publicSummarySection) {
         publicSummarySection.hidden = currentPage !== 'home';
     }
+    if (publicAboutSection) {
+        publicAboutSection.hidden = currentPage !== 'about';
+    }
     if (publicFeedsSection) {
-        publicFeedsSection.hidden = currentPage !== 'feeds';
+        publicFeedsSection.hidden = currentPage !== 'feeds' || isListenPage;
+    }
+    if (publicListenSection) {
+        publicListenSection.hidden = !isListenPage;
     }
     if (publicAlertsSection) {
         publicAlertsSection.hidden = currentPage !== 'alerts';
@@ -87,7 +121,12 @@ function summarySignature(summary) {
     return JSON.stringify({
         name: summary.name || '',
         hostname: summary.hostname || '',
+        ip_address: summary.ip_address || '',
         operator: summary.operator || '',
+        version: summary.version || '',
+        git_commit: summary.git_commit || '',
+        os: summary.os || '',
+        architecture: summary.architecture || '',
         feed_count: summary.feed_count || 0,
         enabled_feed_count: summary.enabled_feed_count || 0,
         feeds_access: summary.feeds_access || '',
@@ -114,6 +153,7 @@ function feedsSignature(feeds) {
             enabled: Boolean(feed.enabled),
             site_names: tx.site_names || [tx.site_name || feed.name || ''],
             webrtc_enabled: Boolean(feed.webrtc_enabled),
+            http_stream_enabled: Boolean(feed.http_stream_enabled),
             media_available: Boolean(summaryState?.media_available),
         };
     }));
@@ -136,16 +176,9 @@ function renderSummary(summary) {
     }
     lastSummarySignature = signature;
 
-    setTextIfChanged(heroTitle, summary.name || 'Haze Weather Radio');
     if (alertsLink) {
         alertsLink.hidden = summary.alerts_archive !== 'public' && !summary.capabilities?.public_alerts;
     }
-    const bits = [
-        summary.hostname || 'unknown host',
-        summary.operator || 'operator unconfigured',
-        `uptime ${formatUptime(summary.uptime_seconds)}`,
-    ];
-    setTextIfChanged(heroSubtitle, bits.join(' · '));
 
     if (summary.admin_url) {
         adminLink.href = summary.admin_url;
@@ -155,18 +188,31 @@ function renderSummary(summary) {
     }
 
     const cards = [
-        ['Hostname', summary.hostname || 'unknown'],
+        ['Site', summary.name || 'Haze Weather Radio'],
         ['Operator', summary.operator || 'unconfigured'],
+        ['IP Address', summary.ip_address || 'unknown'],
+        ['Hostname', summary.hostname || 'unknown'],
         ['Feeds', `${summary.enabled_feed_count}/${summary.feed_count}`],
         ['Uptime', formatUptime(summary.uptime_seconds)],
     ];
 
-    summaryCards.innerHTML = cards.map(([label, value]) => `
-        <article class="metric-card">
-            <p>${escapeHtml(label)}</p>
-            <strong>${escapeHtml(value)}</strong>
-        </article>
-    `).join('');
+    if (summaryCards) {
+        summaryCards.innerHTML = cards.map(([label, value]) => `
+            <div class="public-status-item">
+                <span>${escapeHtml(label)}:</span>
+                <strong>${escapeHtml(value)}</strong>
+            </div>
+        `).join('');
+    }
+    if (buildInfo) {
+        buildInfo.innerHTML = [
+            ['Version', summary.version || 'dev'],
+            ['Commit', summary.git_commit || 'unknown'],
+            ['System', [summary.os || 'unknown', summary.architecture || 'unknown'].join(' / ')],
+        ].map(([label, value]) => `
+            <span><b>${escapeHtml(label)}:</b><em>${escapeHtml(value)}</em></span>
+        `).join('');
+    }
     renderTLSNotice(summary.tls || {});
 }
 
@@ -184,23 +230,59 @@ function cardMarkup(feed) {
     const siteNames = (tx.site_names || [tx.site_name]).filter(Boolean).join(', ') || feed.name || 'Unnamed site';
     const feedId = String(feed.id || '');
     const nowPlaying = feed.runtime?.now_playing || 'Idle';
-    const canPlay = Boolean(feed.enabled && summaryState?.webrtc_enabled);
+    const canWebRTC = feedCanWebRTC(feed);
+    const canHTTP = feedCanHTTP(feed);
+    const canPlay = canWebRTC || canHTTP;
+    const prefs = normalizedFeedPreferences(feedId, feed);
+    const feedState = !feed.enabled
+        ? 'disabled'
+        : (canPlay ? 'ready' : (summaryState?.media_available ? 'unavailable' : 'waiting'));
+    const feedStateLabel = {
+        disabled: 'Disabled',
+        ready: 'Live',
+        unavailable: 'Unavailable',
+        waiting: 'Waiting',
+    }[feedState];
     const status = canPlay
         ? (summaryState?.media_available ? 'Ready' : 'Waiting for playout audio')
         : (feed.enabled ? 'Streaming unavailable' : 'Feed disabled');
+    const modeOptions = [
+        ['webrtc', 'WebRTC', canWebRTC],
+        ['http', 'HTTP', canHTTP],
+    ].map(([value, label, enabled]) => `
+        <option value="${value}" ${prefs.mode === value ? 'selected' : ''} ${enabled ? '' : 'disabled'}>${label}</option>
+    `).join('');
+    const codecOptions = codecOptionsForMode(prefs.mode).map(([value, label]) => `
+        <option value="${value}" ${prefs.codec === value ? 'selected' : ''}>${label}</option>
+    `).join('');
 
     return `
-        <article class="feed-card public-feed-card" data-feed-card="${escapeHtml(feedId)}">
+        <article class="feed-card public-feed-card" data-feed-card="${escapeHtml(feedId)}" data-feed-state="${escapeHtml(feedState)}">
             <div class="public-feed-main">
                 <div class="public-feed-overview">
                     <div>
-                        <p class="feed-id">${escapeHtml(feedId)}</p>
+                        <div class="public-feed-kicker">
+                            <p class="feed-id">${escapeHtml(feedId)}</p>
+                            <span class="public-feed-status-pill">${escapeHtml(feedStateLabel)}</span>
+                        </div>
                         <h3>${escapeHtml(siteNames)}</h3>
                         <p class="public-feed-now" data-feed-now="${escapeHtml(feedId)}">${escapeHtml(nowPlaying)}</p>
                     </div>
                 </div>
             </div>
             <div class="public-feed-controls">
+                <label class="public-listen-field">
+                    <span>Listen</span>
+                    <select data-feed-mode="${escapeHtml(feedId)}" ${canPlay ? '' : 'disabled'}>
+                        ${modeOptions}
+                    </select>
+                </label>
+                <label class="public-listen-field">
+                    <span>Codec</span>
+                    <select data-feed-codec="${escapeHtml(feedId)}" ${canPlay ? '' : 'disabled'}>
+                        ${codecOptions}
+                    </select>
+                </label>
                 <button class="btn-action public-player-btn" type="button" data-feed-play="${escapeHtml(feedId)}" data-feed-playable="${canPlay ? '1' : '0'}" ${canPlay ? '' : 'disabled'}>
                     <i data-lucide="play" width="14" height="14"></i>
                     <span>Play</span>
@@ -208,6 +290,10 @@ function cardMarkup(feed) {
                 <button class="btn-action public-player-btn" type="button" data-feed-stop="${escapeHtml(feedId)}" disabled>
                     <i data-lucide="square" width="14" height="14"></i>
                     <span>Stop</span>
+                </button>
+                <button class="btn-action public-player-btn" type="button" data-feed-share="${escapeHtml(feedId)}" title="Copy HTTP stream link" ${canHTTP ? '' : 'disabled'}>
+                    <i data-lucide="copy" width="14" height="14"></i>
+                    <span>Share</span>
                 </button>
                 <label class="public-volume" aria-label="Feed volume">
                     <i data-lucide="volume-2" width="14" height="14"></i>
@@ -218,6 +304,86 @@ function cardMarkup(feed) {
             </div>
         </article>
     `;
+}
+
+function feedCanWebRTC(feed) {
+    return Boolean(feed.enabled && feed.webrtc_enabled && summaryState?.webrtc_enabled && summaryState?.media_available);
+}
+
+function feedCanHTTP(feed) {
+    return Boolean(feed.enabled && feed.http_stream_enabled && summaryState?.media_available);
+}
+
+function normalizedFeedPreferences(feedId, feed = null) {
+    const current = feedPreferences.get(feedId) || { mode: 'webrtc', codec: 'auto' };
+    const canWebRTC = feed ? feedCanWebRTC(feed) : true;
+    const canHTTP = feed ? feedCanHTTP(feed) : true;
+    let mode = current.mode === 'http' ? 'http' : 'webrtc';
+    if (mode === 'webrtc' && !canWebRTC && canHTTP) mode = 'http';
+    if (mode === 'http' && !canHTTP && canWebRTC) mode = 'webrtc';
+    const allowedCodecs = codecOptionsForMode(mode).map(([value]) => value);
+    let codec = allowedCodecs.includes(current.codec) ? current.codec : allowedCodecs[0];
+    const prefs = { mode, codec };
+    feedPreferences.set(feedId, prefs);
+    return prefs;
+}
+
+function codecOptionsForMode(mode) {
+    return mode === 'http' ? HTTP_CODECS : WEBRTC_CODECS;
+}
+
+function selectedFeedMode(feedId) {
+    const select = findFeedElement('feed-mode', feedId);
+    const value = select?.value === 'http' ? 'http' : 'webrtc';
+    const prefs = normalizedFeedPreferences(feedId);
+    prefs.mode = value;
+    feedPreferences.set(feedId, prefs);
+    return value;
+}
+
+function selectedFeedCodec(feedId) {
+    const select = findFeedElement('feed-codec', feedId);
+    const value = select?.value || normalizedFeedPreferences(feedId).codec;
+    const prefs = normalizedFeedPreferences(feedId);
+    prefs.codec = value;
+    feedPreferences.set(feedId, prefs);
+    return value;
+}
+
+function setFeedMode(feedId, mode) {
+    const prefs = normalizedFeedPreferences(feedId);
+    prefs.mode = mode === 'http' ? 'http' : 'webrtc';
+    prefs.codec = codecOptionsForMode(prefs.mode)[0][0];
+    feedPreferences.set(feedId, prefs);
+    updateFeedCodecSelect(feedId);
+}
+
+function updateFeedCodecSelect(feedId) {
+    const codecSelect = findFeedElement('feed-codec', feedId);
+    if (!codecSelect) return;
+    const prefs = normalizedFeedPreferences(feedId);
+    codecSelect.innerHTML = codecOptionsForMode(prefs.mode).map(([value, label]) => `
+        <option value="${value}" ${prefs.codec === value ? 'selected' : ''}>${label}</option>
+    `).join('');
+}
+
+function httpStreamURL(feedId, absolute = false, codec = null) {
+    const url = new URL(`${API_BASE}/feed/audio`, window.location.origin);
+    url.searchParams.set('feed', feedId);
+    url.searchParams.set('codec', normalizeHTTPCodec(codec || selectedFeedCodec(feedId)));
+    return absolute ? url.toString() : `${url.pathname}${url.search}`;
+}
+
+function listenPageURL(feedId, absolute = false, codec = null) {
+    const url = new URL('/listen', window.location.origin);
+    url.searchParams.set('feed', feedId);
+    url.searchParams.set('codec', normalizeHTTPCodec(codec || selectedFeedCodec(feedId)));
+    return absolute ? url.toString() : `${url.pathname}${url.search}`;
+}
+
+function normalizeHTTPCodec(codec) {
+    const value = String(codec || '').trim().toLowerCase().replaceAll('-', '_');
+    return HTTP_CODEC_VALUES.has(value) ? value : 'pcm16';
 }
 
 function updateFeedRuntime(feeds) {
@@ -270,11 +436,32 @@ function renderFeeds(feeds) {
 }
 
 function attachFeedControls() {
+    feedsGrid.querySelectorAll('[data-feed-mode]').forEach((select) => {
+        select.addEventListener('change', () => {
+            const feedId = select.dataset.feedMode;
+            setFeedMode(feedId, select.value);
+            stopFeed(feedId, { silent: true });
+            setPlayerStatus(feedId, select.value === 'http' ? 'HTTP selected' : 'WebRTC selected');
+        });
+    });
+    feedsGrid.querySelectorAll('[data-feed-codec]').forEach((select) => {
+        select.addEventListener('change', () => {
+            const feedId = select.dataset.feedCodec;
+            const prefs = normalizedFeedPreferences(feedId);
+            prefs.codec = select.value;
+            feedPreferences.set(feedId, prefs);
+            stopFeed(feedId, { silent: true });
+            setPlayerStatus(feedId, 'Codec changed');
+        });
+    });
     feedsGrid.querySelectorAll('[data-feed-play]').forEach((button) => {
         button.addEventListener('click', () => startFeed(button.dataset.feedPlay));
     });
     feedsGrid.querySelectorAll('[data-feed-stop]').forEach((button) => {
         button.addEventListener('click', () => stopFeed(button.dataset.feedStop));
+    });
+    feedsGrid.querySelectorAll('[data-feed-share]').forEach((button) => {
+        button.addEventListener('click', () => copyHTTPLink(button.dataset.feedShare));
     });
     feedsGrid.querySelectorAll('[data-feed-volume]').forEach((input) => {
         input.addEventListener('input', () => {
@@ -296,11 +483,81 @@ function setPlayerStatus(feedId, message) {
 function setPlayerButtons(feedId, playing) {
     const playButton = findFeedElement('feed-play', feedId);
     const stopButton = findFeedElement('feed-stop', feedId);
-    if (playButton) playButton.disabled = playing || !summaryState?.webrtc_enabled || playButton.dataset.feedPlayable !== '1';
+    if (playButton) playButton.disabled = playing || playButton.dataset.feedPlayable !== '1';
     if (stopButton) stopButton.disabled = !playing;
 }
 
 async function startFeed(feedId) {
+    if (selectedFeedMode(feedId) === 'http') {
+        return startFeedHTTP(feedId);
+    }
+    return startFeedWebRTC(feedId);
+}
+
+async function startFeedHTTP(feedId) {
+    feedId = String(feedId || '');
+    if (!feedId || !summaryState?.media_available) {
+        setPlayerStatus(feedId, 'HTTP streaming unavailable');
+        return;
+    }
+    stopFeed(feedId, { silent: true });
+    const audio = findFeedElement('feed-audio', feedId);
+    const volume = findFeedElement('feed-volume', feedId);
+    if (!audio) {
+        return;
+    }
+    const streamURL = httpStreamURL(feedId);
+    const player = {
+        mode: 'http',
+        audio,
+        httpURL: streamURL,
+        trackAttached: true,
+        connected: true,
+    };
+    feedPlayers.set(feedId, player);
+    audio.volume = Number(volume?.value ?? 1);
+    audio.autoplay = true;
+    audio.controls = false;
+    audio.muted = false;
+    audio.playsInline = true;
+    audio.srcObject = null;
+    audio.src = streamURL;
+    audio.dataset.hazePlayerState = 'connecting-http';
+    audio.onplaying = () => {
+        if (isActivePlayer(feedId, player)) {
+            audio.dataset.hazePlayerState = 'playing';
+            setPlayerStatus(feedId, 'Playing over HTTP');
+        }
+    };
+    audio.onwaiting = () => {
+        if (isActivePlayer(feedId, player)) {
+            audio.dataset.hazePlayerState = 'waiting';
+            setPlayerStatus(feedId, 'Buffering HTTP audio...');
+        }
+    };
+    audio.onerror = () => {
+        if (isActivePlayer(feedId, player)) {
+            audio.dataset.hazePlayerState = 'error';
+            setPlayerStatus(feedId, 'HTTP audio error');
+            setPlayerButtons(feedId, false);
+        }
+    };
+    setPlayerStatus(feedId, 'Connecting over HTTP...');
+    setPlayerButtons(feedId, true);
+    try {
+        await audio.play();
+        setPlayerStatus(feedId, audio.paused ? 'HTTP audio ready' : 'Playing over HTTP');
+    } catch {
+        audio.controls = true;
+        audio.dataset.hazePlayerState = 'play-blocked';
+        setPlayerStatus(feedId, 'Press Play to start audio');
+        setPlayerButtons(feedId, false);
+        const stopButton = findFeedElement('feed-stop', feedId);
+        if (stopButton) stopButton.disabled = false;
+    }
+}
+
+async function startFeedWebRTC(feedId) {
     feedId = String(feedId || '');
     if (!feedId || !summaryState?.webrtc_enabled) {
         setPlayerStatus(feedId, 'Streaming unavailable');
@@ -474,10 +731,17 @@ async function startFeed(feedId) {
         await pc.setLocalDescription(offer);
         await waitForIceGathering(pc);
         const local = pc.localDescription;
-        const answer = await publicClient.request('webrtc_offer', {
+        const codec = selectedFeedCodec(feedId);
+        const payload = {
             feed_id: feedId,
             sdp: local.sdp,
             sdp_type: local.type,
+        };
+        if (codec && codec !== 'auto') {
+            payload.codec = codec;
+        }
+        const answer = await publicClient.request('webrtc_offer', {
+            ...payload,
         }, 15000);
         player.mediaRecent = answer.media_recent !== false;
         await pc.setRemoteDescription({
@@ -494,6 +758,48 @@ async function startFeed(feedId) {
     } catch (error) {
         stopFeed(feedId, { silent: true });
         setPlayerStatus(feedId, error.message || 'Could not start stream');
+    }
+}
+
+async function copyHTTPLink(feedId) {
+    feedId = String(feedId || '');
+    if (!feedId) return;
+    const link = listenPageURL(feedId, true);
+    window.hazeLastShareLink = link;
+    try {
+        await copyTextToClipboard(link);
+        setPlayerStatus(feedId, 'Listen link copied');
+    } catch {
+        setPlayerStatus(feedId, `Copy blocked: ${link}`);
+    }
+}
+
+async function copyTextToClipboard(text) {
+    if (navigator.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return;
+        } catch {
+            // Fall through to the selection-based path for HTTP/LAN browsers.
+        }
+    }
+    const input = document.createElement('textarea');
+    input.value = text;
+    input.setAttribute('readonly', '');
+    input.style.position = 'fixed';
+    input.style.top = '0';
+    input.style.left = '0';
+    input.style.width = '1px';
+    input.style.height = '1px';
+    input.style.opacity = '0';
+    document.body.appendChild(input);
+    input.focus();
+    input.select();
+    input.setSelectionRange(0, input.value.length);
+    const copied = document.execCommand?.('copy') === true;
+    input.remove();
+    if (!copied) {
+        throw new Error('copy command rejected');
     }
 }
 
@@ -527,6 +833,7 @@ function stopFeed(feedId, { silent = false } = {}) {
         window.hazeLastStop = {
             feed_id: feedId,
             silent,
+            mode: player.mode || 'webrtc',
             connection_state: player.pc?.connectionState || '',
             ice_state: player.pc?.iceConnectionState || '',
             signaling_state: player.pc?.signalingState || '',
@@ -537,7 +844,12 @@ function stopFeed(feedId, { silent = false } = {}) {
         const audio = findFeedElement('feed-audio', feedId) || player.audio;
         if (audio) {
             audio.pause();
-            audio.srcObject = null;
+            if (player.mode === 'http') {
+                audio.removeAttribute('src');
+                audio.load();
+            } else {
+                audio.srcObject = null;
+            }
             audio.dataset.hazePlayerState = 'stopped';
             audio.dataset.hazeTrackAttached = '0';
         }
@@ -596,6 +908,16 @@ function reattachActivePlayers() {
             continue;
         }
         audio.volume = player.audio?.volume ?? 1;
+        if (player.mode === 'http') {
+            audio.srcObject = null;
+            audio.src = player.httpURL || httpStreamURL(feedId);
+            audio.dataset.hazePlayerState = player.audio?.dataset?.hazePlayerState || 'reattached-http';
+            player.audio = audio;
+            setPlayerButtons(feedId, true);
+            setPlayerStatus(feedId, 'HTTP audio connected');
+            audio.play().catch(() => {});
+            continue;
+        }
         audio.srcObject = player.remoteStream || player.audio?.srcObject || null;
         audio.dataset.hazePlayerState = player.audio?.dataset?.hazePlayerState || 'reattached';
         audio.dataset.hazeTrackAttached = player.trackAttached ? '1' : '0';
@@ -703,11 +1025,93 @@ function renderPublicAlerts(summary) {
     `).join('') : '<article class="feed-card empty">No alerts in this bucket.</article>';
 }
 
+function requestedListenFeedID(feeds) {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get('feed') || params.get('feed_id') || '';
+    if (requested && feeds.some((feed) => String(feed.id || '') === requested)) {
+        return requested;
+    }
+    return String(feeds.find(feedCanHTTP)?.id || feeds[0]?.id || '');
+}
+
+function requestedListenCodec() {
+    const params = new URLSearchParams(window.location.search);
+    return normalizeHTTPCodec(params.get('codec') || params.get('format') || 'pcm16');
+}
+
+function renderListen(feeds) {
+    if (!listenNotice || !listenPanel) return;
+    if (summaryState?.feeds_access === 'disabled') {
+        listenNotice.textContent = 'Public feeds are disabled on this system.';
+        listenPanel.innerHTML = '';
+        return;
+    }
+    const feedID = requestedListenFeedID(feeds || []);
+    const feed = (feeds || []).find((item) => String(item.id || '') === feedID);
+    if (!feed) {
+        listenNotice.textContent = 'No public feed was found for this link.';
+        listenPanel.innerHTML = '';
+        return;
+    }
+    if (!feedCanHTTP(feed)) {
+        listenNotice.textContent = 'This feed does not have public HTTP audio enabled.';
+        listenPanel.innerHTML = '';
+        lastListenSignature = 'unavailable';
+        return;
+    }
+    const codec = requestedListenCodec();
+    const listenSignature = JSON.stringify({ feedID, codec, media: Boolean(summaryState?.media_available) });
+    if (listenSignature === lastListenSignature) {
+        return;
+    }
+    lastListenSignature = listenSignature;
+    const tx = feed.transmitter || {};
+    const siteNames = (tx.site_names || [tx.site_name]).filter(Boolean).join(', ') || feed.name || 'Unnamed site';
+    const nowPlaying = feed.runtime?.now_playing || 'Idle';
+    const streamURL = httpStreamURL(feedID, false, codec);
+    listenNotice.textContent = 'Public HTTP listener ready.';
+    listenPanel.innerHTML = `
+        <article class="feed-card public-listen-card">
+            <div class="public-listen-title">
+                <p class="feed-id">${escapeHtml(feedID)}</p>
+                <h3>${escapeHtml(siteNames)}</h3>
+                <p class="public-feed-now">${escapeHtml(nowPlaying)}</p>
+            </div>
+            <div class="public-listen-toolbar">
+                <label class="public-listen-field">
+                    <span>Format</span>
+                    <select data-listen-codec>
+                        ${HTTP_CODECS.map(([value, label]) => `
+                            <option value="${value}" ${codec === value ? 'selected' : ''}>${label}</option>
+                        `).join('')}
+                    </select>
+                </label>
+                <a class="btn-action public-player-btn" href="${escapeHtml(streamURL)}" data-listen-raw>
+                    <i data-lucide="link" width="14" height="14"></i>
+                    <span>Raw</span>
+                </a>
+            </div>
+            <audio class="public-listen-audio" src="${escapeHtml(streamURL)}" controls autoplay playsinline preload="none"></audio>
+        </article>
+    `;
+    const select = listenPanel.querySelector('[data-listen-codec]');
+    select?.addEventListener('change', () => {
+        const nextCodec = normalizeHTTPCodec(select.value);
+        const nextURL = listenPageURL(feedID, false, nextCodec);
+        window.location.assign(nextURL);
+    });
+    window.lucide?.createIcons();
+}
+
 function renderPublicState(payload) {
     const summary = payload.summary || {};
     renderSummary(summary);
     if (currentPage === 'alerts') {
         renderPublicAlerts(summary);
+        return;
+    }
+    if (isListenPage) {
+        renderListen(summary.feeds || []);
         return;
     }
     if (currentPage !== 'feeds') {
@@ -756,8 +1160,6 @@ publicClient.addEventListener('reconnecting', (event) => {
         }
     } else if (currentPage === 'alerts') {
         alertsNotice.textContent = `Alert archive unavailable. Reconnecting in ${seconds}s...`;
-    } else {
-        heroSubtitle.textContent = `Public status unavailable. Reconnecting in ${seconds}s...`;
     }
 });
 publicClient.addEventListener('recovered', () => {
@@ -769,20 +1171,18 @@ publicClient.addEventListener('close', (event) => {
         setNotice('Live feed directory connection closed. Reconnecting...');
     } else if (currentPage === 'alerts') {
         alertsNotice.textContent = 'Alert archive connection closed. Reconnecting...';
-    } else {
-        heroSubtitle.textContent = 'Public status connection closed. Reconnecting...';
     }
 });
 publicClient.addEventListener('decode_error', () => {
-    heroSubtitle.textContent = 'Unable to decode public status update.';
+    if (currentPage === 'feeds' && feedNotice) {
+        feedNotice.textContent = 'Unable to decode public status update.';
+    }
 });
 publicClient.addEventListener('error', () => {
     if (currentPage === 'feeds') {
         feedNotice.textContent = 'Live feed directory unavailable. Reconnecting...';
     } else if (currentPage === 'alerts') {
         alertsNotice.textContent = 'Alert archive unavailable. Reconnecting...';
-    } else {
-        heroSubtitle.textContent = 'Public status unavailable. Reconnecting...';
     }
 });
 

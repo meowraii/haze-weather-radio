@@ -57,10 +57,36 @@ function Copy-BundleDirectory {
     if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
         return
     }
+    $PreserveDir = $null
+    if ($Name -eq "managed" -and (Test-Path -LiteralPath $Target -PathType Container)) {
+        $OnnxFiles = @(Get-ChildItem -LiteralPath $Target -Filter "*.onnx" -Recurse -File -ErrorAction SilentlyContinue)
+        if ($OnnxFiles.Count -gt 0) {
+            $PreserveDir = Join-Path ([System.IO.Path]::GetTempPath()) ("haze-preserve-onnx-" + [System.Guid]::NewGuid().ToString("N"))
+            $TargetFull = [System.IO.Path]::GetFullPath($Target).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+            foreach ($File in $OnnxFiles) {
+                $Relative = $File.FullName.Substring($TargetFull.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+                $Backup = Join-Path $PreserveDir $Relative
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Backup) | Out-Null
+                Copy-Item -LiteralPath $File.FullName -Destination $Backup -Force
+            }
+        }
+    }
     if (Test-Path -LiteralPath $Target) {
         Remove-Item -LiteralPath $Target -Recurse -Force
     }
     Copy-Item -LiteralPath $Source -Destination $Target -Recurse -Force
+    if ($PreserveDir -and (Test-Path -LiteralPath $PreserveDir -PathType Container)) {
+        $PreserveFull = [System.IO.Path]::GetFullPath($PreserveDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        Get-ChildItem -LiteralPath $PreserveDir -Filter "*.onnx" -Recurse -File | ForEach-Object {
+            $Relative = $_.FullName.Substring($PreserveFull.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+            $Restored = Join-Path $Target $Relative
+            if (-not (Test-Path -LiteralPath $Restored)) {
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Restored) | Out-Null
+                Copy-Item -LiteralPath $_.FullName -Destination $Restored -Force
+            }
+        }
+        Remove-Item -LiteralPath $PreserveDir -Recurse -Force
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $OutFull | Out-Null
@@ -113,7 +139,17 @@ Push-Location (Join-Path $Root "services/go")
 try {
     $env:GOCACHE = Join-Path $Root "target/go-build-cache"
     $env:GOTMPDIR = Join-Path $Root "target/go-tmp"
-    go build @BuildWebArgs -o (Join-Path $BinFull "haze-web.exe") ./cmd/haze-web
+    $GitCommit = "unknown"
+    try {
+        $GitCommitRaw = git -C $Root rev-parse --short=12 HEAD
+        if (-not [string]::IsNullOrWhiteSpace($GitCommitRaw)) {
+            $GitCommit = $GitCommitRaw.Trim()
+        }
+    } catch {
+        $GitCommit = "unknown"
+    }
+    $WebLdflags = "-X github.com/meowraii/haze-weather-radio/services/go/internal/webgateway.BuildGitCommit=$GitCommit"
+    go build @BuildWebArgs -ldflags $WebLdflags -o (Join-Path $BinFull "haze-web.exe") ./cmd/haze-web
     go build -o (Join-Path $BinFull "haze-data-ingest.exe") ./cmd/haze-data-ingest
     go build -o (Join-Path $BinFull "haze-cap-ingest.exe") ./cmd/haze-cap-ingest
     go build -o (Join-Path $BinFull "haze-tts.exe") ./cmd/haze-tts
@@ -135,4 +171,13 @@ try {
 
 foreach ($BundledDir in @("webroot", "managed", "audio")) {
     Copy-BundleDirectory -Name $BundledDir
+}
+
+$ManagedScripts = Join-Path (Join-Path $OutFull "managed") "scripts"
+New-Item -ItemType Directory -Force -Path $ManagedScripts | Out-Null
+foreach ($Script in @("scripts/tts/piper_worker.py", "scripts/tts/chatterbox_infer.py", "scripts/tts/f5_infer.py")) {
+    $Source = Join-Path $Root $Script
+    if (Test-Path -LiteralPath $Source) {
+        Copy-Item -LiteralPath $Source -Destination $ManagedScripts -Force
+    }
 }

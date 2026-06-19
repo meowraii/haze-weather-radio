@@ -135,6 +135,10 @@ func daemonSettingsView(source map[string]any) map[string]any {
 						"managed/voices/piper",
 						200,
 					),
+					"piper_mode":    textAt(source, []string{"services", "go", "tts", "piper_mode"}, "auto", 16),
+					"piper_workers": textAt(source, []string{"services", "go", "tts", "piper_workers"}, "1", 8),
+					"piper_prewarm": boolAt(source, []string{"services", "go", "tts", "piper_prewarm"}, true),
+					"piper_cuda":    boolAt(source, []string{"services", "go", "tts", "piper_cuda"}, false),
 				},
 				"product_render": map[string]any{
 					"enabled": boolAt(source, []string{"services", "go", "product_render", "enabled"}, false),

@@ -27,6 +27,20 @@
     <reader_id>01</reader_id>
   </package>
 
+  <package id="thunderstorm_outlook" enabled="true">
+    <reader_id>00</reader_id>
+  </package>
+
+  <package id="metnotes" enabled="true" />
+
+  <package id="hydrometric" enabled="true" />
+
+  <package id="coastal_flood" enabled="true" />
+
+  <package id="hurricane_tracks" enabled="true" />
+
+  <package id="precipitation_analysis" enabled="true" />
+
   <package id="eccc_discussion" enabled="true">
     <languages>
       <lang>en-CA</lang>

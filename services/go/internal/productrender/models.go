@@ -35,10 +35,12 @@ type InputRef struct {
 }
 
 type renderRequest struct {
-	RequestID string
-	FeedID    string
-	PackageID string
-	Force     bool
+	RequestID    string
+	FeedID       string
+	PackageID    string
+	Force        bool
+	FeedOverride *feedXML
+	Telephone    bool
 }
 
 type wxOnDemandRequest struct {
@@ -47,10 +49,17 @@ type wxOnDemandRequest struct {
 	Code         string
 	Source       string
 	LocationName string
+	Province     string
+	ForecastID   string
+	StationID    string
+	Latitude     string
+	Longitude    string
+	Timezone     string
 	Language     string
 	ReaderID     string
 	Packages     []string
 	Force        bool
+	Telephone    bool
 }
 
 type observationSnapshot struct {

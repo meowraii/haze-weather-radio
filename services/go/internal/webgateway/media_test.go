@@ -2,6 +2,9 @@ package webgateway
 
 import (
 	"encoding/base64"
+	"encoding/binary"
+	"math"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +39,64 @@ func TestPCM16ToG722SilenceFrame(t *testing.T) {
 	}
 }
 
+func TestValidatePCMChunkRejectsImpossibleShape(t *testing.T) {
+	_, ok, _ := validatePCMChunk(PCMChunk{
+		FeedID:     "sk-0001",
+		SampleRate: 384000,
+		Channels:   1,
+		Duration:   20 * time.Millisecond,
+		Data:       make([]byte, 960),
+	})
+	if ok {
+		t.Fatal("invalid sample rate should be rejected")
+	}
+	chunk, ok, _ := validatePCMChunk(PCMChunk{
+		FeedID:     "sk-0001",
+		SampleRate: 48000,
+		Channels:   1,
+		Duration:   20 * time.Millisecond,
+		Data:       []byte{0, 0, 1},
+	})
+	if !ok {
+		t.Fatal("chunk with a trailing partial sample should be repaired")
+	}
+	if len(chunk.Data) != 2 {
+		t.Fatalf("repaired PCM length = %d, want 2", len(chunk.Data))
+	}
+}
+
+func TestPCMLooksLikeStaticButAllowsTone(t *testing.T) {
+	if !pcmLooksLikeStatic(alternatingFullScalePCM(960)) {
+		t.Fatal("alternating full-scale PCM should be classified as static-like")
+	}
+	if pcmLooksLikeStatic(sinePCM(960, 1000, 48000, 26000)) {
+		t.Fatal("a loud SAME-like tone should not be classified as static-like")
+	}
+}
+
+func TestMediaHubMutesSuspiciousPCM(t *testing.T) {
+	hub := newMemoryMediaHub()
+	hub.publish(PCMChunk{
+		FeedID:     "sk-0001",
+		SampleRate: 48000,
+		Channels:   1,
+		Duration:   20 * time.Millisecond,
+		Data:       alternatingFullScalePCM(960),
+	})
+	updates, unsubscribe := hub.Subscribe("sk-0001")
+	defer unsubscribe()
+	select {
+	case chunk := <-updates:
+		for index, value := range chunk.Data {
+			if value != 0 {
+				t.Fatalf("muted PCM byte %d = %d, want silence", index, value)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for muted chunk")
+	}
+}
+
 func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{}); err != nil || got != webRTCAudioPCMU {
 		t.Fatal("PCMU-only offers should use PCMU")
@@ -65,10 +126,75 @@ func TestPreferredWebRTCAudioCodecRequiresOpus(t *testing.T) {
 	}
 }
 
+func TestPreferredWebRTCAudioCodecHonorsExplicitSelection(t *testing.T) {
+	offer := "m=audio 9 UDP/TLS/RTP/SAVPF 111 9 0\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n"
+	if got, err := preferredWebRTCAudioCodec(offer, WebRTCAnswerOptions{PreferredCodec: "g722"}); err != nil || got != webRTCAudioG722 {
+		t.Fatalf("explicit G.722 codec = %v, %v", got, err)
+	}
+	if got, err := preferredWebRTCAudioCodec(offer, WebRTCAnswerOptions{PreferredCodec: "pcmu"}); err != nil || got != webRTCAudioPCMU {
+		t.Fatalf("explicit PCMU codec = %v, %v", got, err)
+	}
+	if _, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 9\r\na=rtpmap:9 G722/8000\r\n", WebRTCAnswerOptions{PreferredCodec: "pcmu"}); err == nil {
+		t.Fatal("explicit PCMU should fail when the receiver offer does not include PCMU")
+	}
+}
+
 func TestOfferedAudioPayloadTypeUsesDynamicOpusPayload(t *testing.T) {
 	offer := "m=audio 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 opus/48000/2\r\n"
 	if got := offeredAudioPayloadType(offer, webRTCAudioOpus); got != 96 {
 		t.Fatalf("Opus payload type = %d, want 96", got)
+	}
+}
+
+func TestWriteWAVStreamHeader(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	if err := writeWAVStreamHeader(recorder, 48000, 1, 16); err != nil {
+		t.Fatal(err)
+	}
+	header := recorder.Body.Bytes()
+	if len(header) != 44 {
+		t.Fatalf("header length = %d, want 44", len(header))
+	}
+	if string(header[:4]) != "RIFF" || string(header[8:12]) != "WAVE" || string(header[36:40]) != "data" {
+		t.Fatalf("invalid WAV header markers: %q", header)
+	}
+	if got := binary.LittleEndian.Uint32(header[24:28]); got != 48000 {
+		t.Fatalf("sample rate = %d", got)
+	}
+	if got := binary.LittleEndian.Uint32(header[40:44]); got != 0xffffffff {
+		t.Fatalf("stream data size = %#x", got)
+	}
+}
+
+func TestHTTPAudioFormatByID(t *testing.T) {
+	cases := []struct {
+		raw         string
+		id          string
+		contentType string
+		usesFFmpeg  bool
+	}{
+		{"", "pcm16", "audio/wav", false},
+		{"wav", "pcm16", "audio/wav", false},
+		{"opus", "opus", "audio/ogg; codecs=opus", true},
+		{"webm-opus", "webm_opus", "audio/webm; codecs=opus", true},
+		{"aac", "aac", "audio/aac", true},
+		{"m4a", "m4a", "audio/mp4", true},
+		{"mp3", "mp3", "audio/mpeg", true},
+		{"vorbis", "vorbis", "audio/ogg; codecs=vorbis", true},
+		{"flac", "flac", "audio/flac", true},
+		{"ulaw", "ulaw", "audio/basic", true},
+	}
+	for _, tc := range cases {
+		got, ok := httpAudioFormatByID(tc.raw)
+		if !ok {
+			t.Fatalf("%q was not accepted", tc.raw)
+		}
+		if got.ID != tc.id || got.ContentType != tc.contentType || (got.FFmpegFormat != "") != tc.usesFFmpeg {
+			t.Fatalf("%q => %#v", tc.raw, got)
+		}
+	}
+	if _, ok := httpAudioFormatByID("definitely-not-real"); ok {
+		t.Fatal("unknown HTTP audio format should be rejected")
 	}
 }
 
@@ -238,5 +364,27 @@ func newMemoryMediaHub() *MediaHub {
 		last:        map[string]PCMChunk{},
 		lastAt:      map[string]time.Time{},
 		seenLogged:  map[string]bool{},
+		guard:       map[string]pcmGuardState{},
 	}
+}
+
+func alternatingFullScalePCM(samples int) []byte {
+	out := make([]byte, samples*2)
+	for i := 0; i < samples; i++ {
+		sample := int16(32767)
+		if i%2 == 1 {
+			sample = -32768
+		}
+		binary.LittleEndian.PutUint16(out[i*2:i*2+2], uint16(sample))
+	}
+	return out
+}
+
+func sinePCM(samples int, frequency float64, sampleRate float64, amplitude float64) []byte {
+	out := make([]byte, samples*2)
+	for i := 0; i < samples; i++ {
+		value := math.Sin(2*math.Pi*frequency*float64(i)/sampleRate) * amplitude
+		binary.LittleEndian.PutUint16(out[i*2:i*2+2], uint16(int16(value)))
+	}
+	return out
 }

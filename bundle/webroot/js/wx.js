@@ -1,101 +1,111 @@
 import { apiCommand, apiGet } from './lib/api.js';
 import { pcmToWav } from './lib/audio.js';
 
-
 const PACKAGE_DESCRIPTIONS = {
-    date_time: 'Current date and time announcement for the selected feed timezone.',
-    station_id: 'Station identification and configured callsign.',
-    current_conditions: 'Observed surface weather conditions from observation locations.',
-    forecast: 'Forecast text for configured ECCC, NWS, or TWC-backed forecast locations.',
-    air_quality: 'Observed or forecast air quality guidance for configured AQHI locations.',
-    climate_summary: 'Daily climate normal and anomaly summary for configured climate locations.',
-    eccc_discussion: 'Raw ECCC FOCN45 forecast discussion bulletin.',
-    geophysical_alert: 'NOAA WWV geophysical alert and solar activity bulletin.',
-    user_bulletin: 'User-defined bulletin text loaded from userbulletins.json.',
+    date_time: 'Date and time',
+    station_id: 'Station identification',
+    current_conditions: 'Current conditions',
+    forecast: 'Forecast',
+    air_quality: 'Air quality',
+    climate_summary: 'Climate summary',
+    thunderstorm_outlook: 'Thunderstorm outlook',
+    metnotes: 'Meteorological notes',
+    hydrometric: 'Hydrometric conditions',
+    coastal_flood: 'Coastal flood guidance',
+    hurricane_tracks: 'Hurricane tracks',
+    precipitation_analysis: 'Precipitation analysis',
+    eccc_discussion: 'ECCC discussion',
+    geophysical_alert: 'Geophysical alert',
+    alerts: 'Active alerts',
+    user_bulletin: 'User bulletin',
 };
 
 const FORMAT_INFO = {
-    raw: { mime: 'audio/raw', delivery: 'streamed', type: 'audio' },
-    wav: { mime: 'audio/wav', delivery: 'buffered', type: 'audio' },
-    mp3: { mime: 'audio/mpeg', delivery: 'buffered', type: 'audio' },
-    ogg: { mime: 'audio/ogg', delivery: 'buffered', type: 'audio' },
-    flac: { mime: 'audio/flac', delivery: 'buffered', type: 'audio' },
-    aac: { mime: 'audio/aac', delivery: 'buffered', type: 'audio' },
-    opus: { mime: 'audio/ogg; codecs=opus', delivery: 'buffered', type: 'audio' },
-    ulaw: { mime: 'audio/basic', delivery: 'buffered', type: 'audio' },
-    alaw: { mime: 'audio/x-alaw', delivery: 'buffered', type: 'audio' },
-    g722: { mime: 'audio/G722', delivery: 'buffered', type: 'audio' },
-    webm: { mime: 'audio/webm', delivery: 'buffered', type: 'audio' },
-    json: { mime: 'application/json', delivery: 'buffered', type: 'text' },
-    xml: { mime: 'application/xml', delivery: 'buffered', type: 'text' },
-    ssml: { mime: 'application/ssml+xml', delivery: 'buffered', type: 'text' },
-    html: { mime: 'text/html', delivery: 'buffered', type: 'text' },
-    markdown: { mime: 'text/markdown', delivery: 'buffered', type: 'text' },
-    latex: { mime: 'application/x-latex', delivery: 'buffered', type: 'text' },
+    wav: { mime: 'audio/wav', type: 'audio', browser: true },
+    mp3: { mime: 'audio/mpeg', type: 'audio', browser: true },
+    opus: { mime: 'audio/ogg; codecs=opus', type: 'audio', browser: true },
+    ogg: { mime: 'audio/ogg; codecs=vorbis', type: 'audio', browser: true },
+    webm: { mime: 'audio/webm; codecs=opus', type: 'audio', browser: true },
+    flac: { mime: 'audio/flac', type: 'audio', browser: true },
+    aac: { mime: 'audio/aac', type: 'audio', browser: true },
+    raw: { mime: 'audio/L16', type: 'audio', browser: false },
+    ulaw: { mime: 'audio/basic', type: 'audio', browser: false },
+    alaw: { mime: 'audio/x-alaw-basic', type: 'audio', browser: false },
+    g722: { mime: 'audio/G722', type: 'audio', browser: false },
+    json: { mime: 'application/json', type: 'text', browser: true },
+    xml: { mime: 'application/xml', type: 'text', browser: true },
+    ssml: { mime: 'application/ssml+xml', type: 'text', browser: true },
+    html: { mime: 'text/html', type: 'text', browser: true },
+    markdown: { mime: 'text/markdown', type: 'text', browser: true },
+    latex: { mime: 'application/x-latex', type: 'text', browser: true },
 };
 
 const TEXT_FORMATS = new Set(['json', 'xml', 'ssml', 'html', 'markdown', 'latex']);
 const DEFAULT_PACKAGES = ['date_time', 'current_conditions', 'forecast'];
 const DEFAULT_WX_SUFFIX = '/wx-on-demand';
 
-const apiBase = detectApiBase();
-
-
 const state = {
-    apiBase,
-    wxBase: `${apiBase}${DEFAULT_WX_SUFFIX}`,
+    wxBase: `${detectApiBase()}${DEFAULT_WX_SUFFIX}`,
+    feeds: [],
+    readers: [],
     allPackages: [],
     selectedPackages: new Set(),
-    abortController: null,
     objectUrl: null,
     busy: false,
+    generation: 0,
 };
 
-const apiDot = document.getElementById('apiDot');
-const wxDot = document.getElementById('wxDot');
-const healthPill = document.getElementById('healthPill');
-const wxBasePill = document.getElementById('wxBasePill');
-const statusBanner = document.getElementById('wxStatusBanner');
-
-const tryLocations = document.getElementById('tryLocations');
-const trySource = document.getElementById('trySource');
-const tryLang = document.getElementById('tryLang');
-const tryVoice = document.getElementById('tryVoice');
-const tryFormat = document.getElementById('tryFormat');
-const tryPkgs = document.getElementById('tryPkgs');
-const pkgDefaultBtn = document.getElementById('pkgDefaultBtn');
-const pkgAllBtn = document.getElementById('pkgAllBtn');
-const pkgClearBtn = document.getElementById('pkgClearBtn');
-const pkgSummary = document.getElementById('pkgSummary');
-const tryBtn = document.getElementById('tryBtn');
-const tryStop = document.getElementById('tryStop');
-const tryStatus = document.getElementById('tryStatus');
-const tryAudio = document.getElementById('tryAudio');
-const tryText = document.getElementById('tryText');
-const pkgTable = document.getElementById('pkgTable');
-const formatTable = document.getElementById('formatTable');
-const generatePath = document.getElementById('generatePath');
-const packagesPath = document.getElementById('packagesPath');
-const wxBaseMetric = document.getElementById('wxBaseMetric');
-const sourceMetric = document.getElementById('sourceMetric');
-const formatMetric = document.getElementById('formatMetric');
-const packageMetric = document.getElementById('packageMetric');
-const responseTypeMetric = document.getElementById('responseTypeMetric');
-const requestBodyPreview = document.getElementById('requestBodyPreview');
-const curlPreview = document.getElementById('curlPreview');
-const responseMeta = document.getElementById('responseMeta');
+const el = {
+    apiDot: document.getElementById('apiDot'),
+    wxDot: document.getElementById('wxDot'),
+    healthPill: document.getElementById('healthPill'),
+    wxBasePill: document.getElementById('wxBasePill'),
+    statusBanner: document.getElementById('wxStatusBanner'),
+    builderSummary: document.getElementById('wxBuilderSummary'),
+    requestSummary: document.getElementById('wxRequestSummary'),
+    responseSummary: document.getElementById('wxResponseSummary'),
+    feed: document.getElementById('tryFeed'),
+    locations: document.getElementById('tryLocations'),
+    source: document.getElementById('trySource'),
+    lang: document.getElementById('tryLang'),
+    voice: document.getElementById('tryVoice'),
+    format: document.getElementById('tryFormat'),
+    packages: document.getElementById('tryPkgs'),
+    pkgDefaultBtn: document.getElementById('pkgDefaultBtn'),
+    pkgAllBtn: document.getElementById('pkgAllBtn'),
+    pkgClearBtn: document.getElementById('pkgClearBtn'),
+    pkgSummary: document.getElementById('pkgSummary'),
+    button: document.getElementById('tryBtn'),
+    stop: document.getElementById('tryStop'),
+    status: document.getElementById('tryStatus'),
+    audio: document.getElementById('tryAudio'),
+    text: document.getElementById('tryText'),
+    apiRequestUrl: document.getElementById('apiRequestUrl'),
+    copyRequestUrl: document.getElementById('copyRequestUrlBtn'),
+    requestPreview: document.getElementById('requestBodyPreview'),
+    curlPreview: document.getElementById('curlPreview'),
+    responseMeta: document.getElementById('responseMeta'),
+    readerCatalog: document.getElementById('readerCatalog'),
+    formatCatalog: document.getElementById('formatCatalog'),
+    generatePath: document.getElementById('generatePath'),
+    packagesPath: document.getElementById('packagesPath'),
+    readersPath: document.getElementById('readersPath'),
+};
 
 function detectApiBase() {
     const stored = sessionStorage.getItem('haze.api_base');
-    if (stored) {
-        return stored;
-    }
+    if (stored) return stored;
     const match = window.location.pathname.match(/^(\/api\/[^/]+)\//);
     const base = match ? match[1] : '/api/v1';
     sessionStorage.setItem('haze.api_base', base);
     return base;
 }
 
+function escapeHtml(value) {
+    const span = document.createElement('span');
+    span.textContent = String(value ?? '');
+    return span.innerHTML;
+}
 
 function splitLocations(value) {
     return String(value || '')
@@ -104,120 +114,221 @@ function splitLocations(value) {
         .filter(Boolean);
 }
 
-function escapeHtml(value) {
-    const element = document.createElement('span');
-    element.textContent = String(value ?? '');
-    return element.innerHTML;
-}
-
-function getSelectedPackages() {
+function selectedPackages() {
     return state.allPackages.filter((pkg) => state.selectedPackages.has(pkg));
 }
 
-function hasAllPackagesSelected() {
-    return state.allPackages.length > 0 && getSelectedPackages().length === state.allPackages.length;
+function allPackagesSelected() {
+    return state.allPackages.length > 0 && selectedPackages().length === state.allPackages.length;
 }
 
-function setSelectedPackages(packageIds) {
+function setSelectedPackages(packages) {
     state.selectedPackages.clear();
-    for (const packageId of packageIds) {
-        if (state.allPackages.includes(packageId)) {
-            state.selectedPackages.add(packageId);
-        }
+    for (const pkg of packages) {
+        if (state.allPackages.includes(pkg)) state.selectedPackages.add(pkg);
     }
 }
 
-function getPayload() {
-    const locations = splitLocations(tryLocations.value);
-    const packages = getSelectedPackages();
-    const payload = {
+function payload() {
+    const locations = splitLocations(el.locations.value);
+    const body = {
+        feed_id: el.feed.value,
         locations: locations.length === 1 ? locations[0] : locations,
-        packages: hasAllPackagesSelected() ? 'all' : packages,
-        lang: tryLang.value,
-        format: tryFormat.value,
+        packages: allPackagesSelected() ? 'all' : selectedPackages(),
+        lang: el.lang.value,
+        format: el.format.value,
     };
-    const voice = tryVoice.value.trim();
-    if (voice) {
-        payload.voice = voice;
-    }
-    if (trySource.value) {
-        payload.source = trySource.value;
-    }
-    return payload;
+    if (el.source.value) body.source = el.source.value;
+    if (el.voice.value) body.reader_id = el.voice.value;
+    return body;
 }
 
-function updateMetrics() {
-    const selectedPackages = getSelectedPackages();
-    sourceMetric.textContent = trySource.value || 'auto';
-    formatMetric.textContent = tryFormat.value;
-    packageMetric.textContent = hasAllPackagesSelected() ? 'all' : String(selectedPackages.length);
-    responseTypeMetric.textContent = TEXT_FORMATS.has(tryFormat.value) ? 'text' : 'audio';
-    wxBaseMetric.textContent = state.wxBase;
-    wxBasePill.textContent = state.wxBase;
-    generatePath.textContent = `${state.wxBase}/generate`;
-    packagesPath.textContent = `${state.wxBase}/packages`;
+function apiRequestUrl() {
+    return new URL(`${state.wxBase}/generate`, window.location.origin).href;
+}
+
+function setHealth(ok, message, pill) {
+    if (el.apiDot) el.apiDot.dataset.state = ok ? 'ok' : 'err';
+    if (el.wxDot) el.wxDot.dataset.state = ok ? 'ok' : 'err';
+    el.healthPill.textContent = pill;
+    el.statusBanner.textContent = message;
+    el.statusBanner.className = `status-banner ${ok ? 'ok' : 'err'}`;
+}
+
+function setBusy(busy, message = '') {
+    state.busy = busy;
+    if (message) el.status.textContent = message;
+    el.stop.disabled = !busy;
+    update();
+}
+
+function resetOutput() {
+    if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
+    state.objectUrl = null;
+    el.audio.pause();
+    el.audio.removeAttribute('src');
+    el.audio.hidden = true;
+    el.text.hidden = true;
+    el.text.textContent = '';
+}
+
+function responseCard(label, value) {
+    return `<article class="wx-response-card"><p>${escapeHtml(label)}</p><strong>${escapeHtml(value)}</strong></article>`;
+}
+
+function renderResponseMeta(result = null, message = '') {
+    if (!result) {
+        el.responseMeta.innerHTML = `<article class="wx-response-card is-empty"><p>${escapeHtml(message || 'No request has been sent yet.')}</p></article>`;
+        el.responseSummary.textContent = message || 'No request yet';
+        return;
+    }
+    const rows = [
+        ['Format', result.format || el.format.value],
+        ['Feed', result.feed_id || el.feed.value || 'auto'],
+        ['Reader', result.reader_id || 'automatic'],
+        ['Language', result.language || el.lang.value],
+        ['Packages', result.packages || selectedPackages().join(', ') || 'none'],
+    ];
+    if (result.sample_rate) rows.push(['Sample rate', `${result.sample_rate} Hz`]);
+    if (result.channels) rows.push(['Channels', result.channels]);
+    el.responseMeta.innerHTML = rows.map(([label, value]) => responseCard(label, value)).join('');
+    el.responseSummary.textContent = result.text ? 'Text ready' : 'Audio ready';
+}
+
+async function revealAudio(bytes, result) {
+    if (!bytes.length) throw new Error('The request returned no audio.');
+    let blobBytes = bytes;
+    let mime = FORMAT_INFO[result.format]?.mime || result.content_type || 'application/octet-stream';
+    if (result.format === 'raw') {
+        blobBytes = pcmToWav(bytes, result.sample_rate || 48000, result.channels || 1);
+        mime = 'audio/wav';
+    }
+    state.objectUrl = URL.createObjectURL(new Blob([blobBytes], { type: mime }));
+    el.audio.src = state.objectUrl;
+    el.audio.hidden = false;
+    try {
+        await el.audio.play();
+        return 'Playing audio.';
+    } catch {
+        return 'Audio ready. Press play.';
+    }
 }
 
 function updatePackageSummary() {
-    const selectedCount = getSelectedPackages().length;
-    const totalCount = state.allPackages.length;
-    if (!totalCount) {
-        pkgSummary.textContent = 'Packages are unavailable.';
-        return;
+    const count = selectedPackages().length;
+    if (!state.allPackages.length) {
+        el.pkgSummary.textContent = 'Package catalog is unavailable.';
+    } else if (!count) {
+        el.pkgSummary.textContent = 'Select at least one package.';
+    } else if (count === state.allPackages.length) {
+        el.pkgSummary.textContent = `All ${count} packages selected.`;
+    } else {
+        el.pkgSummary.textContent = `${count} of ${state.allPackages.length} packages selected.`;
     }
-    if (!selectedCount) {
-        pkgSummary.textContent = 'Select at least one package to enable generate.';
-        return;
-    }
-    if (selectedCount === totalCount) {
-        pkgSummary.textContent = `All ${totalCount} packages selected.`;
-        return;
-    }
-    pkgSummary.textContent = `${selectedCount} of ${totalCount} packages selected.`;
 }
 
-function updateRequestPreviews() {
-    const payload = getPayload();
-    requestBodyPreview.textContent = JSON.stringify(payload, null, 2);
+function updateCatalogs() {
+    el.readerCatalog.innerHTML = state.readers.length
+        ? state.readers.map((reader) => `<span>${escapeHtml(reader.id)} ${escapeHtml(reader.gender || '')} ${escapeHtml(reader.language || '')}</span>`).join('')
+        : '<span>No readers found</span>';
+    el.formatCatalog.innerHTML = Object.entries(FORMAT_INFO)
+        .map(([id, info]) => `<span>${escapeHtml(id)} ${info.type === 'text' ? 'text' : info.mime.split(';')[0]}</span>`)
+        .join('');
+}
 
-    const curlLines = [
-        `curl -s -X POST ${state.wxBase}/generate`,
+function updateEndpoints() {
+    el.wxBasePill.textContent = state.wxBase;
+    el.generatePath.textContent = `${state.wxBase}/generate`;
+    el.packagesPath.textContent = `${state.wxBase}/packages`;
+    el.readersPath.textContent = `${state.wxBase}/readers`;
+}
+
+function update() {
+    const body = payload();
+    const packageCount = selectedPackages().length;
+    const responseType = TEXT_FORMATS.has(body.format) ? 'text' : 'audio';
+    const feedLabel = el.feed.selectedOptions[0]?.textContent || body.feed_id || 'feed';
+    const locationLabel = splitLocations(el.locations.value)[0] || 'default location';
+    el.builderSummary.textContent = `${feedLabel} - ${locationLabel} - ${packageCount || 0} package${packageCount === 1 ? '' : 's'}`;
+    el.requestSummary.textContent = `${responseType}, ${body.format}`;
+    el.apiRequestUrl.textContent = apiRequestUrl();
+    el.requestPreview.textContent = JSON.stringify(body, null, 2);
+    const curl = [
+        `curl -s -X POST ${apiRequestUrl()}`,
         `  -H 'Content-Type: application/json'`,
-        `  -d '${JSON.stringify(payload)}'`,
+        `  -d '${JSON.stringify(body)}'`,
     ];
-    if (!TEXT_FORMATS.has(payload.format)) {
-        curlLines.push(`  --output weather.${payload.format === 'raw' ? 'pcm' : payload.format}`);
+    if (!TEXT_FORMATS.has(body.format)) {
+        curl.push(`  --output weather.${body.format === 'raw' ? 's16le' : body.format}`);
     }
-    curlPreview.textContent = curlLines.join(' \\\n');
-
-    tryBtn.textContent = TEXT_FORMATS.has(payload.format) ? 'Generate' : 'Generate & Play';
-    tryBtn.disabled = state.busy || getSelectedPackages().length === 0;
-    pkgDefaultBtn.disabled = state.busy || state.allPackages.length === 0;
-    pkgAllBtn.disabled = state.busy || state.allPackages.length === 0;
-    pkgClearBtn.disabled = state.busy || getSelectedPackages().length === 0;
+    el.curlPreview.textContent = curl.join(' \\\n');
+    el.button.textContent = responseType === 'text' ? 'Generate Text' : 'Generate & Play';
+    el.button.disabled = state.busy || !body.feed_id || packageCount === 0;
+    el.pkgDefaultBtn.disabled = state.busy || state.allPackages.length === 0;
+    el.pkgAllBtn.disabled = state.busy || state.allPackages.length === 0;
+    el.pkgClearBtn.disabled = state.busy || packageCount === 0;
     updatePackageSummary();
-    updateMetrics();
+    updateEndpoints();
 }
 
-function populatePackageTable(packages) {
-    pkgTable.innerHTML = packages.map((pkg) => (
-        `<tr><td><code>${pkg}</code></td><td>${PACKAGE_DESCRIPTIONS[pkg] || ''}</td></tr>`
-    )).join('');
+async function copyText(text) {
+    if (navigator.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return;
+        } catch {
+            // Browser privacy settings can reject clipboard writes even on localhost.
+        }
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+    if (!copied) {
+        throw new Error('copy command was rejected');
+    }
 }
 
-function populateFormatTable() {
-    formatTable.innerHTML = Object.entries(FORMAT_INFO).map(([format, info]) => (
-        `<tr><td><code>${format}</code></td><td><code>${info.mime}</code></td><td>${info.delivery}</td><td>${info.type}</td></tr>`
-    )).join('');
+function renderFeeds() {
+    if (!state.feeds.length) {
+        el.feed.innerHTML = '<option value="">No configured feeds</option>';
+        return;
+    }
+    const current = el.feed.value;
+    el.feed.innerHTML = state.feeds.map((feed) => {
+        const name = feed.name || feed.id;
+        const suffix = feed.enabled === false ? ' (disabled)' : '';
+        return `<option value="${escapeHtml(feed.id)}">${escapeHtml(name)}${suffix}</option>`;
+    }).join('');
+    if (current && state.feeds.some((feed) => feed.id === current)) {
+        el.feed.value = current;
+    } else {
+        const enabled = state.feeds.find((feed) => feed.enabled !== false);
+        el.feed.value = enabled?.id || state.feeds[0]?.id || '';
+    }
 }
 
-function ensureDefaultPackages() {
-    const defaults = DEFAULT_PACKAGES.filter((pkg) => state.allPackages.includes(pkg));
-    setSelectedPackages(defaults.length ? defaults : state.allPackages.slice(0, 3));
+function renderReaders() {
+    const current = el.voice.value;
+    el.voice.innerHTML = '<option value="">Automatic reader</option>' + state.readers.map((reader) => {
+        const parts = [reader.id, reader.gender, reader.language, reader.voice_id].filter(Boolean);
+        return `<option value="${escapeHtml(reader.id)}">${escapeHtml(parts.join(' - '))}</option>`;
+    }).join('');
+    if (current && state.readers.some((reader) => reader.id === current)) {
+        el.voice.value = current;
+    }
+    updateCatalogs();
 }
 
 function renderPackageChips() {
-    tryPkgs.innerHTML = '';
+    el.packages.innerHTML = '';
     for (const pkg of state.allPackages) {
         const chip = document.createElement('button');
         chip.type = 'button';
@@ -233,212 +344,145 @@ function renderPackageChips() {
                 state.selectedPackages.add(pkg);
             }
             renderPackageChips();
-            updateRequestPreviews();
+            update();
         });
-        tryPkgs.appendChild(chip);
-    }
-    updatePackageSummary();
-}
-
-function setHealth(ok, bannerText, detailText) {
-    apiDot.dataset.state = ok ? 'ok' : 'err';
-    wxDot.dataset.state = ok ? 'ok' : 'err';
-    healthPill.textContent = detailText;
-    statusBanner.textContent = bannerText;
-    statusBanner.className = `status-banner ${ok ? 'ok' : 'err'}`;
-}
-
-function setBusy(busy, message = '') {
-    state.busy = busy;
-    if (message) {
-        tryStatus.textContent = message;
-    }
-    tryStop.disabled = !busy;
-    updateRequestPreviews();
-}
-
-function resetOutput() {
-    if (state.objectUrl) {
-        URL.revokeObjectURL(state.objectUrl);
-        state.objectUrl = null;
-    }
-    tryAudio.pause();
-    tryAudio.removeAttribute('src');
-    tryAudio.hidden = true;
-    tryText.hidden = true;
-    tryText.textContent = '';
-}
-
-async function revealAudio(blob) {
-    if (!blob.size) {
-        throw new Error('The request returned no audio.');
-    }
-    state.objectUrl = URL.createObjectURL(blob);
-    tryAudio.src = state.objectUrl;
-    tryAudio.hidden = false;
-    try {
-        await tryAudio.play();
-        return { message: 'Playing audio…', className: 'try-status ok' };
-    } catch {
-        return { message: 'Audio ready. Press play.', className: 'try-status warn' };
+        el.packages.appendChild(chip);
     }
 }
 
-function renderResponseHeaders(response) {
-    const fields = [
-        ['Content-Type', response.headers.get('Content-Type') || FORMAT_INFO[tryFormat.value]?.mime || 'unknown'],
-        ['X-Format', response.headers.get('X-Format') || tryFormat.value],
-        ['X-Source', response.headers.get('X-Source') || 'auto'],
-        ['X-Packages', response.headers.get('X-Packages') || getSelectedPackages().join(',') || 'none'],
-        ['Content-Length', response.headers.get('Content-Length') || 'streamed'],
-        ['X-Audio-Sample-Rate', response.headers.get('X-Audio-Sample-Rate') || 'n/a'],
-        ['X-Audio-Channels', response.headers.get('X-Audio-Channels') || 'n/a'],
-    ];
-    responseMeta.innerHTML = fields.map(([label, value]) => (
-        `<article class="wx-panel-response-card"><p>${escapeHtml(label)}</p><strong>${escapeHtml(value)}</strong></article>`
-    )).join('');
-}
-
-function renderResponseError(message) {
-    responseMeta.innerHTML = `<article class="wx-panel-response-card is-empty"><p>${escapeHtml(message)}</p></article>`;
-}
-
-
-async function readError(response) {
-    const contentType = response.headers.get('Content-Type') || '';
-    if (contentType.includes('application/json')) {
-        try {
-            const payload = await response.json();
-            return payload.detail || JSON.stringify(payload);
-        } catch {
-            return `Request failed with status ${response.status}`;
-        }
-    }
-    const body = await response.text().catch(() => '');
-    return body || `Request failed with status ${response.status}`;
+function selectDefaultPackages() {
+    const defaults = DEFAULT_PACKAGES.filter((pkg) => state.allPackages.includes(pkg));
+    setSelectedPackages(defaults.length ? defaults : state.allPackages.slice(0, 3));
 }
 
 async function loadHealth() {
     const health = await apiGet('/health');
     state.wxBase = health.wx_base || state.wxBase;
-    const authState = health.auth_required ? 'panel auth enabled' : 'panel auth disabled';
-    setHealth(true, `API healthy. WX base ${state.wxBase}. ${authState}.`, `Healthy • ${authState}`);
+    const ready = health.capabilities?.wx_generate !== false;
+    const auth = health.auth_required ? 'auth enabled' : 'auth disabled';
+    setHealth(ready, ready ? `WX generator ready. ${auth}.` : `WX generator needs the event bridge. ${auth}.`, ready ? 'Ready' : 'Bridge offline');
+}
+
+async function loadFeeds() {
+    const panelState = await apiCommand('state', {}, 15000);
+    const feeds = panelState.summary?.feeds || [];
+    state.feeds = feeds.map((feed) => ({
+        id: String(feed.id || ''),
+        name: String(feed.name || feed.id || ''),
+        enabled: feed.enabled,
+    })).filter((feed) => feed.id);
+    renderFeeds();
 }
 
 async function loadPackages() {
-    const payload = await apiCommand('wx.packages');
-    const packages = Array.isArray(payload.packages) ? payload.packages : [];
-    state.allPackages = packages.length ? packages : Object.keys(PACKAGE_DESCRIPTIONS);
+    const result = await apiCommand('wx.packages');
+    state.allPackages = Array.isArray(result.packages) && result.packages.length
+        ? result.packages
+        : Object.keys(PACKAGE_DESCRIPTIONS);
+    selectDefaultPackages();
+    renderPackageChips();
+}
+
+async function loadReaders() {
+    const result = await apiCommand('wx.readers');
+    state.readers = Array.isArray(result.readers) ? result.readers : [];
+    renderReaders();
 }
 
 async function generate() {
     resetOutput();
-    renderResponseError('Waiting for response.');
-    if (state.abortController) {
-        state.abortController.abort();
-    }
-    state.abortController = new AbortController();
-    const payload = getPayload();
-    setBusy(true, 'Generating…');
-    tryStatus.className = 'try-status';
-
+    renderResponseMeta(null, 'Waiting for response.');
+    const body = payload();
+    const generation = ++state.generation;
+    setBusy(true, 'Generating...');
+    el.status.className = 'try-status';
     try {
-        const result = await apiCommand('wx.generate', payload, 120000);
-        responseMeta.innerHTML = '<article class="wx-panel-response-card"><p>Transport</p><strong>WebSocket</strong></article>';
-        let completion = { message: 'Response ready.', className: 'try-status ok' };
-        if (typeof result?.text === 'string') {
-            tryText.textContent = result.text;
-            tryText.hidden = false;
-            completion = { message: 'Text response ready.', className: 'try-status ok' };
-        } else if (typeof result?.audio_base64 === 'string') {
+        const result = await apiCommand('wx.generate', body, 120000);
+        if (generation !== state.generation) return;
+        renderResponseMeta(result);
+        if (typeof result.text === 'string') {
+            el.text.textContent = result.text;
+            el.text.hidden = false;
+            el.status.textContent = 'Text response ready.';
+            el.status.className = 'try-status ok';
+        } else if (typeof result.audio_base64 === 'string') {
             const bytes = Uint8Array.from(atob(result.audio_base64), (char) => char.charCodeAt(0));
-            if (result.format === 'raw') {
-                completion = await revealAudio(new Blob([
-                    pcmToWav(bytes, result.sample_rate || 48000, result.channels || 1),
-                ], { type: 'audio/wav' }));
-            } else {
-                const info = FORMAT_INFO[result.format] || FORMAT_INFO[payload.format] || { mime: 'application/octet-stream' };
-                completion = await revealAudio(new Blob([bytes], { type: info.mime }));
-            }
+            const message = await revealAudio(bytes, result);
+            el.status.textContent = message;
+            el.status.className = message.includes('Playing') ? 'try-status ok' : 'try-status warn';
         } else {
-            throw new Error('Weather package generation returned no playable payload.');
+            throw new Error('Weather package generation returned no usable payload.');
         }
-
-        tryStatus.textContent = completion.message;
-        tryStatus.className = completion.className;
     } catch (error) {
-        if (error.name === 'AbortError') {
-            tryStatus.textContent = 'Stopped.';
-            tryStatus.className = 'try-status';
-            renderResponseError('Request aborted.');
-        } else {
-            tryStatus.textContent = error.message || 'Request failed.';
-            tryStatus.className = 'try-status err';
-            renderResponseError(error.message || 'Request failed.');
-        }
+        if (generation !== state.generation) return;
+        el.status.textContent = error.message || 'Request failed.';
+        el.status.className = 'try-status err';
+        renderResponseMeta(null, error.message || 'Request failed.');
     } finally {
-        state.abortController = null;
-        setBusy(false);
+        if (generation === state.generation) setBusy(false);
     }
 }
 
 function bindEvents() {
-    tryLocations.addEventListener('input', updateRequestPreviews);
-    trySource.addEventListener('change', updateRequestPreviews);
-    tryLang.addEventListener('change', updateRequestPreviews);
-    tryVoice.addEventListener('input', updateRequestPreviews);
-    tryFormat.addEventListener('change', updateRequestPreviews);
-    pkgDefaultBtn.addEventListener('click', () => {
-        ensureDefaultPackages();
+    for (const item of [el.feed, el.locations, el.source, el.lang, el.voice, el.format]) {
+        item.addEventListener(item.tagName === 'TEXTAREA' ? 'input' : 'change', update);
+    }
+    el.pkgDefaultBtn.addEventListener('click', () => {
+        selectDefaultPackages();
         renderPackageChips();
-        updateRequestPreviews();
+        update();
     });
-    pkgAllBtn.addEventListener('click', () => {
+    el.pkgAllBtn.addEventListener('click', () => {
         setSelectedPackages(state.allPackages);
         renderPackageChips();
-        updateRequestPreviews();
+        update();
     });
-    pkgClearBtn.addEventListener('click', () => {
+    el.pkgClearBtn.addEventListener('click', () => {
         state.selectedPackages.clear();
         renderPackageChips();
-        updateRequestPreviews();
+        update();
     });
-    tryBtn.addEventListener('click', generate);
-    tryStop.addEventListener('click', () => {
-        if (state.abortController) {
-            state.abortController.abort();
+    el.button.addEventListener('click', generate);
+    el.copyRequestUrl.addEventListener('click', async () => {
+        const text = apiRequestUrl();
+        try {
+            await copyText(text);
+            el.copyRequestUrl.textContent = 'Copied';
+            window.setTimeout(() => {
+                el.copyRequestUrl.textContent = 'Copy';
+            }, 1200);
+        } catch {
+            el.status.textContent = 'Unable to copy URL.';
+            el.status.className = 'try-status err';
         }
-        tryAudio.pause();
-        tryStatus.textContent = 'Stopped.';
-        tryStatus.className = 'try-status';
+    });
+    el.stop.addEventListener('click', () => {
+        state.generation += 1;
+        el.audio.pause();
+        el.status.textContent = 'Stopped.';
+        el.status.className = 'try-status';
+        setBusy(false);
     });
 }
 
 async function boot() {
-    if (window.lucide) {
-        lucide.createIcons();
-    }
-    populateFormatTable();
+    if (window.lucide) lucide.createIcons();
     bindEvents();
-
+    updateCatalogs();
+    renderResponseMeta();
     try {
         await loadHealth();
     } catch (error) {
         setHealth(false, `Panel API unavailable: ${error.message || 'request failed'}`, 'Unavailable');
     }
-
-    try {
-        await loadPackages();
-    } catch {
+    await Promise.allSettled([loadFeeds(), loadPackages(), loadReaders()]);
+    if (!state.allPackages.length) {
         state.allPackages = Object.keys(PACKAGE_DESCRIPTIONS);
+        selectDefaultPackages();
+        renderPackageChips();
     }
-
-    ensureDefaultPackages();
-    populatePackageTable(state.allPackages);
-    renderPackageChips();
-    updateRequestPreviews();
-    renderResponseError('No request has been sent yet.');
-    tryStatus.textContent = 'Ready';
+    update();
+    el.status.textContent = 'Ready';
 }
 
 export function initWxView() {

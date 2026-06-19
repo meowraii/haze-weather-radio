@@ -28,8 +28,11 @@ type productResult struct {
 }
 
 type synthResult struct {
-	Path string
-	Err  error
+	Path       string
+	Format     string
+	SampleRate int
+	Channels   int
+	Err        error
 }
 
 type wxResult struct {
@@ -59,6 +62,7 @@ type synthRequest struct {
 	Volume          int
 	SentenceSilence float64
 	OutputPath      string
+	OutputFormat    string
 }
 
 func connectBridge(ctx context.Context, addr string) (*bridgeClient, error) {
@@ -88,6 +92,10 @@ func (c *bridgeClient) Close() error {
 	return c.conn.Close()
 }
 
+func (c *bridgeClient) Events() <-chan map[string]any {
+	return c.events
+}
+
 func (c *bridgeClient) Publish(message map[string]any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -112,14 +120,23 @@ func (c *bridgeClient) WxOnDemand(ctx context.Context, requestID string, locatio
 		"source":  serviceID,
 		"subject": requestID,
 		"data": map[string]any{
-			"request_id":    requestID,
-			"feed_id":       location.FeedID,
-			"code":          location.Code,
-			"source":        location.Source,
-			"location_name": location.Name,
-			"language":      language,
-			"reader_id":     readerID,
-			"packages":      packages,
+			"request_id":      requestID,
+			"feed_id":         location.FeedID,
+			"covered_by_feed": location.Covered,
+			"code":            location.Code,
+			"source":          location.Source,
+			"location_name":   location.Name,
+			"province":        location.Province,
+			"forecast_id":     location.Forecast,
+			"station_id":      location.StationID,
+			"latitude":        location.Latitude,
+			"longitude":       location.Longitude,
+			"timezone":        location.Timezone,
+			"language":        language,
+			"reader_id":       readerID,
+			"packages":        packages,
+			"audience":        "telephone",
+			"telephone":       true,
 		},
 	}); err != nil {
 		return renderedProduct{}, err
@@ -163,7 +180,7 @@ func (c *bridgeClient) RenderProduct(ctx context.Context, requestID string, feed
 	}
 }
 
-func (c *bridgeClient) Synthesize(ctx context.Context, job synthRequest) (string, error) {
+func (c *bridgeClient) Synthesize(ctx context.Context, job synthRequest) (synthResult, error) {
 	ch := make(chan synthResult, 1)
 	c.mu.Lock()
 	c.pendingSynth[job.ID] = ch
@@ -174,7 +191,7 @@ func (c *bridgeClient) Synthesize(ctx context.Context, job synthRequest) (string
 		c.mu.Unlock()
 	}()
 	if err := os.MkdirAll(filepath.Dir(job.OutputPath), 0o755); err != nil {
-		return "", err
+		return synthResult{}, err
 	}
 	if err := c.Publish(map[string]any{
 		"type":    "tts.synthesize",
@@ -192,15 +209,16 @@ func (c *bridgeClient) Synthesize(ctx context.Context, job synthRequest) (string
 			"volume":           job.Volume,
 			"sentence_silence": job.SentenceSilence,
 			"output_path":      job.OutputPath,
+			"output_format":    job.OutputFormat,
 		},
 	}); err != nil {
-		return "", err
+		return synthResult{}, err
 	}
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return synthResult{}, ctx.Err()
 	case result := <-ch:
-		return result.Path, result.Err
+		return result, result.Err
 	}
 }
 
@@ -333,7 +351,12 @@ func (c *bridgeClient) handleSynthResult(message map[string]any) bool {
 		ch <- synthResult{Err: fmt.Errorf("TTS failed: %s", stringAt(data, "error"))}
 		return true
 	}
-	ch <- synthResult{Path: stringAt(data, "output_path")}
+	ch <- synthResult{
+		Path:       stringAt(data, "output_path"),
+		Format:     stringAt(data, "format"),
+		SampleRate: intAt(data, "sample_rate"),
+		Channels:   intAt(data, "channels"),
+	}
 	return true
 }
 
@@ -343,6 +366,23 @@ func stringAt(source map[string]any, key string) string {
 	}
 	value, _ := source[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func intAt(source map[string]any, key string) int {
+	if source == nil {
+		return 0
+	}
+	switch value := source[key].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	case json.Number:
+		parsed, _ := value.Int64()
+		return int(parsed)
+	default:
+		return 0
+	}
 }
 
 func mapAt(source map[string]any, key string) map[string]any {

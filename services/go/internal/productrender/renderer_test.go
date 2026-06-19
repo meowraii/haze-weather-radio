@@ -136,6 +136,360 @@ func TestForecastProductSaysRegionOncePerRegion(t *testing.T) {
 	}
 }
 
+func TestWxOnDemandUsesRequestedLocationInsteadOfFeedLocations(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	if cfg.ProductText["forecast"] == nil {
+		cfg.ProductText["forecast"] = map[string]map[string]string{}
+	}
+	cfg.ProductText["forecast"]["region"] = map[string]string{"en-CA": "For the {region}."}
+	storeObservationJSON(t, cfg.Store, "sk-99", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Regina"},
+  "station_id": "sk-99",
+  "properties": {
+    "condition": {"en": "Clear"},
+    "temp": 21,
+    "wind": {"direction": "SE", "speed": 14},
+    "pressure": {"value": 101.1}
+  }
+}`)
+	storeForecastJSON(t, cfg.Store, "sk-99", "06099", `{
+  "issued_at": "2026-06-15T20:00:00-06:00",
+  "name": {"en": "Regina"},
+  "forecast": [
+    {"period": {"en": "Tonight"}, "textSummary": {"en": "Clear."}},
+    {"period": {"en": "Tuesday"}, "textSummary": {"en": "Sunny."}}
+  ]
+}`)
+
+	product, err := newRenderer(cfg).RenderWxOnDemand(wxOnDemandRequest{
+		RequestID:    "wx-regina",
+		FeedID:       "sk-0001",
+		Code:         "06099",
+		Source:       "hello_weather",
+		LocationName: "Regina",
+		ForecastID:   "sk-99",
+		StationID:    "sk-99",
+		Packages:     []string{"current_conditions", "forecast"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []string{
+		"The weather at Regina was Clear",
+		"For Regina.",
+		"Tonight. Clear.",
+	} {
+		if !strings.Contains(product.Text, wanted) {
+			t.Fatalf("on-demand product missing %q:\n%s", wanted, product.Text)
+		}
+	}
+	if strings.Contains(product.Text, "Saskatoon Diefenbaker") {
+		t.Fatalf("on-demand product leaked feed observation:\n%s", product.Text)
+	}
+}
+
+func TestWxOnDemandUsesProviderStationWhenLocationNameIsID(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeObservationJSON(t, cfg.Store, "sk-99", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Regina International Airport"},
+  "station_id": "sk-99",
+  "properties": {
+    "condition": {"en": "Clear"},
+    "temp": 21,
+    "wind": {"direction": "SE", "speed": 14},
+    "pressure": {"value": 101.1}
+  }
+}`)
+
+	product, err := newRenderer(cfg).RenderWxOnDemand(wxOnDemandRequest{
+		RequestID:    "wx-regina-id-name",
+		FeedID:       "sk-0001",
+		Code:         "06099",
+		Source:       "hello_weather",
+		LocationName: "sk-99",
+		ForecastID:   "sk-99",
+		StationID:    "sk-99",
+		Packages:     []string{"current_conditions"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(product.Text, "The weather at Regina International Airport was Clear") {
+		t.Fatalf("on-demand current conditions did not use provider station:\n%s", product.Text)
+	}
+	if strings.Contains(product.Text, "The weather at sk-99") {
+		t.Fatalf("on-demand current conditions leaked ID override:\n%s", product.Text)
+	}
+}
+
+func TestTelephoneWxOnDemandUsesTelephoneForecastAndSkipsConditionRepeat(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeObservationJSON(t, cfg.Store, "sk-99", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Regina International Airport"},
+  "station_id": "sk-99",
+  "properties": {
+    "condition": {"en": "Clear"},
+    "temp": 21,
+    "wind": {"direction": "SE", "speed": 14},
+    "pressure": {"value": 101.1}
+  }
+}`)
+	storeForecastJSON(t, cfg.Store, "sk-99", "06099", `{
+  "issued_at": "2026-06-15T23:00:00-06:00",
+  "name": {"en": "Regina"},
+  "forecast": [
+    {"period": {"en": "Tonight"}, "textSummary": {"en": "Clear."}},
+    {"period": {"en": "Tuesday"}, "textSummary": {"en": "Sunny."}}
+  ]
+}`)
+
+	product, err := newRenderer(cfg).RenderWxOnDemand(wxOnDemandRequest{
+		RequestID:    "wx-regina-telephone",
+		FeedID:       "sk-0001",
+		Code:         "06099",
+		Source:       "hello_weather",
+		LocationName: "Regina",
+		ForecastID:   "sk-99",
+		StationID:    "sk-99",
+		Packages:     []string{"current_conditions", "forecast"},
+		Telephone:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []string{
+		"The weather at Regina International Airport was Clear",
+		"The official Environment Canada forecast for the Regina area issued at 11:00 PM Central Standard Time.",
+		"Tonight. Clear.",
+	} {
+		if !strings.Contains(product.Text, wanted) {
+			t.Fatalf("telephone product missing %q:\n%s", wanted, product.Text)
+		}
+	}
+	for _, unwanted := range []string{
+		"Again, at Regina International Airport",
+		"For Regina.",
+		"XLF322",
+		"listening area",
+	} {
+		if strings.Contains(product.Text, unwanted) {
+			t.Fatalf("telephone product contained %q:\n%s", unwanted, product.Text)
+		}
+	}
+}
+
+func TestTelephoneWxOnDemandUsesStoredForecastIssueTime(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeObservationJSON(t, cfg.Store, "sk-99", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Regina International Airport"},
+  "station_id": "sk-99",
+  "properties": {
+    "condition": {"en": "Clear"},
+    "temp": 21,
+    "wind": {"direction": "SE", "speed": 14},
+    "pressure": {"value": 101.1}
+  }
+}`)
+	if err := cfg.Store.UpsertForecast(context.Background(), datastore.ForecastRecord{
+		Source:      "eccc",
+		ForecastID:  "sk-99",
+		RegionID:    "06099",
+		IssuedAtRaw: "2026-06-15T23:00:00-06:00",
+		Payload: mustJSONMap(t, `{
+  "name": {"en": "Regina"},
+  "forecast": [
+    {"period": {"en": "Tonight"}, "textSummary": {"en": "Clear."}},
+    {"period": {"en": "Tuesday"}, "textSummary": {"en": "Sunny."}}
+  ]
+}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	product, err := newRenderer(cfg).RenderWxOnDemand(wxOnDemandRequest{
+		RequestID:    "wx-regina-telephone-stored-time",
+		FeedID:       "sk-0001",
+		Code:         "06099",
+		Source:       "hello_weather",
+		LocationName: "Regina",
+		ForecastID:   "sk-99",
+		StationID:    "sk-99",
+		Packages:     []string{"forecast"},
+		Telephone:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(product.Text, "issued at 11:00 PM Central Standard Time.") {
+		t.Fatalf("telephone product missing stored issue time:\n%s", product.Text)
+	}
+	if strings.Contains(product.Text, "latest issue time") {
+		t.Fatalf("telephone product used fallback issue time:\n%s", product.Text)
+	}
+}
+
+func TestTelephoneWxOnDemandOmitsIssuePhraseWhenTimeMissing(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeForecastJSON(t, cfg.Store, "sk-99", "06099", `{
+  "name": {"en": "Regina"},
+  "forecast": [
+    {"period": {"en": "Tonight"}, "textSummary": {"en": "Clear."}}
+  ]
+}`)
+
+	product, err := newRenderer(cfg).RenderWxOnDemand(wxOnDemandRequest{
+		RequestID:    "wx-regina-telephone-no-time",
+		FeedID:       "sk-0001",
+		Code:         "06099",
+		Source:       "hello_weather",
+		LocationName: "Regina",
+		ForecastID:   "sk-99",
+		Packages:     []string{"forecast"},
+		Telephone:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(product.Text, "The official Environment Canada forecast for the Regina area.") {
+		t.Fatalf("telephone product missing no-time opener:\n%s", product.Text)
+	}
+	for _, unwanted := range []string{"latest issue time", "issued at ."} {
+		if strings.Contains(product.Text, unwanted) {
+			t.Fatalf("telephone product contained %q:\n%s", unwanted, product.Text)
+		}
+	}
+}
+
+func TestTelephoneWxOnDemandUsesForecastIDForCurrentConditionsWhenStationMissing(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeObservationJSON(t, cfg.Store, "sk-37", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Last Mountain"},
+  "station_id": "sk-37",
+  "properties": {
+    "condition": {"en": "Not observed"},
+    "temp": 16.2,
+    "wind": {"direction": "NW", "speed": 18},
+    "pressure": {"value": 101.3}
+  }
+}`)
+
+	product, err := newRenderer(cfg).RenderWxOnDemand(wxOnDemandRequest{
+		RequestID:    "wx-imperial-telephone",
+		FeedID:       "sk-0001",
+		Code:         "4711008",
+		Source:       "capcp_geocode",
+		LocationName: "Imperial",
+		ForecastID:   "sk-37",
+		Packages:     []string{"current_conditions"},
+		Telephone:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(product.Text, "The weather at Last Mountain was Not observed") {
+		t.Fatalf("telephone current conditions did not use requested forecast station:\n%s", product.Text)
+	}
+	if strings.Contains(product.Text, "Saskatoon") || strings.Contains(product.Text, "Diefenbaker") {
+		t.Fatalf("telephone current conditions leaked feed default observation:\n%s", product.Text)
+	}
+}
+
+func TestBuildECCCPointConditionsUsesNearestObservationStation(t *testing.T) {
+	obs, err := extractECCCPointObservation(`<script>window.__INITIAL_STATE__={"weather":{"obs":{}},"location":{"location":{"51.347--105.434":{"obs":{"observedAt":"Last Mountain","provinceCode":"sk","climateId":"4014156","tcid":"wxg","timeStamp":"2026-06-18T18:00:00.000Z","timeStampText":"12:00 PM CST Thursday 18 June 2026","iconCode":"29","condition":"","temperature":{"metric":"18","metricUnrounded":"18.3"},"dewpoint":{"metric":"7","metricUnrounded":"7.0"},"pressure":{"metric":"101.2"},"tendency":"falling","humidity":"47","windSpeed":{"metric":"9"},"windGust":{"metric":""},"windDirection":"NW"}}}}};</script>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, ok := buildECCCPointConditions(obs)
+	if !ok {
+		t.Fatal("point conditions did not build")
+	}
+	decoded, ok := decodeLiveObservation(payload)
+	if !ok {
+		t.Fatal("point conditions did not decode")
+	}
+	rendered := observationFromLiveFile(locationXML{ID: "sk-37", Source: "eccc"}, "en-CA", decoded)
+	if rendered.LocationName != "Last Mountain" {
+		t.Fatalf("station = %q", rendered.LocationName)
+	}
+	if rendered.Condition != "Not observed" {
+		t.Fatalf("condition = %q", rendered.Condition)
+	}
+	if rendered.TemperatureC == nil || *rendered.TemperatureC != 18.3 {
+		t.Fatalf("temperature = %#v", rendered.TemperatureC)
+	}
+}
+
+func TestLoadStoreForecastIgnoresDecodedEmptyPayload(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeForecastJSON(t, cfg.Store, "sk-32", "06032", `{
+  "forecastGroup": {"forecasts": []}
+}`)
+
+	var raw liveForecastFile
+	input, ok := newRenderer(cfg).loadStoreForecast(coverageRegionXML{
+		ID:     "06032",
+		Source: "eccc",
+	}, "sk-32", &raw)
+	if ok || input != "" {
+		t.Fatalf("empty decoded store forecast should be ignored, input=%q forecast=%#v", input, raw.Forecast)
+	}
+}
+
+func TestBuildECCCForecastUsesCitypageNameFallback(t *testing.T) {
+	payload, ok := buildECCCForecast(map[string]any{
+		"properties": map[string]any{
+			"lastUpdated": "2026-06-18T05:07:12Z",
+			"name":        map[string]any{"en": "Regina", "fr": "Regina"},
+			"forecastGroup": map[string]any{
+				"timestamp": map[string]any{"en": "2026-06-17T22:00:00Z", "fr": "2026-06-17T22:00:00Z"},
+				"forecasts": []any{
+					map[string]any{
+						"period":      map[string]any{"textForecastName": map[string]any{"en": "Tonight", "fr": "Ce soir"}},
+						"cloudPrecip": map[string]any{"en": "Clear.", "fr": "Dégagé."},
+					},
+				},
+			},
+		},
+	}, coverageRegionXML{ID: "06032", Source: "eccc", Name: "sk-32"}, map[string]forecastRegionName{})
+	if !ok {
+		t.Fatal("forecast payload did not build")
+	}
+	name, ok := payload["name"].(map[string]any)
+	if !ok {
+		t.Fatalf("name block = %#v", payload["name"])
+	}
+	if name["en"] != "Regina" || name["fr"] != "Regina" {
+		t.Fatalf("name block = %#v", name)
+	}
+	if payload["issued_at"] != "2026-06-17T22:00:00Z" || payload["updated_at"] != "2026-06-18T05:07:12Z" {
+		t.Fatalf("timestamps = issued:%#v updated:%#v", payload["issued_at"], payload["updated_at"])
+	}
+}
+
 func TestAirQualityProductUsesLegacyAQHINarrative(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
@@ -177,6 +531,224 @@ func TestAirQualityProductUsesLegacyAQHINarrative(t *testing.T) {
 	}
 	if strings.Contains(product.Text, "Air quality for Saskatoon.") {
 		t.Fatalf("generic air quality opener leaked into legacy narrative:\n%s", product.Text)
+	}
+}
+
+func TestClimateSummaryRendersNOAAStyleDailyPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeProductPayloadJSON(t, cfg.Store, "climate_summary", "eccc", "4057165", `{
+  "source": "eccc",
+  "name": {"en": "Saskatoon"},
+  "last_updated": "2026-06-18T12:00:00Z",
+  "observations": {
+    "station": {"en": "Saskatoon RCS"},
+    "date": "2026-06-17 00:00:00",
+    "high": 20.3,
+    "low": 8.5,
+    "mean": 14.4,
+    "precipitation": 4,
+    "max_gust_speed": 47,
+    "max_gust_direction": "NNW",
+    "heating_degree_days": 3.6,
+    "cooling_degree_days": 0,
+    "min_humidity": 48
+  },
+  "normals": {
+    "station": {"en": "Saskatoon Diefenbaker Int'l A"},
+    "month": 6,
+    "period": "1981 to 2010",
+    "temperature": {"high": 22.4, "low": 9.2, "mean": 15.8},
+    "precipitation": 65.8
+  },
+  "records": {
+    "high_temperature": {"value": 34.6, "year": 1988},
+    "low_temperature": {"value": 0, "year": 1949},
+    "precipitation": {"value": 86.4, "year": 2007}
+  },
+  "astronomy": {
+    "sunrise": "2026-06-17T10:45:00Z",
+    "sunset": "2026-06-18T03:31:00Z",
+    "timezone": "America/Regina"
+  }
+}`)
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "climate_summary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, wanted := range []string{
+		"The Environment Canada climate summary.",
+		"At Saskatoon RCS on Wednesday, June 17, the high was 20.3 degrees, the low was 8.5 degrees, and the mean temperature was 14.4 degrees.",
+		"Precipitation totalled 4.0 millimetres.",
+		"The strongest wind gust was 47.0 kilometres per hour from the north north west.",
+		"The minimum relative humidity was 48 percent.",
+		"Heating degree days were 3.6, and cooling degree days were 0.0.",
+		"For June, the monthly averages from 1981 to 2010 at Saskatoon Diefenbaker Int'l A are high 22.4 degrees, low 9.2 degrees, mean 15.8 degrees, and total precipitation 65.8 millimetres.",
+		"For June 17, the record high was 34.6 degrees in 1988, the record low was 0 degrees in 1949, and the greatest precipitation was 86.4 millimetres in 2007.",
+		"Sunrise is at 4:45 AM, and sunset is at 9:31 PM Central Standard Time.",
+	} {
+		if !strings.Contains(product.Text, wanted) {
+			t.Fatalf("climate summary missing %q:\n%s", wanted, product.Text)
+		}
+	}
+}
+
+func TestClimateSummaryOmitsMissingPrecipitation(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeProductPayloadJSON(t, cfg.Store, "climate_summary", "eccc", "4057165", `{
+  "source": "eccc",
+  "name": {"en": "Saskatoon"},
+  "observations": {
+    "station": {"en": "Saskatoon RCS"},
+    "date": "2026-06-17 00:00:00",
+    "high": 20.3,
+    "low": 8.5
+  }
+}`)
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "climate_summary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(product.Text), "precipitation") {
+		t.Fatalf("missing precipitation should not be announced:\n%s", product.Text)
+	}
+}
+
+func TestSpecialtyProductsRenderStoredPayloads(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	tests := []struct {
+		name    string
+		kind    string
+		payload string
+		want    []string
+	}{
+		{
+			name: "thunderstorm outlook",
+			kind: "thunderstorm_outlook",
+			payload: `{
+  "source": "eccc",
+  "title": "Thunderstorm Outlook",
+  "updated_at": "2026-06-18T18:00:00Z",
+  "items": [{
+    "area": "Prairies",
+    "thunderstorm": "isolated",
+    "risk": 1,
+    "confidence": 3,
+    "impact": 1,
+    "tornado": true,
+    "rain_mm": 30,
+    "hail_cm": 1,
+    "gust_kmh": 70,
+    "valid_at": "2026-06-18T18:00:00Z",
+    "expires_at": "2099-06-18T23:00:00Z"
+  }]
+}`,
+			want: []string{"The Environment Canada Thunderstorm outlook", "For the areas in and around the Saskatoon area, the main convective hazard is expected to be a minor risk of isolated thunderstorms.", "30 millimeters of rain, 1 centimeter of hail, and gusts up to 70 kilometers per hour may be associated with this hazard."},
+		},
+		{
+			name: "metnotes",
+			kind: "metnotes",
+			payload: `{
+  "source": "eccc",
+  "title": "Meteorological Notes",
+  "updated_at": "2026-06-18T18:00:00Z",
+  "items": [{
+    "text": {"en": "Localized heavy showers may cause brief ponding on roads."},
+    "expires_at": "2099-06-18T23:00:00Z"
+  }]
+}`,
+			want: []string{"Meteorological notes for the Saskatoon area.", "Localized heavy showers may cause brief ponding on roads."},
+		},
+		{
+			name: "hydrometric",
+			kind: "hydrometric",
+			payload: `{
+  "source": "eccc",
+  "title": "River Conditions",
+  "updated_at": "2026-06-18T18:00:00Z",
+  "items": [{
+    "station": "South Saskatchewan River at Saskatoon",
+    "observed_at": "2026-06-18T17:00:00-06:00",
+    "level_m": 2.424,
+    "discharge": 288
+  }]
+}`,
+			want: []string{"River conditions for the Saskatoon area.", "At South Saskatchewan River at Saskatoon", "the water level was 2.4 metres", "the discharge was 288 cubic metres per second"},
+		},
+		{
+			name: "coastal flood",
+			kind: "coastal_flood",
+			payload: `{
+  "source": "eccc",
+  "title": "Coastal Flooding Risk",
+  "updated_at": "2026-06-18T18:00:00Z",
+  "items": [{
+    "area": "Atlantic",
+    "risk": 3,
+    "likelihood": 2,
+    "impact": 4,
+    "expires_at": "2099-06-18T23:00:00Z"
+  }]
+}`,
+			want: []string{"Coastal flooding risk for the Saskatoon area.", "For Atlantic", "coastal flooding risk level 3", "impact level 4"},
+		},
+		{
+			name: "hurricane tracks",
+			kind: "hurricane_tracks",
+			payload: `{
+  "source": "eccc",
+  "title": "Hurricane Tracks",
+  "updated_at": "2026-06-18T18:00:00Z",
+  "items": [{
+    "storm_name": "ONE",
+    "classification": "POTENTIAL_TROPICAL",
+    "max_wind_kt": 25,
+    "gust_kt": 35,
+    "pressure_mb": 1007,
+    "valid_at": "2026-06-18T18:00:00Z"
+  }]
+}`,
+			want: []string{"Hurricane track information for the Saskatoon area.", "Tropical cyclone One", "classified as potential tropical", "maximum sustained winds 25 knots"},
+		},
+		{
+			name: "precipitation analysis",
+			kind: "precipitation_analysis",
+			payload: `{
+  "source": "eccc",
+  "title": "Precipitation Analysis",
+  "updated_at": "2026-06-18T18:00:00Z",
+  "items": [{
+    "location": "Saskatoon",
+    "min_mm": 0,
+    "max_mm": 2.5,
+    "mean_mm": 1.3,
+    "published_at": "2026-06-18T18:00:00Z"
+  }]
+}`,
+			want: []string{"Recent precipitation analysis for the Saskatoon area.", "For Saskatoon", "estimated 24 hour precipitation ranged from 0 to 2.5 millimetres", "area average near 1.3 millimetres"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storeProductPayloadJSON(t, cfg.Store, tt.kind, "eccc", "sk-0001", tt.payload)
+			product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: tt.kind})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, wanted := range tt.want {
+				if !strings.Contains(product.Text, wanted) {
+					t.Fatalf("%s product missing %q:\n%s", tt.kind, wanted, product.Text)
+				}
+			}
+		})
 	}
 }
 
@@ -236,9 +808,9 @@ SOUTHERN MB...NIL SIG WX. END/FULTON`)
 	}
 
 	for _, wanted := range []string{
-		"SOUTHERN SASKATCHEWAN",
-		"Southern Saskatchewan. LOW PRESSURE",
-		"SCATTERED THUNDERSTORMS",
+		"southern saskatchewan",
+		"Southern Saskatchewan. low pressure",
+		"scattered thunderstorms",
 	} {
 		if !strings.Contains(product.Text, wanted) {
 			t.Fatalf("discussion product missing %q:\n%s", wanted, product.Text)
@@ -250,6 +822,7 @@ SOUTHERN MB...NIL SIG WX. END/FULTON`)
 		"SOUTHERN MB",
 		"NIL SIG WX",
 		"LOW AND ASSOCIATED FRONTS MOVING THROUGH ALBERTA TODAY WILL TRIGGER WIDESPREAD THUNDERSTORMS",
+		"END/FULTON",
 	} {
 		if strings.Contains(product.Text, unwanted) {
 			t.Fatalf("discussion product leaked %q:\n%s", unwanted, product.Text)
@@ -290,6 +863,22 @@ SOUTHERN SK...NIL SIG WX EARLY, THEN TSTMS OVER SRN SK WITH 8 C TEMPS. END/FULTO
 	for _, unwanted := range []string{"QPF", "KM/H", "NIL SIG WX", "TSTMS", "SRN SK", "8 C"} {
 		if strings.Contains(product.Text, unwanted) {
 			t.Fatalf("discussion product leaked shorthand %q:\n%s", unwanted, product.Text)
+		}
+	}
+}
+
+func TestNormalizeDiscussionForSpeechLowersUppercaseProse(t *testing.T) {
+	got := normalizeDiscussionForSpeech("AN UPPER LOW OVER SOUTHERN SK WILL BRING VFR CONDITIONS BY 3 PM CDT. END/FULTON")
+	for _, wanted := range []string{
+		"an upper low over southern Saskatchewan will bring V F R conditions by 3 P.M. Central Daylight Time.",
+	} {
+		if !strings.Contains(got, wanted) {
+			t.Fatalf("discussion cleanup missing %q:\n%s", wanted, got)
+		}
+	}
+	for _, unwanted := range []string{"AN UPPER LOW", "OVER", "WILL", "VFR", "END/FULTON"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("discussion cleanup leaked %q:\n%s", unwanted, got)
 		}
 	}
 }
@@ -571,6 +1160,9 @@ services:
       <airQualityLocations>
         <location id="HAHJJ" source="eccc"/>
       </airQualityLocations>
+      <climateLocations>
+        <location id="4057165" source="eccc" name_override="Saskatoon" normal_id="4057120"/>
+      </climateLocations>
     </locations>
     <transmitter_metadata>
       <transmitter>

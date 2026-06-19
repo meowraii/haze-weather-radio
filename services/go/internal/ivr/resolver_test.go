@@ -1,6 +1,10 @@
 package ivr
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestResolverMapsHelloWeatherCodeToCoveredFeed(t *testing.T) {
 	cfg := loadedConfig{
@@ -31,7 +35,7 @@ func TestResolverMapsHelloWeatherCodeToCoveredFeed(t *testing.T) {
 		},
 	}
 
-	location, err := NewResolver(cfg).Resolve("06040")
+	location, err := resolverWithHelloWeather(cfg, locationRecord{Code: "06040", Source: "hello_weather", Name: "Saskatoon", Province: "SK"}).Resolve("06040")
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
@@ -46,17 +50,401 @@ func TestResolverMapsHelloWeatherCodeToCoveredFeed(t *testing.T) {
 	}
 }
 
-func TestResolverRejectsKnownButUncoveredLocation(t *testing.T) {
+func TestResolverMarksNearbyHelloWeatherCodeOutsideFeedCoverage(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		ForecastLocations: map[string]locationRecord{
+			"065100": {Code: "065100", Source: "eccc_forecast", Name: "City of Saskatoon", Province: "SK", Forecast: "sk-40"},
+		},
+		Feeds: []feedXML{{
+			ID:         "sk-0001",
+			EnabledRaw: "true",
+			Timezone:   "America/Regina",
+			Locations: struct {
+				Coverage struct {
+					Regions []coverageRegionXML "xml:\"region\""
+				} "xml:\"coverage\""
+				ObservationLocations struct {
+					Locations []feedLocationXML "xml:\"location\""
+				} "xml:\"observationLocations\""
+			}{
+				Coverage: struct {
+					Regions []coverageRegionXML "xml:\"region\""
+				}{
+					Regions: []coverageRegionXML{{ID: "065100", Source: "eccc", DeriveForecast: "sk-40"}},
+				},
+			},
+		}},
+	}
+	resolver := resolverWithHelloWeather(cfg, locationRecord{Code: "06041", Source: "hello_weather", Name: "Nearby test location", Province: "SK", Forecast: "sk-41"})
+
+	location, err := resolver.Resolve("06041")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.FeedID != "sk-0001" {
+		t.Fatalf("FeedID = %q", location.FeedID)
+	}
+	if location.Covered {
+		t.Fatalf("nearby non-covered location was marked covered: %#v", location)
+	}
+	if location.Forecast != "sk-41" {
+		t.Fatalf("Forecast = %q", location.Forecast)
+	}
+}
+
+func TestResolverNamesHelloWeatherCodeFromFeedCoverageRegion(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		ForecastLocations: map[string]locationRecord{
+			"065100": {Code: "065100", Source: "eccc_forecast", Name: "City of Saskatoon", Province: "SK"},
+		},
+		Feeds: []feedXML{
+			{
+				ID:         "sk-0001",
+				EnabledRaw: "true",
+				Timezone:   "America/Regina",
+				Locations: struct {
+					Coverage struct {
+						Regions []coverageRegionXML "xml:\"region\""
+					} "xml:\"coverage\""
+					ObservationLocations struct {
+						Locations []feedLocationXML "xml:\"location\""
+					} "xml:\"observationLocations\""
+				}{
+					Coverage: struct {
+						Regions []coverageRegionXML "xml:\"region\""
+					}{
+						Regions: []coverageRegionXML{{ID: "065100", Source: "eccc", DeriveForecast: "sk-40"}},
+					},
+				},
+			},
+		},
+	}
+
+	location, err := resolverWithHelloWeather(cfg, locationRecord{Code: "06040", Source: "hello_weather", Name: "Saskatoon", Province: "SK"}).Resolve("06040")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.Name != "Saskatoon" {
+		t.Fatalf("Name = %q", location.Name)
+	}
+	if spokenLocationName(location) != "Saskatoon" {
+		t.Fatalf("spoken location = %q", spokenLocationName(location))
+	}
+}
+
+func TestResolverUsesDefaultFeedForKnownUncoveredLocation(t *testing.T) {
 	cfg := loadedConfig{
 		IVR: Config{DefaultLanguage: "en-CA"},
 		CLCs: map[string]locationRecord{
-			"065522": {Code: "065522", Source: "clc", Name: "Saskatoon", Province: "SK"},
+			"065522": {Code: "065522", Source: "clc", Name: "Outlook", Province: "SK"},
+		},
+		Feeds: []feedXML{{ID: "sk-0001", EnabledRaw: "true", Timezone: "America/Regina"}},
+	}
+
+	location, err := NewResolver(cfg).Resolve("065522")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.FeedID != "sk-0001" {
+		t.Fatalf("FeedID = %q", location.FeedID)
+	}
+	if location.Name != "Outlook" {
+		t.Fatalf("Name = %q", location.Name)
+	}
+	if location.Timezone != "America/Regina" {
+		t.Fatalf("Timezone = %q", location.Timezone)
+	}
+}
+
+func TestResolverUsesCoverageDerivedForecastForRegionCode(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		ForecastLocations: map[string]locationRecord{
+			"065500": {Code: "065500", Source: "eccc_forecast", Name: "Outlook - Watrous - Hanley - Imperial - Dinsmore", Province: "SK", Forecast: "sk-65500"},
+		},
+		Feeds: []feedXML{{
+			ID:         "sk-0001",
+			EnabledRaw: "true",
+			Timezone:   "America/Regina",
+			Locations: struct {
+				Coverage struct {
+					Regions []coverageRegionXML "xml:\"region\""
+				} "xml:\"coverage\""
+				ObservationLocations struct {
+					Locations []feedLocationXML "xml:\"location\""
+				} "xml:\"observationLocations\""
+			}{
+				Coverage: struct {
+					Regions []coverageRegionXML "xml:\"region\""
+				}{
+					Regions: []coverageRegionXML{{ID: "065500", Source: "eccc", DeriveForecast: "sk-37"}},
+				},
+			},
+		}},
+	}
+
+	location, err := NewResolver(cfg).Resolve("065500")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.Forecast != "sk-37" {
+		t.Fatalf("Forecast = %q, want sk-37", location.Forecast)
+	}
+}
+
+func TestResolverMapsNamedGeocodeToCoverageDerivedForecast(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		Geocodes: map[string]locationRecord{
+			"4711008": {Code: "4711008", Source: "capcp_geocode", Name: "Imperial", Province: "SK", Latitude: "51.34708551950", Longitude: "-105.43980930200"},
+		},
+		ForecastLocations: map[string]locationRecord{
+			"065500": {Code: "065500", Source: "eccc_forecast", Name: "Outlook - Watrous - Hanley - Imperial - Dinsmore", Province: "SK"},
+		},
+		Feeds: []feedXML{{
+			ID:         "sk-0001",
+			EnabledRaw: "true",
+			Timezone:   "America/Regina",
+			Locations: struct {
+				Coverage struct {
+					Regions []coverageRegionXML "xml:\"region\""
+				} "xml:\"coverage\""
+				ObservationLocations struct {
+					Locations []feedLocationXML "xml:\"location\""
+				} "xml:\"observationLocations\""
+			}{
+				Coverage: struct {
+					Regions []coverageRegionXML "xml:\"region\""
+				}{
+					Regions: []coverageRegionXML{{ID: "065500", Source: "eccc", DeriveForecast: "sk-37"}},
+				},
+			},
+		}},
+	}
+
+	location, err := NewResolver(cfg).Resolve("4711008")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.FeedID != "sk-0001" || location.Forecast != "sk-37" {
+		t.Fatalf("location = %#v, want sk-0001/sk-37", location)
+	}
+	if location.Name != "Imperial" {
+		t.Fatalf("Name = %q", location.Name)
+	}
+	if location.Latitude != "51.34708551950" || location.Longitude != "-105.43980930200" {
+		t.Fatalf("coordinates = %q,%q", location.Latitude, location.Longitude)
+	}
+}
+
+func TestParseHelloWeatherCodesUsesOfficialProvinceSections(t *testing.T) {
+	codes := parseHelloWeatherCodes(`
+		<h2>Manitoba</h2>
+		<p>Winnipeg 1-833-794-3556 (79HELLO) Code: 05038</p>
+		<h2>Quebec</h2>
+		<p>Val-des-Sources 1-833-794-3556 (79HELLO) Code: 03038</p>
+		<h2>Saskatchewan</h2>
+		<p>Saskatoon 1-833-794-3556 (79HELLO) Code: 06040</p>
+	`)
+	tests := map[string]locationRecord{
+		"05038": {Name: "Winnipeg", Province: "MB"},
+		"03038": {Name: "Val-des-Sources", Province: "QC"},
+		"06040": {Name: "Saskatoon", Province: "SK"},
+	}
+	for code, want := range tests {
+		got, ok := codes[code]
+		if !ok {
+			t.Fatalf("missing code %s", code)
+		}
+		if got.Name != want.Name || got.Province != want.Province || got.Source != "hello_weather" {
+			t.Fatalf("code %s = %#v", code, got)
+		}
+	}
+}
+
+func TestResolverUsesOfficialHelloWeatherDirectory(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		Geocodes: map[string]locationRecord{
+			"4611040": {Code: "4611040", Source: "capcp_geocode", Name: "Winnipeg", Province: "MB", Latitude: "49.895", Longitude: "-97.138"},
+		},
+		Feeds: []feedXML{{ID: "mb-0001", EnabledRaw: "true", Timezone: "America/Winnipeg"}},
+	}
+	resolver := resolverWithHelloWeather(cfg, locationRecord{Code: "05038", Source: "hello_weather", Name: "Winnipeg", Province: "MB"})
+
+	location, err := resolver.Resolve("05038")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.Name != "Winnipeg" || location.Province != "MB" {
+		t.Fatalf("location = %#v", location)
+	}
+	if location.Latitude != "49.895" || location.Longitude != "-97.138" {
+		t.Fatalf("coordinates = %q,%q", location.Latitude, location.Longitude)
+	}
+}
+
+func TestResolverDerivesHelloWeatherProviderWhenDirectoryUnavailable(t *testing.T) {
+	cfg := loadedConfig{
+		IVR:   Config{DefaultLanguage: "en-CA"},
+		Feeds: []feedXML{{ID: "mb-0001", EnabledRaw: "true", Timezone: "America/Winnipeg"}},
+	}
+	resolver := resolverWithHelloWeather(cfg)
+	calls := 0
+	resolver.lookupProviderName = func(_ context.Context, forecastID string) (string, bool) {
+		calls++
+		if forecastID != "mb-38" {
+			t.Fatalf("forecastID = %q", forecastID)
+		}
+		return "Winnipeg", true
+	}
+
+	location, err := resolver.Resolve("05038")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.Name != "Winnipeg" || location.Province != "MB" || location.Forecast != "mb-38" {
+		t.Fatalf("location = %#v", location)
+	}
+	if calls != 1 {
+		t.Fatalf("lookup calls = %d", calls)
+	}
+}
+
+func TestResolverAcceptsProvinceAndLocationShorthand(t *testing.T) {
+	cfg := loadedConfig{
+		IVR:   Config{DefaultLanguage: "en-CA"},
+		Feeds: []feedXML{{ID: "sk-0001", EnabledRaw: "true", Timezone: "America/Regina"}},
+	}
+	resolver := resolverWithHelloWeather(cfg, locationRecord{Code: "06040", Source: "hello_weather", Name: "Saskatoon", Province: "SK"})
+
+	location, err := resolver.Resolve("640")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.Code != "06040" || location.Name != "Saskatoon" {
+		t.Fatalf("location = %#v", location)
+	}
+}
+
+func TestResolverPrefersHelloWeatherOverLeftPadCollision(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		ForecastLocations: map[string]locationRecord{
+			"006005": {Code: "006005", Source: "eccc_forecast", Name: "AC000005", Province: "SK", Forecast: "sk-5"},
+		},
+		Feeds: []feedXML{{ID: "sk-0001", EnabledRaw: "true", Timezone: "America/Regina"}},
+	}
+	resolver := resolverWithHelloWeather(cfg, locationRecord{Code: "06005", Source: "hello_weather", Name: "Fort Qu'Appelle", Province: "SK"})
+
+	location, err := resolver.Resolve("06005")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.Source != "hello_weather" {
+		t.Fatalf("Source = %q", location.Source)
+	}
+	if location.Name != "Fort Qu'Appelle" {
+		t.Fatalf("Name = %q", location.Name)
+	}
+}
+
+func TestResolverPrefersExactForecastLocationOverHelloWeatherGuess(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		ForecastLocations: map[string]locationRecord{
+			"050001": {Code: "050001", Source: "eccc_forecast", Name: "Winnipeg", Province: "MB"},
+		},
+		Feeds: []feedXML{{ID: "mb-0001", EnabledRaw: "true", Timezone: "America/Winnipeg"}},
+	}
+	resolver := resolverWithHelloWeather(cfg)
+	resolver.lookupProviderName = func(context.Context, string) (string, bool) {
+		t.Fatal("exact forecast location should not need provider fetch")
+		return "", false
+	}
+
+	location, err := resolver.Resolve("050001")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.Source != "eccc_forecast" {
+		t.Fatalf("Source = %q", location.Source)
+	}
+	if location.Name != "Winnipeg" || location.Province != "MB" {
+		t.Fatalf("location = %#v", location)
+	}
+}
+
+func TestResolverUsesCoverageRegionNameWhenLocalForecastNameIsStale(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		ForecastLocations: map[string]locationRecord{
+			"000001": {Code: "000001", Source: "eccc_forecast", Name: "Saint Pierre and Miquelon", Forecast: "sk-1"},
+			"065400": {Code: "065400", Source: "eccc_forecast", Name: "Martensville - Warman - Rosthern - Delisle - Wakaw", Province: "SK"},
+		},
+		Feeds: []feedXML{{
+			ID:         "sk-0001",
+			EnabledRaw: "true",
+			Timezone:   "America/Regina",
+			Locations: struct {
+				Coverage struct {
+					Regions []coverageRegionXML "xml:\"region\""
+				} "xml:\"coverage\""
+				ObservationLocations struct {
+					Locations []feedLocationXML "xml:\"location\""
+				} "xml:\"observationLocations\""
+			}{
+				Coverage: struct {
+					Regions []coverageRegionXML "xml:\"region\""
+				}{
+					Regions: []coverageRegionXML{{ID: "065400", Source: "eccc", DeriveForecast: "sk-1"}},
+				},
+			},
+		}},
+	}
+	resolver := resolverWithHelloWeather(cfg, locationRecord{Code: "06001", Source: "hello_weather", Name: "Martensville", Province: "SK"})
+	resolver.lookupProviderName = func(context.Context, string) (string, bool) {
+		t.Fatal("covered region should not need provider fetch")
+		return "", false
+	}
+
+	location, err := resolver.Resolve("06001")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.Name != "Martensville" {
+		t.Fatalf("Name = %q", location.Name)
+	}
+	if strings.Contains(location.Name, "Saint Pierre") {
+		t.Fatalf("stale name leaked: %#v", location)
+	}
+}
+
+func resolverWithHelloWeather(cfg loadedConfig, records ...locationRecord) *Resolver {
+	resolver := NewResolver(cfg)
+	codes := map[string]locationRecord{}
+	for _, record := range records {
+		codes[record.Code] = record
+	}
+	resolver.lookupHelloWeather = func(context.Context) map[string]locationRecord {
+		return codes
+	}
+	return resolver
+}
+
+func TestResolverRejectsKnownLocationWhenNoFeedProfileExists(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		CLCs: map[string]locationRecord{
+			"065522": {Code: "065522", Source: "clc", Name: "Outlook", Province: "SK"},
 		},
 	}
 
 	_, err := NewResolver(cfg).Resolve("065522")
 	if err == nil {
-		t.Fatal("Resolve succeeded for uncovered location")
+		t.Fatal("Resolve succeeded without an enabled feed profile")
 	}
 }
 

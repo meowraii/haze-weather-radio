@@ -159,18 +159,7 @@ func (s *Service) handleEvent(event map[string]any) {
 }
 
 func (s *Service) handleWxOnDemand(event map[string]any) {
-	data := mapAt(event, "data")
-	request := wxOnDemandRequest{
-		RequestID:    firstText(event, data, "request_id", "subject", "id"),
-		FeedID:       firstText(event, data, "feed_id"),
-		Code:         firstText(event, data, "code", "location_code"),
-		Source:       firstText(event, data, "source"),
-		LocationName: firstText(event, data, "location_name", "name"),
-		Language:     firstText(event, data, "language"),
-		ReaderID:     firstText(event, data, "reader_id"),
-		Packages:     stringList(firstValue(event, data, "packages", "package_ids", "pkg_ids")),
-		Force:        boolAt(data, "force", boolAt(event, "force", false)),
-	}
+	request := wxOnDemandRequestFromEvent(event)
 	if request.RequestID == "" {
 		request.RequestID = fmt.Sprintf("wx-%d", time.Now().UnixNano())
 	}
@@ -200,6 +189,28 @@ func (s *Service) handleWxOnDemand(event map[string]any) {
 			"product":    product,
 		},
 	})
+}
+
+func wxOnDemandRequestFromEvent(event map[string]any) wxOnDemandRequest {
+	data := mapAt(event, "data")
+	return wxOnDemandRequest{
+		RequestID:    firstText(event, data, "request_id", "subject", "id"),
+		FeedID:       firstText(event, data, "feed_id"),
+		Code:         firstText(event, data, "code", "location_code"),
+		Source:       firstNonBlank(stringAt(data, "source"), stringAt(data, "weather_source")),
+		LocationName: firstText(event, data, "location_name", "name"),
+		Province:     firstText(event, data, "province"),
+		ForecastID:   firstText(event, data, "forecast_id", "forecast"),
+		StationID:    firstText(event, data, "station_id", "station"),
+		Latitude:     firstText(event, data, "latitude", "lat"),
+		Longitude:    firstText(event, data, "longitude", "lon", "lng"),
+		Timezone:     firstText(event, data, "timezone"),
+		Language:     firstText(event, data, "language"),
+		ReaderID:     firstText(event, data, "reader_id"),
+		Packages:     stringList(firstValue(event, data, "packages", "package_ids", "pkg_ids")),
+		Force:        boolAt(data, "force", boolAt(event, "force", false)),
+		Telephone:    boolAt(data, "telephone", strings.EqualFold(firstText(event, data, "audience"), "telephone")),
+	}
 }
 
 func (s *Service) refreshConfigIfNeeded() {

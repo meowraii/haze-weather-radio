@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,6 +115,9 @@ type outputsXML struct {
 	Feeds []outputFeedXML `xml:"feed"`
 }
 
+// BuildGitCommit is populated by release/dev build scripts with -ldflags.
+var BuildGitCommit = "unknown"
+
 type outputFeedXML struct {
 	ID          string        `xml:"id,attr"`
 	Stream      outputNodeXML `xml:"stream"`
@@ -196,8 +201,13 @@ func summaryPayload(config Config, configPath string, startedAt time.Time, reque
 	summary := map[string]any{
 		"name":               siteName(config),
 		"hostname":           hostname(),
+		"ip_address":         serverIP(request),
 		"operator":           displayText(config.Operator.OperatorName),
 		"on_air_name":        displayText(config.Operator.OnAirName),
+		"version":            fallbackText(config.Version, "dev"),
+		"git_commit":         gitCommit(),
+		"os":                 runtime.GOOS,
+		"architecture":       runtime.GOARCH,
 		"feed_count":         len(feeds),
 		"enabled_feed_count": enabled,
 		"uptime_seconds":     time.Since(startedAt).Seconds(),
@@ -265,23 +275,24 @@ func feedSummary(feed feedXML, outputs outputXML, forecastNames map[string]strin
 		runtime["last_alert_header"] = latestQueue.Header
 	}
 	return map[string]any{
-		"id":                strings.TrimSpace(feed.ID),
-		"name":              fallbackText(station.SiteName, feed.ID),
-		"enabled":           xmlBool(feed.EnabledRaw, true),
-		"timezone":          fallbackText(feed.Timezone, "Local"),
-		"languages":         feedLanguages(feed),
-		"location_count":    feedLocationCount(feed),
-		"clc_codes":         sortedKeys(clcCodes),
-		"same_locations":    sameLocations,
-		"coverage_regions":  regions,
-		"transmitter":       transmitterPayload(station, feed),
-		"transmitters":      transmitterPayloads(feed),
-		"outputs":           outputLabels,
-		"webrtc_enabled":    webrtcEnabled,
-		"alert_queue_depth": queueDepth,
-		"recent_alerts":     recentQueue,
-		"playlist_items":    []any{},
-		"runtime":           runtime,
+		"id":                  strings.TrimSpace(feed.ID),
+		"name":                fallbackText(station.SiteName, feed.ID),
+		"enabled":             xmlBool(feed.EnabledRaw, true),
+		"timezone":            fallbackText(feed.Timezone, "Local"),
+		"languages":           feedLanguages(feed),
+		"location_count":      feedLocationCount(feed),
+		"clc_codes":           sortedKeys(clcCodes),
+		"same_locations":      sameLocations,
+		"coverage_regions":    regions,
+		"transmitter":         transmitterPayload(station, feed),
+		"transmitters":        transmitterPayloads(feed),
+		"outputs":             outputLabels,
+		"webrtc_enabled":      webrtcEnabled,
+		"http_stream_enabled": webrtcEnabled,
+		"alert_queue_depth":   queueDepth,
+		"recent_alerts":       recentQueue,
+		"playlist_items":      []any{},
+		"runtime":             runtime,
 	}
 }
 
@@ -290,13 +301,14 @@ func publicFeedSummaries(feeds []map[string]any) []map[string]any {
 	for _, feed := range feeds {
 		transmitter, _ := feed["transmitter"].(map[string]any)
 		out = append(out, map[string]any{
-			"id":             feed["id"],
-			"name":           feed["name"],
-			"enabled":        feed["enabled"],
-			"runtime":        feed["runtime"],
-			"transmitter":    publicTransmitterPayload(transmitter),
-			"transmitters":   publicTransmitters(feed["transmitters"]),
-			"webrtc_enabled": feed["webrtc_enabled"],
+			"id":                  feed["id"],
+			"name":                feed["name"],
+			"enabled":             feed["enabled"],
+			"runtime":             feed["runtime"],
+			"transmitter":         publicTransmitterPayload(transmitter),
+			"transmitters":        publicTransmitters(feed["transmitters"]),
+			"webrtc_enabled":      feed["webrtc_enabled"],
+			"http_stream_enabled": feed["http_stream_enabled"],
 		})
 	}
 	return out
@@ -1120,6 +1132,133 @@ func hostname() string {
 		return "unknown"
 	}
 	return name
+}
+
+func requestIP(request *http.Request) string {
+	ip := "unknown"
+	if request != nil {
+		ip = strings.TrimSpace(request.Header.Get("X-Forwarded-For"))
+		if strings.Contains(ip, ",") {
+			ip = strings.TrimSpace(strings.Split(ip, ",")[0])
+		}
+		if ip == "" {
+			ip = strings.TrimSpace(request.Header.Get("X-Real-IP"))
+		}
+		if ip == "" {
+			ip = strings.TrimSpace(request.RemoteAddr)
+			if host, _, found := strings.Cut(ip, ":"); found {
+				ip = host
+			}
+		}
+	}
+	return fallbackText(ip, "unknown")
+}
+
+func serverIP(request *http.Request) string {
+	if request != nil {
+		if addr, ok := request.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && addr != nil {
+			if ip := addrIP(addr.String()); usableServerIP(ip) {
+				return ip
+			}
+		}
+		if ip := addrIP(request.Host); usableServerIP(ip) {
+			return ip
+		}
+	}
+	if ip := interfaceServerIP(); ip != "" {
+		return ip
+	}
+	return "unknown"
+}
+
+func addrIP(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	} else if strings.Count(value, ":") == 1 {
+		if host, _, found := strings.Cut(value, ":"); found {
+			value = host
+		}
+	}
+	return strings.Trim(value, "[]")
+}
+
+func usableServerIP(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return false
+	}
+	return !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast()
+}
+
+func interfaceServerIP() string {
+	type candidate struct {
+		ip    string
+		score int
+	}
+	candidates := []candidate{}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ip := interfaceAddrIP(addr)
+			if ip == nil || !usableServerIP(ip.String()) || ip.IsLinkLocalUnicast() {
+				continue
+			}
+			score := 1
+			if ip4 := ip.To4(); ip4 != nil {
+				score = 3
+				if ip4.IsPrivate() {
+					score = 4
+				}
+			} else if ip.IsPrivate() {
+				score = 2
+			}
+			candidates = append(candidates, candidate{ip: ip.String(), score: score})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0].ip
+}
+
+func interfaceAddrIP(addr net.Addr) net.IP {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		return value.IP
+	case *net.IPAddr:
+		return value.IP
+	default:
+		return net.ParseIP(addrIP(value.String()))
+	}
+}
+
+func gitCommit() string {
+	for _, name := range []string{"HAZE_GIT_COMMIT", "GIT_COMMIT"} {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	if strings.TrimSpace(BuildGitCommit) != "" {
+		return strings.TrimSpace(BuildGitCommit)
+	}
+	return "unknown"
 }
 
 func truncate(value string, limit int) string {

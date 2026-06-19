@@ -28,6 +28,7 @@ type Request struct {
 	Text            string
 	VoiceID         string
 	Language        string
+	OutputFormat    AudioFormat
 	Rate            int
 	Volume          int
 	SentenceSilence float64

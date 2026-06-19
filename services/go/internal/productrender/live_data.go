@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -69,21 +72,38 @@ type liveClimateFile struct {
 	Name         any    `json:"name"`
 	LastUpdated  string `json:"last_updated"`
 	Observations struct {
-		Station       any      `json:"station"`
-		Date          string   `json:"date"`
-		High          *float64 `json:"high"`
-		Low           *float64 `json:"low"`
-		Mean          *float64 `json:"mean"`
-		Precipitation *float64 `json:"precipitation"`
-		Rain          *float64 `json:"rain"`
-		Snowfall      *float64 `json:"snowfall"`
+		Station            any      `json:"station"`
+		Date               string   `json:"date"`
+		High               *float64 `json:"high"`
+		Low                *float64 `json:"low"`
+		Mean               *float64 `json:"mean"`
+		Precipitation      *float64 `json:"precipitation"`
+		PrecipitationTrace bool     `json:"precipitation_trace"`
+		Rain               *float64 `json:"rain"`
+		RainTrace          bool     `json:"rain_trace"`
+		Snowfall           *float64 `json:"snowfall"`
+		SnowfallTrace      bool     `json:"snowfall_trace"`
+		SnowOnGround       *float64 `json:"snow_on_ground"`
+		MaxGustSpeed       *float64 `json:"max_gust_speed"`
+		MaxGustDirection   string   `json:"max_gust_direction"`
+		HeatingDegreeDays  *float64 `json:"heating_degree_days"`
+		CoolingDegreeDays  *float64 `json:"cooling_degree_days"`
+		MinHumidity        *float64 `json:"min_humidity"`
 	} `json:"observations"`
 	Normals struct {
-		TextSummary any `json:"textSummary"`
+		TextSummary any    `json:"textSummary"`
+		Station     any    `json:"station"`
+		Month       int    `json:"month"`
+		Period      string `json:"period"`
 		Temperature struct {
 			High *float64 `json:"high"`
 			Low  *float64 `json:"low"`
+			Mean *float64 `json:"mean"`
 		} `json:"temperature"`
+		Precipitation *float64 `json:"precipitation"`
+		Rainfall      *float64 `json:"rainfall"`
+		Snowfall      *float64 `json:"snowfall"`
+		WindSpeed     *float64 `json:"wind_speed"`
 	} `json:"normals"`
 	Records map[string]struct {
 		Value *float64 `json:"value"`
@@ -94,6 +114,14 @@ type liveClimateFile struct {
 		Sunset   string `json:"sunset"`
 		Timezone string `json:"timezone"`
 	} `json:"astronomy"`
+}
+
+type liveSpecialtyProductFile struct {
+	Source     string           `json:"source"`
+	Collection string           `json:"collection"`
+	Title      string           `json:"title"`
+	UpdatedAt  string           `json:"updated_at"`
+	Items      []map[string]any `json:"items"`
 }
 
 func (r renderer) loadLiveObservationSnapshot(feed feedXML, snapshot *observationSnapshot) (string, bool) {
@@ -122,7 +150,13 @@ func (r renderer) loadLiveObservationSnapshot(feed feedXML, snapshot *observatio
 
 func (r renderer) liveObservation(loc locationXML, lang string) (observation, string, bool) {
 	var raw liveObservationFile
+	if input, ok := r.fetchECCCPointObservation(loc, &raw); ok {
+		return observationFromLiveFile(loc, lang, raw), input, true
+	}
 	if input, ok := r.loadStoreObservation(loc, &raw); ok {
+		return observationFromLiveFile(loc, lang, raw), input, true
+	}
+	if input, ok := r.fetchECCCObservation(loc, &raw); ok {
 		return observationFromLiveFile(loc, lang, raw), input, true
 	}
 	return observation{}, "", false
@@ -159,11 +193,7 @@ func (r renderer) loadLiveForecastSnapshot(feed feedXML, snapshot *forecastSnaps
 	var issuedAt string
 	for _, region := range feed.Locations.Coverage.Regions {
 		forecastID := fallbackText(region.DeriveForecast, region.ID)
-		var raw liveForecastFile
-		input := ""
-		if dbInput, ok := r.loadStoreForecast(region, forecastID, &raw); ok {
-			input = dbInput
-		}
+		raw, input, _ := r.liveForecast(region, forecastID)
 		if input == "" {
 			continue
 		}
@@ -191,6 +221,17 @@ func (r renderer) loadLiveForecastSnapshot(feed feedXML, snapshot *forecastSnaps
 	}
 	*snapshot = forecastSnapshot{IssuedAt: issuedAt, Regions: regions}
 	return strings.Join(paths, ";"), true
+}
+
+func (r renderer) liveForecast(region coverageRegionXML, forecastID string) (liveForecastFile, string, bool) {
+	var raw liveForecastFile
+	if input, ok := r.loadStoreForecast(region, forecastID, &raw); ok {
+		return raw, input, true
+	}
+	if input, ok := r.fetchECCCForecast(region, forecastID, &raw); ok {
+		return raw, input, true
+	}
+	return liveForecastFile{}, "", false
 }
 
 func (r renderer) forecastRegionDisplayName(region coverageRegionXML, rawName any, lang string) string {
@@ -336,6 +377,50 @@ func (r renderer) loadStoreObservation(loc locationXML, target *liveObservationF
 	return fmt.Sprintf("store:observations.current/%s/%s", source, loc.ID), true
 }
 
+func (r renderer) fetchECCCObservation(loc locationXML, target *liveObservationFile) (string, bool) {
+	if canonicalSource(loc.Source) != "eccc" || strings.TrimSpace(loc.ID) == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	raw, err := fetchECCCCitypage(ctx, strings.TrimSpace(loc.ID))
+	if err != nil {
+		return "", false
+	}
+	payload := buildECCCConditions(raw)
+	payload["_raw_citypage"] = raw
+	decoded, ok := decodeLiveObservation(payload)
+	if !ok {
+		return "", false
+	}
+	*target = decoded
+	return fmt.Sprintf("eccc:citypage/%s/current", loc.ID), true
+}
+
+func (r renderer) fetchECCCPointObservation(loc locationXML, target *liveObservationFile) (string, bool) {
+	latitude := strings.TrimSpace(loc.Latitude)
+	longitude := strings.TrimSpace(loc.Longitude)
+	if canonicalSource(loc.Source) != "eccc" || latitude == "" || longitude == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	raw, err := fetchECCCPointPage(ctx, latitude, longitude)
+	if err != nil {
+		return "", false
+	}
+	payload, ok := buildECCCPointConditions(raw)
+	if !ok {
+		return "", false
+	}
+	decoded, ok := decodeLiveObservation(payload)
+	if !ok {
+		return "", false
+	}
+	*target = decoded
+	return fmt.Sprintf("eccc:point/%s,%s/current", latitude, longitude), true
+}
+
 func (r renderer) loadStoreForecast(region coverageRegionXML, forecastID string, target *liveForecastFile) (string, bool) {
 	if r.cfg.Store == nil {
 		return "", false
@@ -347,7 +432,359 @@ func (r renderer) loadStoreForecast(region coverageRegionXML, forecastID string,
 	if err != nil || !ok {
 		return "", false
 	}
+	if len(target.Forecast) == 0 {
+		return "", false
+	}
 	return fmt.Sprintf("store:forecasts.current/%s/%s", source, forecastID), true
+}
+
+func (r renderer) fetchECCCForecast(region coverageRegionXML, forecastID string, target *liveForecastFile) (string, bool) {
+	if canonicalSource(region.Source) != "eccc" || strings.TrimSpace(forecastID) == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	raw, err := fetchECCCCitypage(ctx, strings.TrimSpace(forecastID))
+	if err != nil {
+		return "", false
+	}
+	payload, ok := buildECCCForecast(raw, region, r.cfg.ForecastNames)
+	if !ok {
+		return "", false
+	}
+	decoded, ok := decodeLiveForecast(payload)
+	if !ok {
+		return "", false
+	}
+	*target = decoded
+	return fmt.Sprintf("eccc:citypage/%s/forecast", forecastID), true
+}
+
+func fetchECCCCitypage(ctx context.Context, locationID string) (map[string]any, error) {
+	url := fmt.Sprintf("https://api.weather.gc.ca/collections/citypageweather-realtime/items/%s?f=json", strings.TrimSpace(locationID))
+	var raw map[string]any
+	return raw, fetchJSON(ctx, url, &raw)
+}
+
+func fetchECCCPointPage(ctx context.Context, latitude string, longitude string) (map[string]any, error) {
+	coords := strings.TrimSpace(latitude) + "," + strings.TrimSpace(longitude)
+	pageURL := "https://weather.gc.ca/en/location/index.html?coords=" + url.QueryEscape(coords)
+	body, err := fetchText(ctx, pageURL)
+	if err != nil {
+		return nil, err
+	}
+	return extractECCCPointObservation(body)
+}
+
+func fetchJSON(ctx context.Context, url string, target any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "HazeWeatherRadio/26.06 product-render")
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%s returned %s", url, resp.Status)
+	}
+	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+func fetchText(ctx context.Context, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "HazeWeatherRadio/26.06 product-render")
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("%s returned %s", url, resp.Status)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func buildECCCConditions(raw map[string]any) map[string]any {
+	props := mapAt(raw, "properties")
+	cc := mapAt(props, "currentConditions")
+	wind := mapAt(cc, "wind")
+	return map[string]any{
+		"source":      "eccc",
+		"observed_at": ecccValue(cc, "timestamp"),
+		"station":     ecccBilingual(cc, "station", "value"),
+		"properties": map[string]any{
+			"temp":       ecccValue(cc, "temperature", "value"),
+			"condition":  ecccBilingual(cc, "condition"),
+			"wind":       map[string]any{"speed": ecccValue(wind, "speed", "value"), "direction": ecccValue(wind, "direction", "value"), "gust": ecccValue(wind, "gust", "value")},
+			"humidity":   ecccValue(cc, "relativeHumidity", "value"),
+			"dewpoint":   ecccValue(cc, "dewpoint", "value"),
+			"visibility": ecccValue(cc, "visibility", "value"),
+			"pressure":   map[string]any{"value": ecccValue(cc, "pressure", "value"), "tendency": ecccBilingual(cc, "pressure", "tendency")},
+			"windChill":  ecccValue(cc, "windChill", "value"),
+			"humidex":    ecccValue(cc, "humidex", "value"),
+			"heatIndex":  nil,
+		},
+	}
+}
+
+func extractECCCPointObservation(page string) (map[string]any, error) {
+	offset := 0
+	for {
+		index := strings.Index(page[offset:], `"obs":`)
+		if index < 0 {
+			break
+		}
+		index += offset
+		raw, ok := extractJSONObjectAt(page, index+len(`"obs":`))
+		if !ok {
+			offset = index + len(`"obs":`)
+			continue
+		}
+		var obs map[string]any
+		if err := json.Unmarshal([]byte(raw), &obs); err == nil && localizedString(obs["observedAt"], "en") != "" {
+			return obs, nil
+		}
+		offset = index + len(`"obs":`) + len(raw)
+	}
+	return nil, fmt.Errorf("ECCC point page did not include observation payload")
+}
+
+func extractJSONObjectAt(text string, start int) (string, bool) {
+	for start < len(text) && (text[start] == ' ' || text[start] == '\n' || text[start] == '\r' || text[start] == '\t') {
+		start++
+	}
+	if start >= len(text) || text[start] != '{' {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for index := start; index < len(text); index++ {
+		char := text[index]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if char == '\\' {
+				escaped = true
+				continue
+			}
+			if char == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch char {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[start : index+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+func buildECCCPointConditions(obs map[string]any) (map[string]any, bool) {
+	station := strings.TrimSpace(localizedString(obs["observedAt"], "en"))
+	if station == "" {
+		return nil, false
+	}
+	condition := strings.TrimSpace(localizedString(obs["condition"], "en"))
+	if condition == "" && strings.TrimSpace(localizedString(obs["iconCode"], "en")) == "29" {
+		condition = "Not observed"
+	}
+	payload := map[string]any{
+		"source":      "eccc",
+		"observed_at": firstNonBlank(localizedString(obs["timeStamp"], "en"), localizedString(obs["timeStampText"], "en")),
+		"station":     map[string]any{"en": station, "fr": station},
+		"station_id":  firstNonBlank(localizedString(obs["climateId"], "en"), localizedString(obs["tcid"], "en")),
+		"properties": map[string]any{
+			"temp":       pointMetricNumber(mapAt(obs, "temperature"), "metricUnrounded", "metric"),
+			"condition":  map[string]any{"en": condition, "fr": condition},
+			"wind":       map[string]any{"speed": pointMetricNumber(mapAt(obs, "windSpeed"), "metric"), "direction": localizedString(obs["windDirection"], "en"), "gust": pointMetricNumber(mapAt(obs, "windGust"), "metric")},
+			"humidity":   pointNumber(obs["humidity"]),
+			"dewpoint":   pointMetricNumber(mapAt(obs, "dewpoint"), "metricUnrounded", "metric"),
+			"visibility": pointMetricNumber(mapAt(obs, "visibility"), "metric"),
+			"pressure":   map[string]any{"value": pointMetricNumber(mapAt(obs, "pressure"), "metric"), "tendency": map[string]any{"en": localizedString(obs["tendency"], "en"), "fr": localizedString(obs["tendency"], "en")}},
+			"windChill":  pointMetricNumber(mapAt(obs, "windChill"), "metric"),
+			"humidex":    pointMetricNumber(mapAt(obs, "humidex"), "metric"),
+			"heatIndex":  nil,
+		},
+	}
+	return payload, true
+}
+
+func pointMetricNumber(source map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value := pointNumber(source[key]); value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func pointNumber(value any) any {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case float64:
+		return typed
+	case int:
+		return float64(typed)
+	case json.Number:
+		parsed, err := typed.Float64()
+		if err == nil {
+			return parsed
+		}
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return nil
+		}
+		parsed, err := strconv.ParseFloat(text, 64)
+		if err == nil {
+			return parsed
+		}
+	}
+	return nil
+}
+
+func buildECCCForecast(raw map[string]any, region coverageRegionXML, forecastNames map[string]forecastRegionName) (map[string]any, bool) {
+	props := mapAt(raw, "properties")
+	group := mapAt(props, "forecastGroup")
+	rawForecasts, _ := group["forecasts"].([]any)
+	periods := make([]map[string]any, 0, len(rawForecasts))
+	for _, item := range rawForecasts {
+		forecast, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		enParts := []string{}
+		frParts := []string{}
+		if text := ecccTextLang(mapAt(forecast, "cloudPrecip"), "en"); text != "" {
+			enParts = append(enParts, text)
+		}
+		if text := ecccTextLang(mapAt(forecast, "cloudPrecip"), "fr"); text != "" {
+			frParts = append(frParts, text)
+		}
+		for _, key := range []string{"temperatures", "windChill"} {
+			summary := mapAt(mapAt(forecast, key), "textSummary")
+			if text := ecccTextLang(summary, "en"); text != "" {
+				enParts = append(enParts, text)
+			}
+			if text := ecccTextLang(summary, "fr"); text != "" {
+				frParts = append(frParts, text)
+			}
+		}
+		periods = append(periods, map[string]any{
+			"period":      ecccBilingual(forecast, "period", "textForecastName"),
+			"textSummary": map[string]any{"en": strings.Join(enParts, " "), "fr": strings.Join(frParts, " ")},
+		})
+	}
+	if len(periods) == 0 {
+		return nil, false
+	}
+	return map[string]any{
+		"source":          "eccc",
+		"issued_at":       ecccValue(group, "timestamp"),
+		"updated_at":      props["lastUpdated"],
+		"forecast":        periods,
+		"forecast_region": region.ID,
+		"name":            ecccForecastLocationNameBlock(region, props["name"], forecastNames),
+	}, true
+}
+
+func ecccForecastLocationNameBlock(region coverageRegionXML, rawName any, forecastNames map[string]forecastRegionName) map[string]any {
+	if names, ok := forecastNames[forecastRegionBaseCode(region.ID)]; ok && (names.English != "" || names.French != "") {
+		fallback := firstNonBlank(names.English, names.French, region.ID)
+		return map[string]any{
+			"en": pauseForecastRegionName(firstNonBlank(names.English, fallback), "en"),
+			"fr": pauseForecastRegionName(firstNonBlank(names.French, fallback), "fr"),
+		}
+	}
+	if name := localizedString(rawName, "en"); name != "" {
+		return map[string]any{
+			"en": pauseForecastRegionName(name, "en"),
+			"fr": pauseForecastRegionName(fallbackText(localizedString(rawName, "fr"), name), "fr"),
+		}
+	}
+	fallback := fallbackText(region.Name, region.ID)
+	return map[string]any{"en": pauseForecastRegionName(fallback, "en"), "fr": pauseForecastRegionName(fallback, "fr")}
+}
+
+func decodeLiveObservation(payload map[string]any) (liveObservationFile, bool) {
+	var decoded liveObservationFile
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return liveObservationFile{}, false
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return liveObservationFile{}, false
+	}
+	return decoded, true
+}
+
+func decodeLiveForecast(payload map[string]any) (liveForecastFile, bool) {
+	var decoded liveForecastFile
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return liveForecastFile{}, false
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return liveForecastFile{}, false
+	}
+	return decoded, true
+}
+
+func ecccBilingual(source map[string]any, keys ...string) map[string]any {
+	current := source
+	for _, key := range keys {
+		current = mapAt(current, key)
+	}
+	out := map[string]any{}
+	for _, lang := range []string{"en", "fr"} {
+		if value, ok := current[lang]; ok {
+			out[lang] = value
+		}
+	}
+	return out
+}
+
+func ecccValue(source map[string]any, keys ...string) any {
+	current := source
+	for _, key := range keys {
+		current = mapAt(current, key)
+	}
+	if value, ok := current["en"]; ok {
+		return value
+	}
+	return nil
+}
+
+func ecccTextLang(source map[string]any, lang string) string {
+	if source == nil {
+		return ""
+	}
+	value, _ := source[lang].(string)
+	return strings.TrimSpace(value)
 }
 
 func (r renderer) loadStoreProductPayload(kind string, sourceRaw string, id string, target any) (string, bool) {
@@ -362,6 +799,17 @@ func (r renderer) loadStoreProductPayload(kind string, sourceRaw string, id stri
 		return "", false
 	}
 	return fmt.Sprintf("store:products.payloads/%s/%s/%s", kind, source, id), true
+}
+
+func (r renderer) loadSpecialtyProductSnapshot(kind string, feed feedXML, snapshot *liveSpecialtyProductFile) (string, bool) {
+	input, ok := r.loadStoreProductPayload(kind, "eccc", feed.ID, snapshot)
+	if !ok {
+		return "", false
+	}
+	if len(snapshot.Items) == 0 {
+		return "", false
+	}
+	return input, true
 }
 
 func canonicalSource(raw string) string {
@@ -529,91 +977,299 @@ func forecastSentence(parts []string) string {
 
 func climateLines(raw liveClimateFile, lang string, timezone string) []string {
 	lines := []string{}
-	station := localizedString(raw.Observations.Station, lang)
-	if raw.Observations.High != nil || raw.Observations.Low != nil || raw.Observations.Precipitation != nil {
-		parts := []string{}
-		if station != "" {
-			parts = append(parts, "At "+titleText(station))
-		}
-		if raw.Observations.High != nil {
-			parts = append(parts, "the high was "+degrees(*raw.Observations.High))
-		}
-		if raw.Observations.Low != nil {
-			parts = append(parts, "the low was "+degrees(*raw.Observations.Low))
-		}
-		if raw.Observations.Precipitation != nil {
-			parts = append(parts, "precipitation was "+oneDecimal(*raw.Observations.Precipitation)+" millimetres")
-		}
-		lines = append(lines, sentence(strings.Join(parts, ", ")))
+	if text := climateTemperatureLine(raw, lang, timezone); text != "" {
+		lines = append(lines, text)
 	}
-	if normal := localizedString(raw.Normals.TextSummary, lang); normal != "" {
-		lines = append(lines, "The normal temperatures are "+strings.TrimSuffix(normal, ".")+".")
-	} else if raw.Normals.Temperature.Low != nil || raw.Normals.Temperature.High != nil {
-		parts := []string{}
-		if raw.Normals.Temperature.Low != nil {
-			parts = append(parts, "low "+degreesBare(*raw.Normals.Temperature.Low))
-		}
-		if raw.Normals.Temperature.High != nil {
-			parts = append(parts, "high "+degreesBare(*raw.Normals.Temperature.High))
-		}
-		lines = append(lines, "The normal temperatures are "+strings.Join(parts, ", ")+".")
+	if text := climatePrecipitationLine(raw); text != "" {
+		lines = append(lines, text)
 	}
-	for _, key := range []string{"high_max", "low_min", "precipitation", "snowfall"} {
-		if text := climateRecordLine(key, raw.Records[key]); text != "" {
-			lines = append(lines, text)
-		}
+	if text := climateWindLine(raw); text != "" {
+		lines = append(lines, text)
 	}
-	if raw.Astronomy.Sunrise != "" || raw.Astronomy.Sunset != "" {
-		parts := []string{}
-		if sunrise := clockTime(raw.Astronomy.Sunrise, firstNonBlank(raw.Astronomy.Timezone, timezone)); sunrise != "" {
-			parts = append(parts, "sunrise is at "+sunrise)
-		}
-		if sunset := clockTime(raw.Astronomy.Sunset, firstNonBlank(raw.Astronomy.Timezone, timezone)); sunset != "" {
-			parts = append(parts, "sunset is at "+sunset)
-		}
-		if len(parts) > 0 {
-			lines = append(lines, sentence(strings.Join(parts, " and ")))
-		}
+	if text := climateHumidityLine(raw); text != "" {
+		lines = append(lines, text)
+	}
+	if text := climateDegreeDayLine(raw); text != "" {
+		lines = append(lines, text)
+	}
+	if text := climateNormalsLine(raw, lang); text != "" {
+		lines = append(lines, text)
+	}
+	if text := climateRecordsLine(raw); text != "" {
+		lines = append(lines, text)
+	}
+	if text := climateAstronomyLine(raw, timezone); text != "" {
+		lines = append(lines, text)
 	}
 	return lines
 }
 
-func climateRecordLine(key string, record struct {
-	Value *float64 `json:"value"`
-	Year  any      `json:"year"`
-}) string {
-	if record.Value == nil {
+func climateTemperatureLine(raw liveClimateFile, lang string, timezone string) string {
+	facts := []string{}
+	if raw.Observations.High != nil {
+		facts = append(facts, "the high was "+degrees(*raw.Observations.High))
+	}
+	if raw.Observations.Low != nil {
+		facts = append(facts, "the low was "+degrees(*raw.Observations.Low))
+	}
+	if raw.Observations.Mean != nil {
+		facts = append(facts, "the mean temperature was "+degrees(*raw.Observations.Mean))
+	}
+	if len(facts) == 0 {
 		return ""
 	}
-	label := map[string]string{
-		"high_max":      "record high",
-		"low_min":       "record low",
-		"precipitation": "record precipitation",
-		"snowfall":      "record snowfall",
-	}[key]
-	if label == "" {
-		return ""
+	prefix := climateStationDatePrefix(raw, lang, timezone)
+	if prefix == "" {
+		return sentence(climateJoin(facts))
 	}
-	unit := "degrees"
-	if key == "precipitation" || key == "snowfall" {
-		unit = "millimetres"
-	}
-	year := localizedString(record.Year, "en")
-	if year != "" {
-		return fmt.Sprintf("The %s is %s %s, set in %s.", label, oneDecimal(*record.Value), unit, year)
-	}
-	return fmt.Sprintf("The %s is %s %s.", label, oneDecimal(*record.Value), unit)
+	return sentence(prefix + ", " + climateJoin(facts))
 }
 
-func clockTime(raw string, timezone string) string {
-	parsed, err := parseLooseTime(raw)
+func climatePrecipitationLine(raw liveClimateFile) string {
+	if raw.Observations.PrecipitationTrace {
+		return "Only a trace of precipitation was recorded."
+	}
+	if raw.Observations.Precipitation != nil {
+		if nearZero(*raw.Observations.Precipitation) {
+			return "No measurable precipitation was recorded."
+		}
+		return "Precipitation totalled " + oneDecimal(*raw.Observations.Precipitation) + " millimetres."
+	}
+	parts := []string{}
+	if raw.Observations.RainTrace {
+		parts = append(parts, "a trace of rain")
+	} else if raw.Observations.Rain != nil {
+		parts = append(parts, oneDecimal(*raw.Observations.Rain)+" millimetres of rain")
+	}
+	if raw.Observations.SnowfallTrace {
+		parts = append(parts, "a trace of snow")
+	} else if raw.Observations.Snowfall != nil {
+		parts = append(parts, oneDecimal(*raw.Observations.Snowfall)+" centimetres of snow")
+	}
+	if len(parts) > 0 {
+		return sentence("The station recorded " + climateJoin(parts))
+	}
+	if raw.Observations.SnowOnGround != nil {
+		if nearZero(*raw.Observations.SnowOnGround) {
+			return "No snow was on the ground at observation time."
+		}
+		return "Snow on the ground was " + oneDecimal(*raw.Observations.SnowOnGround) + " centimetres."
+	}
+	return ""
+}
+
+func climateWindLine(raw liveClimateFile) string {
+	if raw.Observations.MaxGustSpeed == nil {
+		return ""
+	}
+	text := "The strongest wind gust was " + oneDecimal(*raw.Observations.MaxGustSpeed) + " kilometres per hour"
+	if direction := readableDirection(raw.Observations.MaxGustDirection); direction != "" {
+		text += " from the " + direction
+	}
+	return sentence(text)
+}
+
+func climateHumidityLine(raw liveClimateFile) string {
+	if raw.Observations.MinHumidity == nil {
+		return ""
+	}
+	return "The minimum relative humidity was " + rounded(*raw.Observations.MinHumidity) + " percent."
+}
+
+func climateDegreeDayLine(raw liveClimateFile) string {
+	parts := []string{}
+	if raw.Observations.HeatingDegreeDays != nil {
+		parts = append(parts, "Heating degree days were "+oneDecimal(*raw.Observations.HeatingDegreeDays))
+	}
+	if raw.Observations.CoolingDegreeDays != nil {
+		parts = append(parts, "cooling degree days were "+oneDecimal(*raw.Observations.CoolingDegreeDays))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return sentence(climateJoin(parts))
+}
+
+func climateNormalsLine(raw liveClimateFile, lang string) string {
+	facts := []string{}
+	if raw.Normals.Temperature.High != nil {
+		facts = append(facts, "high "+degrees(*raw.Normals.Temperature.High))
+	}
+	if raw.Normals.Temperature.Low != nil {
+		facts = append(facts, "low "+degrees(*raw.Normals.Temperature.Low))
+	}
+	if raw.Normals.Temperature.Mean != nil {
+		facts = append(facts, "mean "+degrees(*raw.Normals.Temperature.Mean))
+	}
+	if raw.Normals.Precipitation != nil {
+		facts = append(facts, "total precipitation "+oneDecimal(*raw.Normals.Precipitation)+" millimetres")
+	}
+	if len(facts) == 0 {
+		if normal := localizedString(raw.Normals.TextSummary, lang); normal != "" {
+			return "The normal temperatures are " + strings.TrimSuffix(normal, ".") + "."
+		}
+		return ""
+	}
+	month := time.Month(raw.Normals.Month).String()
+	if raw.Normals.Month <= 0 || raw.Normals.Month > 12 {
+		month = "the month"
+	}
+	period := fallbackText(raw.Normals.Period, "1981 to 2010")
+	station := titleText(localizedString(raw.Normals.Station, lang))
+	prefix := "For " + month + ", the monthly averages from " + period
+	if station != "" {
+		prefix += " at " + station
+	}
+	return sentence(prefix + " are " + climateJoin(facts))
+}
+
+func climateRecordsLine(raw liveClimateFile) string {
+	parts := []string{}
+	if value, year, ok := climateRecord(raw, "high_temperature"); ok {
+		parts = append(parts, "the record high was "+degrees(value)+" in "+year)
+	}
+	if value, year, ok := climateRecord(raw, "low_temperature"); ok {
+		parts = append(parts, "the record low was "+degrees(value)+" in "+year)
+	}
+	if value, year, ok := climateRecord(raw, "precipitation"); ok {
+		parts = append(parts, "the greatest precipitation was "+oneDecimal(value)+" millimetres in "+year)
+	}
+	if value, year, ok := climateRecord(raw, "snowfall"); ok && !nearZero(value) {
+		parts = append(parts, "the greatest snowfall was "+oneDecimal(value)+" centimetres in "+year)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	date := climateRecordDate(raw.Observations.Date)
+	if date == "" {
+		return sentence("Climate records are " + climateJoin(parts))
+	}
+	return sentence("For " + date + ", " + climateJoin(parts))
+}
+
+func climateRecord(raw liveClimateFile, key string) (float64, string, bool) {
+	record, ok := raw.Records[key]
+	if !ok || record.Value == nil {
+		return 0, "", false
+	}
+	year := climateRecordYear(record.Year)
+	if year == "" {
+		return 0, "", false
+	}
+	return *record.Value, year, true
+}
+
+func climateRecordYear(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case float64:
+		if typed <= 0 {
+			return ""
+		}
+		return strconv.Itoa(int(typed + 0.5))
+	case int:
+		if typed <= 0 {
+			return ""
+		}
+		return strconv.Itoa(typed)
+	case json.Number:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed.String()), 64)
+		if err != nil || parsed <= 0 {
+			return ""
+		}
+		return strconv.Itoa(int(parsed + 0.5))
+	default:
+		text := strings.TrimSpace(fmt.Sprint(typed))
+		if text == "" {
+			return ""
+		}
+		parsed, err := strconv.ParseFloat(text, 64)
+		if err == nil {
+			if parsed <= 0 {
+				return ""
+			}
+			return strconv.Itoa(int(parsed + 0.5))
+		}
+		return text
+	}
+}
+
+func climateRecordDate(raw string) string {
+	raw = strings.TrimSpace(raw)
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02", time.RFC3339} {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed.Format("January 2")
+		}
+	}
+	return ""
+}
+
+func climateAstronomyLine(raw liveClimateFile, timezone string) string {
+	if strings.TrimSpace(raw.Astronomy.Sunrise) == "" || strings.TrimSpace(raw.Astronomy.Sunset) == "" {
+		return ""
+	}
+	sunrise, sunriseErr := parseLooseTime(raw.Astronomy.Sunrise)
+	sunset, sunsetErr := parseLooseTime(raw.Astronomy.Sunset)
+	if sunriseErr != nil || sunsetErr != nil {
+		return ""
+	}
+	if loc, locErr := time.LoadLocation(fallbackText(raw.Astronomy.Timezone, timezone)); locErr == nil {
+		sunrise = sunrise.In(loc)
+		sunset = sunset.In(loc)
+	}
+	return sentence("Sunrise is at " + compactClock(sunrise) + ", and sunset is at " + compactClock(sunset) + " " + timezoneName(sunset.Format("MST")))
+}
+
+func climateStationDatePrefix(raw liveClimateFile, lang string, timezone string) string {
+	station := titleText(localizedString(raw.Observations.Station, lang))
+	date := climateDateLabel(raw.Observations.Date, timezone)
+	switch {
+	case station != "" && date != "":
+		return "At " + station + " on " + date
+	case station != "":
+		return "At " + station
+	case date != "":
+		return "For " + date
+	default:
+		return ""
+	}
+}
+
+func climateDateLabel(raw string, timezone string) string {
+	raw = strings.TrimSpace(raw)
+	var parsed time.Time
+	var err error
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02", time.RFC3339} {
+		parsed, err = time.Parse(layout, raw)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return ""
 	}
 	if loc, locErr := time.LoadLocation(fallbackText(timezone, "Local")); locErr == nil {
-		parsed = parsed.In(loc)
+		parsed = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 12, 0, 0, 0, loc)
 	}
-	return parsed.Format("3:04 PM")
+	return parsed.Format("Monday, January 2")
+}
+
+func climateJoin(parts []string) string {
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	case 2:
+		return parts[0] + ", and " + parts[1]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+	}
+}
+
+func nearZero(value float64) bool {
+	return value > -0.05 && value < 0.05
 }
 
 func bulletinActive(start *string, end *string, now time.Time) bool {

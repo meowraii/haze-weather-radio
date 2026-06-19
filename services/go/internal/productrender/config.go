@@ -92,6 +92,9 @@ type feedXML struct {
 		ClimateLocations struct {
 			Locations []locationXML `xml:"location"`
 		} `xml:"climateLocations"`
+		HydrometricLocations struct {
+			Locations []locationXML `xml:"location"`
+		} `xml:"hydrometricLocations"`
 	} `xml:"locations"`
 	Transmitter struct {
 		Transmitters []transmitterXML `xml:"transmitter"`
@@ -114,6 +117,9 @@ type locationXML struct {
 	ID           string `xml:"id,attr"`
 	Source       string `xml:"source,attr"`
 	NameOverride string `xml:"name_override,attr"`
+	Latitude     string `xml:"latitude,attr"`
+	Longitude    string `xml:"longitude,attr"`
+	NormalID     string `xml:"normal_id,attr"`
 }
 
 type transmitterXML struct {

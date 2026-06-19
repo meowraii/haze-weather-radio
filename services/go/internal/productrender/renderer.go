@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ import (
 var discussionHeadingPattern = regexp.MustCompile(`(?:^|\s)([A-Z][A-Z0-9 /&'\-]{1,48})\.\.\.`)
 var discussionRangeUnitPattern = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*(KM/H|KPH|KT|KTS|MM|CM|M|KM)\b`)
 var discussionNumberUnitPattern = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(KM/H|KPH|KT|KTS|HPA|KPA|MB|MM|CM|M|KM|C)\b`)
+var discussionEndSignaturePattern = regexp.MustCompile(`(?i)\s+\bEND/[A-Z][A-Z0-9_-]*\b.*$`)
+var discussionUppercaseWordPattern = regexp.MustCompile(`\b[A-Z]{2,}(?:'[A-Z]+)?\b`)
 var discussionStandaloneReplacements = []struct {
 	pattern     *regexp.Regexp
 	replacement string
@@ -67,6 +70,10 @@ func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
 	if strings.TrimSpace(request.FeedID) == "" {
 		return Product{}, fmt.Errorf("feed_id is required")
 	}
+	feed, err := r.onDemandFeed(request)
+	if err != nil {
+		return Product{}, err
+	}
 	packages := cleanStringList(request.Packages)
 	if len(packages) == 0 {
 		packages = []string{"current_conditions", "forecast"}
@@ -79,10 +86,12 @@ func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
 	language := strings.TrimSpace(request.Language)
 	for _, packageID := range packages {
 		product, err := r.Render(renderRequest{
-			RequestID: request.RequestID + "-" + safeID(packageID),
-			FeedID:    request.FeedID,
-			PackageID: packageID,
-			Force:     request.Force,
+			RequestID:    request.RequestID + "-" + safeID(packageID),
+			FeedID:       feed.ID,
+			PackageID:    packageID,
+			Force:        request.Force,
+			FeedOverride: &feed,
+			Telephone:    request.Telephone,
 		})
 		if err != nil {
 			return Product{}, err
@@ -106,10 +115,7 @@ func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
 		return Product{}, fmt.Errorf("no weather product text was generated")
 	}
 	now := time.Now().UTC()
-	locationName := strings.TrimSpace(request.LocationName)
-	if locationName == "" {
-		locationName = request.Code
-	}
+	locationName := firstNonBlank(request.LocationName, request.Code, request.ForecastID, request.StationID)
 	title := strings.Join(titles, " / ")
 	if title == "" {
 		title = "Weather On Demand"
@@ -123,8 +129,8 @@ func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
 		})
 	}
 	return Product{
-		ID:          safeID(fmt.Sprintf("wx-%s-%s-%d", request.FeedID, request.Code, now.UnixNano())),
-		FeedID:      request.FeedID,
+		ID:          safeID(fmt.Sprintf("wx-%s-%s-%d", feed.ID, request.Code, now.UnixNano())),
+		FeedID:      feed.ID,
 		PackageID:   "wx_on_demand",
 		Title:       title,
 		Text:        strings.Join(texts, "\n\n"),
@@ -137,6 +143,8 @@ func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
 			"location_code": request.Code,
 			"location_name": locationName,
 			"source":        request.Source,
+			"forecast_id":   request.ForecastID,
+			"station_id":    request.StationID,
 			"packages":      strings.Join(packages, ","),
 		},
 	}, nil
@@ -144,6 +152,10 @@ func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
 
 func (r renderer) Render(request renderRequest) (Product, error) {
 	feed, ok := r.cfg.feedByID(request.FeedID)
+	if request.FeedOverride != nil {
+		feed = *request.FeedOverride
+		ok = true
+	}
 	if !ok {
 		return Product{}, fmt.Errorf("feed %q is not configured", request.FeedID)
 	}
@@ -157,7 +169,7 @@ func (r renderer) Render(request renderRequest) (Product, error) {
 		return Product{}, fmt.Errorf("package %q is disabled", request.PackageID)
 	}
 
-	base := productBase(r.cfg, feed, request.PackageID)
+	base := productBase(r.cfg, feed, request.PackageID, request.Telephone)
 	var product Product
 	var err error
 	switch strings.ToLower(strings.TrimSpace(request.PackageID)) {
@@ -173,6 +185,18 @@ func (r renderer) Render(request renderRequest) (Product, error) {
 		product, err = r.airQualityProduct(base, feed)
 	case "climate_summary":
 		product, err = r.climateProduct(base, feed)
+	case "thunderstorm_outlook":
+		product, err = r.thunderstormOutlookProduct(base, feed)
+	case "metnotes":
+		product, err = r.metNotesProduct(base, feed)
+	case "hydrometric":
+		product, err = r.hydrometricProduct(base, feed)
+	case "coastal_flood":
+		product, err = r.coastalFloodProduct(base, feed)
+	case "hurricane_tracks":
+		product, err = r.hurricaneTracksProduct(base, feed)
+	case "precipitation_analysis":
+		product, err = r.precipitationAnalysisProduct(base, feed)
 	case "user_bulletin":
 		product, err = r.userBulletinProduct(base, feed)
 	case "alerts":
@@ -195,8 +219,89 @@ func (r renderer) Render(request renderRequest) (Product, error) {
 	return product, nil
 }
 
-func productBase(cfg loadedConfig, feed feedXML, pkgID string) Product {
-	return Product{
+func (r renderer) onDemandFeed(request wxOnDemandRequest) (feedXML, error) {
+	feed, ok := r.cfg.feedByID(request.FeedID)
+	if !ok {
+		return feedXML{}, fmt.Errorf("feed %q is not configured", request.FeedID)
+	}
+	if strings.TrimSpace(feed.ID) == "" || !xmlBool(feed.EnabledRaw, true) {
+		return feedXML{}, fmt.Errorf("feed %q is disabled", request.FeedID)
+	}
+
+	locationName := firstNonBlank(request.LocationName, request.Code, request.ForecastID, request.StationID)
+	nameOverride := onDemandNameOverride(locationName, request)
+	if request.Telephone {
+		nameOverride = ""
+	}
+	source := onDemandSource(request)
+	forecastID := strings.TrimSpace(request.ForecastID)
+	latitude := strings.TrimSpace(request.Latitude)
+	longitude := strings.TrimSpace(request.Longitude)
+	stationID := firstNonBlank(request.StationID, forecastID)
+	if forecastID != "" {
+		regionID := firstNonBlank(request.Code, forecastID)
+		feed.Locations.Coverage.Regions = []coverageRegionXML{{
+			ID:             regionID,
+			Source:         source,
+			Name:           locationName,
+			DeriveForecast: forecastID,
+		}}
+	}
+	if stationID != "" || latitude != "" || longitude != "" {
+		feed.Locations.ObservationLocations.Locations = []locationXML{{
+			ID:           firstNonBlank(stationID, request.Code),
+			Source:       source,
+			NameOverride: nameOverride,
+			Latitude:     latitude,
+			Longitude:    longitude,
+		}}
+	}
+	if strings.TrimSpace(request.Timezone) != "" {
+		feed.Timezone = strings.TrimSpace(request.Timezone)
+	}
+	if request.Telephone {
+		feed.Transmitter.Transmitters = []transmitterXML{telephoneTransmitter(feed, locationName)}
+	}
+	return feed, nil
+}
+
+func telephoneTransmitter(feed feedXML, locationName string) transmitterXML {
+	transmitter := stationTransmitter(feed)
+	transmitter.SiteName = fallbackText(locationName, transmitter.SiteName)
+	transmitter.Callsign = ""
+	transmitter.Relationship = "primary"
+	transmitter.FrequencyMHz = transmitterFrequencyXML{}
+	return transmitter
+}
+
+func onDemandNameOverride(locationName string, request wxOnDemandRequest) string {
+	value := strings.TrimSpace(locationName)
+	for _, id := range []string{request.Code, request.ForecastID, request.StationID} {
+		if value != "" && strings.EqualFold(value, strings.TrimSpace(id)) {
+			return ""
+		}
+	}
+	return value
+}
+
+func onDemandSource(request wxOnDemandRequest) string {
+	source := strings.ToLower(strings.TrimSpace(request.Source))
+	switch source {
+	case "", "hello_weather", "eccc_forecast", "clc", "capcp_geocode", "eccc", "msc", "envcan":
+		return "eccc"
+	case "station":
+		stationID := strings.ToUpper(strings.TrimSpace(request.StationID))
+		if strings.HasPrefix(stationID, "K") {
+			return "nws"
+		}
+		return "eccc"
+	default:
+		return canonicalSource(source)
+	}
+}
+
+func productBase(cfg loadedConfig, feed feedXML, pkgID string, telephone bool) Product {
+	product := Product{
 		FeedID:    feed.ID,
 		PackageID: pkgID,
 		Title:     titleForPackage(pkgID),
@@ -207,6 +312,10 @@ func productBase(cfg loadedConfig, feed feedXML, pkgID string) Product {
 			"callsign":  feedCallsign(feed),
 		},
 	}
+	if telephone {
+		product.Metadata["audience"] = "telephone"
+	}
+	return product
 }
 
 func (r renderer) stationIDProduct(base Product, feed feedXML) Product {
@@ -333,7 +442,7 @@ func (r renderer) currentConditionsProduct(base Product, feed feedXML) (Product,
 			segments = append(segments, Segment{Kind: "package", Label: "area_observation", Text: text})
 		}
 	}
-	if repeat := repeatObservationText(snapshot.Primary); repeat != "" {
+	if repeat := repeatObservationText(snapshot.Primary); repeat != "" && !isTelephoneProduct(base) {
 		segments = append(segments, Segment{Kind: "closure", Label: "repeat_primary", Text: repeat})
 	}
 	base.Segments = segments
@@ -365,16 +474,21 @@ func (r renderer) forecastProduct(base Product, feed feedXML) (Product, error) {
 	var snapshot forecastSnapshot
 	inputPath, ok := r.loadLiveForecastSnapshot(feed, &snapshot)
 	if !ok {
-		return Product{}, fmt.Errorf("forecast information is unavailable for feed %s", feed.ID)
+		return Product{}, fmt.Errorf("forecast information is unavailable for feed %s (%s)", feed.ID, forecastCoverageDebug(feed))
 	}
 	base.Title = "Forecast"
 	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
 	callsign := fallbackText(feedCallsign(feed), feedSiteName(feed))
-	segments := []Segment{{Kind: "opener", Text: r.packageText(base.PackageID, "opener", base.Language, "Forecast for the {callsign} listening area:", map[string]string{
-		"callsign": callsign,
-		"site":     feedSiteName(feed),
-	})}}
-	if issued := reportTime(snapshot.IssuedAt, feed.Timezone); issued != "" {
+	segments := []Segment{}
+	if isTelephoneProduct(base) {
+		segments = append(segments, Segment{Kind: "opener", Label: "telephone_opener", Text: r.telephoneForecastOpener(base, feed, snapshot)})
+	} else {
+		segments = append(segments, Segment{Kind: "opener", Text: r.packageText(base.PackageID, "opener", base.Language, "Forecast for the {callsign} listening area:", map[string]string{
+			"callsign": callsign,
+			"site":     feedSiteName(feed),
+		})})
+	}
+	if issued := reportTime(snapshot.IssuedAt, feed.Timezone); issued != "" && !isTelephoneProduct(base) {
 		segments = append(segments, Segment{Kind: "opener", Label: "issued_at", Text: r.packageText(base.PackageID, "issued_at", base.Language, "Issued at {time}.", map[string]string{
 			"time":     issued,
 			"callsign": callsign,
@@ -383,8 +497,8 @@ func (r renderer) forecastProduct(base Product, feed feedXML) (Product, error) {
 	}
 	for _, region := range snapshot.Regions {
 		name := normalizeRegionTitle(region.Name)
-		if name != "" {
-			segments = append(segments, Segment{Kind: "opener", Label: "forecast_region", Text: r.packageText(base.PackageID, "region", base.Language, "For the {region}.", map[string]string{
+		if name != "" && !isTelephoneProduct(base) {
+			segments = append(segments, Segment{Kind: "opener", Label: "forecast_region", Text: r.packageText(base.PackageID, forecastRegionTextKey(name), base.Language, forecastRegionIntroFallback(name), map[string]string{
 				"region": name,
 			})})
 		}
@@ -408,6 +522,66 @@ func (r renderer) forecastProduct(base Product, feed feedXML) (Product, error) {
 	}
 	base.Segments = segments
 	return base, nil
+}
+
+func (r renderer) telephoneForecastOpener(base Product, feed feedXML, snapshot forecastSnapshot) string {
+	name := telephoneForecastAreaName(feed, snapshot)
+	issuedAt := reportTime(snapshot.IssuedAt, feed.Timezone)
+	if issuedAt == "" {
+		return r.packageText(base.PackageID, "telephone_opener_no_time", base.Language, "The official {source} forecast for the {name} area.", map[string]string{
+			"source": forecastSourceName(feed),
+			"name":   name,
+		})
+	}
+	return r.packageText(base.PackageID, "telephone_opener", base.Language, "The official {source} forecast for the {name} area issued at {time}.", map[string]string{
+		"source": forecastSourceName(feed),
+		"name":   name,
+		"time":   issuedAt,
+	})
+}
+
+func telephoneForecastAreaName(feed feedXML, snapshot forecastSnapshot) string {
+	if len(snapshot.Regions) == 1 {
+		if name := normalizeRegionTitle(snapshot.Regions[0].Name); name != "" {
+			return name
+		}
+	}
+	return fallbackText(feedSiteName(feed), "your selected location")
+}
+
+func forecastSourceName(feed feedXML) string {
+	for _, region := range feed.Locations.Coverage.Regions {
+		switch canonicalSource(region.Source) {
+		case "eccc":
+			return "Environment Canada"
+		case "nws":
+			return "National Weather Service"
+		}
+	}
+	return "weather services"
+}
+
+func isTelephoneProduct(product Product) bool {
+	return strings.EqualFold(strings.TrimSpace(product.Metadata["audience"]), "telephone")
+}
+
+func forecastCoverageDebug(feed feedXML) string {
+	if len(feed.Locations.Coverage.Regions) == 0 {
+		return "no coverage regions"
+	}
+	capacity := len(feed.Locations.Coverage.Regions)
+	if capacity > 3 {
+		capacity = 3
+	}
+	parts := make([]string, 0, capacity)
+	for index, region := range feed.Locations.Coverage.Regions {
+		if index >= 3 {
+			parts = append(parts, "...")
+			break
+		}
+		parts = append(parts, fmt.Sprintf("region=%s source=%s forecast=%s", strings.TrimSpace(region.ID), canonicalSource(region.Source), fallbackText(region.DeriveForecast, region.ID)))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (r renderer) airQualityProduct(base Product, feed feedXML) (Product, error) {
@@ -519,7 +693,7 @@ func (r renderer) climateProduct(base Product, feed feedXML) (Product, error) {
 	base.Title = "Climate Summary"
 	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
 	location := fallbackText(snapshot.Location, feedSiteName(feed))
-	segments := []Segment{{Kind: "opener", Text: r.packageText(base.PackageID, "opener", base.Language, "Climate summary for {location}.", map[string]string{
+	segments := []Segment{{Kind: "opener", Text: r.packageText(base.PackageID, "opener", base.Language, "The Environment Canada climate summary.", map[string]string{
 		"location": location,
 		"site":     feedSiteName(feed),
 	})}}
@@ -530,6 +704,553 @@ func (r renderer) climateProduct(base Product, feed feedXML) (Product, error) {
 	}
 	base.Segments = segments
 	return base, nil
+}
+
+func (r renderer) thunderstormOutlookProduct(base Product, feed feedXML) (Product, error) {
+	var snapshot liveSpecialtyProductFile
+	inputPath, ok := r.loadSpecialtyProductSnapshot("thunderstorm_outlook", feed, &snapshot)
+	if !ok {
+		return Product{}, fmt.Errorf("thunderstorm outlook information is unavailable for feed %s", feed.ID)
+	}
+	base.Title = "Thunderstorm Outlook"
+	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
+	now := time.Now()
+	site := fallbackText(feedSiteName(feed), "the listening")
+	segments := []Segment{}
+	for _, item := range sortedThunderstormItems(snapshot.Items) {
+		if !specialtyItemCurrent(item, now) || specialtyString(item, "thunderstorm", base.Language) == "" {
+			continue
+		}
+		if header := thunderstormOutlookHeader(item, feed.Timezone, now); header != "" {
+			segments = append(segments, Segment{Kind: "opener", Label: "outlook_window", Text: header})
+		}
+		if hazard := thunderstormHazardText(item, site, base.Language); hazard != "" {
+			segments = append(segments, Segment{Kind: "package", Label: "convective_hazard", Text: hazard})
+		}
+		if len(segments) >= 6 {
+			break
+		}
+	}
+	if len(segments) == 0 {
+		return Product{}, fmt.Errorf("thunderstorm outlook information is unavailable for feed %s", feed.ID)
+	}
+	base.Segments = segments
+	return base, nil
+}
+
+func (r renderer) metNotesProduct(base Product, feed feedXML) (Product, error) {
+	var snapshot liveSpecialtyProductFile
+	inputPath, ok := r.loadSpecialtyProductSnapshot("metnotes", feed, &snapshot)
+	if !ok {
+		return Product{}, fmt.Errorf("meteorological notes are unavailable for feed %s", feed.ID)
+	}
+	base.Title = "Meteorological Notes"
+	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
+	segments := []Segment{}
+	if opener := r.packageText(base.PackageID, "opener", base.Language, "Meteorological notes for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
+		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
+	}
+	now := time.Now()
+	for _, item := range snapshot.Items {
+		if !specialtyItemCurrent(item, now) {
+			continue
+		}
+		if text := sentence(localizedString(item["text"], base.Language)); text != "" {
+			segments = append(segments, Segment{Kind: "package", Label: "metnote", Text: text})
+		}
+		if len(segments) >= 6 {
+			break
+		}
+	}
+	if len(segments) <= 1 {
+		return Product{}, fmt.Errorf("meteorological notes are unavailable for feed %s", feed.ID)
+	}
+	base.Segments = segments
+	return base, nil
+}
+
+func (r renderer) hydrometricProduct(base Product, feed feedXML) (Product, error) {
+	var snapshot liveSpecialtyProductFile
+	inputPath, ok := r.loadSpecialtyProductSnapshot("hydrometric", feed, &snapshot)
+	if !ok {
+		return Product{}, fmt.Errorf("river conditions are unavailable for feed %s", feed.ID)
+	}
+	base.Title = "River Conditions"
+	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
+	segments := []Segment{}
+	if opener := r.packageText(base.PackageID, "opener", base.Language, "River conditions for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
+		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
+	}
+	for _, item := range snapshot.Items {
+		if text := r.hydrometricText(item, base.Language, feed.Timezone); text != "" {
+			segments = append(segments, Segment{Kind: "package", Label: "river_gauge", Text: text})
+		}
+		if len(segments) >= 6 {
+			break
+		}
+	}
+	if len(segments) <= 1 {
+		return Product{}, fmt.Errorf("river conditions are unavailable for feed %s", feed.ID)
+	}
+	base.Segments = segments
+	return base, nil
+}
+
+func (r renderer) coastalFloodProduct(base Product, feed feedXML) (Product, error) {
+	var snapshot liveSpecialtyProductFile
+	inputPath, ok := r.loadSpecialtyProductSnapshot("coastal_flood", feed, &snapshot)
+	if !ok {
+		return Product{}, fmt.Errorf("coastal flooding risk is unavailable for feed %s", feed.ID)
+	}
+	base.Title = "Coastal Flooding Risk"
+	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
+	segments := []Segment{}
+	if opener := r.packageText(base.PackageID, "opener", base.Language, "Coastal flooding risk for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
+		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
+	}
+	now := time.Now()
+	for _, item := range snapshot.Items {
+		if !specialtyItemCurrent(item, now) {
+			continue
+		}
+		if text := r.coastalFloodText(item, base.Language, feed.Timezone); text != "" {
+			segments = append(segments, Segment{Kind: "package", Label: "coastal_flood_risk", Text: text})
+		}
+		if len(segments) >= 6 {
+			break
+		}
+	}
+	if len(segments) <= 1 {
+		return Product{}, fmt.Errorf("coastal flooding risk is unavailable for feed %s", feed.ID)
+	}
+	base.Segments = segments
+	return base, nil
+}
+
+func (r renderer) hurricaneTracksProduct(base Product, feed feedXML) (Product, error) {
+	var snapshot liveSpecialtyProductFile
+	inputPath, ok := r.loadSpecialtyProductSnapshot("hurricane_tracks", feed, &snapshot)
+	if !ok {
+		return Product{}, fmt.Errorf("hurricane track information is unavailable for feed %s", feed.ID)
+	}
+	base.Title = "Hurricane Tracks"
+	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
+	segments := []Segment{}
+	if opener := r.packageText(base.PackageID, "opener", base.Language, "Hurricane track information for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
+		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
+	}
+	for _, item := range snapshot.Items {
+		if text := r.hurricaneTrackText(item, base.Language, feed.Timezone); text != "" {
+			segments = append(segments, Segment{Kind: "package", Label: "tropical_cyclone", Text: text})
+		}
+		if len(segments) >= 6 {
+			break
+		}
+	}
+	if len(segments) <= 1 {
+		return Product{}, fmt.Errorf("hurricane track information is unavailable for feed %s", feed.ID)
+	}
+	base.Segments = segments
+	return base, nil
+}
+
+func (r renderer) precipitationAnalysisProduct(base Product, feed feedXML) (Product, error) {
+	var snapshot liveSpecialtyProductFile
+	inputPath, ok := r.loadSpecialtyProductSnapshot("precipitation_analysis", feed, &snapshot)
+	if !ok {
+		return Product{}, fmt.Errorf("precipitation analysis is unavailable for feed %s", feed.ID)
+	}
+	base.Title = "Precipitation Analysis"
+	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
+	segments := []Segment{}
+	if opener := r.packageText(base.PackageID, "opener", base.Language, "Recent precipitation analysis for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
+		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
+	}
+	for _, item := range snapshot.Items {
+		if text := r.precipitationAnalysisText(item, base.Language, feed.Timezone); text != "" {
+			segments = append(segments, Segment{Kind: "package", Label: "rdpa", Text: text})
+		}
+		if len(segments) >= 3 {
+			break
+		}
+	}
+	if len(segments) <= 1 {
+		return Product{}, fmt.Errorf("precipitation analysis is unavailable for feed %s", feed.ID)
+	}
+	base.Segments = segments
+	return base, nil
+}
+
+func (r renderer) thunderstormOutlookText(item map[string]any, lang string, timezone string) string {
+	area := fallbackText(specialtyString(item, "area", lang), "the region")
+	thunderstorm := fallbackText(specialtyString(item, "thunderstorm", lang), "thunderstorms")
+	parts := []string{fmt.Sprintf("For %s, the thunderstorm outlook calls for %s thunderstorms", area, strings.ToLower(thunderstorm))}
+	if risk := specialtyLevel(item, "risk"); risk != "" {
+		parts = append(parts, "risk level "+risk)
+	}
+	if confidence := specialtyLevel(item, "confidence"); confidence != "" {
+		parts = append(parts, "confidence level "+confidence)
+	}
+	if impact := specialtyLevel(item, "impact"); impact != "" {
+		parts = append(parts, "impact level "+impact)
+	}
+	if specialtyBool(item, "tornado") {
+		parts = append(parts, "a tornado risk is indicated")
+	}
+	if hail := specialtyPositiveNumber(item, "hail_cm"); hail != "" {
+		parts = append(parts, "hail up to "+hail+" centimetres")
+	}
+	if gust := specialtyPositiveNumber(item, "gust_kmh"); gust != "" {
+		parts = append(parts, "gusts up to "+gust+" kilometres per hour")
+	}
+	if rain := specialtyPositiveNumber(item, "rain_mm"); rain != "" {
+		parts = append(parts, "rainfall near "+rain+" millimetres")
+	}
+	if valid := reportTime(specialtyString(item, "valid_at", lang), timezone); valid != "" {
+		parts = append(parts, "valid around "+valid)
+	}
+	return sentence(strings.Join(parts, "; "))
+}
+
+func sortedThunderstormItems(items []map[string]any) []map[string]any {
+	out := append([]map[string]any(nil), items...)
+	sort.SliceStable(out, func(i, j int) bool {
+		leftRisk, _ := numberFromAny(out[i]["risk"])
+		rightRisk, _ := numberFromAny(out[j]["risk"])
+		if leftRisk != rightRisk {
+			return leftRisk > rightRisk
+		}
+		leftImpact, _ := numberFromAny(out[i]["impact"])
+		rightImpact, _ := numberFromAny(out[j]["impact"])
+		if leftImpact != rightImpact {
+			return leftImpact > rightImpact
+		}
+		leftValid := specialtyString(out[i], "valid_at", "en")
+		rightValid := specialtyString(out[j], "valid_at", "en")
+		return leftValid < rightValid
+	})
+	return out
+}
+
+func thunderstormOutlookHeader(item map[string]any, timezone string, now time.Time) string {
+	published := specialtyString(item, "published_at", "en")
+	validAt := specialtyString(item, "valid_at", "en")
+	expiresAt := specialtyString(item, "expires_at", "en")
+	day := thunderstormDayLabel(validAt, timezone, now)
+	parts := []string{"The Environment Canada Thunderstorm outlook"}
+	if day != "" {
+		parts[0] += " for " + day
+	}
+	if publishedText := thunderstormPublishedText(published, timezone); publishedText != "" {
+		parts = append(parts, "published "+publishedText)
+	}
+	if validText := thunderstormValidityText(validAt, expiresAt, timezone); validText != "" {
+		parts = append(parts, "valid "+validText)
+	}
+	return sentence(strings.Join(parts, ", "))
+}
+
+func thunderstormHazardText(item map[string]any, site string, lang string) string {
+	risk := fallbackText(thunderstormRiskLabel(item["risk"]), "minor")
+	coverage := fallbackText(readableSpecialtyToken(specialtyString(item, "thunderstorm", lang)), "isolated")
+	phenomenon := "thunderstorms"
+	text := fmt.Sprintf("For the areas in and around the %s area, the main convective hazard is expected to be a %s risk of %s %s", site, risk, coverage, phenomenon)
+	if hazards := thunderstormAssociatedHazards(item); hazards != "" {
+		text += ". " + hazards + " may be associated with this hazard"
+	}
+	return sentence(text)
+}
+
+func thunderstormAssociatedHazards(item map[string]any) string {
+	parts := []string{}
+	if rain := thunderstormAmount(item["rain_mm"], "millimeters of rain"); rain != "" {
+		parts = append(parts, rain)
+	}
+	if hail := thunderstormAmount(item["hail_cm"], "centimeters of hail"); hail != "" {
+		parts = append(parts, hail)
+	}
+	if gust := thunderstormAmount(item["gust_kmh"], "kilometers per hour"); gust != "" {
+		parts = append(parts, "gusts up to "+gust)
+	}
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	case 2:
+		return parts[0] + ", and " + parts[1]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+	}
+}
+
+func thunderstormAmount(value any, unit string) string {
+	if values, ok := value.([]any); ok {
+		numbers := []string{}
+		for _, item := range values {
+			if numeric, ok := numberFromAny(item); ok && numeric > 0 {
+				numbers = append(numbers, rounded(numeric))
+			}
+		}
+		if len(numbers) == 0 {
+			return ""
+		}
+		return strings.Join(numbers, " to ") + " " + unit
+	}
+	numeric, ok := numberFromAny(value)
+	if !ok || numeric <= 0 {
+		return ""
+	}
+	return rounded(numeric) + " " + thunderstormUnitForValue(numeric, unit)
+}
+
+func thunderstormUnitForValue(value float64, unit string) string {
+	if math.Abs(value-1) > 0.05 {
+		return unit
+	}
+	replacements := map[string]string{
+		"millimeters": "millimeter",
+		"centimeters": "centimeter",
+		"kilometers":  "kilometer",
+	}
+	for plural, singular := range replacements {
+		if strings.Contains(unit, plural) {
+			return strings.Replace(unit, plural, singular, 1)
+		}
+	}
+	return unit
+}
+
+func thunderstormRiskLabel(value any) string {
+	numeric, ok := numberFromAny(value)
+	if !ok {
+		return readableSpecialtyToken(localizedString(value, "en"))
+	}
+	switch int(math.Round(numeric)) {
+	case 1:
+		return "minor"
+	case 2:
+		return "slight"
+	case 3:
+		return "moderate"
+	case 4:
+		return "high"
+	case 5:
+		return "extreme"
+	default:
+		return "level " + rounded(numeric)
+	}
+}
+
+func thunderstormDayLabel(raw string, timezone string, now time.Time) string {
+	parsed, err := parseLooseTime(raw)
+	if err != nil {
+		return "today"
+	}
+	loc := now.Location()
+	if loaded, locErr := time.LoadLocation(fallbackText(timezone, "Local")); locErr == nil {
+		loc = loaded
+	}
+	validDate := parsed.In(loc)
+	nowDate := now.In(loc)
+	switch {
+	case sameDate(validDate, nowDate):
+		return "today"
+	case sameDate(validDate, nowDate.AddDate(0, 0, 1)):
+		return "tomorrow"
+	default:
+		return validDate.Format("January 2")
+	}
+}
+
+func thunderstormPublishedText(raw string, timezone string) string {
+	parsed, err := parseLooseTime(raw)
+	if err != nil {
+		return ""
+	}
+	if loc, locErr := time.LoadLocation(fallbackText(timezone, "Local")); locErr == nil {
+		parsed = parsed.In(loc)
+	}
+	return "at " + compactClock(parsed) + " on " + parsed.Format("January 2")
+}
+
+func thunderstormValidityText(startRaw string, endRaw string, timezone string) string {
+	start, startErr := parseLooseTime(startRaw)
+	end, endErr := parseLooseTime(endRaw)
+	if startErr != nil || endErr != nil {
+		return ""
+	}
+	if loc, locErr := time.LoadLocation(fallbackText(timezone, "Local")); locErr == nil {
+		start = start.In(loc)
+		end = end.In(loc)
+	}
+	return "from " + compactClock(start) + " on " + start.Format("January 2") + " through " + compactClock(end) + " " + timezoneName(end.Format("MST")) + " on " + end.Format("January 2, 2006")
+}
+
+func compactClock(value time.Time) string {
+	if value.Minute() == 0 {
+		return value.Format("3 PM")
+	}
+	return value.Format("3:04 PM")
+}
+
+func sameDate(left time.Time, right time.Time) bool {
+	ly, lm, ld := left.Date()
+	ry, rm, rd := right.Date()
+	return ly == ry && lm == rm && ld == rd
+}
+
+func (r renderer) hydrometricText(item map[string]any, lang string, timezone string) string {
+	station := fallbackText(specialtyString(item, "station", lang), "the river gauge")
+	parts := []string{"At " + station}
+	if level := specialtyNumber(item, "level_m"); level != "" {
+		parts = append(parts, "the water level was "+level+" metres")
+	}
+	if discharge := specialtyNumber(item, "discharge"); discharge != "" {
+		parts = append(parts, "the discharge was "+discharge+" cubic metres per second")
+	}
+	if note := specialtyString(item, "level_note", lang); note != "" {
+		parts = append(parts, note)
+	}
+	if observed := reportTime(specialtyString(item, "observed_at", lang), timezone); observed != "" {
+		parts = append(parts, "reported at "+observed)
+	}
+	return sentence(strings.Join(parts, ", "))
+}
+
+func (r renderer) coastalFloodText(item map[string]any, lang string, timezone string) string {
+	area := fallbackText(specialtyString(item, "area", lang), "the coast")
+	parts := []string{"For " + area}
+	if risk := specialtyLevel(item, "risk"); risk != "" {
+		parts = append(parts, "coastal flooding risk level "+risk)
+	}
+	if likelihood := specialtyLevel(item, "likelihood"); likelihood != "" {
+		parts = append(parts, "likelihood level "+likelihood)
+	}
+	if impact := specialtyLevel(item, "impact"); impact != "" {
+		parts = append(parts, "impact level "+impact)
+	}
+	for _, field := range []struct {
+		key   string
+		label string
+	}{
+		{"storm_surge", "storm surge"},
+		{"tide", "tide"},
+		{"waves", "wave impacts"},
+	} {
+		if value := specialtyLevel(item, field.key); value != "" {
+			parts = append(parts, field.label+" level "+value)
+		}
+	}
+	if valid := reportTime(specialtyString(item, "valid_at", lang), timezone); valid != "" {
+		parts = append(parts, "valid around "+valid)
+	}
+	return sentence(strings.Join(parts, "; "))
+}
+
+func (r renderer) hurricaneTrackText(item map[string]any, lang string, timezone string) string {
+	name := fallbackText(specialtyString(item, "storm_name", lang), "the tropical cyclone")
+	classification := readableSpecialtyToken(firstNonBlank(specialtyString(item, "classification", lang), specialtyString(item, "sub_type", lang)))
+	parts := []string{"Tropical cyclone " + titleText(name)}
+	if classification != "" {
+		parts = append(parts, "classified as "+classification)
+	}
+	if wind := specialtyNumber(item, "max_wind_kt"); wind != "" {
+		parts = append(parts, "maximum sustained winds "+wind+" knots")
+	}
+	if gust := specialtyNumber(item, "gust_kt"); gust != "" {
+		parts = append(parts, "gusts "+gust+" knots")
+	}
+	if pressure := specialtyNumber(item, "pressure_mb"); pressure != "" {
+		parts = append(parts, "central pressure "+pressure+" millibars")
+	}
+	if valid := reportTime(specialtyString(item, "valid_at", lang), timezone); valid != "" {
+		parts = append(parts, "valid at "+valid)
+	}
+	return sentence(strings.Join(parts, ", "))
+}
+
+func (r renderer) precipitationAnalysisText(item map[string]any, lang string, timezone string) string {
+	location := fallbackText(specialtyString(item, "location", lang), "the area")
+	minimum := specialtyNumber(item, "min_mm")
+	maximum := specialtyNumber(item, "max_mm")
+	mean := specialtyNumber(item, "mean_mm")
+	parts := []string{"For " + location}
+	if minimum != "" && maximum != "" {
+		parts = append(parts, "estimated 24 hour precipitation ranged from "+minimum+" to "+maximum+" millimetres")
+	}
+	if mean != "" {
+		parts = append(parts, "with an area average near "+mean+" millimetres")
+	}
+	if reported := reportTime(specialtyString(item, "published_at", lang), timezone); reported != "" {
+		parts = append(parts, "analysis retrieved at "+reported)
+	}
+	return sentence(strings.Join(parts, ", "))
+}
+
+func specialtyItemCurrent(item map[string]any, now time.Time) bool {
+	expires := specialtyString(item, "expires_at", "en")
+	if expires == "" {
+		return true
+	}
+	parsed, err := parseLooseTime(expires)
+	if err != nil {
+		return true
+	}
+	return parsed.After(now.Add(-5 * time.Minute))
+}
+
+func specialtyString(item map[string]any, key string, lang string) string {
+	if item == nil {
+		return ""
+	}
+	return localizedString(item[key], lang)
+}
+
+func specialtyNumber(item map[string]any, key string) string {
+	value, ok := numberFromAny(item[key])
+	if !ok {
+		return ""
+	}
+	return rounded(value)
+}
+
+func specialtyPositiveNumber(item map[string]any, key string) string {
+	value, ok := numberFromAny(item[key])
+	if !ok || value <= 0 {
+		return ""
+	}
+	return rounded(value)
+}
+
+func specialtyLevel(item map[string]any, key string) string {
+	if value := specialtyString(item, key, "en"); value != "" {
+		return readableSpecialtyToken(value)
+	}
+	return specialtyNumber(item, key)
+}
+
+func specialtyBool(item map[string]any, key string) bool {
+	switch value := item[key].(type) {
+	case bool:
+		return value
+	case string:
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "1", "true", "yes", "y":
+			return true
+		}
+	}
+	return false
+}
+
+func readableSpecialtyToken(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, "_", " ")
+	value = strings.ReplaceAll(value, "-", " ")
+	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
 }
 
 func (r renderer) userBulletinProduct(base Product, feed feedXML) (Product, error) {
@@ -764,6 +1485,7 @@ func normalizeDiscussionForSpeech(text string) string {
 	if text == "" {
 		return ""
 	}
+	text = discussionEndSignaturePattern.ReplaceAllString(text, "")
 	text = discussionRangeUnitPattern.ReplaceAllStringFunc(text, func(raw string) string {
 		matches := discussionRangeUnitPattern.FindStringSubmatch(raw)
 		if len(matches) != 4 {
@@ -781,7 +1503,43 @@ func normalizeDiscussionForSpeech(text string) string {
 	for _, replacement := range discussionStandaloneReplacements {
 		text = replacement.pattern.ReplaceAllString(text, replacement.replacement)
 	}
+	text = normalizeDiscussionUppercaseProse(text)
 	return strings.Join(strings.Fields(text), " ")
+}
+
+func normalizeDiscussionUppercaseProse(text string) string {
+	return discussionUppercaseWordPattern.ReplaceAllStringFunc(text, func(word string) string {
+		switch strings.ToUpper(word) {
+		case "VFR":
+			return "V F R"
+		case "IFR":
+			return "I F R"
+		case "MVFR":
+			return "M V F R"
+		case "ECCC":
+			return "Environment and Climate Change Canada"
+		case "SPC":
+			return "Storm Prediction Centre"
+		case "AM":
+			return "A.M."
+		case "PM":
+			return "P.M."
+		case "CST":
+			return "Central Standard Time"
+		case "CDT":
+			return "Central Daylight Time"
+		case "MST":
+			return "Mountain Standard Time"
+		case "MDT":
+			return "Mountain Daylight Time"
+		case "PST":
+			return "Pacific Standard Time"
+		case "PDT":
+			return "Pacific Daylight Time"
+		default:
+			return strings.ToLower(word)
+		}
+	})
 }
 
 func spokenDiscussionUnit(unit string) string {
@@ -1246,6 +2004,21 @@ func normalizeRegionTitle(raw string) string {
 	return value
 }
 
+func forecastRegionIntroFallback(region string) string {
+	lower := strings.ToLower(strings.TrimSpace(region))
+	if strings.Contains(lower, "region") || strings.Contains(lower, "area") || strings.Contains(region, ",") {
+		return "For the {region}."
+	}
+	return "For {region}."
+}
+
+func forecastRegionTextKey(region string) string {
+	if forecastRegionIntroFallback(region) == "For {region}." {
+		return "region_plain"
+	}
+	return "region"
+}
+
 func pauseForecastRegionName(value string, language string) string {
 	cleaned := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 	if cleaned == "" {
@@ -1387,6 +2160,18 @@ func titleForPackage(pkgID string) string {
 		return "Air Quality"
 	case "climate_summary":
 		return "Climate Summary"
+	case "thunderstorm_outlook":
+		return "Thunderstorm Outlook"
+	case "metnotes":
+		return "Meteorological Notes"
+	case "hydrometric":
+		return "River Conditions"
+	case "coastal_flood":
+		return "Coastal Flooding Risk"
+	case "hurricane_tracks":
+		return "Hurricane Tracks"
+	case "precipitation_analysis":
+		return "Precipitation Analysis"
 	case "geophysical_alert":
 		return "Geophysical Alert"
 	case "eccc_discussion":

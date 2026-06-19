@@ -98,6 +98,22 @@ func TestSQLiteStoreRoundTripsPayloadsAndArchive(t *testing.T) {
 		t.Fatalf("loaded observation = %#v", loadedObservation)
 	}
 
+	forecast := map[string]any{
+		"name":     map[string]any{"en": "Saskatoon"},
+		"forecast": []any{map[string]any{"period": map[string]any{"en": "Tonight"}, "textSummary": map[string]any{"en": "Clear."}}},
+	}
+	if err := store.UpsertForecast(ctx, ForecastRecord{Source: "eccc", ForecastID: "sk-40", RegionID: "06040", IssuedAtRaw: "2026-06-16T21:04:05Z", UpdatedAtRaw: "2026-06-16T22:04:05Z", Payload: forecast}); err != nil {
+		t.Fatalf("UpsertForecast: %v", err)
+	}
+	var loadedForecast map[string]any
+	ok, err = store.ForecastPayload(ctx, "eccc", "sk-40", &loadedForecast)
+	if err != nil || !ok {
+		t.Fatalf("ForecastPayload ok=%v err=%v", ok, err)
+	}
+	if loadedForecast["issued_at"] != "2026-06-16T21:04:05Z" || loadedForecast["updated_at"] != "2026-06-16T22:04:05Z" {
+		t.Fatalf("loaded forecast timestamps = %#v", loadedForecast)
+	}
+
 	aqhi := map[string]any{"aqhi": 3, "location": map[string]any{"en": "Saskatoon"}}
 	if err := store.StoreProductPayload(ctx, ProductPayloadRecord{Kind: "air_quality", Source: "eccc", ID: "sk-40", Payload: aqhi}); err != nil {
 		t.Fatalf("StoreProductPayload: %v", err)

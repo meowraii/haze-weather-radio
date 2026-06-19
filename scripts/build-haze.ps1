@@ -64,10 +64,36 @@ function Copy-BundleDirectory {
     if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
         return
     }
+    $PreserveDir = $null
+    if ($Name -eq "managed" -and (Test-Path -LiteralPath $Target -PathType Container)) {
+        $OnnxFiles = @(Get-ChildItem -LiteralPath $Target -Filter "*.onnx" -Recurse -File -ErrorAction SilentlyContinue)
+        if ($OnnxFiles.Count -gt 0) {
+            $PreserveDir = Join-Path ([System.IO.Path]::GetTempPath()) ("haze-preserve-onnx-" + [System.Guid]::NewGuid().ToString("N"))
+            $TargetFull = [System.IO.Path]::GetFullPath($Target).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+            foreach ($File in $OnnxFiles) {
+                $Relative = $File.FullName.Substring($TargetFull.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+                $Backup = Join-Path $PreserveDir $Relative
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Backup) | Out-Null
+                Copy-Item -LiteralPath $File.FullName -Destination $Backup -Force
+            }
+        }
+    }
     if (Test-Path -LiteralPath $Target) {
         Remove-Item -LiteralPath $Target -Recurse -Force
     }
     Copy-Item -LiteralPath $Source -Destination $Target -Recurse -Force
+    if ($PreserveDir -and (Test-Path -LiteralPath $PreserveDir -PathType Container)) {
+        $PreserveFull = [System.IO.Path]::GetFullPath($PreserveDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        Get-ChildItem -LiteralPath $PreserveDir -Filter "*.onnx" -Recurse -File | ForEach-Object {
+            $Relative = $_.FullName.Substring($PreserveFull.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+            $Restored = Join-Path $Target $Relative
+            if (-not (Test-Path -LiteralPath $Restored)) {
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Restored) | Out-Null
+                Copy-Item -LiteralPath $_.FullName -Destination $Restored -Force
+            }
+        }
+        Remove-Item -LiteralPath $PreserveDir -Recurse -Force
+    }
 }
 
 function Test-RunningOnWindows {
@@ -384,10 +410,10 @@ try {
     }
     $ManagedOut = Join-Path $OutFull "managed"
     New-Item -ItemType Directory -Force -Path $ManagedOut | Out-Null
-    if ((Test-Path -LiteralPath "scripts/tts/chatterbox_infer.py") -or (Test-Path -LiteralPath "scripts/tts/f5_infer.py")) {
+    if ((Test-Path -LiteralPath "scripts/tts/piper_worker.py") -or (Test-Path -LiteralPath "scripts/tts/chatterbox_infer.py") -or (Test-Path -LiteralPath "scripts/tts/f5_infer.py")) {
         $ManagedScripts = Join-Path $ManagedOut "scripts"
         New-Item -ItemType Directory -Force -Path $ManagedScripts | Out-Null
-        foreach ($Script in @("scripts/tts/chatterbox_infer.py", "scripts/tts/f5_infer.py")) {
+        foreach ($Script in @("scripts/tts/piper_worker.py", "scripts/tts/chatterbox_infer.py", "scripts/tts/f5_infer.py")) {
             if (Test-Path -LiteralPath $Script) {
                 Copy-Item -LiteralPath $Script -Destination $ManagedScripts -Force
             }

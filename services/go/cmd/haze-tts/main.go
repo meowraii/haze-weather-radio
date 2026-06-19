@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
@@ -40,6 +41,10 @@ func run() error {
 	timezone := flag.String("timezone", envOrDefault("HAZE_TTS_TIMEZONE", "Local"), "timezone for spoken timestamps")
 	piperExe := flag.String("piper-exe", envOrDefault("HAZE_PIPER_EXE", "piper"), "Piper executable path")
 	piperVoicesDir := flag.String("piper-voices-dir", envOrDefault("HAZE_PIPER_VOICES_DIR", filepath.Join("managed", "voices", "piper")), "Piper voice model directory")
+	piperMode := flag.String("piper-mode", envOrDefault("HAZE_PIPER_MODE", "auto"), "Piper runtime mode: auto, worker, or cli")
+	piperWorkers := flag.Int("piper-workers", envIntOrDefault("HAZE_PIPER_WORKERS", 1), "Piper worker processes per voice")
+	piperPrewarm := flag.Bool("piper-prewarm", envBoolOrDefault("HAZE_PIPER_PREWARM", true), "prewarm Piper worker voices on service startup")
+	piperCUDA := flag.Bool("piper-cuda", envBoolOrDefault("HAZE_PIPER_CUDA", false), "use CUDA for Piper workers when available")
 	text := flag.String("text", "", "text to synthesize")
 	out := flag.String("out", "", "output WAV path")
 	listVoices := flag.Bool("list-voices", false, "list provider voices as JSON")
@@ -54,14 +59,18 @@ func run() error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 		return runService(ctx, serviceConfig{
-			BridgeAddr: *bridge,
-			Readers:    *readersPath,
-			Dictionary: *dictionaryPath,
-			Provider:   *providerID,
-			Language:   *lang,
-			Timezone:   *timezone,
-			OutDir:     *outDir,
-			Timeout:    *timeout,
+			BridgeAddr:   *bridge,
+			Readers:      *readersPath,
+			Dictionary:   *dictionaryPath,
+			Provider:     *providerID,
+			Language:     *lang,
+			Timezone:     *timezone,
+			OutDir:       *outDir,
+			Timeout:      *timeout,
+			PiperMode:    *piperMode,
+			PiperWorkers: maxInt(1, *piperWorkers),
+			PiperPrewarm: *piperPrewarm,
+			PiperCUDA:    *piperCUDA,
 		})
 	}
 
@@ -122,14 +131,32 @@ func run() error {
 }
 
 type serviceConfig struct {
-	BridgeAddr string
-	Readers    string
-	Dictionary string
-	Provider   string
-	Language   string
-	Timezone   string
-	OutDir     string
-	Timeout    time.Duration
+	BridgeAddr   string
+	Readers      string
+	Dictionary   string
+	Provider     string
+	Language     string
+	Timezone     string
+	OutDir       string
+	Timeout      time.Duration
+	PiperMode    string
+	PiperWorkers int
+	PiperPrewarm bool
+	PiperCUDA    bool
+}
+
+type serviceState struct {
+	cfg          serviceConfig
+	providers    map[string]tts.Provider
+	readers      []tts.Reader
+	readersErr   error
+	dictionaries map[string]dictionaryResult
+	mu           sync.Mutex
+}
+
+type dictionaryResult struct {
+	Dictionary tts.Dictionary
+	Err        error
 }
 
 func runService(ctx context.Context, cfg serviceConfig) error {
@@ -185,6 +212,10 @@ func runService(ctx context.Context, cfg serviceConfig) error {
 }
 
 func runServiceConnection(ctx context.Context, conn net.Conn, cfg serviceConfig) error {
+	state, err := newServiceState(ctx, cfg)
+	if err != nil {
+		return err
+	}
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -205,12 +236,100 @@ func runServiceConnection(ctx context.Context, conn net.Conn, cfg serviceConfig)
 		if stringValue(message, "type") != "tts.synthesize" {
 			continue
 		}
-		handleSynthesisJob(ctx, conn, cfg, message)
+		handleSynthesisJob(ctx, conn, state, message)
 	}
 	return scanner.Err()
 }
 
-func handleSynthesisJob(ctx context.Context, conn net.Conn, cfg serviceConfig, message map[string]any) {
+func newServiceState(ctx context.Context, cfg serviceConfig) (*serviceState, error) {
+	providers := tts.DefaultProviders()
+	if piper, ok := providers["piper"].(*tts.PiperProvider); ok {
+		piper.ConfigureRuntime(tts.PiperRuntimeOptions{
+			Mode:    cfg.PiperMode,
+			Workers: maxInt(1, cfg.PiperWorkers),
+			Prewarm: cfg.PiperPrewarm,
+			UseCUDA: cfg.PiperCUDA,
+		})
+	}
+	readers, err := tts.LoadReaders(cfg.Readers)
+	if err != nil {
+		readers = nil
+	}
+	state := &serviceState{
+		cfg:          cfg,
+		providers:    providers,
+		readers:      readers,
+		readersErr:   err,
+		dictionaries: map[string]dictionaryResult{},
+	}
+	if cfg.PiperPrewarm {
+		state.prewarmPiper(ctx)
+	}
+	return state, nil
+}
+
+func (s *serviceState) prewarmPiper(ctx context.Context) {
+	piper, ok := s.providers["piper"].(*tts.PiperProvider)
+	if !ok {
+		return
+	}
+	for _, reader := range s.readers {
+		if ctx.Err() != nil {
+			return
+		}
+		if tts.NormalizeProvider(reader.Provider) != "piper" {
+			continue
+		}
+		prewarmCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err := piper.Prewarm(prewarmCtx, tts.Request{
+			Text:         "Ready.",
+			VoiceID:      reader.VoiceID,
+			Language:     reader.Language,
+			OutputFormat: tts.FormatPCM16LE,
+			Volume:       100,
+		})
+		cancel()
+		if err != nil {
+			log.Printf("piper prewarm for reader %s failed: %v", reader.ID, err)
+		}
+	}
+}
+
+func (s *serviceState) serviceReader(readerID string, language string) (tts.Reader, bool, error) {
+	if strings.TrimSpace(readerID) == "" {
+		return tts.Reader{}, false, nil
+	}
+	if s.readersErr != nil {
+		return tts.Reader{}, false, s.readersErr
+	}
+	reader, ok := tts.SelectReader(s.readers, readerID, language, "")
+	if !ok {
+		return tts.Reader{}, false, fmt.Errorf("reader %q not found in %s", readerID, s.cfg.Readers)
+	}
+	return reader, true, nil
+}
+
+func (s *serviceState) dictionary(language string) (tts.Dictionary, error) {
+	key := tts.NormalizeLanguage(language)
+	if key == "" {
+		key = tts.NormalizeLanguage(s.cfg.Language)
+	}
+	s.mu.Lock()
+	if cached, ok := s.dictionaries[key]; ok {
+		s.mu.Unlock()
+		return cached.Dictionary, cached.Err
+	}
+	s.mu.Unlock()
+
+	dictionary, err := tts.LoadDictionary(s.cfg.Dictionary, language)
+	s.mu.Lock()
+	s.dictionaries[key] = dictionaryResult{Dictionary: dictionary, Err: err}
+	s.mu.Unlock()
+	return dictionary, err
+}
+
+func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState, message map[string]any) {
+	cfg := state.cfg
 	data := objectValue(message, "data")
 	jobID := firstText(message, data, "job_id", "id", "subject")
 	if jobID == "" {
@@ -225,8 +344,7 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, cfg serviceConfig, m
 
 	jobCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	providers := tts.DefaultProviders()
-	reader, hasReader, err := serviceReader(cfg.Readers, firstText(message, data, "reader_id"), firstText(message, data, "language"))
+	reader, hasReader, err := state.serviceReader(firstText(message, data, "reader_id"), firstText(message, data, "language"))
 	if err != nil {
 		publishTTSError(conn, jobID, err.Error())
 		return
@@ -255,16 +373,18 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, cfg serviceConfig, m
 	if providerID == "" {
 		providerID = "auto"
 	}
-	dictionary, err := tts.LoadDictionary(cfg.Dictionary, language)
+	dictionary, err := state.dictionary(language)
 	if err != nil {
 		publishTTSError(conn, jobID, err.Error())
 		return
 	}
+	outputFormat := normalizeOutputFormat(firstText(message, data, "output_format", "format"))
 
-	audio, provider, err := synthesizeWithProvider(jobCtx, providers, providerID, tts.Request{
+	audio, provider, err := synthesizeWithProvider(jobCtx, state.providers, providerID, tts.Request{
 		Text:            tts.NormalizeText(text, dictionary, timezone),
 		VoiceID:         voiceID,
 		Language:        language,
+		OutputFormat:    outputFormat,
 		Volume:          intValue(message, data, "volume", 100),
 		Rate:            intValue(message, data, "rate", 0),
 		SentenceSilence: floatValue(message, data, "sentence_silence", 0),
@@ -273,7 +393,7 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, cfg serviceConfig, m
 		publishTTSError(conn, jobID, err.Error())
 		return
 	}
-	if audio.Format != tts.FormatWAV {
+	if audio.Format != tts.FormatWAV && audio.Format != tts.FormatPCM16LE {
 		publishTTSError(conn, jobID, fmt.Sprintf("unsupported audio format %q", audio.Format))
 		return
 	}
@@ -294,6 +414,9 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, cfg serviceConfig, m
 		"job_id":      jobID,
 		"output_path": outputPath,
 		"bytes":       len(audio.Data),
+		"format":      audio.Format,
+		"sample_rate": audio.SampleRate,
+		"channels":    audio.Channels,
 		"provider":    provider.ID(),
 		"reader_id":   reader.ID,
 		"voice_id":    voiceID,
@@ -406,6 +529,15 @@ func floatValue(message map[string]any, data map[string]any, key string, fallbac
 	return fallback
 }
 
+func normalizeOutputFormat(format string) tts.AudioFormat {
+	switch tts.AudioFormat(strings.ToLower(strings.TrimSpace(format))) {
+	case tts.FormatPCM16LE:
+		return tts.FormatPCM16LE
+	default:
+		return tts.FormatWAV
+	}
+}
+
 func sanitizeFileName(value string) string {
 	var builder strings.Builder
 	for _, char := range value {
@@ -434,6 +566,38 @@ func envOrDefault(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func envIntOrDefault(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func envBoolOrDefault(key string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on", "enabled":
+		return true
+	case "0", "false", "no", "off", "disabled":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func maxInt(left int, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func setTTSRuntimeEnv(piperExe string, piperVoicesDir string) {

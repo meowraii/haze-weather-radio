@@ -98,10 +98,12 @@ func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	var payload struct {
-		FeedID      string `json:"feed_id"`
-		SDP         string `json:"sdp"`
-		DisableG722 bool   `json:"disable_g722"`
-		RequireOpus bool   `json:"require_opus"`
+		FeedID         string `json:"feed_id"`
+		SDP            string `json:"sdp"`
+		DisableG722    bool   `json:"disable_g722"`
+		RequireOpus    bool   `json:"require_opus"`
+		Codec          string `json:"codec"`
+		PreferredCodec string `json:"preferred_codec"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 		http.Error(writer, "invalid JSON", http.StatusBadRequest)
@@ -120,8 +122,9 @@ func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	answer, err := s.media.AnswerWithOptions(request.Context(), feedID, payload.SDP, WebRTCAnswerOptions{
-		DisableG722: payload.DisableG722,
-		RequireOpus: payload.RequireOpus,
+		DisableG722:    payload.DisableG722,
+		RequireOpus:    payload.RequireOpus,
+		PreferredCodec: firstNonBlank(payload.Codec, payload.PreferredCodec),
 	})
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusBadRequest)

@@ -229,7 +229,27 @@ func (s *SQLiteStore) ObservationPayload(ctx context.Context, source string, loc
 }
 
 func (s *SQLiteStore) ForecastPayload(ctx context.Context, source string, forecastID string, target any) (bool, error) {
-	return s.loadJSONPayload(ctx, `SELECT payload FROM forecasts_current WHERE source = ? AND forecast_id = ?`, source, forecastID, target)
+	if s == nil || s.db == nil {
+		return false, nil
+	}
+	source = clean(source, "unknown")
+	forecastID = clean(forecastID, "")
+	if forecastID == "" {
+		return false, nil
+	}
+	var raw string
+	var issuedAt sql.NullString
+	var updatedAt sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT payload, issued_at, source_updated_at FROM forecasts_current WHERE source = ? AND forecast_id = ?`, source, forecastID).Scan(&raw, &issuedAt, &updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := mergeForecastPayloadTimes([]byte(raw), issuedAt.String, updatedAt.String, target); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *SQLiteStore) StoreProductPayload(ctx context.Context, record ProductPayloadRecord) error {

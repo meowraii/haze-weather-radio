@@ -328,6 +328,7 @@ func (p *feedPlanner) nextPlannedItem(ctx context.Context, now time.Time) (playl
 		item, err := p.buildProduct(ctx, pkgID, "routine", "", timelineEnd, now)
 		if err == nil {
 			p.nextRoutineRetryAt = time.Time{}
+			p.lastError = ""
 			if hasFixed &&
 				shouldFrontLoadFixed(now, nextFixed, p.cfg.Root.Services.Go.Playlist.FixedToleranceS) &&
 				routineItemWouldCrowdFixed(item, nextFixed, p.cfg.Root.Services.Go.Playlist.FixedToleranceS) {

@@ -1,6 +1,9 @@
 package dataingest
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestBuildECCCForecastUsesForecastLocationCSVNames(t *testing.T) {
 	raw := map[string]any{
@@ -35,6 +38,39 @@ func TestBuildECCCForecastUsesForecastLocationCSVNames(t *testing.T) {
 	}
 	if got := name["en"]; got != "Outlook, Watrous, Hanley, Imperial, and Dinsmore region" {
 		t.Fatalf("english name = %q", got)
+	}
+}
+
+func TestBuildECCCForecastIncludesIssueAndUpdateTimes(t *testing.T) {
+	raw := map[string]any{
+		"properties": map[string]any{
+			"lastUpdated": "2026-06-18T04:07:12Z",
+			"forecastGroup": map[string]any{
+				"timestamp": map[string]any{"en": "2026-06-18T03:00:00Z", "fr": "2026-06-18T03:00:00Z"},
+				"forecasts": []any{
+					map[string]any{
+						"period":      map[string]any{"textForecastName": map[string]any{"en": "Tonight", "fr": "Ce soir"}},
+						"cloudPrecip": map[string]any{"en": "Cloudy.", "fr": "Nuageux."},
+					},
+				},
+			},
+		},
+	}
+
+	payload, ok := buildECCCForecast(raw, coverageRegionXML{
+		ID:             "065500",
+		Source:         "eccc",
+		Name:           "Outlook. Watrous. Hanley. Imperial. Dinsmore Area",
+		DeriveForecast: "sk-37",
+	}, map[string]forecastRegionName{})
+	if !ok {
+		t.Fatal("forecast was not built")
+	}
+	if got := payload["issued_at"]; got != "2026-06-18T03:00:00Z" {
+		t.Fatalf("issued_at = %#v", got)
+	}
+	if got := payload["updated_at"]; got != "2026-06-18T04:07:12Z" {
+		t.Fatalf("updated_at = %#v", got)
 	}
 }
 
@@ -76,5 +112,169 @@ func TestBuildTWCConditionsNameOverrideWins(t *testing.T) {
 	station := payload["station"].(map[string]any)
 	if got := station["en"]; got != "Custom Pilger" {
 		t.Fatalf("station name = %q", got)
+	}
+}
+
+func TestAQHIPeriodsAcceptsUnderscoreKeys(t *testing.T) {
+	periods := aqhiPeriods(map[string]any{
+		"forecast_period": map[string]any{
+			"period_2": map[string]any{
+				"forecast_period_en": "Tonight",
+				"forecast_period_fr": "Ce soir",
+				"aqhi":               2,
+				"aqhi_insmoke":       5,
+			},
+			"period_3": map[string]any{
+				"forecast_period_en": "Tomorrow",
+				"forecast_period_fr": "Demain",
+				"aqhi":               3,
+			},
+		},
+	})
+	if len(periods) != 2 {
+		t.Fatalf("period count = %d", len(periods))
+	}
+	first := periods[0]
+	name := first["period"].(map[string]any)
+	if name["en"] != "Tonight" || first["aqhi"] != 2 || first["aqhi_insmoke"] != 5 {
+		t.Fatalf("first period = %#v", first)
+	}
+}
+
+func TestClimateDailyUsableRejectsMissingFlaggedValues(t *testing.T) {
+	props := map[string]any{
+		"LOCAL_DATE":               "2026-06-17 00:00:00",
+		"MAX_TEMPERATURE":          20.3,
+		"MAX_TEMPERATURE_FLAG":     "M",
+		"TOTAL_PRECIPITATION":      0,
+		"TOTAL_PRECIPITATION_FLAG": "M",
+		"SPEED_MAX_GUST":           47,
+		"SPEED_MAX_GUST_FLAG":      "M",
+	}
+	if climateDailyUsable(props, mustTime(t, "2026-06-18T00:00:00Z")) {
+		t.Fatalf("missing-flagged climate row should not be usable: %#v", props)
+	}
+	props["TOTAL_PRECIPITATION_FLAG"] = "T"
+	if !climateDailyUsable(props, mustTime(t, "2026-06-18T00:00:00Z")) {
+		t.Fatalf("trace precipitation should make climate row usable: %#v", props)
+	}
+	if !climateTrace(props, "TOTAL_PRECIPITATION") {
+		t.Fatalf("trace precipitation flag was not detected")
+	}
+}
+
+func TestClimateGustDirectionUsesTensOfDegrees(t *testing.T) {
+	props := map[string]any{
+		"DIRECTION_MAX_GUST":      34,
+		"DIRECTION_MAX_GUST_FLAG": "",
+	}
+	if got := climateGustDirection(props); got != "NNW" {
+		t.Fatalf("gust direction = %#v", got)
+	}
+}
+
+func TestClimateNormalQualityGate(t *testing.T) {
+	if climateNormalUsable(map[string]any{
+		"PERIOD":                   "NORM",
+		"CURRENT_FLAG":             "Y",
+		"YEAR_COUNT_NORMAL_PERIOD": 14,
+		"PERCENT_OF_POSSIBLE_OBS":  100,
+	}) {
+		t.Fatal("normal with fewer than 15 years should be rejected")
+	}
+	if !climateNormalUsable(map[string]any{
+		"PERIOD":                   "NORM",
+		"CURRENT_FLAG":             "Y",
+		"YEAR_COUNT_NORMAL_PERIOD": 27,
+		"PERCENT_OF_POSSIBLE_OBS":  98.8,
+	}) {
+		t.Fatal("good normal should be accepted")
+	}
+}
+
+func TestClimateRecordExtractionRequiresUsefulValuesAndYears(t *testing.T) {
+	records := map[string]any{}
+	addClimateRecord(records, "high_temperature", map[string]any{
+		"RECORD_HIGH_MAX_TEMP":    34.6,
+		"RECORD_HIGH_MAX_TEMP_YR": 1988,
+	}, "RECORD_HIGH_MAX_TEMP", "RECORD_HIGH_MAX_TEMP_YR", true)
+	addClimateRecord(records, "snowfall", map[string]any{
+		"RECORD_SNOWFALL":    0,
+		"RECORD_SNOWFALL_YR": 2009,
+	}, "RECORD_SNOWFALL", "RECORD_SNOWFALL_YR", false)
+	addClimateRecord(records, "precipitation", map[string]any{
+		"RECORD_PRECIPITATION": 86.4,
+	}, "RECORD_PRECIPITATION", "RECORD_PRECIPITATION_YR", false)
+
+	high := records["high_temperature"].(map[string]any)
+	if high["value"] != 34.6 || high["year"] != 1988 {
+		t.Fatalf("high record = %#v", high)
+	}
+	if _, ok := records["snowfall"]; ok {
+		t.Fatalf("zero snowfall record should be omitted: %#v", records["snowfall"])
+	}
+	if _, ok := records["precipitation"]; ok {
+		t.Fatalf("record without year should be omitted: %#v", records["precipitation"])
+	}
+}
+
+func TestClimateSunriseSunsetAlignsToFeedLocalDate(t *testing.T) {
+	events, ok := climateSunriseSunset(time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC), -106.718889, 52.173611, "America/Regina")
+	if !ok {
+		t.Fatal("sunrise and sunset were not computed")
+	}
+	loc, err := time.LoadLocation("America/Regina")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sunrise, err := time.Parse(time.RFC3339, events["sunrise"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sunset, err := time.Parse(time.RFC3339, events["sunset"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	riseLocal := sunrise.In(loc)
+	setLocal := sunset.In(loc)
+	if riseLocal.Format("2006-01-02") != "2026-06-17" || setLocal.Format("2006-01-02") != "2026-06-17" {
+		t.Fatalf("events not aligned to local date: sunrise=%s sunset=%s", riseLocal, setLocal)
+	}
+	if riseLocal.Hour() < 4 || riseLocal.Hour() > 5 || setLocal.Hour() != 21 {
+		t.Fatalf("unexpected local solar times: sunrise=%s sunset=%s", riseLocal.Format(time.Kitchen), setLocal.Format(time.Kitchen))
+	}
+}
+
+func TestFeedSpecialtySubtypesUsesECCCCitypagePrefix(t *testing.T) {
+	feed := feedXML{}
+	feed.Locations.Coverage.Regions = []coverageRegionXML{{ID: "065500", Source: "eccc", DeriveForecast: "sk-37"}}
+	subtypes := feedSpecialtySubtypes(feed)
+	if _, ok := subtypes["PRAIRIES"]; !ok {
+		t.Fatalf("subtypes = %#v", subtypes)
+	}
+}
+
+func mustTime(t *testing.T, raw string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
+func TestRDPAStatsSummarizesCoverageValues(t *testing.T) {
+	stats, ok := rdpaStats(map[string]any{
+		"ranges": map[string]any{
+			"APCP": map[string]any{
+				"values": []any{nil, 0.04, 1.26, 2.51},
+			},
+		},
+	})
+	if !ok {
+		t.Fatal("stats were not built")
+	}
+	if stats["min_mm"] != 0.0 || stats["max_mm"] != 2.5 || stats["mean_mm"] != 1.3 {
+		t.Fatalf("stats = %#v", stats)
 	}
 }

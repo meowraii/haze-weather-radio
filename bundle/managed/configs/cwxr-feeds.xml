@@ -84,7 +84,7 @@
       </airQualityLocations>
 
       <climateLocations>
-        <location id="VSSK40V" source="eccc"/>
+        <location id="4057165" source="eccc" name_override="Saskatoon" normal_id="4057120"/>
       </climateLocations>
 
     </locations>

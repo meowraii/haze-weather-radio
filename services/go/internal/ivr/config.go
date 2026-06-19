@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +23,11 @@ type Options struct {
 
 type rootConfig struct {
 	FeedsFile string `yaml:"feeds_file"`
-	Services  struct {
+	Operator  struct {
+		OnAirName     any `yaml:"on_air_name"`
+		TelephoneName any `yaml:"telephone_name"`
+	} `yaml:"operator"`
+	Services struct {
 		Go struct {
 			IVR Config `yaml:"ivr"`
 		} `yaml:"go"`
@@ -67,6 +70,20 @@ type sipConfig struct {
 		Username    string `yaml:"username"`
 		PasswordEnv string `yaml:"password_env"`
 	} `yaml:"auth"`
+	Registration sipRegistrationConfig `yaml:"registration"`
+}
+
+type sipRegistrationConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	Server       string `yaml:"server"`
+	Domain       string `yaml:"domain"`
+	Username     string `yaml:"username"`
+	AuthUsername string `yaml:"auth_username"`
+	PasswordEnv  string `yaml:"password_env"`
+	FromUser     string `yaml:"from_user"`
+	ContactUser  string `yaml:"contact_user"`
+	Expires      int    `yaml:"expires"`
+	RetrySeconds int    `yaml:"retry_seconds"`
 }
 
 type rtpConfig struct {
@@ -89,6 +106,7 @@ type loadedConfig struct {
 	Root              rootConfig
 	IVR               Config
 	BaseDir           string
+	PromptsPath       string
 	Feeds             []feedXML
 	ForecastLocations map[string]locationRecord
 	CLCs              map[string]locationRecord
@@ -124,11 +142,18 @@ type feedXML struct {
 }
 
 type transmitterXML struct {
+	Network      transmitterNetworkXML   `xml:"network"`
 	SiteName     string                  `xml:"site_name"`
 	Callsign     string                  `xml:"callsign"`
 	Relationship string                  `xml:"relationship"`
 	FrequencyMHz transmitterFrequencyXML `xml:"frequency_mhz"`
 	HostName     string                  `xml:"host_name"`
+}
+
+type transmitterNetworkXML struct {
+	Name           string `xml:"name"`
+	Pronounciation string `xml:"pronounciation"`
+	Pronunciation  string `xml:"pronunciation"`
 }
 
 type transmitterFrequencyXML struct {
@@ -162,6 +187,8 @@ type locationRecord struct {
 	FeedID    string `json:"feed_id,omitempty"`
 	Forecast  string `json:"forecast_id,omitempty"`
 	StationID string `json:"station_id,omitempty"`
+	Latitude  string `json:"latitude,omitempty"`
+	Longitude string `json:"longitude,omitempty"`
 }
 
 func loadConfig(path string, overrides Options) (loadedConfig, error) {
@@ -192,7 +219,8 @@ func loadConfig(path string, overrides Options) (loadedConfig, error) {
 	if err != nil {
 		return loadedConfig{}, err
 	}
-	prompts, err := loadPromptConfig(resolvePath(baseDir, cfg.PromptsFile))
+	promptsPath := resolvePath(baseDir, cfg.PromptsFile)
+	prompts, err := loadPromptConfig(promptsPath)
 	if err != nil {
 		return loadedConfig{}, err
 	}
@@ -200,6 +228,7 @@ func loadConfig(path string, overrides Options) (loadedConfig, error) {
 		Root:              root,
 		IVR:               cfg,
 		BaseDir:           baseDir,
+		PromptsPath:       promptsPath,
 		Feeds:             feeds,
 		ForecastLocations: loadForecastLocations(resolvePath(baseDir, "managed/csv/FORECAST_LOCATIONS.csv")),
 		CLCs:              loadCommaCSV(resolvePath(baseDir, "managed/csv/CLC_Base_Zone.csv"), "CLC", "NAME", "PROVINCE_C", "clc"),
@@ -218,6 +247,12 @@ func normalizeIVRConfig(cfg *Config) {
 	}
 	if cfg.SIP.Listen == "" {
 		cfg.SIP.Listen = "0.0.0.0:5060"
+	}
+	if cfg.SIP.Registration.Expires == 0 {
+		cfg.SIP.Registration.Expires = 300
+	}
+	if cfg.SIP.Registration.RetrySeconds == 0 {
+		cfg.SIP.Registration.RetrySeconds = 30
 	}
 	if cfg.RTP.PortMin == 0 {
 		cfg.RTP.PortMin = 30000
@@ -344,7 +379,6 @@ func loadForecastLocations(path string) map[string]locationRecord {
 				Source:   "eccc_forecast",
 				Name:     strings.Trim(strings.TrimSpace(row[nameIndex]), `"`),
 				Province: province,
-				Forecast: cityPageFromForecastCode(code),
 			}
 		}
 	}
@@ -366,6 +400,8 @@ func loadCommaCSV(path string, codeHeader string, nameHeader string, provinceHea
 	codeIndex := csvIndex(header, codeHeader)
 	nameIndex := csvIndex(header, nameHeader)
 	provIndex := csvIndex(header, provinceHeader)
+	latIndex := csvIndex(header, "LAT_DD")
+	lonIndex := csvIndex(header, "LON_DD")
 	out := map[string]locationRecord{}
 	for {
 		row, err := reader.Read()
@@ -383,11 +419,21 @@ func loadCommaCSV(path string, codeHeader string, nameHeader string, provinceHea
 		if provIndex >= 0 && len(row) > provIndex {
 			province = strings.Trim(strings.TrimSpace(row[provIndex]), `"`)
 		}
+		latitude := ""
+		if latIndex >= 0 && len(row) > latIndex {
+			latitude = strings.Trim(strings.TrimSpace(row[latIndex]), `"`)
+		}
+		longitude := ""
+		if lonIndex >= 0 && len(row) > lonIndex {
+			longitude = strings.Trim(strings.TrimSpace(row[lonIndex]), `"`)
+		}
 		out[code] = locationRecord{
-			Code:     code,
-			Source:   source,
-			Name:     strings.Trim(strings.TrimSpace(row[nameIndex]), `"`),
-			Province: province,
+			Code:      code,
+			Source:    source,
+			Name:      strings.Trim(strings.TrimSpace(row[nameIndex]), `"`),
+			Province:  province,
+			Latitude:  latitude,
+			Longitude: longitude,
 		}
 	}
 	return out
@@ -459,18 +505,6 @@ func maxInt(values ...int) int {
 	return max
 }
 
-func cityPageFromForecastCode(code string) string {
-	code = strings.TrimLeft(strings.TrimSpace(code), "0")
-	if code == "" {
-		return ""
-	}
-	number, err := strconv.Atoi(code)
-	if err != nil {
-		return ""
-	}
-	return fmt.Sprintf("sk-%d", number)
-}
-
 func resolvePath(base string, value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -487,6 +521,38 @@ func fallbackText(value string, fallback string) string {
 		return strings.TrimSpace(fallback)
 	}
 	return strings.TrimSpace(value)
+}
+
+func displayText(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		merged := map[string]any{}
+		for _, item := range typed {
+			if child, ok := item.(map[string]any); ok {
+				for key, value := range child {
+					merged[key] = value
+				}
+			}
+		}
+		for _, key := range []string{"pronunciation", "text", "name"} {
+			if text := displayText(merged[key]); text != "" {
+				return text
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"pronunciation", "text", "name", "value"} {
+			if text := displayText(typed[key]); text != "" {
+				return text
+			}
+		}
+	default:
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+	return ""
 }
 
 func xmlBool(raw string, fallback bool) bool {

@@ -3,34 +3,18 @@ package ivr
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestSIPInviteNegotiatesPCMUAndTelephoneEvents(t *testing.T) {
-	service := &Service{cfg: loadedConfig{IVR: Config{RTP: rtpConfig{PortMin: 0, PortMax: 0}}, Prompts: defaultPromptConfig()}}
-	request := parseSIPRequest(strings.Join([]string{
-		"INVITE sip:haze@127.0.0.1 SIP/2.0",
-		"Via: SIP/2.0/UDP 127.0.0.1:5062;branch=z9hG4bK-test",
-		"From: <sip:caller@127.0.0.1>;tag=abc",
-		"To: <sip:haze@127.0.0.1>",
-		"Call-ID: call-1",
-		"CSeq: 1 INVITE",
-		"Contact: <sip:caller@127.0.0.1:5062>",
-		"Content-Type: application/sdp",
-		"Content-Length: 161",
-		"",
-		"v=0",
-		"o=caller 0 0 IN IP4 127.0.0.1",
-		"s=call",
-		"c=IN IP4 127.0.0.1",
-		"t=0 0",
-		"m=audio 40000 RTP/AVP 0 101",
-		"a=rtpmap:0 PCMU/8000",
-		"a=rtpmap:101 telephone-event/8000",
-		"",
-	}, "\r\n"))
+func TestSIPInviteUsesConfiguredG722AndTelephoneEvents(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{RTP: rtpConfig{PortMin: 0, PortMax: 0}, Cache: cacheConfig{PhoneCodec: "g722"}}, Prompts: defaultPromptConfig()}}
+	request := sampleSIPInviteRequestWithFormats("9 0 101", "a=rtpmap:9 G722/8000", "a=rtpmap:0 PCMU/8000")
 
 	call, response := service.acceptSIPInvite(context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
 	if call == nil {
@@ -43,8 +27,352 @@ func TestSIPInviteNegotiatesPCMUAndTelephoneEvents(t *testing.T) {
 	if !strings.Contains(response, "Content-Type: application/sdp") || !strings.Contains(response, "m=audio ") {
 		t.Fatalf("response did not include SDP: %s", response)
 	}
+	if !strings.Contains(response, "a=rtpmap:9 G722/8000") || !strings.Contains(response, "telephone-event/8000") {
+		t.Fatalf("response did not negotiate G.722 and telephone events: %s", response)
+	}
+	if call.audioCodec != sipAudioCodecG722 || call.audioPayload != sipPayloadG722 {
+		t.Fatalf("call negotiated codec=%v payload=%d", call.audioCodec, call.audioPayload)
+	}
+}
+
+func TestSIPInvitePrefersConfiguredPCMUOverG722(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{RTP: rtpConfig{PortMin: 0, PortMax: 0}, Cache: cacheConfig{PhoneCodec: "pcmu"}}, Prompts: defaultPromptConfig()}}
+	request := sampleSIPInviteRequestWithFormats("9 0 101", "a=rtpmap:9 G722/8000", "a=rtpmap:0 PCMU/8000")
+
+	call, response := service.acceptSIPInvite(context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
+	if call == nil {
+		t.Fatalf("expected accepted call, response: %s", response)
+	}
+	call.close()
+	if !strings.Contains(response, "a=rtpmap:0 PCMU/8000") {
+		t.Fatalf("response did not select PCMU: %s", response)
+	}
+	if call.audioCodec != sipAudioCodecPCMU || call.audioPayload != sipPayloadPCMU {
+		t.Fatalf("call negotiated codec=%v payload=%d", call.audioCodec, call.audioPayload)
+	}
+}
+
+func TestSIPInviteFallsBackToPCMU(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{RTP: rtpConfig{PortMin: 0, PortMax: 0}}, Prompts: defaultPromptConfig()}}
+	request := sampleSIPInviteRequest()
+
+	call, response := service.acceptSIPInvite(context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
+	if call == nil {
+		t.Fatalf("expected accepted call, response: %s", response)
+	}
+	call.close()
 	if !strings.Contains(response, "a=rtpmap:0 PCMU/8000") || !strings.Contains(response, "telephone-event/8000") {
 		t.Fatalf("response did not negotiate PCMU and telephone events: %s", response)
+	}
+}
+
+func TestSIPInviteBindsRTPWildcardWhenPublicHostConfigured(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{
+		SIP: sipConfig{PublicHost: "203.0.113.10"},
+		RTP: rtpConfig{PortMin: 0, PortMax: 0},
+	}, Prompts: defaultPromptConfig()}}
+
+	call, response := service.acceptSIPInvite(context.Background(), sampleSIPInviteRequest(), &net.UDPAddr{IP: net.ParseIP("198.51.100.20"), Port: 5060}, &net.UDPAddr{IP: net.IPv4zero, Port: 5060})
+	if call == nil {
+		t.Fatalf("expected accepted call, response: %s", response)
+	}
+	defer call.close()
+	if !strings.Contains(response, "c=IN IP4 203.0.113.10") {
+		t.Fatalf("response did not advertise public host: %s", response)
+	}
+	if addr, ok := call.rtpConn.LocalAddr().(*net.UDPAddr); !ok || !addr.IP.IsUnspecified() {
+		t.Fatalf("RTP should bind locally, got %#v", call.rtpConn.LocalAddr())
+	}
+}
+
+func TestSIPAdvertiseHostUsesLANForPrivateCallers(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{
+		SIP: sipConfig{PublicHost: "203.0.113.10"},
+	}}}
+	got := service.sipAdvertiseHost(&net.UDPAddr{IP: net.ParseIP("172.16.1.33"), Port: 5060}, &net.UDPAddr{IP: net.ParseIP("172.16.1.30"), Port: 5060})
+	if got != "172.16.1.30" {
+		t.Fatalf("LAN caller should receive LAN advertise host, got %q", got)
+	}
+	got = service.sipAdvertiseHost(&net.UDPAddr{IP: net.ParseIP("208.100.60.166"), Port: 5060}, &net.UDPAddr{IP: net.ParseIP("172.16.1.30"), Port: 5060})
+	if got != "203.0.113.10" {
+		t.Fatalf("public caller should receive public advertise host, got %q", got)
+	}
+}
+
+func TestSIPRegisterUsesLocalContactWithPublicHostConfigured(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{
+		SIP: sipConfig{PublicHost: "203.0.113.10"},
+	}}}
+	registrar := &sipRegistrar{
+		service:   service,
+		localAddr: &net.UDPAddr{IP: net.ParseIP("172.16.1.30"), Port: 5060},
+	}
+
+	request := registrar.buildRegister("sip:ca.voip.ms:5060", "ca.voip.ms", "529289_TeleWeather", "529289_TeleWeather", "call-id", "tag", 1, 300, "")
+
+	if !strings.Contains(request, "Via: SIP/2.0/UDP 172.16.1.30:5060") {
+		t.Fatalf("REGISTER should use local Via host, got:\n%s", request)
+	}
+	if !strings.Contains(request, "Contact: <sip:529289_TeleWeather@172.16.1.30:5060>") {
+		t.Fatalf("REGISTER should use local Contact host, got:\n%s", request)
+	}
+	if strings.Contains(request, "203.0.113.10") {
+		t.Fatalf("REGISTER leaked public SDP host:\n%s", request)
+	}
+}
+
+func TestSIPInviteSetsCallDeadline(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{
+		MaxCallSeconds: 7,
+		RTP:            rtpConfig{PortMin: 0, PortMax: 0},
+	}}}
+	call, response := service.acceptSIPInvite(context.Background(), sampleSIPInviteRequest(), &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
+	if call == nil {
+		t.Fatalf("expected accepted call, response: %s", response)
+	}
+	defer call.close()
+	deadline, ok := call.ctx.Deadline()
+	if !ok {
+		t.Fatalf("call context did not receive a deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > 8*time.Second {
+		t.Fatalf("unexpected call deadline remaining: %s", remaining)
+	}
+}
+
+func TestSIPAdvertiseHostIPHelpers(t *testing.T) {
+	for _, value := range []string{"10.0.0.5", "172.16.1.20", "172.31.255.1", "192.168.1.50"} {
+		if !isPrivateIPv4(net.ParseIP(value)) {
+			t.Fatalf("%s should be private IPv4", value)
+		}
+	}
+	for _, value := range []string{"127.0.0.1", "169.254.1.2", "172.32.0.1", "8.8.8.8", "::1"} {
+		if isPrivateIPv4(net.ParseIP(value)) {
+			t.Fatalf("%s should not be private IPv4", value)
+		}
+	}
+	if usableIPv4(net.ParseIP("192.168.1.50")).String() != "192.168.1.50" {
+		t.Fatal("usable IPv4 rejected LAN address")
+	}
+	if usableIPv4(net.ParseIP("::1")) != nil {
+		t.Fatal("usable IPv4 accepted IPv6 loopback")
+	}
+}
+
+func TestSDPOfferRejectsMissingSupportedCodec(t *testing.T) {
+	_, err := parseSDPOffer(strings.Join([]string{
+		"v=0",
+		"o=caller 0 0 IN IP4 127.0.0.1",
+		"s=call",
+		"c=IN IP4 127.0.0.1",
+		"t=0 0",
+		"m=audio 40000 RTP/AVP 8 101",
+		"a=rtpmap:8 PCMA/8000",
+		"a=rtpmap:101 telephone-event/8000",
+		"",
+	}, "\r\n"), &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062})
+	if err == nil || !strings.Contains(err.Error(), "G722") || !strings.Contains(err.Error(), "PCMU") {
+		t.Fatalf("expected supported-codec rejection, got %v", err)
+	}
+}
+
+func TestSDPOfferRejectsMalformedAudioLineWithoutPanic(t *testing.T) {
+	_, err := parseSDPOffer(strings.Join([]string{
+		"v=0",
+		"o=caller 0 0 IN IP4 127.0.0.1",
+		"s=call",
+		"c=IN IP4 127.0.0.1",
+		"t=0 0",
+		"m=audio 40000",
+		"",
+	}, "\r\n"), &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062})
+	if err == nil {
+		t.Fatalf("expected malformed SDP to be rejected")
+	}
+}
+
+func TestSIPSourceAllowedSupportsIPAndCIDR(t *testing.T) {
+	service := &Service{}
+	if !service.sipSourceAllowed(&net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 5060}) {
+		t.Fatalf("empty allowlist should allow any source")
+	}
+	service.cfg.IVR.SIP.AllowedSources = []string{"192.0.2.10", "10.0.0.0/8"}
+	if !service.sipSourceAllowed(&net.UDPAddr{IP: net.ParseIP("192.0.2.10"), Port: 5060}) {
+		t.Fatalf("exact source IP was not allowed")
+	}
+	if !service.sipSourceAllowed(&net.UDPAddr{IP: net.ParseIP("10.42.0.5"), Port: 5060}) {
+		t.Fatalf("CIDR source IP was not allowed")
+	}
+	if service.sipSourceAllowed(&net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 5060}) {
+		t.Fatalf("source outside allowlist was allowed")
+	}
+}
+
+func TestSIPCanAcceptCallHonorsConfiguredLimit(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{MaxConcurrentCalls: 2}}}
+	if !service.sipCanAcceptCall(1) {
+		t.Fatalf("call below limit should be accepted")
+	}
+	if service.sipCanAcceptCall(2) {
+		t.Fatalf("call at limit should be rejected")
+	}
+}
+
+func TestSIPDigestAuthChallengeAndVerification(t *testing.T) {
+	t.Setenv("HAZE_IVR_TEST_PASSWORD", "secret")
+	service := &Service{}
+	service.cfg.IVR.SIP.Auth.Enabled = true
+	service.cfg.IVR.SIP.Auth.Username = "haze"
+	service.cfg.IVR.SIP.Auth.PasswordEnv = "HAZE_IVR_TEST_PASSWORD"
+	request := sampleSIPInviteRequest()
+	challenges := map[string]time.Time{}
+
+	ok, status, extra := service.sipAuthorizeInvite(request, challenges)
+	if ok || status != "401 Unauthorized" || !strings.Contains(extra, "WWW-Authenticate: Digest") {
+		t.Fatalf("expected digest challenge, ok=%v status=%q extra=%q", ok, status, extra)
+	}
+	if len(challenges) != 1 {
+		t.Fatalf("expected one nonce challenge, got %d", len(challenges))
+	}
+	nonce := ""
+	for key := range challenges {
+		nonce = key
+	}
+	request.Headers["authorization"] = digestAuthHeader(request, "haze", sipAuthRealm(), "secret", nonce)
+	ok, status, extra = service.sipAuthorizeInvite(request, challenges)
+	if !ok {
+		t.Fatalf("expected digest auth to pass, status=%q extra=%q", status, extra)
+	}
+}
+
+func TestSIPPromptPlaybackBargesInOnDigit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "long.pcmu")
+	raw := make([]byte, sipPacketSamples*80)
+	for index := range raw {
+		raw[index] = 0xFF
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := &sipCall{
+		ctx:    ctx,
+		digits: make(chan string, 1),
+	}
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		call.pushDigit("2")
+	}()
+
+	startedAt := time.Now()
+	digit, ok := call.playPCMUFile(path, digitInterruptAny)
+	elapsed := time.Since(startedAt)
+	if !ok || digit != "2" {
+		t.Fatalf("digit=%q ok=%v", digit, ok)
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Fatalf("barge-in took too long: %s", elapsed)
+	}
+}
+
+func TestSIPProductPlaybackOnlyBargesInOnPound(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "long.pcmu")
+	raw := make([]byte, sipPacketSamples*80)
+	for index := range raw {
+		raw[index] = 0xFF
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := &sipCall{
+		ctx:    ctx,
+		digits: make(chan string, 4),
+	}
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		call.pushDigit("2")
+		time.Sleep(40 * time.Millisecond)
+		call.pushDigit("#")
+	}()
+
+	startedAt := time.Now()
+	digit, ok := call.playPCMUFile(path, digitInterruptPound)
+	elapsed := time.Since(startedAt)
+	if !ok || digit != "#" {
+		t.Fatalf("digit=%q ok=%v", digit, ok)
+	}
+	if elapsed > 400*time.Millisecond {
+		t.Fatalf("product pound interrupt took too long: %s", elapsed)
+	}
+}
+
+func TestCollectDigitsUsesDigitThatInterruptedPrompt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	call := &sipCall{
+		ctx:    ctx,
+		digits: make(chan string, 8),
+		service: &Service{cfg: loadedConfig{IVR: Config{
+			DigitTimeoutSeconds: 1,
+		}}},
+	}
+	call.pushDigit("6")
+	call.pushDigit("0")
+	call.pushDigit("4")
+	call.pushDigit("0")
+	call.pushDigit("#")
+
+	code, ok := call.collectDigits(time.Second, "0")
+	if !ok || code != "06040" {
+		t.Fatalf("code=%q ok=%v", code, ok)
+	}
+}
+
+func TestCollectLocationInputAutoSubmitsValidCode(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := loadedConfig{
+		IVR:   Config{DigitTimeoutSeconds: 2, DefaultLanguage: "en-CA"},
+		Feeds: []feedXML{testFeedWithLanguages("sk-0001", "en-CA")},
+	}
+	call := &sipCall{
+		ctx:    ctx,
+		digits: make(chan string, 8),
+		service: &Service{
+			cfg:      cfg,
+			resolver: resolverWithHelloWeather(cfg, locationRecord{Code: "06040", Source: "hello_weather", Name: "Saskatoon", Province: "SK"}),
+		},
+	}
+	for _, digit := range []string{"0", "6", "0", "4", "0"} {
+		call.pushDigit(digit)
+	}
+
+	startedAt := time.Now()
+	code, geophysical, ok := call.collectLocationInput(2*time.Second, "")
+	elapsed := time.Since(startedAt)
+	if !ok || geophysical || code != "06040" {
+		t.Fatalf("code=%q geophysical=%v ok=%v", code, geophysical, ok)
+	}
+	if elapsed < 550*time.Millisecond || elapsed > 1200*time.Millisecond {
+		t.Fatalf("auto-submit delay = %s, want about 600ms", elapsed)
+	}
+}
+
+func TestCollectLocationInputStarSelectsGeophysical(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	call := &sipCall{
+		ctx:     ctx,
+		digits:  make(chan string, 1),
+		service: &Service{cfg: loadedConfig{IVR: Config{DigitTimeoutSeconds: 1}}},
+	}
+	code, geophysical, ok := call.collectLocationInput(time.Second, "*")
+	if !ok || !geophysical || code != "" {
+		t.Fatalf("code=%q geophysical=%v ok=%v", code, geophysical, ok)
 	}
 }
 
@@ -62,4 +390,45 @@ func TestRTPDTMFDigitDecodesEndEvent(t *testing.T) {
 	if digit != "1" || key == "" {
 		t.Fatalf("digit=%q key=%q", digit, key)
 	}
+}
+
+func sampleSIPInviteRequest() sipRequest {
+	return sampleSIPInviteRequestWithFormats("0 101", "a=rtpmap:0 PCMU/8000")
+}
+
+func sampleSIPInviteRequestWithFormats(formats string, rtpmapLines ...string) sipRequest {
+	lines := []string{
+		"INVITE sip:haze@127.0.0.1 SIP/2.0",
+		"Via: SIP/2.0/UDP 127.0.0.1:5062;branch=z9hG4bK-test",
+		"From: <sip:caller@127.0.0.1>;tag=abc",
+		"To: <sip:haze@127.0.0.1>",
+		"Call-ID: call-1",
+		"CSeq: 1 INVITE",
+		"Contact: <sip:caller@127.0.0.1:5062>",
+		"Content-Type: application/sdp",
+		"Content-Length: 161",
+		"",
+		"v=0",
+		"o=caller 0 0 IN IP4 127.0.0.1",
+		"s=call",
+		"c=IN IP4 127.0.0.1",
+		"t=0 0",
+		"m=audio 40000 RTP/AVP " + formats,
+	}
+	lines = append(lines, rtpmapLines...)
+	lines = append(lines,
+		"a=rtpmap:101 telephone-event/8000",
+		"",
+	)
+	return parseSIPRequest(strings.Join(lines, "\r\n"))
+}
+
+func digestAuthHeader(request sipRequest, username string, realm string, password string, nonce string) string {
+	cnonce := "abcdef"
+	nc := "00000001"
+	qop := "auth"
+	ha1 := sipMD5Hex(username + ":" + realm + ":" + password)
+	ha2 := sipMD5Hex(request.Method + ":" + request.URI)
+	response := sipMD5Hex(strings.Join([]string{ha1, nonce, nc, cnonce, qop, ha2}, ":"))
+	return fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s", algorithm=MD5, qop=%s, nc=%s, cnonce="%s"`, username, realm, nonce, request.URI, response, qop, nc, cnonce)
 }

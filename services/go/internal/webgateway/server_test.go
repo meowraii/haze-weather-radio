@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,30 @@ import (
 
 	"github.com/coder/websocket"
 )
+
+func TestServerIPUsesNonLoopbackLocalAddress(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8086/", nil)
+	request = request.WithContext(context.WithValue(request.Context(), http.LocalAddrContextKey, &net.TCPAddr{
+		IP:   net.ParseIP("192.168.50.10"),
+		Port: 8086,
+	}))
+
+	if got := serverIP(request); got != "192.168.50.10" {
+		t.Fatalf("serverIP = %q", got)
+	}
+}
+
+func TestServerIPIgnoresLoopbackLocalAddress(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://203.0.113.10:8086/", nil)
+	request = request.WithContext(context.WithValue(request.Context(), http.LocalAddrContextKey, &net.TCPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 8086,
+	}))
+
+	if got := serverIP(request); got != "203.0.113.10" {
+		t.Fatalf("serverIP = %q", got)
+	}
+}
 
 func TestHealth(t *testing.T) {
 	server := NewServer(Config{}, ".")
@@ -103,6 +128,46 @@ func TestAdminSurfaceDoesNotExposePublicFeedSocket(t *testing.T) {
 
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+func TestPublicListenPageServedWhenFeedsAvailable(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	mustWrite(t, filepath.Join(dir, "index.html"), "<!doctype html><title>public listener</title>")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, dir)
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/listen?feed=sk-0001&codec=opus", nil)
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "public listener") {
+		t.Fatalf("body = %q", response.Body.String())
+	}
+}
+
+func TestPublicAboutPageServesIndex(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "index.html"), "<!doctype html><title>about</title>")
+	server := NewServerWithSurface(Config{}, "config.yaml", dir, "public")
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/about", nil)
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "about") {
+		t.Fatalf("body = %q", response.Body.String())
 	}
 }
 
@@ -456,6 +521,11 @@ func TestPublicWebSocketSendsPublicState(t *testing.T) {
 	if summary["feeds_access"] != "public" || summary["webrtc_enabled"] != true || summary["media_available"] != false {
 		t.Fatalf("summary = %#v", summary)
 	}
+	for _, key := range []string{"ip_address", "version", "git_commit", "os", "architecture"} {
+		if strings.TrimSpace(fmt.Sprint(summary[key])) == "" {
+			t.Fatalf("missing public summary %s in %#v", key, summary)
+		}
+	}
 	feeds := summary["feeds"].([]any)
 	if len(feeds) != 1 {
 		t.Fatalf("feeds = %#v", feeds)
@@ -533,6 +603,13 @@ func TestWebSocketCatalogCommands(t *testing.T) {
 		t.Fatalf("packages = %#v", packages)
 	}
 
+	writeWS(t, ctx, conn, map[string]any{"type": "command", "request_id": "readers", "command": "wx.readers"})
+	readersReply := readType(t, ctx, conn, "command_result")
+	readers := readersReply["result"].(map[string]any)["readers"].([]any)
+	if len(readers) != 1 || readers[0].(map[string]any)["id"] != "00" {
+		t.Fatalf("readers = %#v", readers)
+	}
+
 	writeWS(t, ctx, conn, map[string]any{"type": "command", "request_id": "codes", "command": "same.event_codes"})
 	codesReply := readType(t, ctx, conn, "command_result")
 	eas := codesReply["result"].(map[string]any)["eas"].(map[string]any)
@@ -558,6 +635,38 @@ func TestWebSocketCatalogCommands(t *testing.T) {
 	templateLocations := same["locations"].([]any)
 	if len(templateLocations) != 1 || templateLocations[0].(map[string]any)["id"] != "065522" {
 		t.Fatalf("template locations = %#v", same["locations"])
+	}
+}
+
+func TestWxGeneratePayloadResolvesLocationHints(t *testing.T) {
+	dir := t.TempDir()
+	writePanelFixture(t, dir)
+	configPath := filepath.Join(dir, "config.yaml")
+
+	request, err := parseWxGeneratePayload(configPath, map[string]any{
+		"feed_id":   "sk-0001",
+		"locations": "sk-40",
+		"packages":  []any{"forecast"},
+		"format":    "json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.ForecastID != "sk-40" || request.StationID != "sk-40" {
+		t.Fatalf("request = %#v", request)
+	}
+
+	derived, err := parseWxGeneratePayload(configPath, map[string]any{
+		"feed_id":   "sk-0001",
+		"locations": "640",
+		"packages":  []any{"forecast"},
+		"format":    "json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derived.Code != "06040" || derived.ForecastID != "sk-40" || derived.StationID != "sk-40" || derived.Province != "SK" {
+		t.Fatalf("derived = %#v", derived)
 	}
 }
 
@@ -960,6 +1069,10 @@ webpanel:
   authentication:
     enabled: true
     session_ttl_seconds: 60
+services:
+  go:
+    tts:
+      readers: managed/configs/readers.xml
 operator:
   operator_name:
     - text: "@operator"
@@ -1005,6 +1118,15 @@ same: {}
   <package id="forecast" enabled="true"/>
   <package id="disabled_item" enabled="false"/>
 </Packages>
+`)
+	mustWrite(t, filepath.Join(dir, "managed", "configs", "readers.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<Readers>
+  <reader id="00" provider="piper">
+    <gender>male</gender>
+    <language>en-CA</language>
+    <voice_id>en_CA-test-medium</voice_id>
+  </reader>
+</Readers>
 `)
 	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"eas":{"RWT":"Required Weekly Test"},"naadsToEas":{"test":"RWT"}}`)
 	mustWrite(t, filepath.Join(dir, "managed", "csv", "CAP-CP_Geocodes.csv"), "NAME,NOM,CAPCPGCODE\nSaskatoon,,065522\n")

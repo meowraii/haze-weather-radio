@@ -37,6 +37,7 @@ type CachedProduct struct {
 	Language    string           `json:"language"`
 	WAVPath     string           `json:"wav_path"`
 	PCMUPath    string           `json:"pcmu_path"`
+	G722Path    string           `json:"g722_path,omitempty"`
 	GeneratedAt time.Time        `json:"generated_at"`
 	ExpiresAt   time.Time        `json:"expires_at"`
 }
@@ -47,6 +48,7 @@ type CachedAudio struct {
 	Text        string    `json:"text"`
 	WAVPath     string    `json:"wav_path"`
 	PCMUPath    string    `json:"pcmu_path"`
+	G722Path    string    `json:"g722_path,omitempty"`
 	GeneratedAt time.Time `json:"generated_at"`
 	ExpiresAt   time.Time `json:"expires_at"`
 }
@@ -139,9 +141,11 @@ func (c *ProductCache) render(ctx context.Context, key string, location Resolved
 	}
 	text := strings.TrimSpace(product.Text)
 	wavPath := filepath.Join(base, "audio.wav")
+	pcm16Path := filepath.Join(base, "audio.pcm16")
 	pcmuPath := filepath.Join(base, "audio.pcmu")
+	g722Path := filepath.Join(base, "audio.g722")
 	jobID := fmt.Sprintf("ivr-tts-%s-%d", key[:12], time.Now().UnixNano())
-	if _, err := c.bridge.Synthesize(renderCtx, synthRequest{
+	synth, err := c.bridge.Synthesize(renderCtx, synthRequest{
 		ID:              jobID,
 		Text:            text,
 		ReaderID:        readerID,
@@ -152,11 +156,13 @@ func (c *ProductCache) render(ctx context.Context, key string, location Resolved
 		Rate:            policy.Rate,
 		Volume:          policy.Volume,
 		SentenceSilence: policy.SentenceSilence,
-		OutputPath:      wavPath,
-	}); err != nil {
+		OutputPath:      pcm16Path,
+		OutputFormat:    "pcm_s16le",
+	})
+	if err != nil {
 		return CachedProduct{}, err
 	}
-	if err := writePCMUFromWAV(wavPath, pcmuPath, c.cfg.IVR.Cache.PhoneSampleRate); err != nil {
+	if err := c.writeTelephoneAudio(synth, wavPath, pcmuPath, g722Path); err != nil {
 		return CachedProduct{}, err
 	}
 	now := time.Now().UTC()
@@ -170,6 +176,7 @@ func (c *ProductCache) render(ctx context.Context, key string, location Resolved
 		Language:    language,
 		WAVPath:     wavPath,
 		PCMUPath:    pcmuPath,
+		G722Path:    g722Path,
 		GeneratedAt: now,
 		ExpiresAt:   now.Add(ttlForPolicy(policy, c.cfg.cacheTTL())),
 	}
@@ -185,6 +192,18 @@ func (c *ProductCache) GetPrompt(ctx context.Context, menuID string, lineKey str
 		return CachedAudio{}, fmt.Errorf("IVR prompt %s/%s is not configured", menuID, lineKey)
 	}
 	policy := c.cfg.Prompts.TTSForMenu(menuID)
+	return c.getPromptAudio(ctx, menuID, lineKey, text, policy, force)
+}
+
+func (c *ProductCache) GetPromptWithPolicy(ctx context.Context, menuID string, lineKey string, values map[string]string, policy TTSProfile, force bool) (CachedAudio, error) {
+	text := c.cfg.Prompts.MenuLine(menuID, lineKey, values)
+	if text == "" {
+		return CachedAudio{}, fmt.Errorf("IVR prompt %s/%s is not configured", menuID, lineKey)
+	}
+	return c.getPromptAudio(ctx, menuID, lineKey, text, policy, force)
+}
+
+func (c *ProductCache) getPromptAudio(ctx context.Context, menuID string, lineKey string, text string, policy TTSProfile, force bool) (CachedAudio, error) {
 	key := promptCacheKey(menuID, lineKey, text, policy)
 	if !force {
 		if cached, ok := c.readFreshAudio(key); ok {
@@ -198,9 +217,11 @@ func (c *ProductCache) GetPrompt(ctx context.Context, menuID string, lineKey str
 		return CachedAudio{}, err
 	}
 	wavPath := filepath.Join(base, "audio.wav")
+	pcm16Path := filepath.Join(base, "audio.pcm16")
 	pcmuPath := filepath.Join(base, "audio.pcmu")
+	g722Path := filepath.Join(base, "audio.g722")
 	jobID := fmt.Sprintf("ivr-prompt-%s-%d", key[:12], time.Now().UnixNano())
-	if _, err := c.bridge.Synthesize(renderCtx, synthRequest{
+	synth, err := c.bridge.Synthesize(renderCtx, synthRequest{
 		ID:              jobID,
 		Text:            text,
 		ReaderID:        policy.ReaderID,
@@ -210,11 +231,13 @@ func (c *ProductCache) GetPrompt(ctx context.Context, menuID string, lineKey str
 		Rate:            policy.Rate,
 		Volume:          policy.Volume,
 		SentenceSilence: policy.SentenceSilence,
-		OutputPath:      wavPath,
-	}); err != nil {
+		OutputPath:      pcm16Path,
+		OutputFormat:    "pcm_s16le",
+	})
+	if err != nil {
 		return CachedAudio{}, err
 	}
-	if err := writePCMUFromWAV(wavPath, pcmuPath, c.cfg.IVR.Cache.PhoneSampleRate); err != nil {
+	if err := c.writeTelephoneAudio(synth, wavPath, pcmuPath, g722Path); err != nil {
 		return CachedAudio{}, err
 	}
 	now := time.Now().UTC()
@@ -224,6 +247,7 @@ func (c *ProductCache) GetPrompt(ctx context.Context, menuID string, lineKey str
 		Text:        text,
 		WAVPath:     wavPath,
 		PCMUPath:    pcmuPath,
+		G722Path:    g722Path,
 		GeneratedAt: now,
 		ExpiresAt:   now.Add(ttlForPolicy(policy, c.cfg.cacheTTL())),
 	}
@@ -231,6 +255,20 @@ func (c *ProductCache) GetPrompt(ctx context.Context, menuID string, lineKey str
 		return CachedAudio{}, err
 	}
 	return result, nil
+}
+
+func (c *ProductCache) writeTelephoneAudio(synth synthResult, wavPath string, pcmuPath string, g722Path string) error {
+	switch synth.Format {
+	case "pcm_s16le":
+		return writeTelephoneAudioFromPCMFile(synth.Path, synth.SampleRate, synth.Channels, wavPath, pcmuPath, g722Path, c.cfg.IVR.Cache.PhoneSampleRate)
+	default:
+		if strings.TrimSpace(synth.Path) != "" && filepath.Clean(synth.Path) != filepath.Clean(wavPath) {
+			if err := copyFile(synth.Path, wavPath); err != nil {
+				return err
+			}
+		}
+		return writeTelephoneAudioFromWAV(wavPath, pcmuPath, g722Path, c.cfg.IVR.Cache.PhoneSampleRate)
+	}
 }
 
 func (c *ProductCache) readFresh(key string) (CachedProduct, bool) {
@@ -250,6 +288,9 @@ func (c *ProductCache) readFresh(key string) (CachedProduct, bool) {
 		return CachedProduct{}, false
 	}
 	if _, err := os.Stat(cached.PCMUPath); err != nil {
+		return CachedProduct{}, false
+	}
+	if _, err := os.Stat(cached.G722Path); err != nil {
 		return CachedProduct{}, false
 	}
 	return cached, true
@@ -272,6 +313,9 @@ func (c *ProductCache) readFreshAudio(key string) (CachedAudio, bool) {
 		return CachedAudio{}, false
 	}
 	if _, err := os.Stat(cached.PCMUPath); err != nil {
+		return CachedAudio{}, false
+	}
+	if _, err := os.Stat(cached.G722Path); err != nil {
 		return CachedAudio{}, false
 	}
 	return cached, true
@@ -298,7 +342,12 @@ func cacheKey(location ResolvedLocation, packages []string, lang string, policy 
 		location.FeedID,
 		location.Code,
 		location.Source,
+		location.Forecast,
+		location.StationID,
+		location.Latitude,
+		location.Longitude,
 		strings.Join(packages, ","),
+		"telephone",
 		lang,
 		ttsPolicyFingerprint(policy),
 	}, "|")))

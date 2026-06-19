@@ -26,7 +26,22 @@
     <text key="forecast_insmoke_eccc" lang="en-CA">The air quality health index is expected to be {val} in smoke.</text>
   </package>
   <package id="climate_summary">
-    <text key="opener" lang="en-CA">Climate summary for {location}.</text>
+    <text key="opener" lang="en-CA">The Environment Canada climate summary.</text>
+  </package>
+  <package id="metnotes">
+    <text key="opener" lang="en-CA">Meteorological notes for the {site} area.</text>
+  </package>
+  <package id="hydrometric">
+    <text key="opener" lang="en-CA">River conditions for the {site} area.</text>
+  </package>
+  <package id="coastal_flood">
+    <text key="opener" lang="en-CA">Coastal flooding risk for the {site} area.</text>
+  </package>
+  <package id="hurricane_tracks">
+    <text key="opener" lang="en-CA">Hurricane track information for the {site} area.</text>
+  </package>
+  <package id="precipitation_analysis">
+    <text key="opener" lang="en-CA">Recent precipitation analysis for the {site} area.</text>
   </package>
   <package id="station_id">
     <text key="opener" lang="en-CA">This is {on_air_name}.</text>

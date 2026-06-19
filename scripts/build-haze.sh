@@ -145,11 +145,30 @@ copy_bundle_dir() {
   local name="$1"
   local source="$root/bundle/$name"
   local target="$out_full/$name"
+  local preserve_dir=""
   if [[ ! -d "$source" ]]; then
     return 0
   fi
+  if [[ "$name" == "managed" && -d "$target" ]]; then
+    preserve_dir="$(mktemp -d "${TMPDIR:-/tmp}/haze-preserve-onnx.XXXXXX")"
+    while IFS= read -r -d '' file; do
+      local rel="${file#"$target"/}"
+      mkdir -p "$(dirname -- "$preserve_dir/$rel")"
+      cp -p -- "$file" "$preserve_dir/$rel"
+    done < <(find "$target" -type f -name '*.onnx' -print0)
+  fi
   rm -rf "$target"
   cp -a "$source" "$target"
+  if [[ -n "$preserve_dir" ]]; then
+    while IFS= read -r -d '' file; do
+      local rel="${file#"$preserve_dir"/}"
+      if [[ ! -e "$target/$rel" ]]; then
+        mkdir -p "$(dirname -- "$target/$rel")"
+        cp -p -- "$file" "$target/$rel"
+      fi
+    done < <(find "$preserve_dir" -type f -name '*.onnx' -print0)
+    rm -rf "$preserve_dir"
+  fi
 }
 
 if [[ "$skip_cargo_build" -eq 0 ]]; then
@@ -203,7 +222,7 @@ rm -f \
   "$bin_full/haze-ivr" \
   "$bin_full/haze-playout" \
   "$bin_full/haze-playout-rs"
-rm -rf "$out_full/webroot" "$out_full/managed" "$out_full/audio"
+rm -rf "$out_full/webroot" "$out_full/audio"
 
 cp "$exe_path" "$out_full/haze"
 chmod +x "$out_full/haze"
@@ -221,6 +240,13 @@ for bundled_dir in webroot managed audio; do
 done
 
 mkdir -p "$out_full/managed"
+managed_scripts="$out_full/managed/scripts"
+mkdir -p "$managed_scripts"
+for script in scripts/tts/piper_worker.py scripts/tts/chatterbox_infer.py scripts/tts/f5_infer.py; do
+  if [[ -f "$root/$script" ]]; then
+    cp "$root/$script" "$managed_scripts/"
+  fi
+done
 printf '%s\n' "Haze Weather Radio runtime directory" > "$out_full/.haze-runtime"
 
 mkdir -p "$out_full/audio"

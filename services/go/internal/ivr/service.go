@@ -2,6 +2,8 @@ package ivr
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,19 +12,42 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 )
 
 const serviceID = "haze-ivr"
+const staticPromptManifestVersion = 1
+
+type staticPromptManifest struct {
+	Version     int                         `json:"version"`
+	Fingerprint string                      `json:"fingerprint"`
+	Provider    string                      `json:"provider"`
+	ReaderID    string                      `json:"reader_id,omitempty"`
+	VoiceID     string                      `json:"voice_id,omitempty"`
+	Language    string                      `json:"language,omitempty"`
+	GeneratedAt time.Time                   `json:"generated_at"`
+	Files       map[string]staticPromptFile `json:"files"`
+}
+
+type staticPromptFile struct {
+	Text string `json:"text"`
+	WAV  string `json:"wav"`
+	PCMU string `json:"pcmu"`
+	G722 string `json:"g722,omitempty"`
+}
 
 type Service struct {
-	cfg      loadedConfig
-	resolver *Resolver
-	cache    *ProductCache
-	bridge   *bridgeClient
-	metrics  metrics
+	cfg       loadedConfig
+	resolver  *Resolver
+	cache     *ProductCache
+	bridge    *bridgeClient
+	broadcast *broadcastHub
+	metrics   metrics
 }
 
 type metrics struct {
@@ -34,6 +59,8 @@ type metrics struct {
 }
 
 func Run(ctx context.Context, options Options) error {
+	loadDotEnv(filepath.Join(filepath.Dir(filepath.Clean(options.ConfigPath)), ".env"))
+	loadDotEnv(".env")
 	cfg, err := loadConfig(options.ConfigPath, options)
 	if err != nil {
 		return err
@@ -70,6 +97,29 @@ func Run(ctx context.Context, options Options) error {
 	return nil
 }
 
+func loadDotEnv(path string) {
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" || os.Getenv(key) != "" {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		_ = os.Setenv(key, value)
+	}
+}
+
 func (s *Service) runConnected(ctx context.Context) error {
 	if err := s.bridge.Publish(map[string]any{
 		"type":   "service.ready",
@@ -85,6 +135,8 @@ func (s *Service) runConnected(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	s.broadcast = newBroadcastHub()
+	go s.broadcast.run(ctx, s.bridge.Events())
 
 	errCh := make(chan error, 2)
 	if s.cfg.IVR.HTTP.Enabled {
@@ -117,6 +169,7 @@ func (s *Service) runConnected(ctx context.Context) error {
 	if s.cfg.IVR.Cache.RefreshOnStartup {
 		go s.prewarm(ctx, s.cfg.IVR.Cache.PrewarmCodes, false)
 	}
+	go s.generateStaticPrompts(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -152,7 +205,7 @@ func (s *Service) handleHealth(writer http.ResponseWriter, _ *http.Request) {
 
 func (s *Service) handleLookup(writer http.ResponseWriter, request *http.Request) {
 	code := request.URL.Query().Get("code")
-	location, err := s.resolver.Resolve(code)
+	location, err := s.resolveLocation(code)
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusNotFound)
 		return
@@ -166,18 +219,19 @@ func (s *Service) handlePrompt(writer http.ResponseWriter, request *http.Request
 	lineKey := fallbackText(request.URL.Query().Get("line"), "main")
 	format := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("format")))
 	force := request.URL.Query().Get("force") == "1"
-	audio, err := s.cache.GetPrompt(request.Context(), menuID, lineKey, promptValuesFromRequest(request), force)
+	values := s.promptValues(promptValuesFromRequest(request))
+	if !force {
+		if audio, ok := s.staticPromptAudio(menuID, lineKey, values); ok {
+			s.serveCachedAudio(writer, request, audio, format, http.StatusOK)
+			return
+		}
+	}
+	audio, err := s.cache.GetPromptWithPolicy(request.Context(), menuID, lineKey, values, s.staticPiperPromptPolicy(), force)
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if format == "pcmu" {
-		writer.Header().Set("Content-Type", "audio/basic")
-		http.ServeFile(writer, request, audio.PCMUPath)
-		return
-	}
-	writer.Header().Set("Content-Type", "audio/wav")
-	http.ServeFile(writer, request, audio.WAVPath)
+	s.serveCachedAudio(writer, request, audio, format, http.StatusOK)
 }
 
 func (s *Service) handleAudio(writer http.ResponseWriter, request *http.Request) {
@@ -215,10 +269,16 @@ func (s *Service) handleTwiML(writer http.ResponseWriter, request *http.Request)
 		s.handleEntryDigit(writer, request)
 	case "location_code":
 		s.handleLocationCodeTwiML(writer, request)
+	case "location_number":
+		s.handleLocationNumberTwiML(writer, request)
 	case "location_menu", "location":
 		s.writeLocationMenuTwiML(writer, request)
 	case "location_option":
 		s.handleLocationOptionTwiML(writer, request)
+	case "ivr_menu":
+		s.writeConfiguredMenuTwiML(writer, request)
+	case "ivr_menu_option":
+		s.handleConfiguredMenuOptionTwiML(writer, request)
 	default:
 		s.writeEntryTwiML(writer, request)
 	}
@@ -226,16 +286,27 @@ func (s *Service) handleTwiML(writer http.ResponseWriter, request *http.Request)
 
 func (s *Service) writeEntryTwiML(writer http.ResponseWriter, request *http.Request) {
 	entry, _ := s.cfg.Prompts.Menu("entry")
-	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{"state": "entry"}), "1", "", entry.Timeout, []string{
-		promptURL(request, "entry", "main", nil),
+	lineKey := s.menuMainLine("entry", "")
+	numDigits := "1"
+	timeout := entry.Timeout
+	if _, single := s.singleConfiguredLanguage(); single {
+		numDigits = ""
+		timeout = locationCodeAutoSubmitTimeout()
+	}
+	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{"state": "entry"}), numDigits, "#", timeout, []string{
+		promptURL(request, "entry", lineKey, s.promptValues(nil)),
 	}, []string{
-		twimlPlay(promptURL(request, "error", "timeout", nil)),
+		twimlPlay(promptURL(request, "error", "timeout", s.promptValues(nil))),
 	})
 	writeTwiML(writer, body)
 }
 
 func (s *Service) handleEntryDigit(writer http.ResponseWriter, request *http.Request) {
 	digit := strings.TrimSpace(request.FormValue("Digits"))
+	if language, single := s.singleConfiguredLanguage(); single {
+		s.handleLocationCodeWithLanguageTwiML(writer, request, language, digit)
+		return
+	}
 	option, ok := s.cfg.Prompts.Option("entry", digit)
 	if !ok {
 		s.writeEntryErrorTwiML(writer, request)
@@ -243,12 +314,16 @@ func (s *Service) handleEntryDigit(writer http.ResponseWriter, request *http.Req
 	}
 	switch option.Action {
 	case "language":
+		if !s.languageConfigured(option.Language) {
+			s.writeEntryErrorTwiML(writer, request)
+			return
+		}
 		locationMenu, _ := s.cfg.Prompts.Menu("location_code")
 		lang := fallbackText(option.Language, s.cfg.IVR.DefaultLanguage)
 		body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{
 			"state": "location_code",
 			"lang":  lang,
-		}), "", "#", locationMenu.Timeout, []string{
+		}), "", "#", locationCodeAutoSubmitTimeoutForMenu(locationMenu.Timeout), []string{
 			promptURL(request, "location_code", "main", nil),
 		}, []string{
 			twimlPlay(promptURL(request, "error", "timeout", nil)),
@@ -266,8 +341,8 @@ func (s *Service) handleEntryDigit(writer http.ResponseWriter, request *http.Req
 		s.writeProductTwiML(writer, request, location, splitCSV(option.Packages), "")
 	case "broadcast":
 		location, err := s.defaultFeedLocation()
-		if err != nil {
-			writeTwiML(writer, twimlPlay(promptURL(request, "broadcast_menu", "main", nil))+twimlRedirect(twimlURL(request, "/ivr/v1/twiml", nil)))
+		if err != nil || !s.broadcastAvailable(location.FeedID) {
+			s.writeEntryErrorTwiML(writer, request)
 			return
 		}
 		s.writeProductTwiML(writer, request, location, s.broadcastPackages(option), "")
@@ -280,21 +355,95 @@ func (s *Service) handleEntryDigit(writer http.ResponseWriter, request *http.Req
 
 func (s *Service) handleLocationCodeTwiML(writer http.ResponseWriter, request *http.Request) {
 	code := firstNonBlank(request.FormValue("Digits"), request.URL.Query().Get("code"))
+	if strings.TrimSpace(code) == "" {
+		s.writeLocationCodePrompt(writer, request, request.URL.Query().Get("lang"))
+		return
+	}
+	s.handleLocationCodeWithLanguageTwiML(writer, request, request.URL.Query().Get("lang"), code)
+}
+
+func (s *Service) writeLocationCodePrompt(writer http.ResponseWriter, request *http.Request, language string) {
+	locationMenu, _ := s.cfg.Prompts.Menu("location_code")
+	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{
+		"state": "location_code",
+		"lang":  language,
+	}), "", "#", locationCodeAutoSubmitTimeoutForMenu(locationMenu.Timeout), []string{
+		promptURL(request, "location_code", "main", nil),
+	}, []string{
+		twimlPlay(promptURL(request, "error", "timeout", nil)),
+	})
+	writeTwiML(writer, body)
+}
+
+func (s *Service) handleLocationCodeWithLanguageTwiML(writer http.ResponseWriter, request *http.Request, language string, code string) {
 	if code == "" {
 		writeTwiML(writer, twimlPlay(promptURL(request, "error", "timeout", nil)))
 		return
 	}
-	location, err := s.resolver.Resolve(code)
+	code = strings.TrimSuffix(strings.TrimSpace(code), "#")
+	if code == "*" {
+		location, err := s.defaultFeedLocation()
+		if err != nil {
+			s.writeUnavailableTwiML(writer, request)
+			return
+		}
+		location.Language = fallbackText(language, location.Language)
+		s.writeProductTwiML(writer, request, location, []string{"geophysical_alert"}, "")
+		return
+	}
+	if isProvinceDigit(code) {
+		s.writeLocationNumberPrompt(writer, request, language, code)
+		return
+	}
+	location, err := s.resolveLocation(code)
 	if err != nil {
 		body := twimlPlay(promptURL(request, "error", "invalid_code", nil)) +
 			twimlRedirect(twimlURL(request, "/ivr/v1/twiml", nil))
 		writeTwiML(writer, body)
 		return
 	}
-	if lang := strings.TrimSpace(request.URL.Query().Get("lang")); lang != "" {
+	if lang := strings.TrimSpace(language); lang != "" {
 		location.Language = lang
 	}
 	s.writeLocationMenu(writer, request, location)
+}
+
+func (s *Service) writeLocationNumberPrompt(writer http.ResponseWriter, request *http.Request, language string, province string) {
+	menu, _ := s.cfg.Prompts.Menu("location_number")
+	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{
+		"state":    "location_number",
+		"lang":     language,
+		"province": province,
+	}), "", "#", locationCodeAutoSubmitTimeoutForMenu(menu.Timeout), []string{
+		promptURL(request, "location_number", "main", s.promptValues(map[string]string{"province": provinceDigitDisplayName(province)})),
+	}, []string{
+		twimlPlay(promptURL(request, "error", "timeout", nil)),
+	})
+	writeTwiML(writer, body)
+}
+
+func (s *Service) handleLocationNumberTwiML(writer http.ResponseWriter, request *http.Request) {
+	province := firstNonBlank(request.URL.Query().Get("province"), request.FormValue("province"))
+	number := strings.TrimSuffix(strings.TrimSpace(firstNonBlank(request.FormValue("Digits"), request.URL.Query().Get("number"))), "#")
+	if number == "" {
+		writeTwiML(writer, twimlPlay(promptURL(request, "error", "timeout", nil)))
+		return
+	}
+	if number == "*" {
+		body := twimlPlay(promptURL(request, "location_number", "search_unavailable", nil)) +
+			twimlRedirect(twimlURL(request, "/ivr/v1/twiml", map[string]string{
+				"state": "location_code",
+				"lang":  request.URL.Query().Get("lang"),
+			}))
+		writeTwiML(writer, body)
+		return
+	}
+	code, ok := helloWeatherCodeFromProvinceCity(province, number)
+	if !ok {
+		s.writeEntryErrorTwiML(writer, request)
+		return
+	}
+	s.handleLocationCodeWithLanguageTwiML(writer, request, request.URL.Query().Get("lang"), code)
 }
 
 func (s *Service) writeLocationMenuTwiML(writer http.ResponseWriter, request *http.Request) {
@@ -308,14 +457,15 @@ func (s *Service) writeLocationMenuTwiML(writer http.ResponseWriter, request *ht
 
 func (s *Service) writeLocationMenu(writer http.ResponseWriter, request *http.Request, location ResolvedLocation) {
 	menu, _ := s.cfg.Prompts.Menu("location_menu")
+	lineKey := s.locationMenuMainLine(location)
 	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{
 		"state": "location_option",
 		"code":  location.Code,
 		"lang":  location.Language,
 	}), "1", "", menu.Timeout, []string{
-		promptURL(request, "location_menu", "main", map[string]string{"location": location.Name}),
+		promptURL(request, "location_menu", lineKey, s.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID})),
 	}, []string{
-		twimlPlay(promptURL(request, "error", "timeout", nil)),
+		twimlPlay(promptURL(request, "error", "timeout", s.promptValues(nil))),
 	})
 	writeTwiML(writer, body)
 }
@@ -327,6 +477,10 @@ func (s *Service) handleLocationOptionTwiML(writer http.ResponseWriter, request 
 		return
 	}
 	digit := strings.TrimSpace(request.FormValue("Digits"))
+	if digit == "#" {
+		s.writeEntryTwiML(writer, request)
+		return
+	}
 	option, ok := s.cfg.Prompts.Option("location_menu", digit)
 	if !ok {
 		s.writeLocationMenu(writer, request, location)
@@ -339,7 +493,13 @@ func (s *Service) handleLocationOptionTwiML(writer http.ResponseWriter, request 
 			"code":  location.Code,
 			"lang":  location.Language,
 		}))
+	case "menu":
+		s.writeConfiguredMenu(writer, request, location, option.Next)
 	case "broadcast":
+		if !s.locationBroadcastAvailable(location) {
+			s.writeLocationMenu(writer, request, location)
+			return
+		}
 		s.writeProductTwiML(writer, request, location, s.broadcastPackages(option), twimlURL(request, "/ivr/v1/twiml", map[string]string{
 			"state": "location_menu",
 			"code":  location.Code,
@@ -348,6 +508,86 @@ func (s *Service) handleLocationOptionTwiML(writer http.ResponseWriter, request 
 	default:
 		s.writeLocationMenu(writer, request, location)
 	}
+}
+
+func (s *Service) writeConfiguredMenuTwiML(writer http.ResponseWriter, request *http.Request) {
+	location, err := s.locationFromRequest(request)
+	if err != nil {
+		s.writeEntryErrorTwiML(writer, request)
+		return
+	}
+	s.writeConfiguredMenu(writer, request, location, request.URL.Query().Get("menu"))
+}
+
+func (s *Service) writeConfiguredMenu(writer http.ResponseWriter, request *http.Request, location ResolvedLocation, menuID string) {
+	menuID = strings.ToLower(strings.TrimSpace(menuID))
+	menu, ok := s.cfg.Prompts.Menu(menuID)
+	if !ok {
+		s.writeLocationMenu(writer, request, location)
+		return
+	}
+	params := locationTwiMLParams(location)
+	params["state"] = "ivr_menu_option"
+	params["menu"] = menuID
+	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", params), "1", "", menu.Timeout, []string{
+		promptURL(request, menuID, "main", s.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID})),
+	}, []string{
+		twimlPlay(promptURL(request, "error", "timeout", s.promptValues(nil))),
+	})
+	writeTwiML(writer, body)
+}
+
+func (s *Service) handleConfiguredMenuOptionTwiML(writer http.ResponseWriter, request *http.Request) {
+	location, err := s.locationFromRequest(request)
+	if err != nil {
+		s.writeEntryErrorTwiML(writer, request)
+		return
+	}
+	menuID := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("menu")))
+	digit := strings.TrimSpace(request.FormValue("Digits"))
+	if digit == "#" {
+		s.writeLocationMenu(writer, request, location)
+		return
+	}
+	option, ok := s.cfg.Prompts.Option(menuID, digit)
+	if !ok {
+		s.writeConfiguredMenu(writer, request, location, menuID)
+		return
+	}
+	switch option.Action {
+	case "product":
+		params := locationTwiMLParams(location)
+		params["state"] = "ivr_menu"
+		params["menu"] = menuID
+		s.writeProductTwiML(writer, request, location, splitCSV(option.Packages), twimlURL(request, "/ivr/v1/twiml", params))
+	case "menu":
+		s.writeConfiguredMenu(writer, request, location, option.Next)
+	case "broadcast":
+		if !s.locationBroadcastAvailable(location) {
+			s.writeConfiguredMenu(writer, request, location, menuID)
+			return
+		}
+		params := locationTwiMLParams(location)
+		params["state"] = "ivr_menu"
+		params["menu"] = menuID
+		s.writeProductTwiML(writer, request, location, s.broadcastPackages(option), twimlURL(request, "/ivr/v1/twiml", params))
+	case "operator":
+		s.writeOperatorTwiML(writer, request)
+	default:
+		s.writeConfiguredMenu(writer, request, location, menuID)
+	}
+}
+
+func locationTwiMLParams(location ResolvedLocation) map[string]string {
+	params := map[string]string{
+		"code":    location.Code,
+		"feed_id": location.FeedID,
+		"lang":    location.Language,
+	}
+	if strings.TrimSpace(location.Code) == "" {
+		delete(params, "code")
+	}
+	return params
 }
 
 func (s *Service) writeProductTwiML(writer http.ResponseWriter, request *http.Request, location ResolvedLocation, packages []string, afterURL string) {
@@ -380,20 +620,319 @@ func (s *Service) broadcastPackages(option menuOption) []string {
 	return append([]string(nil), s.cfg.IVR.BroadcastPackages...)
 }
 
+func (s *Service) broadcastAvailable(feedID string) bool {
+	if s == nil || s.broadcast == nil || strings.TrimSpace(feedID) == "" {
+		return false
+	}
+	return s.broadcast.HasRecent(feedID, 5*time.Second)
+}
+
+func (s *Service) locationBroadcastAvailable(location ResolvedLocation) bool {
+	return location.Covered && s.broadcastAvailable(location.FeedID)
+}
+
+func (s *Service) locationMenuMainLine(location ResolvedLocation) string {
+	if s.locationBroadcastAvailable(location) {
+		return "main"
+	}
+	if _, ok := s.cfg.Prompts.Line("location_menu", "main_no_broadcast"); ok {
+		return "main_no_broadcast"
+	}
+	return "main"
+}
+
+func (s *Service) menuMainLine(menuID string, feedID string) string {
+	if menuID == "entry" {
+		if _, single := s.singleConfiguredLanguage(); single {
+			if _, ok := s.cfg.Prompts.Line(menuID, "main_single_language"); ok {
+				return "main_single_language"
+			}
+		}
+	}
+	if strings.TrimSpace(feedID) == "" {
+		if location, err := s.defaultFeedLocation(); err == nil {
+			feedID = location.FeedID
+		}
+	}
+	if s.broadcastAvailable(feedID) {
+		return "main"
+	}
+	if _, ok := s.cfg.Prompts.Line(menuID, "main_no_broadcast"); ok {
+		return "main_no_broadcast"
+	}
+	return "main"
+}
+
+func (s *Service) promptValues(values map[string]string) map[string]string {
+	feedID := ""
+	if values != nil {
+		feedID = values["feed_id"]
+	}
+	out := map[string]string{}
+	for key, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out[key] = value
+		}
+	}
+	out["telephone_service_name"] = s.telephoneServiceName()
+	out["radio_service_name"] = s.radioServiceName(feedID)
+	out["language_options"] = s.languageOptionsPrompt()
+	return out
+}
+
+func (s *Service) singleConfiguredLanguage() (string, bool) {
+	languages := s.configuredLanguages()
+	if len(languages) != 1 {
+		return "", false
+	}
+	return languages[0], true
+}
+
+func (s *Service) configuredLanguages() []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	add := func(language string) {
+		language = strings.TrimSpace(language)
+		if language == "" {
+			return
+		}
+		key := strings.ToLower(language)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, language)
+	}
+	for _, feed := range s.cfg.Feeds {
+		if !xmlBool(feed.EnabledRaw, true) {
+			continue
+		}
+		for _, language := range feed.Languages.Langs {
+			add(language.Code)
+		}
+	}
+	if len(out) == 0 {
+		add(s.cfg.IVR.DefaultLanguage)
+	}
+	return out
+}
+
+func (s *Service) languageConfigured(language string) bool {
+	language = strings.TrimSpace(language)
+	if language == "" {
+		return false
+	}
+	for _, configured := range s.configuredLanguages() {
+		if strings.EqualFold(configured, language) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) configuredEntryLanguageOptions() []menuOption {
+	menu, ok := s.cfg.Prompts.Menu("entry")
+	if !ok {
+		return nil
+	}
+	options := []menuOption{}
+	seen := map[string]struct{}{}
+	for _, option := range menu.Options {
+		if option.Action != "language" || !s.languageConfigured(option.Language) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(option.Language))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		options = append(options, option)
+	}
+	return options
+}
+
+func (s *Service) languageOptionsPrompt() string {
+	options := s.configuredEntryLanguageOptions()
+	if len(options) == 0 {
+		return "1 for service in " + languageDisplayName(s.cfg.IVR.DefaultLanguage)
+	}
+	parts := make([]string, 0, len(options))
+	for _, option := range options {
+		parts = append(parts, option.Digit+" for service in "+languageDisplayName(option.Language))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func languageDisplayName(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "en", "en-ca", "en-us", "en-gb":
+		return "English"
+	case "fr", "fr-ca", "fr-fr":
+		return "French"
+	case "es", "es-us", "es-mx":
+		return "Spanish"
+	default:
+		return strings.TrimSpace(language)
+	}
+}
+
+func locationCodeAutoSubmitTimeout() time.Duration {
+	return time.Second
+}
+
+func locationCodeAutoSubmitTimeoutForMenu(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return locationCodeAutoSubmitTimeout()
+	}
+	if timeout < locationCodeAutoSubmitTimeout() {
+		return timeout
+	}
+	return locationCodeAutoSubmitTimeout()
+}
+
+func spokenLocationName(location ResolvedLocation) string {
+	name := strings.TrimSpace(location.Name)
+	if name != "" {
+		for _, id := range []string{location.Code, location.Forecast, location.StationID, location.FeedID} {
+			if strings.EqualFold(name, strings.TrimSpace(id)) {
+				name = ""
+				break
+			}
+		}
+		if name != "" && !looksLikeProviderID(name) {
+			return name
+		}
+	}
+	return "the selected area"
+}
+
+func looksLikeProviderID(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if matched, _ := regexp.MatchString(`(?i)^[a-z]{2}-\d+$`, value); matched {
+		return true
+	}
+	if matched, _ := regexp.MatchString(`^[A-Z]{1,4}\d{1,4}$`, value); matched {
+		return true
+	}
+	return false
+}
+
+func (s *Service) telephoneServiceName() string {
+	if s == nil {
+		return "Haze Weather Telephone"
+	}
+	return fallbackText(displayText(s.cfg.Root.Operator.TelephoneName), "Haze Weather Telephone")
+}
+
+func (s *Service) radioServiceName(feedID string) string {
+	if s == nil {
+		return "Haze Weather Radio"
+	}
+	if name := displayText(s.cfg.Root.Operator.OnAirName); name != "" {
+		return name
+	}
+	for _, feed := range s.cfg.Feeds {
+		if strings.TrimSpace(feedID) != "" && !strings.EqualFold(feed.ID, feedID) {
+			continue
+		}
+		transmitter := stationTransmitter(feed)
+		if name := firstNonBlank(transmitter.Network.Pronunciation, transmitter.Network.Pronounciation, transmitter.Network.Name); name != "" {
+			return name
+		}
+		if site := strings.TrimSpace(transmitter.SiteName); site != "" {
+			return site
+		}
+	}
+	return "Haze Weather Radio"
+}
+
 func (s *Service) servePromptAudio(writer http.ResponseWriter, request *http.Request, menuID string, lineKey string, values map[string]string, status int) {
-	audio, err := s.cache.GetPrompt(request.Context(), menuID, lineKey, values, false)
+	promptValues := s.promptValues(values)
+	format := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("format")))
+	if audio, ok := s.staticPromptAudio(menuID, lineKey, promptValues); ok {
+		s.serveCachedAudio(writer, request, audio, format, status)
+		return
+	}
+	audio, err := s.cache.GetPromptWithPolicy(request.Context(), menuID, lineKey, promptValues, s.staticPiperPromptPolicy(), false)
 	if err != nil {
 		http.Error(writer, err.Error(), status)
 		return
 	}
-	format := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("format")))
+	s.serveCachedAudio(writer, request, audio, format, status)
+}
+
+func (s *Service) serveCachedAudio(writer http.ResponseWriter, request *http.Request, audio CachedAudio, format string, status int) {
 	if format == "pcmu" {
 		writer.Header().Set("Content-Type", "audio/basic")
+		if status != http.StatusOK {
+			writer.WriteHeader(status)
+		}
 		http.ServeFile(writer, request, audio.PCMUPath)
 		return
 	}
 	writer.Header().Set("Content-Type", "audio/wav")
+	if status != http.StatusOK {
+		writer.WriteHeader(status)
+	}
 	http.ServeFile(writer, request, audio.WAVPath)
+}
+
+func (s *Service) staticPromptAudio(menuID string, lineKey string, values map[string]string) (CachedAudio, bool) {
+	manifest, ok := s.currentStaticPromptManifest()
+	if !ok {
+		return CachedAudio{}, false
+	}
+	rendered := s.cfg.Prompts.MenuLine(menuID, lineKey, values)
+	if strings.TrimSpace(rendered) == "" {
+		return CachedAudio{}, false
+	}
+	prefix := safeID(fallbackText(menuID, "default")) + "__" + safeID(lineKey)
+	file, ok := manifest.Files[prefix]
+	if !ok || strings.TrimSpace(file.Text) != strings.TrimSpace(rendered) {
+		return CachedAudio{}, false
+	}
+	if strings.TrimSpace(file.WAV) == "" || strings.TrimSpace(file.PCMU) == "" {
+		return CachedAudio{}, false
+	}
+	audio := CachedAudio{
+		Key:         manifest.Fingerprint + ":" + prefix,
+		Title:       fallbackText(menuID, "default") + "/" + lineKey,
+		Text:        file.Text,
+		WAVPath:     filepath.Clean(filepath.FromSlash(file.WAV)),
+		PCMUPath:    filepath.Clean(filepath.FromSlash(file.PCMU)),
+		G722Path:    filepath.Clean(filepath.FromSlash(file.G722)),
+		GeneratedAt: manifest.GeneratedAt,
+		ExpiresAt:   time.Now().UTC().Add(24 * time.Hour),
+	}
+	for _, path := range []string{audio.WAVPath, audio.PCMUPath, audio.G722Path} {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			return CachedAudio{}, false
+		}
+	}
+	return audio, true
+}
+
+func (s *Service) currentStaticPromptManifest() (staticPromptManifest, bool) {
+	targetDir := filepath.Join(s.cfg.BaseDir, "audio", "ivr")
+	manifestPath := filepath.Join(targetDir, "manifest.json")
+	raw, err := os.ReadFile(filepath.Clean(manifestPath))
+	if err != nil {
+		return staticPromptManifest{}, false
+	}
+	var manifest staticPromptManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return staticPromptManifest{}, false
+	}
+	if manifest.Version != staticPromptManifestVersion || len(manifest.Files) == 0 {
+		return staticPromptManifest{}, false
+	}
+	return manifest, true
 }
 
 func (s *Service) writeOperatorTwiML(writer http.ResponseWriter, request *http.Request) {
@@ -402,15 +941,15 @@ func (s *Service) writeOperatorTwiML(writer http.ResponseWriter, request *http.R
 		writeTwiML(writer, "<Dial>"+html.EscapeString(strings.TrimSpace(menu.TransferURI))+"</Dial>")
 		return
 	}
-	writeTwiML(writer, twimlPlay(promptURL(request, "operator", "main", nil))+twimlRedirect(twimlURL(request, "/ivr/v1/twiml", nil)))
+	writeTwiML(writer, twimlPlay(promptURL(request, "operator", "main", s.promptValues(nil)))+twimlRedirect(twimlURL(request, "/ivr/v1/twiml", nil)))
 }
 
 func (s *Service) writeEntryErrorTwiML(writer http.ResponseWriter, request *http.Request) {
-	writeTwiML(writer, twimlPlay(promptURL(request, "error", "invalid_code", nil))+twimlRedirect(twimlURL(request, "/ivr/v1/twiml", nil)))
+	writeTwiML(writer, twimlPlay(promptURL(request, "error", "invalid_code", s.promptValues(nil)))+twimlRedirect(twimlURL(request, "/ivr/v1/twiml", nil)))
 }
 
 func (s *Service) writeUnavailableTwiML(writer http.ResponseWriter, request *http.Request) {
-	writeTwiML(writer, twimlPlay(promptURL(request, "error", "unavailable", nil))+twimlRedirect(twimlURL(request, "/ivr/v1/twiml", nil)))
+	writeTwiML(writer, twimlPlay(promptURL(request, "error", "unavailable", s.promptValues(nil)))+twimlRedirect(twimlURL(request, "/ivr/v1/twiml", nil)))
 }
 
 func (s *Service) handlePrewarm(writer http.ResponseWriter, request *http.Request) {
@@ -437,7 +976,7 @@ func (s *Service) handleMetrics(writer http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Service) productForCode(ctx context.Context, code string, packages []string, force bool) (CachedProduct, error) {
-	location, err := s.resolver.Resolve(code)
+	location, err := s.resolveLocation(code)
 	if err != nil {
 		return CachedProduct{}, err
 	}
@@ -462,7 +1001,7 @@ func (s *Service) locationFromRequest(request *http.Request) (ResolvedLocation, 
 	var location ResolvedLocation
 	var err error
 	if strings.TrimSpace(code) != "" {
-		location, err = s.resolver.Resolve(code)
+		location, err = s.resolveLocation(code)
 	} else {
 		location, err = s.defaultFeedLocationForID(firstNonBlank(request.URL.Query().Get("feed_id"), request.FormValue("feed_id")))
 	}
@@ -475,11 +1014,23 @@ func (s *Service) locationFromRequest(request *http.Request) (ResolvedLocation, 
 	return location, nil
 }
 
+func (s *Service) resolveLocation(code string) (ResolvedLocation, error) {
+	resolver := s.resolver
+	if resolver == nil {
+		resolver = NewResolver(s.cfg)
+	}
+	return resolver.Resolve(code)
+}
+
 func (s *Service) defaultFeedLocation() (ResolvedLocation, error) {
 	return s.defaultFeedLocationForID("")
 }
 
 func (s *Service) defaultFeedLocationForID(feedID string) (ResolvedLocation, error) {
+	resolver := s.resolver
+	if resolver == nil {
+		resolver = NewResolver(s.cfg)
+	}
 	for _, feed := range s.cfg.Feeds {
 		if strings.TrimSpace(feedID) != "" && !strings.EqualFold(feed.ID, feedID) {
 			continue
@@ -492,7 +1043,8 @@ func (s *Service) defaultFeedLocationForID(feedID string) (ResolvedLocation, err
 			Source:   "feed",
 			Name:     fallbackText(feedDisplayName(feed), feed.ID),
 			FeedID:   feed.ID,
-			Language: s.resolver.feedLanguage(feed.ID),
+			Covered:  true,
+			Language: resolver.feedLanguage(feed.ID),
 			Timezone: strings.TrimSpace(feed.Timezone),
 		}, nil
 	}
@@ -514,6 +1066,168 @@ func (s *Service) prewarm(ctx context.Context, codes []string, force bool) {
 			log.Printf("IVR prewarm failed for %s: %v", code, err)
 		}
 	}
+}
+
+func (s *Service) generateStaticPrompts(ctx context.Context) {
+	if s.cache == nil {
+		return
+	}
+	targetDir := filepath.Join(s.cfg.BaseDir, "audio", "ivr")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		log.Printf("IVR static prompt directory failed: %v", err)
+		return
+	}
+	lines := s.cfg.Prompts.StaticPromptLines()
+	policy := s.staticPiperPromptPolicy()
+	fingerprint, err := s.staticPromptFingerprint(lines, policy)
+	if err != nil {
+		log.Printf("IVR static prompt fingerprint failed: %v", err)
+		return
+	}
+	manifestPath := filepath.Join(targetDir, "manifest.json")
+	if staticPromptManifestCurrent(manifestPath, fingerprint) {
+		log.Printf("IVR static prompts are current for %s", filepath.Base(s.cfg.PromptsPath))
+		return
+	}
+	manifest := staticPromptManifest{
+		Version:     staticPromptManifestVersion,
+		Fingerprint: fingerprint,
+		Provider:    policy.Provider,
+		ReaderID:    policy.ReaderID,
+		VoiceID:     policy.VoiceID,
+		Language:    policy.Language,
+		GeneratedAt: time.Now().UTC(),
+		Files:       map[string]staticPromptFile{},
+	}
+	for _, line := range lines {
+		if ctx.Err() != nil {
+			return
+		}
+		values := s.promptValues(line.Values)
+		text := s.cfg.Prompts.MenuLine(line.MenuID, line.LineKey, values)
+		audio, err := s.cache.GetPromptWithPolicy(ctx, line.MenuID, line.LineKey, values, policy, true)
+		if err != nil {
+			log.Printf("IVR static prompt %s/%s failed: %v", fallbackText(line.MenuID, "default"), line.LineKey, err)
+			continue
+		}
+		prefix := safeID(fallbackText(line.MenuID, "default")) + "__" + safeID(line.LineKey)
+		wavPath := filepath.Join(targetDir, prefix+".wav")
+		pcmuPath := filepath.Join(targetDir, prefix+".pcmu")
+		g722Path := filepath.Join(targetDir, prefix+".g722")
+		if err := copyFile(audio.WAVPath, wavPath); err != nil {
+			log.Printf("IVR static WAV prompt %s failed: %v", prefix, err)
+			continue
+		}
+		if err := copyFile(audio.PCMUPath, pcmuPath); err != nil {
+			log.Printf("IVR static PCMU prompt %s failed: %v", prefix, err)
+			continue
+		}
+		if strings.TrimSpace(audio.G722Path) != "" {
+			if err := copyFile(audio.G722Path, g722Path); err != nil {
+				log.Printf("IVR static G.722 prompt %s failed: %v", prefix, err)
+				continue
+			}
+		} else {
+			g722Path = ""
+		}
+		manifest.Files[prefix] = staticPromptFile{
+			Text: text,
+			WAV:  filepath.ToSlash(wavPath),
+			PCMU: filepath.ToSlash(pcmuPath),
+			G722: filepath.ToSlash(g722Path),
+		}
+	}
+	if len(manifest.Files) == 0 {
+		log.Printf("IVR static prompt generation produced no files")
+		return
+	}
+	if err := writeStaticPromptManifest(manifestPath, manifest); err != nil {
+		log.Printf("IVR static prompt manifest failed: %v", err)
+		return
+	}
+	log.Printf("IVR static prompts regenerated with Piper (%d clips)", len(manifest.Files))
+}
+
+func (s *Service) staticPiperPromptPolicy() TTSProfile {
+	return TTSProfile{
+		ReaderID: "00",
+		Provider: "piper",
+		VoiceID:  "en_US-hfc_male-medium",
+		Language: fallbackText(s.cfg.IVR.DefaultLanguage, "en-CA"),
+		Volume:   100,
+		CacheTTL: 24 * time.Hour,
+	}
+}
+
+func (s *Service) staticPromptFingerprint(lines []staticPromptLine, policy TTSProfile) (string, error) {
+	hash := sha256.New()
+	hash.Write([]byte(fmt.Sprintf("v%d\n", staticPromptManifestVersion)))
+	hash.Write([]byte("policy\n" + ttsPolicyFingerprint(policy) + "\n"))
+	if strings.TrimSpace(s.cfg.PromptsPath) != "" {
+		raw, err := os.ReadFile(filepath.Clean(s.cfg.PromptsPath))
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("ivr_xml\n"))
+		hash.Write(raw)
+		hash.Write([]byte("\n"))
+	}
+	entries := make([]string, 0, len(lines))
+	for _, line := range lines {
+		values := s.promptValues(line.Values)
+		text := s.cfg.Prompts.MenuLine(line.MenuID, line.LineKey, values)
+		entries = append(entries, strings.Join([]string{line.MenuID, line.LineKey, text}, "\x00"))
+	}
+	sort.Strings(entries)
+	for _, entry := range entries {
+		hash.Write([]byte(entry))
+		hash.Write([]byte("\n"))
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func staticPromptManifestCurrent(path string, fingerprint string) bool {
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	var manifest staticPromptManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return false
+	}
+	if manifest.Version != staticPromptManifestVersion || manifest.Fingerprint != fingerprint || len(manifest.Files) == 0 {
+		return false
+	}
+	for _, file := range manifest.Files {
+		for _, path := range []string{file.WAV, file.PCMU, file.G722} {
+			if strings.TrimSpace(path) == "" {
+				continue
+			}
+			if _, err := os.Stat(filepath.Clean(filepath.FromSlash(path))); err != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func writeStaticPromptManifest(path string, manifest staticPromptManifest) error {
+	raw, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Clean(path), raw, 0o644)
+}
+
+func copyFile(source string, target string) error {
+	raw, err := os.ReadFile(filepath.Clean(source))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Clean(target), raw, 0o644)
 }
 
 func writeJSON(writer http.ResponseWriter, value any) {

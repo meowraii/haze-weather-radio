@@ -355,7 +355,27 @@ func (s *PostgresStore) ObservationPayload(ctx context.Context, source string, l
 }
 
 func (s *PostgresStore) ForecastPayload(ctx context.Context, source string, forecastID string, target any) (bool, error) {
-	return s.loadJSONPayload(ctx, `SELECT payload FROM forecasts.current WHERE source = $1 AND forecast_id = $2`, source, forecastID, target)
+	if s == nil || s.pool == nil {
+		return false, nil
+	}
+	source = clean(source, "unknown")
+	forecastID = clean(forecastID, "")
+	if forecastID == "" {
+		return false, nil
+	}
+	var raw []byte
+	var issuedAt pgtype.Timestamptz
+	var updatedAt pgtype.Timestamptz
+	if err := s.pool.QueryRow(ctx, `SELECT payload, issued_at, source_updated_at FROM forecasts.current WHERE source = $1 AND forecast_id = $2`, source, forecastID).Scan(&raw, &issuedAt, &updatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := mergeForecastPayloadTimes(raw, pgTimestampText(issuedAt), pgTimestampText(updatedAt), target); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *PostgresStore) StoreProductPayload(ctx context.Context, record ProductPayloadRecord) error {
@@ -758,6 +778,13 @@ func pgText(value pgtype.Text) string {
 		return ""
 	}
 	return value.String
+}
+
+func pgTimestampText(value pgtype.Timestamptz) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.Time.UTC().Format(time.RFC3339Nano)
 }
 
 func jsonText(value any) (string, error) {

@@ -71,9 +71,12 @@ func (s *Server) Handler() http.Handler {
 	if s.surface.allowsPublic() {
 		mux.HandleFunc("/", s.publicIndex)
 		mux.HandleFunc("/feeds", s.publicIndex)
+		mux.HandleFunc("/listen", s.publicIndex)
+		mux.HandleFunc("/about", s.publicIndex)
 		mux.HandleFunc("/alerts", s.publicIndex)
 		mux.HandleFunc("/alerts/archive", s.publicIndex)
 		mux.HandleFunc("/api/public/v1/panel/ws", s.websocket)
+		mux.HandleFunc("/api/public/v1/feed/audio", s.publicFeedAudio)
 	}
 	if s.surface.allowsAdmin() {
 		if !s.surface.allowsPublic() {
@@ -84,6 +87,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/banner/stream", s.bannerStream)
 		mux.HandleFunc("/api/v1/banner/audio", s.bannerAudio)
 		mux.HandleFunc("/api/v1/banner/webrtc/offer", s.bannerWebRTCOffer)
+		mux.HandleFunc("/api/v1/wx-on-demand/generate", s.wxOnDemandGenerate)
+		mux.HandleFunc("/api/v1/wx-on-demand/packages", s.wxOnDemandPackages)
+		mux.HandleFunc("/api/v1/wx-on-demand/readers", s.wxOnDemandReaders)
 		mux.HandleFunc("/login", s.login)
 		mux.HandleFunc("/api/v1/panel/ws", s.websocket)
 	}
@@ -97,11 +103,11 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) publicIndex(writer http.ResponseWriter, request *http.Request) {
-	if request.URL.Path != "/" && request.URL.Path != "/feeds" && request.URL.Path != "/alerts" && request.URL.Path != "/alerts/archive" {
+	if request.URL.Path != "/" && request.URL.Path != "/feeds" && request.URL.Path != "/listen" && request.URL.Path != "/about" && request.URL.Path != "/alerts" && request.URL.Path != "/alerts/archive" {
 		http.NotFound(writer, request)
 		return
 	}
-	if request.URL.Path == "/feeds" && !s.publicFeedsAvailable() {
+	if (request.URL.Path == "/feeds" || request.URL.Path == "/listen") && !s.publicFeedsAvailable() {
 		http.NotFound(writer, request)
 		return
 	}
@@ -350,8 +356,9 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed streaming is not configured or disabled"})
 	}
 	answer, err := s.media.AnswerWithOptions(ctx, feedID, stringValue(message, "sdp"), WebRTCAnswerOptions{
-		DisableG722: boolValue(message, "disable_g722"),
-		RequireOpus: boolValue(message, "require_opus"),
+		DisableG722:    boolValue(message, "disable_g722"),
+		RequireOpus:    boolValue(message, "require_opus"),
+		PreferredCodec: firstNonBlank(stringValue(message, "codec"), stringValue(message, "preferred_codec")),
 	})
 	if err != nil {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": err.Error()})
@@ -402,6 +409,12 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 			return nil, err
 		}
 		return map[string]any{"packages": packageIDs}, nil
+	case "wx.readers":
+		readers, err := loadReaderCatalog(s.configPath)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"readers": readers}, nil
 	case "playlist.state":
 		return playlistStatePayload(s.configPath)
 	case "playlist.control":
@@ -444,7 +457,7 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 	case "same.upload_audio":
 		return nil, fmt.Errorf("SAME media upload is not available in this gateway yet")
 	case "wx.generate":
-		return nil, fmt.Errorf("weather package generation is not available in this gateway yet")
+		return s.generateWx(payload)
 	case "health":
 		return map[string]any{
 			"ok":            true,
@@ -456,7 +469,7 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 				"same_queue":     true,
 				"same_broadcast": false,
 				"raw_udp_output": true,
-				"wx_generate":    false,
+				"wx_generate":    strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR")) != "",
 			},
 		}, nil
 	default:
