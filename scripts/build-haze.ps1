@@ -242,7 +242,7 @@ function Get-PeImportedDllNames {
     $Output = & $Objdump.Source -p $Path 2>$null
     $Names = @()
     foreach ($Line in $Output) {
-        if ($Line -match "DLL Name:\s*(.+)$") {
+        if ($Line -cmatch "^\s*DLL Name:\s*(.+)$") {
             $Names += $Matches[1].Trim()
         }
     }
@@ -407,6 +407,7 @@ try {
         ".haze-runtime"
     )
     $BundleOwnedBinFiles = @(
+        "haze.exe",
         "haze-web.exe",
         "haze-data-ingest.exe",
         "haze-cap-ingest.exe",
@@ -458,14 +459,13 @@ try {
         }
     }
 
-    Copy-Item -LiteralPath $ExePath -Destination (Join-Path $OutFull "haze.exe") -Force
+    Copy-Item -LiteralPath $ExePath -Destination (Join-Path $BinFull "haze.exe") -Force
     Copy-Item -LiteralPath $PlayoutExePath -Destination (Join-Path $BinFull "haze-playout-rs.exe") -Force
 
     if (-not $SkipGoServices) {
         & (Join-Path $ScriptDir "build-go-services.ps1") -OutputDir $OutputDir
     }
     if ($RunningOnWindows) {
-        Copy-Clang64RuntimeDependencies -EntryPoints @((Join-Path $OutFull "haze.exe")) -DestinationDir $OutFull
         $ServiceEntryPoints = @()
         if (Test-Path -LiteralPath $BinFull -PathType Container) {
             $ServiceEntryPoints = @(Get-ChildItem -LiteralPath $BinFull -Filter "*.exe" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
@@ -473,7 +473,7 @@ try {
         if ($ServiceEntryPoints.Count -gt 0) {
             Copy-Clang64RuntimeDependencies -EntryPoints $ServiceEntryPoints -DestinationDir $BinFull
         }
-        Assert-PortableRuntimeDependencies -Directories @($OutFull, $BinFull)
+        Assert-PortableRuntimeDependencies -Directories @($BinFull)
     }
 
     foreach ($Item in @("config.yaml")) {
@@ -514,7 +514,7 @@ try {
 @echo off
 set "HAZE_HOME=%~dp0."
 set "PATH=%~dp0bin;%PATH%"
-"%~dp0haze.exe" %*
+"%~dp0bin\haze.exe" %*
 set "HAZE_EXIT=%ERRORLEVEL%"
 if not "%HAZE_EXIT%"=="0" (
     echo.
@@ -529,20 +529,21 @@ exit /b %HAZE_EXIT%
 Haze Weather Radio host bundle
 
 Run:
-  haze.exe --config config.yaml
+  haze.cmd --config config.yaml
 
 Bundled service executables are kept in:
   bin/
 
-The daemon is the only top-level executable. Managed services are launched by
-Haze and can also be extracted from its embedded service payload.
+The top-level launcher sets PATH for the native runtime DLLs in bin/ and then
+starts bin/haze.exe. Managed services are launched by Haze and can also be
+extracted from its embedded service payload.
 
 This bundle was built from:
   $Root
 "@ | Set-Content -LiteralPath (Join-Path $OutFull "README-runtime.txt") -Encoding UTF8
 
     Write-Host "Built $OutFull"
-    Write-Host "Run: $OutFull\haze.exe --config config.yaml"
+    Write-Host "Run: $OutFull\haze.cmd --config config.yaml"
 } finally {
     Pop-Location
 }
