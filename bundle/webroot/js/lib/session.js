@@ -32,13 +32,10 @@ function cookieToken() {
 function setCookieToken(value) {
     try {
         const secure = window.location.protocol === 'https:' ? '; Secure' : '';
-        if (value) {
-            document.cookie = `${SESSION_COOKIE}=${encodeURIComponent(value)}; Path=/; SameSite=Lax; Max-Age=43200${secure}`;
-        } else {
-            document.cookie = `${SESSION_COOKIE}=; Path=/; SameSite=Lax; Max-Age=0${secure}`;
-        }
+        if (value) return;
+        document.cookie = `${SESSION_COOKIE}=; Path=/; SameSite=Strict; Max-Age=0${secure}`;
     } catch {
-        // Ignore; URL token and memory/local storage remain available.
+        // The server owns the real session cookie so it can be HttpOnly.
     }
 }
 

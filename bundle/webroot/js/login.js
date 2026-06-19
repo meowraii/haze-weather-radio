@@ -1,4 +1,4 @@
-import { session, token } from './lib/api.js';
+import { token } from './lib/api.js';
 import { initTheme } from './lib/theme.js';
 import { createControlClient } from './lib/ws-client.js';
 
@@ -72,7 +72,6 @@ async function signIn(event) {
         if (payload.type !== 'auth_ok') {
             throw new Error(payload.detail || 'Incorrect password or unavailable websocket.');
         }
-        if (payload.token) session.setToken(payload.token);
         passwordInput.value = '';
         setStatus('Signed in. Opening panel...', 'ok');
         window.location.href = destinationWithToken(nextPath, payload.token);

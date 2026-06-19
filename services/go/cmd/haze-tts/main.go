@@ -144,7 +144,7 @@ func run() error {
 	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(*out, audio.Data, 0o644)
+	return writeFileAtomic(*out, audio.Data, 0o644)
 }
 
 type serviceConfig struct {
@@ -191,6 +191,10 @@ func runService(ctx context.Context, cfg serviceConfig) error {
 	if strings.TrimSpace(cfg.Timezone) == "" {
 		cfg.Timezone = "Local"
 	}
+	state, err := newServiceState(ctx, cfg)
+	if err != nil {
+		return err
+	}
 
 	for ctx.Err() == nil {
 		conn, err := net.DialTimeout("tcp", cfg.BridgeAddr, 3*time.Second)
@@ -201,7 +205,7 @@ func runService(ctx context.Context, cfg serviceConfig) error {
 		log.Printf("connected to host bridge at %s", cfg.BridgeAddr)
 		_ = publishServiceEvent(conn, "service.ready", "", map[string]any{
 			"service":   serviceID,
-			"providers": providerIDs(tts.DefaultProviders()),
+			"providers": providerIDs(state.providers),
 			"readers":   cfg.Readers,
 		})
 
@@ -213,7 +217,7 @@ func runService(ctx context.Context, cfg serviceConfig) error {
 			case <-done:
 			}
 		}()
-		err = runServiceConnection(ctx, conn, cfg)
+		err = runServiceConnection(ctx, conn, state)
 		close(done)
 		_ = conn.Close()
 		if errors.Is(err, errSystemShutdown) {
@@ -230,12 +234,8 @@ func runService(ctx context.Context, cfg serviceConfig) error {
 	return nil
 }
 
-func runServiceConnection(ctx context.Context, conn net.Conn, cfg serviceConfig) error {
-	state, err := newServiceState(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	queue := newSynthesisQueue(ctx, conn, state, maxInt(1, cfg.Workers))
+func runServiceConnection(ctx context.Context, conn net.Conn, state *serviceState) error {
+	queue := newSynthesisQueue(ctx, conn, state, maxInt(1, state.cfg.Workers))
 	defer queue.Close()
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -309,7 +309,7 @@ func (q *synthesisQueue) Enqueue(ctx context.Context, message map[string]any) bo
 	case target <- message:
 		return true
 	case <-ctx.Done():
-		return true
+		return false
 	default:
 		return false
 	}
@@ -533,7 +533,7 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
-	if err := os.WriteFile(outputPath, audio.Data, 0o644); err != nil {
+	if err := writeFileAtomic(outputPath, audio.Data, 0o644); err != nil {
 		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
@@ -587,6 +587,18 @@ func publishServiceEvent(conn net.Conn, eventType string, subject string, data m
 		Subject:   subject,
 		Data:      data,
 	})
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp := fmt.Sprintf("%s.%d.tmp", path, time.Now().UnixNano())
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func providerIDs(providers map[string]tts.Provider) []string {

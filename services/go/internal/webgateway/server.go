@@ -37,6 +37,8 @@ const (
 	SurfaceAdmin    WebSurface = "admin"
 )
 
+const maxWebSocketMessageBytes = 1 << 20
+
 // NewServer creates a web gateway server.
 func NewServer(config Config, webroot string) *Server {
 	return NewServerWithConfigPath(config, "config.yaml", webroot)
@@ -131,13 +133,19 @@ func (s *Server) adminRoot(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) admin(writer http.ResponseWriter, request *http.Request) {
+	if token := strings.TrimSpace(request.URL.Query().Get("token")); token != "" && s.auth.ValidToken(token) {
+		s.auth.SetCookie(writer, token)
+		cleanURL := *request.URL
+		query := cleanURL.Query()
+		query.Del("token")
+		cleanURL.RawQuery = query.Encode()
+		http.Redirect(writer, request, cleanURL.RequestURI(), http.StatusSeeOther)
+		return
+	}
 	if !s.auth.Authenticated(request) {
 		target := "/login?next=" + request.URL.EscapedPath()
 		http.Redirect(writer, request, target, http.StatusSeeOther)
 		return
-	}
-	if token := strings.TrimSpace(request.URL.Query().Get("token")); token != "" {
-		s.auth.SetCookie(writer, token)
 	}
 	s.serveHTML(writer, request, "admin.html")
 }
@@ -177,6 +185,7 @@ func (s *Server) websocket(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	defer connection.CloseNow()
+	connection.SetReadLimit(maxWebSocketMessageBytes)
 
 	ctx, cancel := context.WithCancel(request.Context())
 	defer cancel()
@@ -213,7 +222,11 @@ func (s *Server) websocket(writer http.ResponseWriter, request *http.Request) {
 	go func() {
 		for {
 			_, data, err := connection.Read(ctx)
-			readDone <- readResult{data: data, err: err}
+			select {
+			case readDone <- readResult{data: data, err: err}:
+			case <-ctx.Done():
+				return
+			}
 			if err != nil {
 				return
 			}
@@ -598,12 +611,34 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "SAMEORIGIN")
-		writer.Header().Set("Referrer-Policy", "same-origin")
+		writer.Header().Set("Referrer-Policy", "no-referrer")
+		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		writer.Header().Set("Content-Security-Policy", contentSecurityPolicy(request.URL.Path))
 		if s.config.Webpanel.TLS.HSTS && requestIsHTTPS(request) {
 			writer.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+func contentSecurityPolicy(path string) string {
+	scriptSrc := "script-src 'self' https://unpkg.com"
+	if path == "/banner" {
+		scriptSrc = "script-src 'self' 'unsafe-inline'"
+	}
+	return strings.Join([]string{
+		"default-src 'self'",
+		scriptSrc,
+		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+		"font-src 'self' https://fonts.gstatic.com",
+		"img-src 'self' data:",
+		"connect-src 'self' ws: wss: stun: stuns: turn: turns:",
+		"media-src 'self' blob:",
+		"object-src 'none'",
+		"base-uri 'self'",
+		"frame-ancestors 'self'",
+		"form-action 'self'",
+	}, "; ")
 }
 
 func noStore(next http.Handler) http.Handler {

@@ -34,6 +34,7 @@ type PiperProvider struct {
 	VoiceBaseURL string
 	HTTPClient   *http.Client
 
+	downloadMu       sync.Mutex
 	runtimeMu        sync.Mutex
 	mode             string
 	workerCount      int
@@ -104,12 +105,26 @@ func NewPiperProvider(executable string, voicesDir string) *PiperProvider {
 		VoicesDir:      voicesDir,
 		MetadataURL:    defaultPiperMetadataURL,
 		VoiceBaseURL:   defaultPiperVoiceBaseURL,
-		HTTPClient:     &http.Client{Timeout: 2 * time.Minute},
+		HTTPClient:     defaultPiperHTTPClient(),
 		mode:           "auto",
 		workerCount:    1,
 		prewarm:        true,
 		resolvedVoices: map[string]resolvedPiperVoice{},
 		workerPools:    map[string]*piperWorkerPool{},
+	}
+}
+
+func defaultPiperHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 2 * time.Minute,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			MaxIdleConns:          32,
+			MaxIdleConnsPerHost:   8,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+		},
 	}
 }
 
@@ -399,7 +414,7 @@ func (p *PiperProvider) voiceIndex(ctx context.Context) (piperVoiceIndex, error)
 		if err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(metadataPath, raw, 0o644); err != nil {
+		if err := writeFileAtomic(metadataPath, raw, 0o644); err != nil {
 			return nil, err
 		}
 	}
@@ -819,18 +834,18 @@ func (p *PiperProvider) ensureVoiceFile(ctx context.Context, relativePath string
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return "", err
 	}
-	url := strings.TrimRight(p.VoiceBaseURL, "/") + "/" + relativePath
-	raw, err := p.download(ctx, url)
-	if err != nil {
-		return "", err
-	}
-	if meta.MD5Digest != "" {
-		sum := md5.Sum(raw)
-		if hex.EncodeToString(sum[:]) != strings.ToLower(meta.MD5Digest) {
-			return "", fmt.Errorf("downloaded piper voice file failed checksum: %s", relativePath)
+	p.downloadMu.Lock()
+	defer p.downloadMu.Unlock()
+	if shouldPreserveLocalPiperConfig(relativePath) {
+		if _, err := os.Stat(localPath); err == nil {
+			return localPath, nil
 		}
 	}
-	if err := os.WriteFile(localPath, raw, 0o644); err != nil {
+	if ok, err := fileMatchesMD5(localPath, meta.MD5Digest); ok && err == nil {
+		return localPath, nil
+	}
+	url := strings.TrimRight(p.VoiceBaseURL, "/") + "/" + relativePath
+	if err := p.downloadFile(ctx, url, localPath, relativePath, meta); err != nil {
 		return "", err
 	}
 	return localPath, nil
@@ -867,13 +882,67 @@ func applyPiperVoiceOverrides(voiceID string, configPath string) error {
 		return err
 	}
 	updated = append(updated, '\n')
-	return os.WriteFile(filepath.Clean(configPath), updated, 0o644)
+	return writeFileAtomic(filepath.Clean(configPath), updated, 0o644)
 }
 
 func (p *PiperProvider) download(ctx context.Context, url string) ([]byte, error) {
+	response, err := p.downloadResponse(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	return io.ReadAll(response.Body)
+}
+
+func (p *PiperProvider) downloadFile(ctx context.Context, url string, localPath string, relativePath string, meta piperVoiceFile) error {
+	response, err := p.downloadResponse(ctx, url)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	tmp := fmt.Sprintf("%s.%d.tmp", localPath, time.Now().UnixNano())
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmp)
+		}
+	}()
+
+	hash := md5.New()
+	reader := io.Reader(response.Body)
+	if meta.SizeBytes > 0 {
+		reader = io.LimitReader(response.Body, meta.SizeBytes+1)
+	}
+	written, copyErr := io.Copy(io.MultiWriter(file, hash), reader)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if meta.SizeBytes > 0 && written != meta.SizeBytes {
+		return fmt.Errorf("downloaded piper voice file has unexpected size: %s", relativePath)
+	}
+	if meta.MD5Digest != "" && hex.EncodeToString(hash.Sum(nil)) != strings.ToLower(meta.MD5Digest) {
+		return fmt.Errorf("downloaded piper voice file failed checksum: %s", relativePath)
+	}
+	if err := os.Rename(tmp, localPath); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func (p *PiperProvider) downloadResponse(ctx context.Context, url string) (*http.Response, error) {
 	client := p.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = defaultPiperHTTPClient()
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -883,11 +952,11 @@ func (p *PiperProvider) download(ctx context.Context, url string) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		response.Body.Close()
 		return nil, fmt.Errorf("download %s failed: %s", url, response.Status)
 	}
-	return io.ReadAll(response.Body)
+	return response, nil
 }
 
 func fileMatchesMD5(path string, expected string) (bool, error) {
@@ -905,4 +974,16 @@ func fileMatchesMD5(path string, expected string) (bool, error) {
 		return false, err
 	}
 	return hex.EncodeToString(hash.Sum(nil)) == strings.ToLower(expected), nil
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp := fmt.Sprintf("%s.%d.tmp", path, time.Now().UnixNano())
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }

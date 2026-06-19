@@ -245,17 +245,43 @@ func TestWebSocketLoginTokenOpensAdminAndAuthenticatedStream(t *testing.T) {
 		t.Fatal("token was empty")
 	}
 
+	client := &http.Client{
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	adminURL := httpServer.URL + "/admin?token=" + url.QueryEscape(token)
-	response, err := http.Get(adminURL)
+	response, err := client.Get(adminURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("admin status = %d", response.StatusCode)
 	}
-	if len(response.Cookies()) == 0 || response.Cookies()[0].Name != sessionCookieName {
+	if response.Header.Get("Location") != "/admin" {
+		t.Fatalf("admin location = %q", response.Header.Get("Location"))
+	}
+	cookies := response.Cookies()
+	if len(cookies) == 0 || cookies[0].Name != sessionCookieName {
 		t.Fatalf("admin did not set session cookie: %#v", response.Cookies())
+	}
+	if !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("admin session cookie was not hardened: %#v", cookies[0])
+	}
+
+	adminRequest, err := http.NewRequest(http.MethodGet, httpServer.URL+"/admin", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminRequest.AddCookie(cookies[0])
+	adminResponse, err := http.DefaultClient.Do(adminRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer adminResponse.Body.Close()
+	if adminResponse.StatusCode != http.StatusOK {
+		t.Fatalf("admin follow-up status = %d", adminResponse.StatusCode)
 	}
 
 	controlWS := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/v1/panel/ws?mode=control&token=" + url.QueryEscape(token)

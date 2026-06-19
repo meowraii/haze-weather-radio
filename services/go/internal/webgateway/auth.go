@@ -154,7 +154,8 @@ func (a *AuthManager) SetCookie(writer http.ResponseWriter, token string) {
 		Value:    token,
 		Path:     "/",
 		MaxAge:   int(a.ttl.Seconds()),
-		SameSite: http.SameSiteLaxMode,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
 		Secure:   a.secureCookie,
 	})
 }
