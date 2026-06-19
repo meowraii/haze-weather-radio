@@ -125,7 +125,7 @@ func (p *KokoroProvider) ensureEngine(ctx context.Context) (*sherpa.OfflineTts, 
 	if p.engine != nil {
 		return p.engine, nil
 	}
-	if err := p.options.validate(); err != nil {
+	if err := p.options.ensureModelFiles(ctx); err != nil {
 		return nil, err
 	}
 	config := p.options.sherpaConfig()
