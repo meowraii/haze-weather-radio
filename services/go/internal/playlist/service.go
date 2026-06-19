@@ -867,7 +867,7 @@ func alertTextFromData(data map[string]any) string {
 }
 
 func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, outputPath string, alertText string, sampleRate int, channels int) error {
-	readerID := "000"
+	readerID := "00"
 	language := feedLanguage(p.feed)
 	if strings.TrimSpace(alertText) == "" {
 		renderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

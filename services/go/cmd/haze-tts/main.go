@@ -45,7 +45,7 @@ func run() error {
 	piperWorkers := flag.Int("piper-workers", envIntOrDefault("HAZE_PIPER_WORKERS", 1), "Piper worker processes per voice")
 	piperPrewarm := flag.Bool("piper-prewarm", envBoolOrDefault("HAZE_PIPER_PREWARM", true), "prewarm Piper worker voices on service startup")
 	piperCUDA := flag.Bool("piper-cuda", envBoolOrDefault("HAZE_PIPER_CUDA", false), "use CUDA for Piper workers when available")
-	kokoroModelDir := flag.String("kokoro-model-dir", envOrDefault("HAZE_KOKORO_MODEL_DIR", filepath.Join("managed", "voices", "kokoro")), "Kokoro model directory")
+	kokoroModelDir := flag.String("kokoro-model-dir", envOrDefault("HAZE_KOKORO_MODEL_DIR", filepath.Join("managed", "voices", "kokoro-multi-lang-v1_0")), "Kokoro model directory")
 	kokoroRuntimeProvider := flag.String("kokoro-runtime-provider", envOrDefault("HAZE_KOKORO_PROVIDER", "cpu"), "Kokoro sherpa-onnx provider: cpu, cuda, or coreml")
 	kokoroThreads := flag.Int("kokoro-threads", envIntOrDefault("HAZE_KOKORO_THREADS", 0), "Kokoro neural network worker threads")
 	kokoroSpeed := flag.Float64("kokoro-speed", envFloatOrDefault("HAZE_KOKORO_SPEED", 1.0), "Kokoro default generation speed")
@@ -62,6 +62,7 @@ func run() error {
 		PiperExe:              *piperExe,
 		PiperVoicesDir:        *piperVoicesDir,
 		KokoroModelDir:        *kokoroModelDir,
+		KokoroLang:            kokoroRuntimeLang(*lang),
 		KokoroRuntimeProvider: *kokoroRuntimeProvider,
 		KokoroThreads:         *kokoroThreads,
 		KokoroSpeed:           *kokoroSpeed,
@@ -84,6 +85,7 @@ func run() error {
 			PiperWorkers: maxInt(1, *piperWorkers),
 			PiperPrewarm: *piperPrewarm,
 			PiperCUDA:    *piperCUDA,
+			Workers:      1,
 		})
 	}
 
@@ -156,6 +158,7 @@ type serviceConfig struct {
 	PiperWorkers int
 	PiperPrewarm bool
 	PiperCUDA    bool
+	Workers      int
 }
 
 type serviceState struct {
@@ -165,6 +168,7 @@ type serviceState struct {
 	readersErr   error
 	dictionaries map[string]dictionaryResult
 	mu           sync.Mutex
+	publishMu    sync.Mutex
 }
 
 type dictionaryResult struct {
@@ -229,6 +233,8 @@ func runServiceConnection(ctx context.Context, conn net.Conn, cfg serviceConfig)
 	if err != nil {
 		return err
 	}
+	queue := newSynthesisQueue(ctx, conn, state, maxInt(1, cfg.Workers))
+	defer queue.Close()
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -249,9 +255,115 @@ func runServiceConnection(ctx context.Context, conn net.Conn, cfg serviceConfig)
 		if stringValue(message, "type") != "tts.synthesize" {
 			continue
 		}
-		handleSynthesisJob(ctx, conn, state, message)
+		if !queue.Enqueue(ctx, message) {
+			jobID := firstText(message, objectValue(message, "data"), "job_id", "id", "subject")
+			if jobID == "" {
+				jobID = "tts"
+			}
+			state.publishTTSError(conn, jobID, "tts queue is full")
+		}
 	}
 	return scanner.Err()
+}
+
+type synthesisQueue struct {
+	conn   net.Conn
+	state  *serviceState
+	high   chan map[string]any
+	normal chan map[string]any
+	low    chan map[string]any
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+func newSynthesisQueue(ctx context.Context, conn net.Conn, state *serviceState, workers int) *synthesisQueue {
+	queueCtx, cancel := context.WithCancel(ctx)
+	q := &synthesisQueue{
+		conn:   conn,
+		state:  state,
+		high:   make(chan map[string]any, 256),
+		normal: make(chan map[string]any, 256),
+		low:    make(chan map[string]any, 256),
+		cancel: cancel,
+	}
+	for range maxInt(1, workers) {
+		q.wg.Add(1)
+		go q.worker(queueCtx)
+	}
+	return q
+}
+
+func (q *synthesisQueue) Enqueue(ctx context.Context, message map[string]any) bool {
+	var target chan map[string]any
+	switch synthesisPriority(message) {
+	case "high":
+		target = q.high
+	case "low":
+		target = q.low
+	default:
+		target = q.normal
+	}
+	select {
+	case target <- message:
+		return true
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func (q *synthesisQueue) Close() {
+	q.cancel()
+	q.wg.Wait()
+}
+
+func (q *synthesisQueue) worker(ctx context.Context) {
+	defer q.wg.Done()
+	for {
+		message, ok := q.next(ctx)
+		if !ok {
+			return
+		}
+		handleSynthesisJob(ctx, q.conn, q.state, message)
+	}
+}
+
+func (q *synthesisQueue) next(ctx context.Context) (map[string]any, bool) {
+	select {
+	case message := <-q.high:
+		return message, true
+	default:
+	}
+	select {
+	case message := <-q.high:
+		return message, true
+	case message := <-q.normal:
+		return message, true
+	default:
+	}
+	select {
+	case message := <-q.high:
+		return message, true
+	case message := <-q.normal:
+		return message, true
+	case message := <-q.low:
+		return message, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+func synthesisPriority(message map[string]any) string {
+	data := objectValue(message, "data")
+	switch strings.ToLower(firstText(message, data, "priority", "queue_priority")) {
+	case "realtime", "urgent", "high", "radio", "playout":
+		return "high"
+	case "batch", "background", "low":
+		return "low"
+	default:
+		return "normal"
+	}
 }
 
 func newServiceState(ctx context.Context, cfg serviceConfig) (*serviceState, error) {
@@ -351,7 +463,7 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 
 	text := firstText(message, data, "text")
 	if strings.TrimSpace(text) == "" {
-		publishTTSError(conn, jobID, "empty synthesis text")
+		state.publishTTSError(conn, jobID, "empty synthesis text")
 		return
 	}
 
@@ -359,7 +471,7 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 	defer cancel()
 	reader, hasReader, err := state.serviceReader(firstText(message, data, "reader_id"), firstText(message, data, "language"))
 	if err != nil {
-		publishTTSError(conn, jobID, err.Error())
+		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
 
@@ -388,7 +500,7 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 	}
 	dictionary, err := state.dictionary(language)
 	if err != nil {
-		publishTTSError(conn, jobID, err.Error())
+		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
 	outputFormat := normalizeOutputFormat(firstText(message, data, "output_format", "format"))
@@ -403,11 +515,11 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 		SentenceSilence: floatValue(message, data, "sentence_silence", 0),
 	})
 	if err != nil {
-		publishTTSError(conn, jobID, err.Error())
+		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
 	if audio.Format != tts.FormatWAV && audio.Format != tts.FormatPCM16LE {
-		publishTTSError(conn, jobID, fmt.Sprintf("unsupported audio format %q", audio.Format))
+		state.publishTTSError(conn, jobID, fmt.Sprintf("unsupported audio format %q", audio.Format))
 		return
 	}
 
@@ -416,14 +528,14 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 		outputPath = filepath.Join(cfg.OutDir, sanitizeFileName(jobID)+".wav")
 	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
-		publishTTSError(conn, jobID, err.Error())
+		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
 	if err := os.WriteFile(outputPath, audio.Data, 0o644); err != nil {
-		publishTTSError(conn, jobID, err.Error())
+		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
-	_ = publishServiceEvent(conn, "tts.synthesized", jobID, map[string]any{
+	_ = state.publishServiceEvent(conn, "tts.synthesized", jobID, map[string]any{
 		"job_id":      jobID,
 		"output_path": outputPath,
 		"bytes":       len(audio.Data),
@@ -452,11 +564,17 @@ func serviceReader(path string, readerID string, language string) (tts.Reader, b
 	return reader, true, nil
 }
 
-func publishTTSError(conn net.Conn, jobID string, detail string) {
-	_ = publishServiceEvent(conn, "tts.failed", jobID, map[string]any{
+func (s *serviceState) publishTTSError(conn net.Conn, jobID string, detail string) {
+	_ = s.publishServiceEvent(conn, "tts.failed", jobID, map[string]any{
 		"job_id": jobID,
 		"error":  detail,
 	})
+}
+
+func (s *serviceState) publishServiceEvent(conn net.Conn, eventType string, subject string, data map[string]any) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	return publishServiceEvent(conn, eventType, subject, data)
 }
 
 func publishServiceEvent(conn net.Conn, eventType string, subject string, data map[string]any) error {
@@ -629,6 +747,7 @@ type ttsRuntimeEnv struct {
 	PiperExe              string
 	PiperVoicesDir        string
 	KokoroModelDir        string
+	KokoroLang            string
 	KokoroRuntimeProvider string
 	KokoroThreads         int
 	KokoroSpeed           float64
@@ -645,6 +764,9 @@ func setTTSRuntimeEnv(options ttsRuntimeEnv) {
 	if strings.TrimSpace(options.KokoroModelDir) != "" {
 		_ = os.Setenv("HAZE_KOKORO_MODEL_DIR", strings.TrimSpace(options.KokoroModelDir))
 	}
+	if strings.TrimSpace(options.KokoroLang) != "" {
+		_ = os.Setenv("HAZE_KOKORO_LANG", strings.TrimSpace(options.KokoroLang))
+	}
 	if strings.TrimSpace(options.KokoroRuntimeProvider) != "" {
 		_ = os.Setenv("HAZE_KOKORO_PROVIDER", strings.TrimSpace(options.KokoroRuntimeProvider))
 	}
@@ -657,6 +779,17 @@ func setTTSRuntimeEnv(options ttsRuntimeEnv) {
 	if options.KokoroLengthScale > 0 {
 		_ = os.Setenv("HAZE_KOKORO_LENGTH_SCALE", fmt.Sprintf("%g", options.KokoroLengthScale))
 	}
+}
+
+func kokoroRuntimeLang(language string) string {
+	normalized := tts.NormalizeLanguage(language)
+	if strings.HasPrefix(normalized, "en") || normalized == "" {
+		return "en-us"
+	}
+	if strings.HasPrefix(normalized, "zh") || strings.HasPrefix(normalized, "cmn") || strings.HasPrefix(normalized, "yue") {
+		return "zh"
+	}
+	return normalized
 }
 
 func resolveReader(path string, readerID string, lang string) (tts.Reader, error) {

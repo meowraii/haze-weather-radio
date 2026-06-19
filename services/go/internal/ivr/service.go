@@ -169,7 +169,9 @@ func (s *Service) runConnected(ctx context.Context) error {
 	if s.cfg.IVR.Cache.RefreshOnStartup {
 		go s.prewarm(ctx, s.cfg.IVR.Cache.PrewarmCodes, false)
 	}
-	go s.generateStaticPrompts(ctx)
+	if s.cfg.IVR.Cache.StaticOnStartup {
+		go s.generateStaticPrompts(ctx)
+	}
 
 	select {
 	case <-ctx.Done():
@@ -226,7 +228,7 @@ func (s *Service) handlePrompt(writer http.ResponseWriter, request *http.Request
 			return
 		}
 	}
-	audio, err := s.cache.GetPromptWithPolicy(request.Context(), menuID, lineKey, values, s.staticPiperPromptPolicy(), force)
+	audio, err := s.cache.GetPromptWithPolicy(request.Context(), menuID, lineKey, values, s.staticPromptPolicy(), force)
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusBadGateway)
 		return
@@ -856,7 +858,7 @@ func (s *Service) servePromptAudio(writer http.ResponseWriter, request *http.Req
 		s.serveCachedAudio(writer, request, audio, format, status)
 		return
 	}
-	audio, err := s.cache.GetPromptWithPolicy(request.Context(), menuID, lineKey, promptValues, s.staticPiperPromptPolicy(), false)
+	audio, err := s.cache.GetPromptWithPolicy(request.Context(), menuID, lineKey, promptValues, s.staticPromptPolicy(), false)
 	if err != nil {
 		http.Error(writer, err.Error(), status)
 		return
@@ -930,6 +932,10 @@ func (s *Service) currentStaticPromptManifest() (staticPromptManifest, bool) {
 		return staticPromptManifest{}, false
 	}
 	if manifest.Version != staticPromptManifestVersion || len(manifest.Files) == 0 {
+		return staticPromptManifest{}, false
+	}
+	fingerprint, err := s.staticPromptFingerprint(s.cfg.Prompts.StaticPromptLines(), s.staticPromptPolicy())
+	if err != nil || manifest.Fingerprint != fingerprint {
 		return staticPromptManifest{}, false
 	}
 	return manifest, true
@@ -1078,7 +1084,8 @@ func (s *Service) generateStaticPrompts(ctx context.Context) {
 		return
 	}
 	lines := s.cfg.Prompts.StaticPromptLines()
-	policy := s.staticPiperPromptPolicy()
+	policy := s.staticPromptPolicy()
+	policy.Priority = "low"
 	fingerprint, err := s.staticPromptFingerprint(lines, policy)
 	if err != nil {
 		log.Printf("IVR static prompt fingerprint failed: %v", err)
@@ -1145,24 +1152,31 @@ func (s *Service) generateStaticPrompts(ctx context.Context) {
 		log.Printf("IVR static prompt manifest failed: %v", err)
 		return
 	}
-	log.Printf("IVR static prompts regenerated with Piper (%d clips)", len(manifest.Files))
+	log.Printf("IVR static prompts regenerated with reader %s (%d clips)", fallbackText(policy.ReaderID, "default"), len(manifest.Files))
 }
 
-func (s *Service) staticPiperPromptPolicy() TTSProfile {
-	return TTSProfile{
-		ReaderID: "00",
-		Provider: "piper",
-		VoiceID:  "en_US-hfc_male-medium",
-		Language: fallbackText(s.cfg.IVR.DefaultLanguage, "en-CA"),
-		Volume:   100,
-		CacheTTL: 24 * time.Hour,
+func (s *Service) staticPromptPolicy() TTSProfile {
+	policy := s.cfg.Prompts.TTSForMenu("")
+	if strings.TrimSpace(policy.ReaderID) == "" {
+		policy.ReaderID = fallbackText(s.cfg.IVR.DefaultReaderID, "00")
 	}
+	if strings.TrimSpace(policy.Language) == "" {
+		policy.Language = fallbackText(s.cfg.IVR.DefaultLanguage, "en-CA")
+	}
+	if policy.Volume <= 0 {
+		policy.Volume = 100
+	}
+	if policy.CacheTTL <= 0 {
+		policy.CacheTTL = 24 * time.Hour
+	}
+	return policy
 }
 
 func (s *Service) staticPromptFingerprint(lines []staticPromptLine, policy TTSProfile) (string, error) {
 	hash := sha256.New()
 	hash.Write([]byte(fmt.Sprintf("v%d\n", staticPromptManifestVersion)))
 	hash.Write([]byte("policy\n" + ttsPolicyFingerprint(policy) + "\n"))
+	hash.Write([]byte("reader\n" + s.cfg.ttsReaderFingerprint(policy.ReaderID, policy.Language, "") + "\n"))
 	if strings.TrimSpace(s.cfg.PromptsPath) != "" {
 		raw, err := os.ReadFile(filepath.Clean(s.cfg.PromptsPath))
 		if err != nil {

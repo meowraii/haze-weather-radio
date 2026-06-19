@@ -60,9 +60,11 @@ function Copy-BundleDirectory {
     $PreserveDir = $null
     if ($Name -eq "managed" -and (Test-Path -LiteralPath $Target -PathType Container)) {
         $PreserveFiles = @(Get-ChildItem -LiteralPath $Target -Filter "*.onnx" -Recurse -File -ErrorAction SilentlyContinue)
-        $KokoroTarget = Join-Path $Target "voices/kokoro"
-        if (Test-Path -LiteralPath $KokoroTarget -PathType Container) {
-            $PreserveFiles += @(Get-ChildItem -LiteralPath $KokoroTarget -Recurse -File -ErrorAction SilentlyContinue)
+        $VoicesTarget = Join-Path $Target "voices"
+        if (Test-Path -LiteralPath $VoicesTarget -PathType Container) {
+            $PreserveFiles += @(Get-ChildItem -LiteralPath $VoicesTarget -Directory -Filter "kokoro*" -ErrorAction SilentlyContinue | ForEach-Object {
+                Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue
+            })
         }
         if ($PreserveFiles.Count -gt 0) {
             $PreserveDir = Join-Path ([System.IO.Path]::GetTempPath()) ("haze-preserve-onnx-" + [System.Guid]::NewGuid().ToString("N"))

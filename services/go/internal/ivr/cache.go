@@ -106,7 +106,9 @@ func (c *ProductCache) productCacheKey(location ResolvedLocation, packages []str
 		language = strings.TrimSpace(policy.Language)
 	}
 	readerID := firstNonBlank(policy.ReaderID, c.cfg.IVR.DefaultReaderID)
-	return cacheKey(location, packages, language, policy), packages, language, readerID, policy
+	policy.ReaderID = readerID
+	readerFingerprint := c.cfg.ttsReaderFingerprint(readerID, language, "")
+	return cacheKey(location, packages, language, policy, readerFingerprint), packages, language, readerID, policy
 }
 
 func (c *ProductCache) render(ctx context.Context, key string, location ResolvedLocation, packages []string) (CachedProduct, error) {
@@ -158,6 +160,7 @@ func (c *ProductCache) render(ctx context.Context, key string, location Resolved
 		SentenceSilence: policy.SentenceSilence,
 		OutputPath:      pcm16Path,
 		OutputFormat:    "pcm_s16le",
+		Priority:        "high",
 	})
 	if err != nil {
 		return CachedProduct{}, err
@@ -204,7 +207,7 @@ func (c *ProductCache) GetPromptWithPolicy(ctx context.Context, menuID string, l
 }
 
 func (c *ProductCache) getPromptAudio(ctx context.Context, menuID string, lineKey string, text string, policy TTSProfile, force bool) (CachedAudio, error) {
-	key := promptCacheKey(menuID, lineKey, text, policy)
+	key := promptCacheKey(menuID, lineKey, text, policy, c.cfg.ttsReaderFingerprint(policy.ReaderID, policy.Language, ""))
 	if !force {
 		if cached, ok := c.readFreshAudio(key); ok {
 			return cached, nil
@@ -233,6 +236,7 @@ func (c *ProductCache) getPromptAudio(ctx context.Context, menuID string, lineKe
 		SentenceSilence: policy.SentenceSilence,
 		OutputPath:      pcm16Path,
 		OutputFormat:    "pcm_s16le",
+		Priority:        policy.Priority,
 	})
 	if err != nil {
 		return CachedAudio{}, err
@@ -337,7 +341,7 @@ func (c *ProductCache) writeAudioMetadata(audio CachedAudio) error {
 	return os.WriteFile(filepath.Join(c.cfg.cacheDir(), "prompts", audio.Key, "audio.json"), raw, 0o644)
 }
 
-func cacheKey(location ResolvedLocation, packages []string, lang string, policy TTSProfile) string {
+func cacheKey(location ResolvedLocation, packages []string, lang string, policy TTSProfile, readerFingerprint string) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		location.FeedID,
 		location.Code,
@@ -350,16 +354,18 @@ func cacheKey(location ResolvedLocation, packages []string, lang string, policy 
 		"telephone",
 		lang,
 		ttsPolicyFingerprint(policy),
+		readerFingerprint,
 	}, "|")))
 	return hex.EncodeToString(sum[:])
 }
 
-func promptCacheKey(menuID string, lineKey string, text string, policy TTSProfile) string {
+func promptCacheKey(menuID string, lineKey string, text string, policy TTSProfile, readerFingerprint string) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		menuID,
 		lineKey,
 		text,
 		ttsPolicyFingerprint(policy),
+		readerFingerprint,
 	}, "|")))
 	return hex.EncodeToString(sum[:])
 }

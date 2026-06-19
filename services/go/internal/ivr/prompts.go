@@ -87,6 +87,7 @@ type TTSProfile struct {
 	SentenceSilence    float64       `xml:"-"`
 	CacheTTLRaw        string        `xml:"cache_ttl,attr"`
 	CacheTTL           time.Duration `xml:"-"`
+	Priority           string        `xml:"-"`
 }
 
 type PromptConfig struct {

@@ -63,6 +63,7 @@ type synthRequest struct {
 	SentenceSilence float64
 	OutputPath      string
 	OutputFormat    string
+	Priority        string
 }
 
 func connectBridge(ctx context.Context, addr string) (*bridgeClient, error) {
@@ -210,6 +211,7 @@ func (c *bridgeClient) Synthesize(ctx context.Context, job synthRequest) (synthR
 			"sentence_silence": job.SentenceSilence,
 			"output_path":      job.OutputPath,
 			"output_format":    job.OutputFormat,
+			"priority":         job.Priority,
 		},
 	}); err != nil {
 		return synthResult{}, err

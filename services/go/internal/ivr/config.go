@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	ttspkg "github.com/meowraii/haze-weather-radio/services/go/internal/tts"
 	"gopkg.in/yaml.v3"
 )
 
@@ -29,6 +30,9 @@ type rootConfig struct {
 	} `yaml:"operator"`
 	Services struct {
 		Go struct {
+			TTS struct {
+				Readers string `yaml:"readers"`
+			} `yaml:"tts"`
 			IVR Config `yaml:"ivr"`
 		} `yaml:"go"`
 	} `yaml:"services"`
@@ -100,6 +104,7 @@ type cacheConfig struct {
 	MaxEntries       int      `yaml:"max_entries"`
 	StampedeWaiters  int      `yaml:"stampede_waiters"`
 	RefreshOnStartup bool     `yaml:"refresh_on_startup"`
+	StaticOnStartup  bool     `yaml:"static_prompts_on_startup"`
 }
 
 type loadedConfig struct {
@@ -318,6 +323,32 @@ func (cfg loadedConfig) enabled() bool {
 
 func (cfg loadedConfig) cacheDir() string {
 	return resolvePath(cfg.BaseDir, cfg.IVR.Cache.Dir)
+}
+
+func (cfg loadedConfig) ttsReadersPath() string {
+	return resolvePath(cfg.BaseDir, fallbackText(cfg.Root.Services.Go.TTS.Readers, "managed/configs/readers.xml"))
+}
+
+func (cfg loadedConfig) ttsReaderFingerprint(readerID string, language string, gender string) string {
+	readerID = strings.TrimSpace(readerID)
+	if readerID == "" {
+		return ""
+	}
+	readers, err := ttspkg.LoadReaders(cfg.ttsReadersPath())
+	if err != nil {
+		return "error:" + err.Error()
+	}
+	reader, ok := ttspkg.SelectReader(readers, readerID, language, gender)
+	if !ok {
+		return "missing:" + readerID
+	}
+	return strings.Join([]string{
+		reader.ID,
+		reader.Provider,
+		reader.VoiceID,
+		reader.Language,
+		reader.Gender,
+	}, "|")
 }
 
 func (cfg loadedConfig) cacheTTL() time.Duration {

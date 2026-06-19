@@ -1,8 +1,13 @@
 <Readers>
-    <reader id="000" provider="kokoro">
+    <reader id="00" provider="kokoro">
         <gender>male</gender>
         <language>en-US</language>
-        <voice_id>5</voice_id>
+        <voice_id>15</voice_id>
+    </reader>
+    <reader id="HAHAFUNNYTIKTOKVOICE" provider="kokoro">
+        <gender>male</gender>
+        <language>en-US</language>
+        <voice_id>11</voice_id>
     </reader>
     <reader id="01" provider="piper">
         <gender>female</gender>

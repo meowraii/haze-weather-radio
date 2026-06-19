@@ -149,6 +149,7 @@ func (c *bridgeClient) Synthesize(ctx context.Context, job synthJob) (string, er
 			"language":    job.Language,
 			"timezone":    job.Timezone,
 			"output_path": job.OutputPath,
+			"priority":    "high",
 		},
 	}); err != nil {
 		return "", err

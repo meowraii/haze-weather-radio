@@ -861,7 +861,7 @@ func (c *sipCall) playPromptAudio(menuID string, lineKey string, values map[stri
 	audio, ok := c.service.staticPromptAudio(menuID, lineKey, promptValues)
 	if !ok {
 		var err error
-		audio, err = c.service.cache.GetPromptWithPolicy(c.ctx, menuID, lineKey, promptValues, c.service.staticPiperPromptPolicy(), false)
+		audio, err = c.service.cache.GetPromptWithPolicy(c.ctx, menuID, lineKey, promptValues, c.service.staticPromptPolicy(), false)
 		if err != nil {
 			log.Printf("IVR SIP prompt %s/%s failed: %v", menuID, lineKey, err)
 			return "", false

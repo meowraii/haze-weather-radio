@@ -580,10 +580,10 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     args.extend(["--piper-workers".to_string(), workers.to_string()]);
                 }
                 if let Some(prewarm) = tts.piper_prewarm {
-                    args.extend(["--piper-prewarm".to_string(), prewarm.to_string()]);
+                    args.push(format!("--piper-prewarm={prewarm}"));
                 }
                 if let Some(cuda) = tts.piper_cuda {
-                    args.extend(["--piper-cuda".to_string(), cuda.to_string()]);
+                    args.push(format!("--piper-cuda={cuda}"));
                 }
                 if let Some(model_dir) = tts
                     .kokoro_model_dir

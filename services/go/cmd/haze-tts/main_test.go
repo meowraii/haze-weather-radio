@@ -123,3 +123,29 @@ func TestHandleSynthesisJobPublishesPCMMetadata(t *testing.T) {
 		t.Fatalf("output bytes = %d err=%v", len(raw), err)
 	}
 }
+
+func TestSynthesisQueuePrioritizesRealtimeJobs(t *testing.T) {
+	queue := &synthesisQueue{
+		high:   make(chan map[string]any, 3),
+		normal: make(chan map[string]any, 3),
+		low:    make(chan map[string]any, 3),
+	}
+	if !queue.Enqueue(context.Background(), map[string]any{"data": map[string]any{"job_id": "low", "priority": "low"}}) {
+		t.Fatal("low enqueue failed")
+	}
+	if !queue.Enqueue(context.Background(), map[string]any{"data": map[string]any{"job_id": "normal"}}) {
+		t.Fatal("normal enqueue failed")
+	}
+	if !queue.Enqueue(context.Background(), map[string]any{"data": map[string]any{"job_id": "high", "priority": "high"}}) {
+		t.Fatal("high enqueue failed")
+	}
+	for _, want := range []string{"high", "normal", "low"} {
+		message, ok := queue.next(context.Background())
+		if !ok {
+			t.Fatalf("next returned false for %s", want)
+		}
+		if got := firstText(message, objectValue(message, "data"), "job_id"); got != want {
+			t.Fatalf("next job = %q, want %q", got, want)
+		}
+	}
+}

@@ -619,7 +619,7 @@ func TestServePromptAudioPreservesFallbackStatus(t *testing.T) {
 	}
 }
 
-func TestStaticPiperPromptPolicyUsesBundledPiperReader(t *testing.T) {
+func TestStaticPromptPolicyUsesConfiguredDefaultReader(t *testing.T) {
 	service := &Service{cfg: loadedConfig{
 		IVR: Config{
 			DefaultLanguage: "en-CA",
@@ -627,12 +627,12 @@ func TestStaticPiperPromptPolicyUsesBundledPiperReader(t *testing.T) {
 		},
 		Prompts: defaultPromptConfig(),
 	}}
-	policy := service.staticPiperPromptPolicy()
-	if policy.Provider != "piper" || policy.ReaderID != "00" || policy.VoiceID != "en_US-hfc_male-medium" {
+	policy := service.staticPromptPolicy()
+	if policy.ReaderID != "some-sapi-reader" || policy.Provider != "fast" || policy.Language != "en-CA" {
 		t.Fatalf("static policy = %+v", policy)
 	}
 	if policy.SentenceSilence != 0 {
-		t.Fatalf("static Piper prompts must not pass sentence silence, got %f", policy.SentenceSilence)
+		t.Fatalf("static prompts must not pass sentence silence unless configured, got %f", policy.SentenceSilence)
 	}
 }
 
@@ -662,7 +662,7 @@ func TestStaticPromptFingerprintChangesWithIVRXML(t *testing.T) {
 		Prompts:     defaultPromptConfig(),
 	}
 	service := &Service{cfg: cfg}
-	policy := service.staticPiperPromptPolicy()
+	policy := service.staticPromptPolicy()
 	first, err := service.staticPromptFingerprint(cfg.Prompts.StaticPromptLines(), policy)
 	if err != nil {
 		t.Fatal(err)
@@ -676,6 +676,41 @@ func TestStaticPromptFingerprintChangesWithIVRXML(t *testing.T) {
 	}
 	if first == second {
 		t.Fatalf("fingerprint did not change after ivr.xml changed: %s", first)
+	}
+}
+
+func TestStaticPromptFingerprintChangesWithReaderVoiceSettings(t *testing.T) {
+	dir := t.TempDir()
+	readersPath := filepath.Join(dir, "readers.xml")
+	if err := os.WriteFile(readersPath, []byte(`<Readers><reader id="00" provider="kokoro"><gender>male</gender><language>en-US</language><voice_id>5</voice_id></reader></Readers>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var root rootConfig
+	root.Services.Go.TTS.Readers = "readers.xml"
+	cfg := loadedConfig{
+		Root:    root,
+		BaseDir: dir,
+		IVR: Config{
+			DefaultLanguage: "en-US",
+			DefaultReaderID: "00",
+		},
+		Prompts: defaultPromptConfig(),
+	}
+	service := &Service{cfg: cfg}
+	policy := service.staticPromptPolicy()
+	first, err := service.staticPromptFingerprint(cfg.Prompts.StaticPromptLines(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(readersPath, []byte(`<Readers><reader id="00" provider="kokoro"><gender>male</gender><language>en-US</language><voice_id>7</voice_id></reader></Readers>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.staticPromptFingerprint(cfg.Prompts.StaticPromptLines(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("fingerprint did not change after reader voice changed: %s", first)
 	}
 }
 
@@ -765,6 +800,18 @@ func recentBroadcastHub(feedID string) *broadcastHub {
 func staticPromptTestService(t *testing.T, key string, text string) *Service {
 	t.Helper()
 	dir := t.TempDir()
+	service := &Service{cfg: loadedConfig{
+		BaseDir: dir,
+		IVR: Config{
+			DefaultLanguage: "en-CA",
+		},
+		Prompts: defaultPromptConfig(),
+	}}
+	policy := service.staticPromptPolicy()
+	fingerprint, err := service.staticPromptFingerprint(service.cfg.Prompts.StaticPromptLines(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
 	staticDir := filepath.Join(dir, "audio", "ivr")
 	if err := os.MkdirAll(staticDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -779,11 +826,11 @@ func staticPromptTestService(t *testing.T, key string, text string) *Service {
 	}
 	if err := writeStaticPromptManifest(filepath.Join(staticDir, "manifest.json"), staticPromptManifest{
 		Version:     staticPromptManifestVersion,
-		Fingerprint: "test",
-		Provider:    "piper",
-		ReaderID:    "00",
-		VoiceID:     "en_US-hfc_male-medium",
-		Language:    "en-CA",
+		Fingerprint: fingerprint,
+		Provider:    policy.Provider,
+		ReaderID:    policy.ReaderID,
+		VoiceID:     policy.VoiceID,
+		Language:    policy.Language,
 		GeneratedAt: time.Now().UTC(),
 		Files: map[string]staticPromptFile{
 			key: {
@@ -796,13 +843,7 @@ func staticPromptTestService(t *testing.T, key string, text string) *Service {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return &Service{cfg: loadedConfig{
-		BaseDir: dir,
-		IVR: Config{
-			DefaultLanguage: "en-CA",
-		},
-		Prompts: defaultPromptConfig(),
-	}}
+	return service
 }
 
 func testFeedWithLanguages(id string, languages ...string) feedXML {

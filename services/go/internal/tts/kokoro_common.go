@@ -18,9 +18,9 @@ import (
 )
 
 const kokoroProviderID = "kokoro"
-const defaultKokoroArchiveURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2"
-const defaultKokoroArchiveSHA256 = "912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7"
-const defaultKokoroArchiveSize = 319625534
+const defaultKokoroArchiveURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2"
+const defaultKokoroArchiveSHA256 = "c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046"
+const defaultKokoroArchiveSize = 349418188
 
 type kokoroOptions struct {
 	ModelDir        string
@@ -45,10 +45,10 @@ type kokoroOptions struct {
 }
 
 func defaultKokoroOptions() kokoroOptions {
-	modelDir := envOrDefault("HAZE_KOKORO_MODEL_DIR", filepath.Join("managed", "voices", "kokoro"))
+	modelDir := envOrDefault("HAZE_KOKORO_MODEL_DIR", filepath.Join("managed", "voices", "kokoro-multi-lang-v1_0"))
 	lexiconPath := strings.TrimSpace(os.Getenv("HAZE_KOKORO_LEXICON"))
 	if lexiconPath == "" {
-		lexiconPath = existingKokoroPath(filepath.Join(modelDir, "lexicon.txt"))
+		lexiconPath = filepath.Join(modelDir, "lexicon-us-en.txt")
 	}
 	return kokoroOptions{
 		ModelDir:        modelDir,
@@ -60,7 +60,7 @@ func defaultKokoroOptions() kokoroOptions {
 		RuleFsts:        strings.TrimSpace(os.Getenv("HAZE_KOKORO_RULE_FSTS")),
 		RuleFars:        strings.TrimSpace(os.Getenv("HAZE_KOKORO_RULE_FARS")),
 		RuntimeProvider: envOrDefault("HAZE_KOKORO_PROVIDER", "cpu"),
-		Lang:            NormalizeLanguage(os.Getenv("HAZE_KOKORO_LANG")),
+		Lang:            NormalizeLanguage(envOrDefault("HAZE_KOKORO_LANG", "en-us")),
 		Threads:         kokoroEnvInt("HAZE_KOKORO_THREADS", defaultKokoroThreads()),
 		MaxSentences:    kokoroEnvInt("HAZE_KOKORO_MAX_SENTENCES", 1),
 		LengthScale:     kokoroEnvFloat32("HAZE_KOKORO_LENGTH_SCALE", 1.0),
