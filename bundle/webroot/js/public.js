@@ -74,6 +74,19 @@ function escapeHtml(value) {
     }[char]));
 }
 
+function formatDateTime(value) {
+    if (!value) return 'not set';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString([], {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+    });
+}
+
 function formatUptime(seconds) {
     const s = Math.round(seconds || 0);
     if (s < 60) return `${s}s`;
@@ -962,30 +975,103 @@ function normalizePublicAlerts(summary) {
     };
 }
 
-function alertInfo(record) {
-    return record.alert?.infos?.[0] || {};
+function publicAlertMetaItems(record) {
+    const items = [
+        ['Event', record.event || 'unknown'],
+        ['Feed', record.feed_id || 'none'],
+        ['Status', record.status || record.bucket || 'unknown'],
+        ['Message', record.message_type || 'unknown'],
+        ['Severity', record.severity || 'unknown'],
+        ['Urgency', record.urgency || 'unknown'],
+        ['Certainty', record.certainty || 'unknown'],
+        ['Sent', formatDateTime(record.sent)],
+        ['Expires', formatDateTime(record.expires)],
+    ];
+    if (record.reason) items.splice(3, 0, ['Reason', record.reason]);
+    if (record.audio_url) items.push(['Audio', record.audio_mime_type || 'available']);
+    return items;
 }
 
-function alertTitle(record) {
-    const info = alertInfo(record);
-    return info.headline || info.event || record.id || 'Weather Alert';
+function groupedPublicAccepted(records) {
+    const groups = new Map();
+    for (const record of records) {
+        const feedID = record.feed_id || 'unassigned';
+        if (!groups.has(feedID)) groups.set(feedID, []);
+        groups.get(feedID).push(record);
+    }
+    return [...groups.entries()];
 }
 
-function alertMeta(record) {
-    const info = alertInfo(record);
-    return [
-        record.feed_id,
-        record.status,
-        info.severity,
-        info.urgency,
-        record.updated_at,
-    ].filter(Boolean).join(' · ');
+function publicAlertAreas(record) {
+    if (Array.isArray(record.areas) && record.areas.length) return record.areas.join('; ');
+    return record.area_text || record.sender || 'No area text available';
 }
 
-function alertBody(record) {
-    const info = alertInfo(record);
-    const areas = (info.areas || []).map((area) => area.description).filter(Boolean).join('; ');
-    return [areas, info.description, info.instruction, record.reason].filter(Boolean).join('\n\n');
+function publicAlertCard(record) {
+    const id = record.id || '';
+    const feedID = record.feed_id || '';
+    const headline = record.headline || record.event || 'Weather Alert';
+    const identifier = record.cap_xml_url
+        ? `<a class="alert-card-id" href="${escapeHtml(record.cap_xml_url)}" target="_blank" rel="noopener noreferrer" title="Open CAP XML">${escapeHtml(id)}</a>`
+        : `<span class="alert-card-id">${escapeHtml(id)}</span>`;
+    const meta = publicAlertMetaItems(record).map(([key, value]) => `
+        <span><b>${escapeHtml(key)}</b>${escapeHtml(value)}</span>
+    `).join('');
+    const capAudioLink = record.audio_url ? `
+        <a class="btn-action btn-link" href="${escapeHtml(record.audio_url)}" target="_blank" rel="noopener noreferrer">
+            <i data-lucide="circle-play" width="13" height="13"></i>
+            CAP Audio
+        </a>` : '';
+    const capXMLLink = record.cap_xml_url ? `
+        <a class="btn-action btn-link" href="${escapeHtml(record.cap_xml_url)}" target="_blank" rel="noopener noreferrer">
+            <i data-lucide="file-code-2" width="13" height="13"></i>
+            CAP XML
+        </a>` : '';
+    const actions = [capAudioLink, capXMLLink].filter(Boolean).join('');
+    return `
+        <article class="alert-card public-alert-card" data-alert-id="${escapeHtml(id)}" data-feed-id="${escapeHtml(feedID)}">
+            <div class="alert-card-main">
+                <div class="alert-card-head">
+                    <div>
+                        <h3><span>${escapeHtml(headline)}</span>${identifier}</h3>
+                        <p>${escapeHtml(publicAlertAreas(record))}</p>
+                    </div>
+                    <span class="alert-card-time">${escapeHtml(formatDateTime(record.updated_at || record.sent))}</span>
+                </div>
+                <div class="alert-card-meta">${meta}</div>
+                <details class="alert-details">
+                    <summary>Details</summary>
+                    <div class="alert-details-grid">
+                        <section>
+                            <h4>Description</h4>
+                            <p>${escapeHtml(record.description || record.message || 'No description provided.')}</p>
+                        </section>
+                        <section>
+                            <h4>Instruction</h4>
+                            <p>${escapeHtml(record.instruction || 'No instruction provided.')}</p>
+                        </section>
+                    </div>
+                </details>
+            </div>
+            <div class="alert-card-actions public-alert-card-actions">
+                ${actions || '<span class="public-alert-action-note">Public details only</span>'}
+            </div>
+        </article>
+    `;
+}
+
+function renderPublicAccepted(records) {
+    const groups = groupedPublicAccepted(records);
+    if (!groups.length) return '<article class="alert-empty">No accepted alerts are active for any feed.</article>';
+    return groups.map(([feedID, items]) => `
+        <section class="alert-feed-group">
+            <div class="alert-feed-group-hd">
+                <strong>${escapeHtml(feedID)}</strong>
+                <span>${items.length} active</span>
+            </div>
+            ${items.map(publicAlertCard).join('')}
+        </section>
+    `).join('');
 }
 
 function renderPublicAlerts(summary) {
@@ -1012,17 +1098,12 @@ function renderPublicAlerts(summary) {
     if (!alertsList) {
         return;
     }
-    alertsList.innerHTML = records.length ? records.map((record) => `
-        <details class="alert-archive-card public-alert-card">
-            <summary>
-                <span>
-                    <strong>${escapeHtml(alertTitle(record))}</strong>
-                    <small>${escapeHtml(alertMeta(record))}</small>
-                </span>
-            </summary>
-            <pre>${escapeHtml(alertBody(record) || 'No public alert details available.')}</pre>
-        </details>
-    `).join('') : '<article class="feed-card empty">No alerts in this bucket.</article>';
+    alertsList.innerHTML = activeAlertTab === 'accepted'
+        ? renderPublicAccepted(records)
+        : (records.length
+            ? records.map(publicAlertCard).join('')
+            : `<article class="alert-empty">No ${escapeHtml(activeAlertTab)} alerts are archived.</article>`);
+    window.lucide?.createIcons();
 }
 
 function requestedListenFeedID(feeds) {

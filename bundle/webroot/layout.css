@@ -167,6 +167,63 @@ a:focus-visible {
     outline-offset: 2px;
 }
 
+.alert-card h3 {
+    align-items: baseline;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.alert-card-id {
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 450;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+
+a.alert-card-id {
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    text-underline-offset: 2px;
+}
+
+a.alert-card-id:hover {
+    color: var(--accent);
+}
+
+.alert-card-actions a.btn-action {
+    justify-content: center;
+    min-height: 30px;
+    width: 100%;
+}
+
+.public-alert-tabs {
+    margin-top: 10px;
+}
+
+.public-alert-list {
+    margin-top: 0;
+}
+
+.public-alert-card-actions {
+    justify-content: flex-start;
+}
+
+.public-alert-action-note {
+    align-items: center;
+    border: 1px solid var(--border-deep);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--bevel-sunken);
+    color: var(--muted);
+    display: flex;
+    font-size: 12px;
+    justify-content: center;
+    min-height: 30px;
+    padding: 6px 8px;
+    text-align: center;
+}
+
 .feed-grid {
     gap: 12px;
     grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
@@ -799,6 +856,14 @@ a:focus-visible {
 
     .wx-form-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 760px) {
+    .alert-card-actions a.btn-action,
+    .public-alert-action-note {
+        flex: 1 1 150px;
+        width: auto;
     }
 }
 
