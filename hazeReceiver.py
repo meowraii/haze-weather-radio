@@ -93,6 +93,8 @@ class ReceiverConfig:
     stream_stall_timeout_s: float
     write_chunk_size: int
     audio_frame_ms: int
+    jitter_buffer_ms: int
+    max_jitter_buffer_ms: int
 
 
 def _safe_feed_name(feed_id: str) -> str:
@@ -644,7 +646,11 @@ class ReceiverSupervisor:
         )
 
     async def _pump_track_to_processor(self, track: Any, ffmpeg_stdin: asyncio.StreamWriter) -> str:
-        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
+        queue_frames = max(
+            32,
+            int(self.config.max_jitter_buffer_ms / max(1, self.config.audio_frame_ms)) * 4,
+        )
+        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=queue_frames)
         producer = asyncio.create_task(self._read_track_audio(track, queue), name='webrtc_audio_reader')
         writer = asyncio.create_task(self._write_paced_audio(queue, ffmpeg_stdin), name='ffmpeg_audio_writer')
         try:
@@ -699,33 +705,89 @@ class ReceiverSupervisor:
     async def _write_paced_audio(self, queue: asyncio.Queue[bytes], ffmpeg_stdin: asyncio.StreamWriter) -> str:
         frame_ms = max(10, min(100, self.config.audio_frame_ms))
         frame_samples = max(1, int(self.config.webrtc_input_sample_rate * frame_ms / 1000))
-        frame_bytes = frame_samples * self.config.channels * 2
+        sample_bytes = self.config.channels * 2
+        frame_bytes = frame_samples * sample_bytes
+        byte_rate = self.config.webrtc_input_sample_rate * sample_bytes
+        target_buffer_bytes = max(
+            frame_bytes,
+            int(byte_rate * max(0, self.config.jitter_buffer_ms) / 1000),
+        )
+        max_buffer_bytes = max(
+            target_buffer_bytes + frame_bytes,
+            int(byte_rate * max(self.config.max_jitter_buffer_ms, self.config.jitter_buffer_ms) / 1000),
+        )
+        target_buffer_bytes -= target_buffer_bytes % sample_bytes
+        max_buffer_bytes -= max_buffer_bytes % sample_bytes
         silence = b'\x00' * frame_bytes
         buffered = bytearray()
+        primed = target_buffer_bytes <= frame_bytes
         next_tick = time.monotonic()
+        underflows = 0
+        dropped_bytes = 0
+        last_underflow_log = 0.0
+        last_drop_log = 0.0
         transport = getattr(ffmpeg_stdin, 'transport', None)
         if transport is not None:
             with contextlib.suppress(Exception):
                 transport.set_write_buffer_limits(high=frame_bytes * 50, low=frame_bytes * 10)
+        log.info(
+            'Receiver audio jitter buffer target=%dms max=%dms frame=%dms',
+            int(self.config.jitter_buffer_ms),
+            int(self.config.max_jitter_buffer_ms),
+            frame_ms,
+        )
         while not self.stop_event.is_set():
+            while True:
+                try:
+                    buffered.extend(queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+
             if len(buffered) < frame_bytes:
                 try:
                     buffered.extend(await asyncio.wait_for(queue.get(), timeout=frame_ms / 1000))
                 except asyncio.TimeoutError:
                     pass
-            while len(buffered) < frame_bytes:
-                try:
-                    buffered.extend(queue.get_nowait())
-                except asyncio.QueueEmpty:
-                    break
-            if len(buffered) >= frame_bytes:
+                while True:
+                    try:
+                        buffered.extend(queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+
+            if len(buffered) > max_buffer_bytes:
+                drop_bytes = len(buffered) - target_buffer_bytes
+                drop_bytes -= drop_bytes % sample_bytes
+                if drop_bytes > 0:
+                    del buffered[:drop_bytes]
+                    dropped_bytes += drop_bytes
+                    now = time.monotonic()
+                    if now - last_drop_log >= 5.0:
+                        log.warning(
+                            'Receiver audio jitter buffer overflow; dropped %.0fms total buffered audio',
+                            dropped_bytes / byte_rate * 1000,
+                        )
+                        last_drop_log = now
+                    primed = len(buffered) >= target_buffer_bytes
+
+            if not primed and len(buffered) >= target_buffer_bytes:
+                primed = True
+
+            if primed and len(buffered) >= frame_bytes:
                 chunk = bytes(buffered[:frame_bytes])
                 del buffered[:frame_bytes]
-            elif buffered:
-                chunk = bytes(buffered) + silence[len(buffered):]
-                buffered.clear()
             else:
                 chunk = silence
+                if primed or len(buffered) < frame_bytes:
+                    underflows += 1
+                    primed = False
+                    now = time.monotonic()
+                    if now - last_underflow_log >= 5.0:
+                        log.warning(
+                            'Receiver audio jitter buffer underrun; holding %.0fms buffered audio after %d underrun frame(s)',
+                            len(buffered) / byte_rate * 1000,
+                            underflows,
+                        )
+                        last_underflow_log = now
             try:
                 ffmpeg_stdin.write(chunk)
                 await ffmpeg_stdin.drain()
@@ -927,6 +989,8 @@ def _parse_args() -> ReceiverConfig:
     parser.add_argument('--reconnect-backoff', type=float, default=1.5)
     parser.add_argument('--chunk-size', type=int, default=4096)
     parser.add_argument('--audio-frame-ms', type=int, default=20)
+    parser.add_argument('--jitter-buffer-ms', type=int, default=160)
+    parser.add_argument('--max-jitter-buffer-ms', type=int, default=800)
     args = parser.parse_args()
 
     pair_token = args.pair_token
@@ -939,6 +1003,9 @@ def _parse_args() -> ReceiverConfig:
         parser.error(str(exc))
 
     state_file = pathlib.Path(args.state_file).expanduser() if args.state_file else _default_state_file(args.feed_id)
+    audio_frame_ms = max(10, min(100, int(args.audio_frame_ms)))
+    jitter_buffer_ms = max(0, int(args.jitter_buffer_ms))
+    max_jitter_buffer_ms = max(jitter_buffer_ms + audio_frame_ms, int(args.max_jitter_buffer_ms))
     return ReceiverConfig(
         server_url=server_url,
         feed_id=str(args.feed_id).strip(),
@@ -959,7 +1026,9 @@ def _parse_args() -> ReceiverConfig:
         reconnect_backoff=max(1.0, float(args.reconnect_backoff)),
         stream_stall_timeout_s=max(2.0, float(args.stall_timeout)),
         write_chunk_size=max(512, int(args.chunk_size)),
-        audio_frame_ms=max(10, min(100, int(args.audio_frame_ms))),
+        audio_frame_ms=audio_frame_ms,
+        jitter_buffer_ms=jitter_buffer_ms,
+        max_jitter_buffer_ms=max_jitter_buffer_ms,
     )
 
 
