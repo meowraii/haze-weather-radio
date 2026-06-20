@@ -227,19 +227,26 @@ where
         BlueLocalSystemTime.format_time(&mut writer)?;
         write!(writer, "  {level:<5} ")?;
 
-        match *level {
-            Level::INFO => write!(writer, "\x1b[90m")?,
-            Level::ERROR => write!(writer, "\x1b[1m")?,
-            _ => {}
+        if let Some(style) = console_level_style(level) {
+            write!(writer, "{style}")?;
         }
 
         ctx.format_fields(writer.by_ref(), event)?;
 
-        if matches!(*level, Level::INFO | Level::ERROR) {
+        if console_level_style(level).is_some() {
             write!(writer, "\x1b[0m")?;
         }
 
         writeln!(writer)
+    }
+}
+
+fn console_level_style(level: &Level) -> Option<&'static str> {
+    match *level {
+        Level::INFO => Some("\x1b[90m"),
+        Level::WARN => Some("\x1b[33m"),
+        Level::ERROR => Some("\x1b[1;31m"),
+        _ => None,
     }
 }
 
