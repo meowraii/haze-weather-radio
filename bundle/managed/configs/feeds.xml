@@ -3,7 +3,7 @@
 
   <feed id="sk-0001" enabled="true" timezone="America/Regina">
 
-    <playout routine="true" same="true"/>
+    <playout routine="true" same="true" same_originator="EAS"/>
 
     <alerts>
       <cap_cp enabled="true">
@@ -98,6 +98,54 @@
         <callsign>XLF322</callsign>
         <relationship>primary</relationship>
         <frequency_mhz>162.550</frequency_mhz>
+      </transmitter>
+    </transmitter_metadata>
+  </feed>
+
+  <feed id="CAP-IT-ALL" enabled="true" timezone="America/Regina">
+
+    <playout routine="false" same="true" same_originator="EAS" same_attention_tone="EAS"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="false">
+          <allowlist>
+            <severity>Moderate</severity>
+            <severity>Severe</severity>
+            <severity>Extreme</severity>
+          </allowlist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="true">
+        <filter use_feed_locations="false">
+          <allowlist>
+            <severity>Moderate</severity>
+            <severity>Severe</severity>
+            <severity>Extreme</severity>
+          </allowlist>
+        </filter>
+      </nws_cap>
+    </alerts>
+
+    <languages>
+      <lang code="en-CA" interval="0"/>
+    </languages>
+
+    <description>
+      <lang code="en-CA"
+            text="CAP-IT-ALL standby alert relay."
+            suffix=""/>
+    </description>
+
+    <locations>
+      <coverage/>
+    </locations>
+
+    <transmitter_metadata>
+      <transmitter>
+        <site_name>CAP-IT-ALL</site_name>
+        <callsign>CAPALL</callsign>
+        <relationship>primary</relationship>
       </transmitter>
     </transmitter_metadata>
   </feed>

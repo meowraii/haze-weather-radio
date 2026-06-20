@@ -170,10 +170,10 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 		return payload
 	}
 	payload["same_event"] = event
-	payload["same_originator"] = sameOriginatorForCAP(*info)
+	payload["same_originator"] = sameOriginatorForCAP(*info, feed)
 	payload["same_locations"] = locations
 	payload["same_duration"] = sameDurationForCAP(alert, *info)
-	payload["same_tone"] = sameToneForCAP(*info)
+	payload["same_tone"] = sameToneForCAP(*info, feed)
 	return payload
 }
 
@@ -229,23 +229,32 @@ func sameEventForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
 }
 
 func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string) []string {
+	db := loadAlertGeoDB(baseDir)
 	coverage := feedCoverageModel(baseDir, feed, nil)
 	alertCodes := alertInfoCoverageCodes(info)
 	out := []string{}
-	for code := range alertCodes {
-		if coverageCodeMatches(coverage.Codes, code) {
-			clean := sameLocationCode(code)
+	addCode := func(code string) {
+		for _, clean := range sameLocationCodesForAlertCode(db, code) {
 			if clean != "" {
 				out = append(out, clean)
 			}
 		}
 	}
-	if len(out) == 0 {
-		for code := range coverage.Codes {
-			clean := sameLocationCode(code)
-			if clean != "" {
-				out = append(out, clean)
+
+	if len(coverage.Codes) == 0 {
+		for code := range alertCodes {
+			addCode(code)
+		}
+	} else {
+		for code := range alertCodes {
+			if coverageCodeMatches(coverage.Codes, code) {
+				addCode(code)
 			}
+		}
+	}
+	if len(out) == 0 && len(coverage.Codes) > 0 {
+		for code := range coverage.Codes {
+			addCode(code)
 		}
 	}
 	out = uniqueStrings(out)
@@ -256,6 +265,27 @@ func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string)
 	return out
 }
 
+func sameLocationCodesForAlertCode(db alertGeoDB, raw string) []string {
+	if clean := sameLocationCode(raw); clean != "" {
+		return []string{clean}
+	}
+	code := normalizeNWSCode(raw)
+	if code == "" {
+		return nil
+	}
+	if item, ok := db.NWS[code]; ok {
+		if clean := sameLocationCode(item.FIPS); clean != "" {
+			return []string{clean}
+		}
+	}
+	if item, ok := db.FIPS[code]; ok {
+		if clean := sameLocationCode(item.FIPS); clean != "" {
+			return []string{clean}
+		}
+	}
+	return nil
+}
+
 func sameLocationCode(raw string) string {
 	digits := strings.Builder{}
 	for _, ch := range raw {
@@ -264,6 +294,9 @@ func sameLocationCode(raw string) string {
 		}
 	}
 	value := digits.String()
+	if len(value) == 5 {
+		return "0" + value
+	}
 	if len(value) != 6 {
 		return ""
 	}
@@ -287,17 +320,14 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-func sameOriginatorForCAP(info capingest.AlertInfo) string {
+func sameOriginatorForCAP(info capingest.AlertInfo, feed feedXML) string {
 	if originator := strings.ToUpper(strings.TrimSpace(alertParam(info, "eas-org"))); len(originator) == 3 {
 		return originator
 	}
-	for _, category := range info.Category {
-		switch strings.ToLower(strings.TrimSpace(category)) {
-		case "met", "geo":
-			return "WXR"
-		}
+	if originator := strings.ToUpper(strings.TrimSpace(feed.Playout.SAMEOriginator)); len(originator) == 3 {
+		return originator
 	}
-	return "CIV"
+	return "EAS"
 }
 
 func sameDurationForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
@@ -319,7 +349,10 @@ func sameDurationForCAP(alert capingest.Alert, info capingest.AlertInfo) string 
 	return fmt.Sprintf("%02d%02d", minutes/60, minutes%60)
 }
 
-func sameToneForCAP(info capingest.AlertInfo) string {
+func sameToneForCAP(info capingest.AlertInfo, feed feedXML) string {
+	if tone := strings.ToUpper(strings.TrimSpace(feed.Playout.SAMEAttentionTone)); tone != "" {
+		return tone
+	}
 	if isBroadcastImmediateInfo(info) {
 		return "NPAS"
 	}
@@ -366,6 +399,19 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 				FeedID:    feed.ID,
 				Status:    "rejected",
 				Reason:    "source disabled for feed",
+				UpdatedAt: now,
+				Alert:     alert,
+				RawXML:    alert.RawXML,
+			}
+			storeCAPArchiveRecord(s.cfg.Store, "rejected", record)
+			continue
+		}
+		if !feedAllowsCAPAlert(feed, alert) {
+			record := capArchiveRecord{
+				ID:        alert.Identifier,
+				FeedID:    feed.ID,
+				Status:    "rejected",
+				Reason:    "feed alert filter",
 				UpdatedAt: now,
 				Alert:     alert,
 				RawXML:    alert.RawXML,
@@ -497,6 +543,9 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 
 func capPriorityBroadcastAllowed(alert capingest.Alert, feed feedXML, baseDir string, now time.Time) bool {
 	if isCAPEnded(alert, now) {
+		return false
+	}
+	if !feedAllowsCAPAlert(feed, alert) {
 		return false
 	}
 	info := chooseAlertInfo(alert, feedLanguage(feed))
@@ -918,14 +967,137 @@ func isExplicitCAPEnd(alert capingest.Alert) bool {
 }
 
 func feedAcceptsCAPSource(feed feedXML, alert capingest.Alert) bool {
-	switch detectCAPSource(alert) {
-	case "eccc":
-		return xmlBool(feed.Alerts.CapCP.EnabledRaw, true)
-	case "nws":
-		return xmlBool(feed.Alerts.NWSCAP.EnabledRaw, false)
-	default:
+	source, sourceConfig := feedCAPSourceConfig(feed, alert)
+	if source == "generic" {
 		return xmlBool(feed.Alerts.CapCP.EnabledRaw, true) || xmlBool(feed.Alerts.NWSCAP.EnabledRaw, false)
 	}
+	return xmlBool(sourceConfig.EnabledRaw, source == "eccc")
+}
+
+func feedAllowsCAPAlert(feed feedXML, alert capingest.Alert) bool {
+	_, sourceConfig := feedCAPSourceConfig(feed, alert)
+	return alertFilterAllows(sourceConfig.Filter, alert, feedLanguage(feed))
+}
+
+func feedUsesAlertCoverage(feed feedXML, alert capingest.Alert) bool {
+	_, sourceConfig := feedCAPSourceConfig(feed, alert)
+	return xmlBool(sourceConfig.Filter.UseFeedLocations, true)
+}
+
+func feedCAPSourceConfig(feed feedXML, alert capingest.Alert) (string, feedAlertSourceXML) {
+	source := detectCAPSource(alert)
+	switch source {
+	case "nws":
+		return source, feed.Alerts.NWSCAP
+	default:
+		return source, feed.Alerts.CapCP
+	}
+}
+
+func alertFilterAllows(filter alertFilterXML, alert capingest.Alert, language string) bool {
+	info := chooseAlertInfo(alert, language)
+	if info == nil {
+		return true
+	}
+	if alertFilterListMatches(filter.Blocklist, alert, *info) {
+		return false
+	}
+	if alertFilterListEmpty(filter.Allowlist) {
+		return true
+	}
+	return alertFilterListAllows(filter.Allowlist, alert, *info)
+}
+
+func alertFilterListAllows(list alertFilterListXML, alert capingest.Alert, info capingest.AlertInfo) bool {
+	if len(list.Severities) > 0 && !textInList(info.Severity, list.Severities) {
+		return false
+	}
+	if len(list.Urgencies) > 0 && !textInList(info.Urgency, list.Urgencies) {
+		return false
+	}
+	if len(list.Certainties) > 0 && !textInList(info.Certainty, list.Certainties) {
+		return false
+	}
+	if len(list.MessageTypes) > 0 && !textInList(alert.MessageType, list.MessageTypes) {
+		return false
+	}
+	if len(list.Events) > 0 && !alertEventMatches(info, list.Events) {
+		return false
+	}
+	if len(list.NAADSEvents) > 0 && !alertEventMatches(info, list.NAADSEvents) {
+		return false
+	}
+	for _, other := range list.Others {
+		if !alertOtherFilterMatches(info, other) {
+			return false
+		}
+	}
+	return true
+}
+
+func alertFilterListMatches(list alertFilterListXML, alert capingest.Alert, info capingest.AlertInfo) bool {
+	return (len(list.Severities) > 0 && textInList(info.Severity, list.Severities)) ||
+		(len(list.Urgencies) > 0 && textInList(info.Urgency, list.Urgencies)) ||
+		(len(list.Certainties) > 0 && textInList(info.Certainty, list.Certainties)) ||
+		(len(list.MessageTypes) > 0 && textInList(alert.MessageType, list.MessageTypes)) ||
+		(len(list.Events) > 0 && alertEventMatches(info, list.Events)) ||
+		(len(list.NAADSEvents) > 0 && alertEventMatches(info, list.NAADSEvents)) ||
+		alertOtherFiltersMatch(info, list.Others)
+}
+
+func alertFilterListEmpty(list alertFilterListXML) bool {
+	return len(list.Severities) == 0 &&
+		len(list.Urgencies) == 0 &&
+		len(list.Certainties) == 0 &&
+		len(list.MessageTypes) == 0 &&
+		len(list.Events) == 0 &&
+		len(list.NAADSEvents) == 0 &&
+		len(list.Others) == 0
+}
+
+func alertEventMatches(info capingest.AlertInfo, wanted []string) bool {
+	if textInList(info.Event, wanted) || textInList(info.Headline, wanted) {
+		return true
+	}
+	for _, code := range info.EventCodes {
+		if textInList(code.Value, wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func alertOtherFiltersMatch(info capingest.AlertInfo, filters []alertFilterOtherXML) bool {
+	for _, filter := range filters {
+		if alertOtherFilterMatches(info, filter) {
+			return true
+		}
+	}
+	return false
+}
+
+func alertOtherFilterMatches(info capingest.AlertInfo, filter alertFilterOtherXML) bool {
+	name := strings.TrimSpace(filter.ValueName)
+	value := strings.TrimSpace(filter.Value)
+	if name == "" || value == "" {
+		return false
+	}
+	for _, param := range info.Parameters {
+		if strings.EqualFold(strings.TrimSpace(param.Name), name) && strings.EqualFold(strings.TrimSpace(param.Value), value) {
+			return true
+		}
+	}
+	return false
+}
+
+func textInList(value string, list []string) bool {
+	value = strings.TrimSpace(value)
+	for _, item := range list {
+		if strings.EqualFold(value, strings.TrimSpace(item)) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectCAPSource(alert capingest.Alert) string {
@@ -990,6 +1162,9 @@ var alertGeoCache = struct {
 }{byBase: map[string]alertGeoDB{}}
 
 func alertMatchesFeed(alert capingest.Alert, feed feedXML, baseDir string) bool {
+	if !feedUsesAlertCoverage(feed, alert) {
+		return true
+	}
 	coverage := feedCoverageModel(baseDir, feed, nil)
 	if len(coverage.Codes) == 0 {
 		return true
@@ -1139,6 +1314,10 @@ func loadNWSZones(path string) map[string]nwsZone {
 			FIPS:       strings.TrimSpace(row[6]),
 		}
 		out[item.Code] = item
+		if len(item.Code) == 5 {
+			out[item.Code[:2]+"Z"+item.Code[2:]] = item
+			out[item.Code[:2]+"C"+item.Code[2:]] = item
+		}
 	}
 	return out
 }
@@ -1157,11 +1336,15 @@ func loadNWSFIPS(path string) map[string]nwsZone {
 		if _, exists := out[fips]; exists {
 			continue
 		}
-		out[fips] = nwsZone{
+		item := nwsZone{
 			Code:       strings.ToUpper(strings.TrimSpace(row[4])),
 			Name:       strings.TrimSpace(row[3]),
 			CountyName: strings.TrimSpace(row[5]),
 			FIPS:       fips,
+		}
+		out[fips] = item
+		if clean := sameLocationCode(fips); clean != "" {
+			out[clean] = item
 		}
 	}
 	return out
@@ -1202,17 +1385,25 @@ func expandAlertRegion(db alertGeoDB, regionID string, source string) []string {
 }
 
 func expandNWSRegion(db alertGeoDB, regionID string) []string {
-	code := strings.ToUpper(strings.TrimSpace(regionID))
+	code := normalizeNWSCode(regionID)
 	if code == "" {
 		return nil
 	}
-	if _, ok := db.NWS[code]; ok {
-		return []string{code}
+	if item, ok := db.NWS[code]; ok {
+		return uniqueStrings([]string{item.Code, item.FIPS, sameLocationCode(item.FIPS)})
 	}
 	if item, ok := db.FIPS[code]; ok {
-		return []string{item.Code, item.FIPS}
+		return uniqueStrings([]string{item.Code, item.FIPS, sameLocationCode(item.FIPS)})
 	}
 	return nil
+}
+
+func normalizeNWSCode(raw string) string {
+	code := strings.ToUpper(strings.TrimSpace(raw))
+	if len(code) == 6 && (code[2] == 'Z' || code[2] == 'C') {
+		return code[:2] + code[3:]
+	}
+	return code
 }
 
 func alertRegionName(db alertGeoDB, code string, lang string) string {
@@ -1295,12 +1486,17 @@ func coverageCodeMatches(coverage map[string]struct{}, raw string) bool {
 	if code == "" {
 		return false
 	}
-	if _, ok := coverage[code]; ok {
-		return true
+	candidates := uniqueStrings([]string{code, strings.ToUpper(code), normalizeNWSCode(code), sameLocationCode(code)})
+	for _, candidate := range candidates {
+		if _, ok := coverage[candidate]; ok {
+			return true
+		}
 	}
 	for feedCode := range coverage {
-		if strings.HasSuffix(feedCode, "*") && strings.HasPrefix(code, strings.TrimSuffix(feedCode, "*")) {
-			return true
+		for _, candidate := range candidates {
+			if strings.HasSuffix(feedCode, "*") && strings.HasPrefix(candidate, strings.TrimSuffix(feedCode, "*")) {
+				return true
+			}
 		}
 	}
 	return false
@@ -1314,7 +1510,7 @@ func (r renderer) alertsProduct(base Product, feed feedXML) (Product, error) {
 	base.Title = "Weather Alerts"
 	base.Inputs = append(base.Inputs, InputRef{Type: "store", ID: "archive.cap_xml/accepted/" + feed.ID})
 	for _, entry := range pruned {
-		if !alertMatchesFeed(entry.Alert, feed, r.cfg.BaseDir) {
+		if !feedAllowsCAPAlert(feed, entry.Alert) || !alertMatchesFeed(entry.Alert, feed, r.cfg.BaseDir) {
 			continue
 		}
 		info := chooseAlertInfo(entry.Alert, feedLanguage(feed))

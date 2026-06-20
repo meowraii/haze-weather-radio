@@ -56,16 +56,14 @@ type feedXML struct {
 	EnabledRaw string `xml:"enabled,attr"`
 	Timezone   string `xml:"timezone,attr"`
 	Playout    struct {
-		Routine string `xml:"routine,attr"`
-		SAME    string `xml:"same,attr"`
+		Routine           string `xml:"routine,attr"`
+		SAME              string `xml:"same,attr"`
+		SAMEOriginator    string `xml:"same_originator,attr"`
+		SAMEAttentionTone string `xml:"same_attention_tone,attr"`
 	} `xml:"playout"`
 	Alerts struct {
-		CapCP struct {
-			EnabledRaw string `xml:"enabled,attr"`
-		} `xml:"cap_cp"`
-		NWSCAP struct {
-			EnabledRaw string `xml:"enabled,attr"`
-		} `xml:"nws_cap"`
+		CapCP  feedAlertSourceXML `xml:"cap_cp"`
+		NWSCAP feedAlertSourceXML `xml:"nws_cap"`
 	} `xml:"alerts"`
 	Languages struct {
 		Langs []struct {
@@ -99,6 +97,32 @@ type feedXML struct {
 	Transmitter struct {
 		Transmitters []transmitterXML `xml:"transmitter"`
 	} `xml:"transmitter_metadata"`
+}
+
+type feedAlertSourceXML struct {
+	EnabledRaw string         `xml:"enabled,attr"`
+	Filter     alertFilterXML `xml:"filter"`
+}
+
+type alertFilterXML struct {
+	UseFeedLocations string             `xml:"use_feed_locations,attr"`
+	Allowlist        alertFilterListXML `xml:"allowlist"`
+	Blocklist        alertFilterListXML `xml:"blocklist"`
+}
+
+type alertFilterListXML struct {
+	Severities   []string              `xml:"severity"`
+	Urgencies    []string              `xml:"urgency"`
+	Certainties  []string              `xml:"certainty"`
+	MessageTypes []string              `xml:"message_type"`
+	Events       []string              `xml:"event"`
+	NAADSEvents  []string              `xml:"naads_event"`
+	Others       []alertFilterOtherXML `xml:"other"`
+}
+
+type alertFilterOtherXML struct {
+	ValueName string `xml:"value_name,attr"`
+	Value     string `xml:"value,attr"`
 }
 
 type coverageRegionXML struct {

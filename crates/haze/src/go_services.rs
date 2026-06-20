@@ -29,6 +29,7 @@ mod embedded {
 struct RootConfig {
     services: Option<ServicesConfig>,
     webpanel: Option<WebPanelConfig>,
+    cap: Option<CapConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -93,6 +94,24 @@ struct CapIngestConfig {
     url: Option<String>,
     interval: Option<String>,
     timeout: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CapConfig {
+    nws_cap: Option<NwsCapConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NwsCapConfig {
+    enabled: Option<bool>,
+    sources: Option<Vec<NwsCapSourceConfig>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NwsCapSourceConfig {
+    id: Option<String>,
+    url: Option<String>,
+    queries: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -777,6 +796,58 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     configured_executable: cap.executable.clone(),
                     args,
                 });
+
+                if root
+                    .cap
+                    .as_ref()
+                    .and_then(|cap| cap.nws_cap.as_ref())
+                    .and_then(|nws| nws.enabled)
+                    .unwrap_or(false)
+                {
+                    let source = root
+                        .cap
+                        .as_ref()
+                        .and_then(|cap| cap.nws_cap.as_ref())
+                        .and_then(|nws| nws.sources.as_ref())
+                        .and_then(|sources| sources.first());
+                    let url = source
+                        .and_then(|source| source.url.as_ref())
+                        .filter(|value| !value.trim().is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            "https://api.weather.gov/alerts/active.atom".to_string()
+                        });
+                    let url = append_query_params(
+                        &url,
+                        source
+                            .and_then(|source| source.queries.as_ref())
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                    );
+                    let source_id = source
+                        .and_then(|source| source.id.as_ref())
+                        .filter(|value| !value.trim().is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| "nws_api".to_string());
+                    deferred_cap_specs.push(ServiceSpec {
+                        id: "go:nws_cap_ingest",
+                        kind: "managed",
+                        binary: executable_name("haze-cap-ingest"),
+                        configured_executable: cap.executable.clone(),
+                        args: vec![
+                            "--source-id".to_string(),
+                            source_id,
+                            "--source".to_string(),
+                            "nws".to_string(),
+                            "--url".to_string(),
+                            url,
+                            "--interval".to_string(),
+                            cap.interval.clone().unwrap_or_else(|| "30s".to_string()),
+                            "--timeout".to_string(),
+                            cap.timeout.clone().unwrap_or_else(|| "15s".to_string()),
+                        ],
+                    });
+                }
             }
         }
 
@@ -1115,6 +1186,23 @@ fn web_gateway_specs(
         ));
     }
     specs
+}
+
+fn append_query_params(url: &str, queries: &[String]) -> String {
+    let mut out = url.trim().to_string();
+    for query in queries {
+        let query = query.trim();
+        if query.is_empty() {
+            continue;
+        }
+        if out.contains('?') {
+            out.push('&');
+        } else {
+            out.push('?');
+        }
+        out.push_str(query);
+    }
+    out
 }
 
 fn web_gateway_spec(
@@ -1549,6 +1637,7 @@ fn service_label(service_id: &str) -> &str {
         "go:web_admin" => "Admin web",
         "svc:data_ingest" => "Data ingest",
         "go:cap_ingest" => "CAP ingest",
+        "go:nws_cap_ingest" => "NWS CAP ingest",
         "aux:tts" => "TTS",
         "svc:product_render" => "Product render",
         "svc:playlist" => "Playlist",

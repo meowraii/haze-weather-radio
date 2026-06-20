@@ -2,8 +2,11 @@ package productrender
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
 )
 
 func TestCAPSAMEPayloadSuppressesCancellations(t *testing.T) {
@@ -130,5 +133,73 @@ func TestSameAlertFreshForToneUsesLongWindowForOtherAlerts(t *testing.T) {
 	}
 	if sameAlertFreshForTone(alert, *info, "ADR", sentPlus61) {
 		t.Fatal("other SAME events should suppress tones after 60 minutes")
+	}
+}
+
+func TestCAPFeedFilterAllowsModerateAndUp(t *testing.T) {
+	var feed feedXML
+	feed.Alerts.CapCP.EnabledRaw = "true"
+	feed.Alerts.CapCP.Filter.Allowlist.Severities = []string{"Moderate", "Severe", "Extreme"}
+	alert := parseTestAlert(t, testCAP("urn:test:filter-moderate", "Alert", "active", "2099-06-15T21:30:00-06:00", false))
+
+	if !feedAllowsCAPAlert(feed, alert) {
+		t.Fatal("moderate alert should pass moderate-and-up feed filter")
+	}
+
+	alert.Infos[0].Severity = "Minor"
+	if feedAllowsCAPAlert(feed, alert) {
+		t.Fatal("minor alert should be rejected by moderate-and-up feed filter")
+	}
+}
+
+func TestCAPFeedFilterCanDisableCoverageMatching(t *testing.T) {
+	var feed feedXML
+	feed.Alerts.CapCP.EnabledRaw = "true"
+	feed.Alerts.CapCP.Filter.UseFeedLocations = "false"
+	alert := parseTestAlert(t, testCAP("urn:test:all-locations", "Alert", "active", "2099-06-15T21:30:00-06:00", false))
+
+	if !alertMatchesFeed(alert, feed, t.TempDir()) {
+		t.Fatal("feed with use_feed_locations=false should match every alert location")
+	}
+}
+
+func TestSameLocationsForCAPUsesNWSFIPSAndZones(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv"), `STATE|ZONE_CODE|CWA_ID|ZONE_NAME|STATE+ZONE|COUNTY_NAME|FIPS/SAME|TIMEZONE|FE_AREA|LAT|LON
+GA|033|FFC|North Fulton|GA033|Fulton|13121|E|nc|33.9350|-84.3557
+`)
+	var feed feedXML
+	info := capingest.AlertInfo{
+		Areas: []capingest.AlertArea{{
+			Geocodes: []capingest.NameValue{{Name: "UGC", Value: "GAZ033"}},
+		}},
+	}
+
+	got := sameLocationsForCAP(info, feed, dir)
+	want := []string{"013121"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("same locations = %#v, want %#v", got, want)
+	}
+}
+
+func TestExpandedNWSCoverageMatchesFIPSAndSAMECodes(t *testing.T) {
+	db := alertGeoDB{
+		NWS: map[string]nwsZone{
+			"GA033": {Code: "GA033", Name: "North Fulton", CountyName: "Fulton", FIPS: "13121"},
+		},
+		FIPS: map[string]nwsZone{
+			"13121":  {Code: "GA033", Name: "North Fulton", CountyName: "Fulton", FIPS: "13121"},
+			"013121": {Code: "GA033", Name: "North Fulton", CountyName: "Fulton", FIPS: "13121"},
+		},
+	}
+	coverage := map[string]struct{}{}
+	for _, code := range expandNWSRegion(db, "GAZ033") {
+		addCoverageCode(coverage, code)
+	}
+
+	for _, code := range []string{"GAZ033", "GA033", "13121", "013121"} {
+		if !coverageCodeMatches(coverage, code) {
+			t.Fatalf("coverage should match %q with expanded NWS zone/FIPS map: %#v", code, coverage)
+		}
 	}
 }

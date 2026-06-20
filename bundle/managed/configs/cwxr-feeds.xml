@@ -4,7 +4,7 @@
 
   <feed id="cwxr-sk01" enabled="true" timezone="America/Regina">
 
-    <playout routine="true" same="true"/>
+    <playout routine="true" same="true" same_originator="EAS"/>
 
     <alerts>
       <cap_cp enabled="true">
@@ -155,7 +155,7 @@
  
   <feed id="cwxr-sk02" enabled="true" timezone="America/Regina">
 
-    <playout routine="true" same="true"/>
+    <playout routine="true" same="true" same_originator="EAS"/>
 
     <alerts>
       <cap_cp enabled="true">
@@ -274,7 +274,7 @@
 
   <feed id="cwxr-ab01" enabled="true" timezone="America/Edmonton">
 
-    <playout routine="true" same="true"/>
+    <playout routine="true" same="true" same_originator="EAS"/>
 
     <alerts>
       <cap_cp enabled="true">
@@ -395,7 +395,7 @@
   
   <feed id="cwxr-mb01" enabled="true" timezone="America/Winnipeg">
 
-    <playout routine="true" same="true"/>
+    <playout routine="true" same="true" same_originator="EAS"/>
 
     <alerts>
       <cap_cp enabled="true">
@@ -522,6 +522,5 @@
     </output>
 
   </feed>
-
 
 </feeds>

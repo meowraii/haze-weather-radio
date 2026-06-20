@@ -321,7 +321,7 @@ cap:
         - identifier
         - sent
   nws_cap:
-    enabled: false
+    enabled: true
     sources:
       - id: nws_api
         url: https://api.weather.gov/alerts/active.atom
