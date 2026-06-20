@@ -25,6 +25,7 @@ import (
 )
 
 const serviceID = "haze-data-ingest"
+const thunderstormOutlookNearbyKM = 175.0
 
 type Options struct {
 	ConfigPath string
@@ -954,6 +955,270 @@ func featurePoint(feature geoFeature) (float64, float64, bool) {
 	return lon, lat, true
 }
 
+func geoFeatureDistanceToPointKM(feature geoFeature, lon float64, lat float64) (float64, bool) {
+	return geoGeometryDistanceToPointKM(feature.Geometry, lon, lat)
+}
+
+func geoFeatureDirectionFromPoint(feature geoFeature, lon float64, lat float64) (string, bool) {
+	targetLon, targetLat, ok := geoGeometryCentroid(feature.Geometry)
+	if !ok {
+		return "", false
+	}
+	return cardinalDirection(lon, lat, targetLon, targetLat), true
+}
+
+func geoGeometryDistanceToPointKM(geometry map[string]any, lon float64, lat float64) (float64, bool) {
+	geometryType := strings.ToLower(strings.TrimSpace(textValue(geometry["type"])))
+	coordinates, _ := geometry["coordinates"].([]any)
+	switch geometryType {
+	case "point":
+		if len(coordinates) < 2 {
+			return 0, false
+		}
+		pointLon, lonOK := numberValue(coordinates[0])
+		pointLat, latOK := numberValue(coordinates[1])
+		if !lonOK || !latOK {
+			return 0, false
+		}
+		return haversineKM(lon, lat, pointLon, pointLat), true
+	case "linestring":
+		return lineStringDistanceToPointKM(coordinates, lon, lat)
+	case "polygon":
+		return polygonDistanceToPointKM(coordinates, lon, lat)
+	case "multipolygon":
+		best := math.Inf(1)
+		for _, polygonRaw := range coordinates {
+			polygon, _ := polygonRaw.([]any)
+			if distance, ok := polygonDistanceToPointKM(polygon, lon, lat); ok && distance < best {
+				best = distance
+			}
+		}
+		return best, !math.IsInf(best, 1)
+	default:
+		return 0, false
+	}
+}
+
+func geoGeometryCentroid(geometry map[string]any) (float64, float64, bool) {
+	geometryType := strings.ToLower(strings.TrimSpace(textValue(geometry["type"])))
+	coordinates, _ := geometry["coordinates"].([]any)
+	switch geometryType {
+	case "point":
+		if len(coordinates) < 2 {
+			return 0, 0, false
+		}
+		lon, lonOK := numberValue(coordinates[0])
+		lat, latOK := numberValue(coordinates[1])
+		return lon, lat, lonOK && latOK
+	case "linestring":
+		return coordinateListCentroid(coordinates)
+	case "polygon":
+		if len(coordinates) == 0 {
+			return 0, 0, false
+		}
+		outer, _ := coordinates[0].([]any)
+		return coordinateListCentroid(outer)
+	case "multipolygon":
+		lons := []float64{}
+		lats := []float64{}
+		for _, polygonRaw := range coordinates {
+			polygon, _ := polygonRaw.([]any)
+			if len(polygon) == 0 {
+				continue
+			}
+			outer, _ := polygon[0].([]any)
+			if lon, lat, ok := coordinateListCentroid(outer); ok {
+				lons = append(lons, lon)
+				lats = append(lats, lat)
+			}
+		}
+		return averageLonLat(lons, lats)
+	default:
+		return 0, 0, false
+	}
+}
+
+func coordinateListCentroid(points []any) (float64, float64, bool) {
+	lons := []float64{}
+	lats := []float64{}
+	for index, raw := range points {
+		if index == len(points)-1 && len(points) > 1 {
+			if sameCoordinate(points[0], raw) {
+				continue
+			}
+		}
+		point, _ := raw.([]any)
+		if len(point) < 2 {
+			continue
+		}
+		lon, lonOK := numberValue(point[0])
+		lat, latOK := numberValue(point[1])
+		if lonOK && latOK {
+			lons = append(lons, lon)
+			lats = append(lats, lat)
+		}
+	}
+	return averageLonLat(lons, lats)
+}
+
+func sameCoordinate(left any, right any) bool {
+	leftPoint, _ := left.([]any)
+	rightPoint, _ := right.([]any)
+	if len(leftPoint) < 2 || len(rightPoint) < 2 {
+		return false
+	}
+	leftLon, leftLonOK := numberValue(leftPoint[0])
+	leftLat, leftLatOK := numberValue(leftPoint[1])
+	rightLon, rightLonOK := numberValue(rightPoint[0])
+	rightLat, rightLatOK := numberValue(rightPoint[1])
+	return leftLonOK && leftLatOK && rightLonOK && rightLatOK && math.Abs(leftLon-rightLon) < 1e-9 && math.Abs(leftLat-rightLat) < 1e-9
+}
+
+func averageLonLat(lons []float64, lats []float64) (float64, float64, bool) {
+	if len(lons) == 0 || len(lons) != len(lats) {
+		return 0, 0, false
+	}
+	lonTotal := 0.0
+	latTotal := 0.0
+	for index := range lons {
+		lonTotal += lons[index]
+		latTotal += lats[index]
+	}
+	count := float64(len(lons))
+	return lonTotal / count, latTotal / count, true
+}
+
+func polygonDistanceToPointKM(rings []any, lon float64, lat float64) (float64, bool) {
+	if len(rings) == 0 {
+		return 0, false
+	}
+	outer, ok := rings[0].([]any)
+	if !ok || len(outer) < 4 {
+		return 0, false
+	}
+	if pointInRing(lon, lat, outer) {
+		inHole := false
+		for _, holeRaw := range rings[1:] {
+			hole, _ := holeRaw.([]any)
+			if len(hole) >= 4 && pointInRing(lon, lat, hole) {
+				inHole = true
+				break
+			}
+		}
+		if !inHole {
+			return 0, true
+		}
+	}
+	return lineStringDistanceToPointKM(outer, lon, lat)
+}
+
+func lineStringDistanceToPointKM(points []any, lon float64, lat float64) (float64, bool) {
+	if len(points) == 0 {
+		return 0, false
+	}
+	best := math.Inf(1)
+	var prevLon, prevLat float64
+	hasPrev := false
+	for _, raw := range points {
+		point, _ := raw.([]any)
+		if len(point) < 2 {
+			continue
+		}
+		pointLon, lonOK := numberValue(point[0])
+		pointLat, latOK := numberValue(point[1])
+		if !lonOK || !latOK {
+			continue
+		}
+		if !hasPrev {
+			distance := haversineKM(lon, lat, pointLon, pointLat)
+			if distance < best {
+				best = distance
+			}
+			prevLon, prevLat = pointLon, pointLat
+			hasPrev = true
+			continue
+		}
+		distance := segmentDistanceToPointKM(prevLon, prevLat, pointLon, pointLat, lon, lat)
+		if distance < best {
+			best = distance
+		}
+		prevLon, prevLat = pointLon, pointLat
+	}
+	return best, !math.IsInf(best, 1)
+}
+
+func pointInRing(lon float64, lat float64, ring []any) bool {
+	inside := false
+	j := len(ring) - 1
+	for i := 0; i < len(ring); i++ {
+		left, _ := ring[i].([]any)
+		right, _ := ring[j].([]any)
+		if len(left) < 2 || len(right) < 2 {
+			j = i
+			continue
+		}
+		leftLon, leftLonOK := numberValue(left[0])
+		leftLat, leftLatOK := numberValue(left[1])
+		rightLon, rightLonOK := numberValue(right[0])
+		rightLat, rightLatOK := numberValue(right[1])
+		if !leftLonOK || !leftLatOK || !rightLonOK || !rightLatOK {
+			j = i
+			continue
+		}
+		if (leftLat > lat) != (rightLat > lat) {
+			crossLon := (rightLon-leftLon)*(lat-leftLat)/(rightLat-leftLat) + leftLon
+			if lon < crossLon {
+				inside = !inside
+			}
+		}
+		j = i
+	}
+	return inside
+}
+
+func segmentDistanceToPointKM(lon1 float64, lat1 float64, lon2 float64, lat2 float64, lon float64, lat float64) float64 {
+	const kmPerDegreeLat = 111.32
+	cosLat := math.Cos(degreesToRadians(lat))
+	x1 := lon1 * cosLat * kmPerDegreeLat
+	y1 := lat1 * kmPerDegreeLat
+	x2 := lon2 * cosLat * kmPerDegreeLat
+	y2 := lat2 * kmPerDegreeLat
+	px := lon * cosLat * kmPerDegreeLat
+	py := lat * kmPerDegreeLat
+	dx := x2 - x1
+	dy := y2 - y1
+	if math.Abs(dx) < 1e-9 && math.Abs(dy) < 1e-9 {
+		return math.Hypot(px-x1, py-y1)
+	}
+	t := ((px-x1)*dx + (py-y1)*dy) / (dx*dx + dy*dy)
+	t = math.Max(0, math.Min(1, t))
+	closestX := x1 + t*dx
+	closestY := y1 + t*dy
+	return math.Hypot(px-closestX, py-closestY)
+}
+
+func haversineKM(lon1 float64, lat1 float64, lon2 float64, lat2 float64) float64 {
+	const earthRadiusKM = 6371.0
+	dLat := degreesToRadians(lat2 - lat1)
+	dLon := degreesToRadians(lon2 - lon1)
+	lat1Rad := degreesToRadians(lat1)
+	lat2Rad := degreesToRadians(lat2)
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(lat1Rad)*math.Cos(lat2Rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return earthRadiusKM * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+func cardinalDirection(fromLon float64, fromLat float64, toLon float64, toLat float64) string {
+	dx := (toLon - fromLon) * math.Cos(degreesToRadians(fromLat))
+	dy := toLat - fromLat
+	if math.Abs(dx) < 1e-9 && math.Abs(dy) < 1e-9 {
+		return ""
+	}
+	degrees := math.Mod(radiansToDegrees(math.Atan2(dx, dy))+360, 360)
+	directions := []string{"north", "north east", "east", "south east", "south", "south west", "west", "north west"}
+	index := int(math.Floor((degrees+22.5)/45.0)) % len(directions)
+	return directions[index]
+}
+
 func addClimateRecord(records map[string]any, key string, props map[string]any, valueField string, yearField string, includeZero bool) {
 	value, valueOK := numberValue(props[valueField])
 	year := intValue(props[yearField])
@@ -1220,11 +1485,15 @@ func fetchFeedSpecialtyProducts(ctx context.Context, client *http.Client, publis
 	}
 }
 
-func fetchThunderstormOutlookProduct(ctx context.Context, client *http.Client, feed feedXML, _ map[string]map[string]any) (map[string]any, error) {
+func fetchThunderstormOutlookProduct(ctx context.Context, client *http.Client, feed feedXML, ecccCache map[string]map[string]any) (map[string]any, error) {
 	features, timestamp, err := fetchCollectionFeatures(ctx, client, "thunderstorm_outlook", "limit=1000&sortby=-validity_datetime")
 	if err != nil {
 		return nil, err
 	}
+	if ecccCache == nil {
+		ecccCache = map[string]map[string]any{}
+	}
+	refLon, refLat, _, hasReference := feedReferencePoint(ctx, client, feed, ecccCache)
 	subtypes := feedSpecialtySubtypes(feed)
 	now := time.Now().UTC()
 	items := []map[string]any{}
@@ -1233,7 +1502,15 @@ func fetchThunderstormOutlookProduct(ctx context.Context, client *http.Client, f
 		if !featureCurrent(props, now) || !featureSubtypeMatchesFeed(props, subtypes) {
 			continue
 		}
-		items = append(items, map[string]any{
+		distanceKM := 0.0
+		if hasReference {
+			var near bool
+			distanceKM, near = geoFeatureDistanceToPointKM(feature, refLon, refLat)
+			if !near || distanceKM > thunderstormOutlookNearbyKM {
+				continue
+			}
+		}
+		item := map[string]any{
 			"id":           firstNonBlank(feature.ID, textValue(props["id"])),
 			"area":         textValue(props["product_sub_type"]),
 			"thunderstorm": textValue(props["metobject.thunderstorm.value"]),
@@ -1250,7 +1527,16 @@ func fetchThunderstormOutlookProduct(ctx context.Context, client *http.Client, f
 			"published_at": textValue(props["publication_datetime"]),
 			"valid_at":     textValue(props["validity_datetime"]),
 			"expires_at":   textValue(props["expiration_datetime"]),
-		})
+		}
+		if hasReference {
+			item["distance_km"] = math.Round(distanceKM)
+			if distanceKM > 0.5 {
+				if direction, ok := geoFeatureDirectionFromPoint(feature, refLon, refLat); ok {
+					item["direction"] = direction
+				}
+			}
+		}
+		items = append(items, item)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		left, _ := numberValue(items[i]["risk"])

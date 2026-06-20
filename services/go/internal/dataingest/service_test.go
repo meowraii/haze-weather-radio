@@ -254,6 +254,84 @@ func TestFeedSpecialtySubtypesUsesECCCCitypagePrefix(t *testing.T) {
 	}
 }
 
+func TestThunderstormOutlookGeometryFiltersDistantPrairiePolygons(t *testing.T) {
+	const saskatoonLon = -106.6700
+	const saskatoonLat = 52.1332
+	tests := []struct {
+		name        string
+		geometry    map[string]any
+		wantNear    bool
+		maxDistance float64
+	}{
+		{
+			name: "contains saskatoon",
+			geometry: polygonGeometry([][]float64{
+				{-107.0, 51.9},
+				{-106.2, 51.9},
+				{-106.2, 52.4},
+				{-107.0, 52.4},
+				{-107.0, 51.9},
+			}),
+			wantNear:    true,
+			maxDistance: 0,
+		},
+		{
+			name: "near saskatoon",
+			geometry: polygonGeometry([][]float64{
+				{-106.8, 53.1},
+				{-106.2, 53.1},
+				{-106.2, 53.5},
+				{-106.8, 53.5},
+				{-106.8, 53.1},
+			}),
+			wantNear:    true,
+			maxDistance: thunderstormOutlookNearbyKM,
+		},
+		{
+			name: "northern alberta near bc border",
+			geometry: polygonGeometry([][]float64{
+				{-118.5, 58.2},
+				{-116.5, 58.2},
+				{-116.5, 59.4},
+				{-118.5, 59.4},
+				{-118.5, 58.2},
+			}),
+			wantNear:    false,
+			maxDistance: thunderstormOutlookNearbyKM,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			feature := geoFeature{Geometry: test.geometry}
+			distance, ok := geoFeatureDistanceToPointKM(feature, saskatoonLon, saskatoonLat)
+			if !ok {
+				t.Fatal("geometry distance was not computed")
+			}
+			gotNear := distance <= test.maxDistance
+			if gotNear != test.wantNear {
+				t.Fatalf("distance = %.1f km, near = %v, want %v", distance, gotNear, test.wantNear)
+			}
+			if test.name == "northern alberta near bc border" {
+				direction, ok := geoFeatureDirectionFromPoint(feature, saskatoonLon, saskatoonLat)
+				if !ok || direction != "north west" {
+					t.Fatalf("direction = %q, ok = %v", direction, ok)
+				}
+			}
+		})
+	}
+}
+
+func polygonGeometry(ring [][]float64) map[string]any {
+	points := make([]any, 0, len(ring))
+	for _, point := range ring {
+		points = append(points, []any{point[0], point[1]})
+	}
+	return map[string]any{
+		"type":        "Polygon",
+		"coordinates": []any{points},
+	}
+}
+
 func mustTime(t *testing.T, raw string) time.Time {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339, raw)

@@ -955,33 +955,32 @@ func thunderstormOutlookHeader(item map[string]any, timezone string, now time.Ti
 	return strings.Join(parts, " ")
 }
 
-func thunderstormOutlookOpener(snapshot liveSpecialtyProductFile, site string, timezone string) string {
-	published := ""
-	for _, item := range snapshot.Items {
-		if candidate := specialtyString(item, "published_at", "en"); candidate != "" && candidate > published {
-			published = candidate
-		}
-	}
-	parts := []string{fmt.Sprintf("The Environment Canada Thunderstorm Outlook covering %s.", thunderstormAreaPhrase(site))}
-	if publishedText := thunderstormPublishedText(published, timezone); publishedText != "" {
-		parts = append(parts, sentence("Issued "+publishedText))
-	}
-	return strings.Join(parts, " ")
+func thunderstormOutlookOpener(_ liveSpecialtyProductFile, site string, _ string) string {
+	return fmt.Sprintf("The Environment Canada Thunderstorm Outlook covering %s.", thunderstormAreaPhrase(site))
 }
 
 func thunderstormHazardText(item map[string]any, site string, lang string, timezone string, now time.Time) string {
 	period := thunderstormPeriodIntro(item, timezone, now)
 	if thunderstormNoHazardExpected(item, lang) {
-		return sentence(period + " no hazardous thunderstorm weather is expected for " + thunderstormAreaPhrase(site) + ".")
+		return sentence(period + " no hazardous weather is expected.")
 	}
 	risk := fallbackText(thunderstormRiskLabel(item["risk"]), "minor")
-	coverage := fallbackText(readableSpecialtyToken(specialtyString(item, "thunderstorm", lang)), "isolated")
-	text := fmt.Sprintf("%s a %s convective risk is expected for %s, with %s thunderstorms possible.", period, risk, thunderstormAreaPhrase(site), coverage)
+	text := ""
+	if thunderstormNearbyRisk(item) {
+		direction := specialtyString(item, "direction", lang)
+		directionText := "near the area"
+		if direction != "" {
+			directionText = direction + " of the area"
+		}
+		text = fmt.Sprintf("%s however, %s is within close proximity to a %s convective risk %s.", period, thunderstormAreaPhrase(site), risk, directionText)
+	} else {
+		text = fmt.Sprintf("%s a %s convective risk is anticipated.", period, risk)
+	}
 	if specialtyBool(item, "tornado") {
 		text += " A tornado risk is also indicated."
 	}
 	if hazards := thunderstormAssociatedHazards(item); hazards != "" {
-		text += " Associated hazards may include " + hazards + "."
+		text += " " + thunderstormHazardsSentence(hazards)
 	}
 	return sentence(text)
 }
@@ -992,10 +991,18 @@ func thunderstormAreaPhrase(site string) string {
 		return "the listening area"
 	}
 	lower := strings.ToLower(site)
+	if lower == "saskatoon" {
+		return "the City of Saskatoon area"
+	}
 	if strings.HasPrefix(lower, "the ") || strings.HasSuffix(lower, " area") || strings.HasSuffix(lower, " region") {
 		return site
 	}
 	return "the " + site + " area"
+}
+
+func thunderstormNearbyRisk(item map[string]any) bool {
+	distance, ok := numberFromAny(item["distance_km"])
+	return ok && distance > 0.5
 }
 
 func thunderstormNoHazardExpected(item map[string]any, lang string) bool {
@@ -1049,13 +1056,11 @@ func thunderstormPeriodLabel(startRaw string, endRaw string, timezone string, no
 			return "Tonight"
 		}
 		return "This " + period
-	case sameDate(start, now.AddDate(0, 0, 1)):
-		if period == "overnight" {
+	default:
+		if period == "overnight" && sameDate(start, now.AddDate(0, 0, 1)) {
 			return "Overnight"
 		}
-		return "Tomorrow " + period
-	default:
-		return start.Format("Monday") + " " + period
+		return "For " + start.Format("Monday") + " " + period
 	}
 }
 
@@ -1068,9 +1073,6 @@ func thunderstormPeriodName(start time.Time, end time.Time) string {
 		return "morning"
 	}
 	if hour >= 12 && hour < 17 {
-		if !end.IsZero() && end.In(start.Location()).Day() != start.Day() {
-			return "afternoon and evening"
-		}
 		return "afternoon"
 	}
 	if hour >= 17 && hour < 22 {
@@ -1092,14 +1094,14 @@ func thunderstormClockPeriodLabel(start time.Time, now time.Time) string {
 
 func thunderstormAssociatedHazards(item map[string]any) string {
 	parts := []string{}
-	if rain := thunderstormAmount(item["rain_mm"], "millimeters of rain"); rain != "" {
-		parts = append(parts, rain)
+	if gust := thunderstormAmount(item["gust_kmh"], "kilometers per hour"); gust != "" {
+		parts = append(parts, "wind gusts up to "+gust)
 	}
 	if hail := thunderstormAmount(item["hail_cm"], "centimeters of hail"); hail != "" {
 		parts = append(parts, hail)
 	}
-	if gust := thunderstormAmount(item["gust_kmh"], "kilometers per hour"); gust != "" {
-		parts = append(parts, "gusts up to "+gust)
+	if rain := thunderstormAmount(item["rain_mm"], "millimeters of rain"); rain != "" {
+		parts = append(parts, rain)
 	}
 	switch len(parts) {
 	case 0:
@@ -1111,6 +1113,22 @@ func thunderstormAssociatedHazards(item map[string]any) string {
 	default:
 		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
 	}
+}
+
+func thunderstormHazardsSentence(hazards string) string {
+	verb := "are"
+	if !strings.Contains(hazards, ",") && !strings.Contains(hazards, " and ") {
+		verb = "is"
+	}
+	return sentence(capitalizeFirst(hazards) + " " + verb + " associated with this convective risk")
+}
+
+func capitalizeFirst(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
 }
 
 func thunderstormAmount(value any, unit string) string {
