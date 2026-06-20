@@ -53,4 +53,8 @@
 
     <audio_device enabled="false"/>
   </feed>
+
+  <feed id="CAP-IT-ALL">
+    <webrtc enabled="true"/>
+  </feed>
 </outputs>

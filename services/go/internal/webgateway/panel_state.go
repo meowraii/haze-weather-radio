@@ -243,13 +243,14 @@ func loadFeedSummaries(configPath string) ([]map[string]any, error) {
 	outputs, _ := loadOutputsXML(configPath, root)
 	forecastNames := loadForecastRegionNames(resolveConfigPath(configPath, "managed/csv/FORECAST_LOCATIONS.csv"))
 	clcNames := loadCLCNames(resolveConfigPath(configPath, "managed/csv/CLC_Base_Zone.csv"))
+	nwsFIPSNames := loadNWSFIPSNames(resolveConfigPath(configPath, "managed/csv/NWS_ZONE_COUNTY_CORRELATION.csv"))
 	queueItems, _ := loadAlertQueueItems(configPath)
 	out := make([]map[string]any, 0, len(parsed.Feeds))
 	for _, feed := range parsed.Feeds {
 		if strings.TrimSpace(feed.ID) == "" {
 			continue
 		}
-		out = append(out, feedSummary(feed, outputs[feed.ID], forecastNames, clcNames, queueItems))
+		out = append(out, feedSummary(feed, outputs[feed.ID], forecastNames, clcNames, nwsFIPSNames, queueItems))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return fmt.Sprint(out[i]["id"]) < fmt.Sprint(out[j]["id"])
@@ -257,11 +258,12 @@ func loadFeedSummaries(configPath string) ([]map[string]any, error) {
 	return out, nil
 }
 
-func feedSummary(feed feedXML, outputs outputXML, forecastNames map[string]string, clcNames map[string]string, queueItems []sameQueueItem) map[string]any {
+func feedSummary(feed feedXML, outputs outputXML, forecastNames map[string]string, clcNames map[string]string, nwsFIPSNames map[string]string, queueItems []sameQueueItem) map[string]any {
 	station := stationTransmitter(feed)
 	regions := coverageRegionPayloads(feed, forecastNames, clcNames)
 	clcCodes := feedCoverageCodes(feed, clcNames)
-	sameLocations := feedSameLocations(feed, clcNames)
+	allLocations := feedCoversAllLocations(feed)
+	sameLocations := feedSameLocations(feed, clcNames, nwsFIPSNames)
 	outputLabels := outputLabels(outputs)
 	webrtcEnabled := xmlBool(outputs.WebRTC.EnabledRaw, false)
 	queueDepth, recentQueue, latestQueue := alertQueueState(queueItems, feed.ID)
@@ -283,6 +285,7 @@ func feedSummary(feed feedXML, outputs outputXML, forecastNames map[string]strin
 		"location_count":      feedLocationCount(feed),
 		"clc_codes":           sortedKeys(clcCodes),
 		"same_locations":      sameLocations,
+		"same_all_locations":  allLocations,
 		"coverage_regions":    regions,
 		"transmitter":         transmitterPayload(station, feed),
 		"transmitters":        transmitterPayloads(feed),
@@ -702,7 +705,10 @@ func feedCoverageCodes(feed feedXML, clcNames map[string]string) map[string]stru
 	return codes
 }
 
-func feedSameLocations(feed feedXML, clcNames map[string]string) []string {
+func feedSameLocations(feed feedXML, clcNames map[string]string, nwsFIPSNames map[string]string) []string {
+	if feedCoversAllLocations(feed) {
+		return allCanadaUSSameLocations(clcNames, nwsFIPSNames)
+	}
 	codes := map[string]struct{}{}
 	for _, region := range feed.Locations.Coverage.Regions {
 		addCode(codes, region.ID)
@@ -711,6 +717,38 @@ func feedSameLocations(feed feedXML, clcNames map[string]string) []string {
 		}
 	}
 	return sortedKeys(codes)
+}
+
+func feedCoversAllLocations(feed feedXML) bool {
+	if len(feed.Locations.Coverage.Regions) > 0 {
+		return false
+	}
+	return xmlBool(feed.Alerts.CapCP.EnabledRaw, true) || xmlBool(feed.Alerts.NWSCAP.EnabledRaw, false)
+}
+
+func allCanadaUSSameLocations(clcNames map[string]string, nwsFIPSNames map[string]string) []string {
+	codes := map[string]struct{}{"000000": {}}
+	for code := range clcNames {
+		addCode(codes, cleanLocationCode(code))
+	}
+	for code := range nwsFIPSNames {
+		addCode(codes, cleanLocationCode(code))
+	}
+	out := sortedKeys(codes)
+	if len(out) == 0 || out[0] == "000000" {
+		return out
+	}
+	return append([]string{"000000"}, removeString(out, "000000")...)
+}
+
+func removeString(values []string, unwanted string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if value != unwanted {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func expandedCoverageSubregionIDs(region coverageRegionXML, clcNames map[string]string) []string {
@@ -776,6 +814,39 @@ func loadForecastRegionNames(path string) map[string]string {
 
 func loadCLCNames(path string) map[string]string {
 	return loadCSVNames(path, 0, 2)
+}
+
+func loadNWSFIPSNames(path string) map[string]string {
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return map[string]string{}
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) < 7 || strings.EqualFold(strings.TrimSpace(parts[0]), "STATE") {
+			continue
+		}
+		code := cleanLocationCode(parts[6])
+		if code == "" {
+			continue
+		}
+		name := strings.TrimSpace(parts[5])
+		if name == "" {
+			name = strings.TrimSpace(parts[3])
+		}
+		if state := strings.TrimSpace(parts[0]); state != "" && name != "" {
+			name = name + ", " + strings.ToUpper(state)
+		}
+		if name != "" {
+			out[code] = name
+		}
+	}
+	return out
 }
 
 func loadCSVNames(path string, codeIndex int, nameIndex int) map[string]string {
@@ -1043,8 +1114,14 @@ func loadLocationNames(configPath string) (map[string]any, error) {
 		names[code] = name
 	}
 	for code, name := range loadCLCNames(resolveConfigPath(configPath, "managed/csv/CLC_Base_Zone.csv")) {
+		if clean := cleanLocationCode(code); clean != "" {
+			names[clean] = name
+		}
+	}
+	for code, name := range loadNWSFIPSNames(resolveConfigPath(configPath, "managed/csv/NWS_ZONE_COUNTY_CORRELATION.csv")) {
 		names[code] = name
 	}
+	names["000000"] = "All areas"
 	return names, nil
 }
 
@@ -1058,6 +1135,9 @@ func cleanLocationCode(raw string) string {
 		}
 	}
 	cleaned := builder.String()
+	if len(cleaned) == 5 {
+		return "0" + cleaned
+	}
 	if len(cleaned) != 6 {
 		return ""
 	}

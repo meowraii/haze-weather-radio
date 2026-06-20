@@ -266,6 +266,14 @@ func expandSameLocationsForFeeds(configPath string, feedIDs []string, locations 
 		if code == "" {
 			return
 		}
+		if code == "000000" {
+			selected = map[string]struct{}{"000000": {}}
+			out = []string{"000000"}
+			return
+		}
+		if _, national := selected["000000"]; national {
+			return
+		}
 		if _, ok := selected[code]; ok {
 			return
 		}
@@ -723,6 +731,13 @@ func outputTargetsForFeeds(configPath string, feedIDs []string) ([]sameOutputTar
 
 func outputTargetsForFeed(feedID string, output outputXML) []sameOutputTarget {
 	targets := []sameOutputTarget{}
+	if xmlBool(output.WebRTC.EnabledRaw, false) {
+		targets = append(targets, sameOutputTarget{
+			FeedID: feedID,
+			Type:   "webrtc",
+			Format: "pcm_s16le",
+		})
+	}
 	if xmlBool(output.UDP.EnabledRaw, false) {
 		address := ""
 		if ip := strings.TrimSpace(output.UDP.IP); ip != "" && strings.TrimSpace(output.UDP.Port) != "" {
@@ -891,6 +906,9 @@ func stringSlicePayload(payload map[string]any, key string) []string {
 		}
 	}
 	values = uniqueStrings(values)
+	if containsString(values, "000000") {
+		return []string{"000000"}
+	}
 	sort.Strings(values)
 	return values
 }

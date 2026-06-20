@@ -905,7 +905,7 @@ fn process_alert_manifest(
     publish_alert_event(publisher, "alert.playout.started", &item, Some(&audio_path));
 
     let delivered_in_realtime =
-        match deliver_alert_outputs(&item, &audio_path, sleep_for_audio, stop) {
+        match deliver_alert_outputs(&item, &audio_path, publisher, sleep_for_audio, stop) {
             Ok(value) => value,
             Err(err) => {
                 item.status = "failed".to_string();
@@ -938,6 +938,7 @@ fn process_alert_manifest(
 fn deliver_alert_outputs(
     item: &AlertQueueItem,
     audio_path: &Path,
+    publisher: &Sender<Value>,
     sleep_for_audio: bool,
     stop: Option<&AtomicBool>,
 ) -> Result<bool> {
@@ -949,6 +950,17 @@ fn deliver_alert_outputs(
         match output.r#type.trim().to_ascii_lowercase().as_str() {
             "udp" => {
                 deliver_udp_output(item, output, audio_path, sleep_for_audio, stop)?;
+                delivered_in_realtime = delivered_in_realtime || sleep_for_audio;
+            }
+            "webrtc" | "media_bridge" => {
+                deliver_media_bridge_output(
+                    item,
+                    output,
+                    audio_path,
+                    publisher,
+                    sleep_for_audio,
+                    stop,
+                )?;
                 delivered_in_realtime = delivered_in_realtime || sleep_for_audio;
             }
             "rtp" | "rtmp" | "srt" | "rtsp" | "icecast" | "stream" | "audio_device" => {
@@ -965,6 +977,96 @@ fn deliver_alert_outputs(
         }
     }
     Ok(delivered_in_realtime)
+}
+
+fn deliver_media_bridge_output(
+    item: &AlertQueueItem,
+    output: &AlertOutputTarget,
+    audio_path: &Path,
+    publisher: &Sender<Value>,
+    sleep_for_audio: bool,
+    stop: Option<&AtomicBool>,
+) -> Result<()> {
+    if !item.format.trim().eq_ignore_ascii_case("pcm_s16le") {
+        bail!(
+            "WebRTC output for feed {} requires pcm_s16le alert audio but manifest format is {}",
+            output.feed_id,
+            item.format
+        );
+    }
+    let sample_rate = item.sample_rate.max(8_000);
+    let channels = item.channels.max(1);
+    let bytes_per_sample = 2usize;
+    let frame_bytes = ((usize::try_from(sample_rate).unwrap_or(48_000)
+        * usize::from(channels)
+        * bytes_per_sample)
+        / 50)
+        .max(usize::from(channels) * bytes_per_sample);
+    let raw = fs::read(audio_path)
+        .with_context(|| format!("failed to read alert audio {}", audio_path.display()))?;
+    let feed_id = if output.feed_id.trim().is_empty() {
+        item.feed_ids.first().cloned().unwrap_or_default()
+    } else {
+        output.feed_id.clone()
+    };
+    if feed_id.trim().is_empty() {
+        bail!("WebRTC output is missing feed_id");
+    }
+    for chunk in raw.chunks(frame_bytes) {
+        if should_stop(stop) {
+            break;
+        }
+        let duration_ms = pcm_chunk_duration_ms(chunk.len(), sample_rate, channels);
+        let _ = publisher.send(json!({
+            "type": "playout.pcm",
+            "source": "daemon-alert-queue",
+            "feed_id": feed_id,
+            "data": {
+                "feed_id": feed_id,
+                "sample_rate": sample_rate,
+                "channels": channels,
+                "duration_ms": duration_ms,
+                "pcm": encode_base64(chunk),
+            },
+            "timestamp_unix_ms": unix_now_ms(),
+        }));
+        if sleep_for_audio {
+            sleep_or_optional_stop(stop, Duration::from_millis(u64::from(duration_ms.max(1))));
+        }
+    }
+    Ok(())
+}
+
+fn pcm_chunk_duration_ms(bytes: usize, sample_rate: u32, channels: u16) -> u32 {
+    let bytes_per_second = u64::from(sample_rate.max(1)) * u64::from(channels.max(1)) * 2;
+    if bytes_per_second == 0 {
+        return 20;
+    }
+    let millis = (u64::try_from(bytes).unwrap_or(0) * 1000).div_ceil(bytes_per_second);
+    u32::try_from(millis.max(1)).unwrap_or(20)
+}
+
+fn encode_base64(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 fn deliver_udp_output(
@@ -1322,6 +1424,60 @@ mod tests {
         let updated_raw = fs::read_to_string(queue_dir.join("udp.json")).expect("updated");
         let updated: AlertQueueItem = serde_json::from_str(&updated_raw).expect("updated json");
         assert_eq!(updated.status, "played");
+    }
+
+    #[test]
+    fn alert_queue_worker_publishes_webrtc_pcm_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = dir.path();
+        let queue_dir = runtime.join(ALERT_QUEUE_DIR);
+        let audio_dir = runtime.join("runtime/audio/alerts");
+        fs::create_dir_all(&queue_dir).expect("queue dir");
+        fs::create_dir_all(&audio_dir).expect("audio dir");
+        fs::write(audio_dir.join("webrtc.pcm16le"), [1_u8, 2, 3, 4, 5, 6]).expect("audio");
+        fs::write(
+            queue_dir.join("webrtc.json"),
+            serde_json::to_vec_pretty(&json!({
+                "id": "webrtc",
+                "type": "same_alert",
+                "status": "pending",
+                "feed_ids": ["CAP-IT-ALL"],
+                "header": "ZCZC-EAS-SVR-000000+0015-1661200-CAPALL  -",
+                "event": "SVR",
+                "audio_path": "runtime/audio/alerts/webrtc.pcm16le",
+                "format": "pcm_s16le",
+                "sample_rate": 48000,
+                "channels": 1,
+                "audio_bytes": 6,
+                "outputs": [{
+                    "feed_id": "CAP-IT-ALL",
+                    "type": "webrtc",
+                    "format": "pcm_s16le"
+                }]
+            }))
+            .expect("manifest json"),
+        )
+        .expect("manifest");
+        let (tx, rx) = mpsc::channel();
+
+        let processed = process_alert_queue_once(runtime, &tx, false).expect("process queue");
+
+        assert_eq!(processed, 1);
+        let events: Vec<Value> = rx.try_iter().collect();
+        assert_eq!(events[0]["type"], "alert.playout.started");
+        let pcm = events
+            .iter()
+            .find(|event| event["type"] == "playout.pcm")
+            .expect("playout pcm event");
+        assert_eq!(pcm["feed_id"], "CAP-IT-ALL");
+        assert_eq!(pcm["data"]["feed_id"], "CAP-IT-ALL");
+        assert_eq!(pcm["data"]["sample_rate"], 48000);
+        assert_eq!(pcm["data"]["channels"], 1);
+        assert_eq!(pcm["data"]["pcm"], "AQIDBAUG");
+        assert_eq!(
+            events.last().expect("last event")["type"],
+            "alert.playout.completed"
+        );
     }
 
     #[test]

@@ -519,6 +519,29 @@ func TestStateSignatureIgnoresVolatilePanelFields(t *testing.T) {
 	}
 }
 
+func TestAllLocationFeedSameLocationsIncludeNationalCanadaAndUS(t *testing.T) {
+	clcNames := map[string]string{
+		"065522": "City of Saskatoon",
+	}
+	nwsNames := map[string]string{
+		"013121": "Fulton, GA",
+	}
+	var feed feedXML
+	feed.Alerts.CapCP.EnabledRaw = "true"
+	feed.Alerts.NWSCAP.EnabledRaw = "true"
+
+	locations := feedSameLocations(feed, clcNames, nwsNames)
+	if len(locations) != 3 {
+		t.Fatalf("same locations = %#v", locations)
+	}
+	if locations[0] != "000000" {
+		t.Fatalf("national SAME code should be first: %#v", locations)
+	}
+	if !containsString(locations, "065522") || !containsString(locations, "013121") {
+		t.Fatalf("all-location feed should include Canada CLC and US SAME/FIPS codes: %#v", locations)
+	}
+}
+
 func TestPublicWebSocketSendsPublicState(t *testing.T) {
 	dir := t.TempDir()
 	writePublicFixture(t, dir, "public")

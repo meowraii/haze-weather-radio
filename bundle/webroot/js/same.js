@@ -335,7 +335,7 @@ function applyTemplate(key) {
 
     const locations = templateLocations(template);
     if (locations.length) {
-        selectedLocationCodes = new Set(locations);
+        selectedLocationCodes = normalizeSelectedLocationSet(locations);
         renderLocations();
     }
     updateAll();
@@ -359,6 +359,7 @@ function normalizeLocationCode(value) {
 
 function locationName(code) {
     const normalized = normalizeLocationCode(code);
+    if (normalized === '000000') return 'All areas';
     return String(locationNames[normalized] || customLocations.find((item) => item.code === normalized)?.name || normalized);
 }
 
@@ -368,6 +369,9 @@ function selectedFeeds() {
 
 function feedCoverageRows(feed) {
     const rows = [];
+    if (feed.same_all_locations) {
+        rows.push({ code: '000000', name: 'All areas', region: 'National / all locations', feedID: feed.id });
+    }
     const regions = Array.isArray(feed.coverage_regions) ? feed.coverage_regions : [];
     for (const region of regions) {
         const regionName = String(region.name || region.id || feedName(feed));
@@ -392,6 +396,12 @@ function feedCoverageRows(feed) {
     const fallback = Array.isArray(feed.same_locations) && feed.same_locations.length ? feed.same_locations : (feed.clc_codes || []);
     return [...new Set(fallback.map(normalizeLocationCode).filter(Boolean))]
         .map((code) => ({ code, name: locationName(code), region: feedName(feed), feedID: feed.id }));
+}
+
+function normalizeSelectedLocationSet(codes) {
+    const normalized = [...codes].map(normalizeLocationCode).filter(Boolean);
+    if (normalized.includes('000000')) return new Set(['000000']);
+    return new Set(normalized);
 }
 
 function targetLocationRows() {
@@ -484,7 +494,7 @@ function renderFeeds() {
 function renderLocations() {
     const rows = targetLocationRows();
     const availableCodes = new Set(rows.map((row) => row.code));
-    selectedLocationCodes = new Set([...selectedLocationCodes].filter((code) => availableCodes.has(code)));
+    selectedLocationCodes = normalizeSelectedLocationSet([...selectedLocationCodes].filter((code) => availableCodes.has(code)));
     if (!rows.length) {
         locationRows.innerHTML = '<tr><td colspan="4" class="ba-empty-cell">No locations available.</td></tr>';
         locationCount.textContent = '0';
@@ -503,6 +513,10 @@ function renderLocations() {
         input.addEventListener('change', () => {
             if (input.checked) selectedLocationCodes.add(input.value);
             else selectedLocationCodes.delete(input.value);
+            selectedLocationCodes = normalizeSelectedLocationSet(selectedLocationCodes);
+            if (input.value === '000000' || selectedLocationCodes.has('000000')) {
+                renderLocations();
+            }
             updateAll();
         });
     });
@@ -516,7 +530,7 @@ function durationCode() {
 }
 
 function headerText() {
-    const locs = [...selectedLocationCodes];
+    const locs = selectedLocationCodes.has('000000') ? ['000000'] : [...selectedLocationCodes];
     const locText = (locs.length ? locs.slice(0, 31) : ['000000']).join('-');
     const now = new Date();
     const start = new Date(now.getFullYear(), 0, 0);
@@ -536,7 +550,7 @@ function scheduleISOString() {
 
 function payload() {
     const feedIds = [...selectedFeedIds];
-    const locs = [...selectedLocationCodes];
+    const locs = selectedLocationCodes.has('000000') ? ['000000'] : [...selectedLocationCodes];
     return {
         originator: originator.value,
         event: eventSelect.value,
@@ -735,7 +749,10 @@ function bindEvents() {
         updateAll();
     });
     document.getElementById('baLocationsAll').addEventListener('click', () => {
-        selectedLocationCodes = new Set(targetLocationRows().map((row) => row.code));
+        const rows = targetLocationRows();
+        selectedLocationCodes = rows.some((row) => row.code === '000000')
+            ? new Set(['000000'])
+            : new Set(rows.map((row) => row.code));
         renderLocations();
         updateAll();
     });
@@ -751,6 +768,7 @@ function bindEvents() {
             customLocations.push({ code, name: customName.value.trim() || locationName(code) || code });
         }
         selectedLocationCodes.add(code);
+        selectedLocationCodes = normalizeSelectedLocationSet(selectedLocationCodes);
         customCode.value = '';
         customName.value = '';
         renderLocations();
