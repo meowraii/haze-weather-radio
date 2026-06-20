@@ -330,6 +330,7 @@
             audioRetryCount: 0,
             audioElement: null,
             audioReconnectTimer: null,
+            obsController: null,
             unloading: false,
             tickerDormantSignature: '',
             tickerScroller: null,
@@ -471,6 +472,14 @@
             const speed = Number.parseFloat(params.get('speed') || '240');
             const aspectKey = parseAspect(params.get('aspect'));
             const audio = String(params.get('audio') || '').trim().toLowerCase();
+            const fragment = new URLSearchParams(String(window.location.hash || '').replace(/^#/, ''));
+            const obsPassword = String(fragment.get('obsPassword') || params.get('obsPassword') || '').trim();
+            const obsUrl = String(
+                params.get('obsWebSocketUrl')
+                || params.get('obsWsUrl')
+                || params.get('obsUrl')
+                || 'ws://127.0.0.1:4455'
+            ).trim();
 
             return {
                 feed: String(params.get('feed') || '').trim(),
@@ -480,10 +489,35 @@
                 scroll: Number.isFinite(scroll) && scroll >= 0 ? scroll : 1,
                 speed: Number.isFinite(speed) && speed > 0 ? speed : 30,
                 audio: ['1', 'true', 'yes', 'on'].includes(audio),
+                obs: {
+                    url: obsUrl,
+                    password: obsPassword,
+                    sources: parseOBSProgramSources(params.get('obsProgramSources')),
+                    restore: String(params.get('obsRestore') || 'previous').trim().toLowerCase() === 'unmute' ? 'unmute' : 'previous',
+                },
             };
         }
 
         const query = parseQuery();
+
+        function parseOBSProgramSources(value) {
+            return String(value || '')
+                .split(',')
+                .map((source) => source.trim())
+                .filter(Boolean)
+                .filter((source, index, sources) => sources.indexOf(source) === index)
+                .filter((source) => source.length <= 128)
+                .slice(0, 32);
+        }
+
+        function validOBSWebSocketURL(value) {
+            try {
+                const url = new URL(value);
+                return ['ws:', 'wss:'].includes(url.protocol) ? url.toString() : '';
+            } catch {
+                return '';
+            }
+        }
 
         function applyViewportScale() {
             const viewportWidth = Math.max(window.innerWidth || document.documentElement.clientWidth || 1920, 320);
@@ -540,6 +574,250 @@
 
         function setVisible(visible) {
             frame.dataset.visible = visible ? 'true' : 'false';
+        }
+
+        class OBSMuteController {
+            constructor(config) {
+                this.url = validOBSWebSocketURL(config.url) || 'ws://127.0.0.1:4455';
+                this.password = config.password || '';
+                this.sources = Array.isArray(config.sources) ? config.sources : [];
+                this.restore = config.restore === 'unmute' ? 'unmute' : 'previous';
+                this.socket = null;
+                this.connected = false;
+                this.connecting = null;
+                this.requestId = 0;
+                this.pending = new Map();
+                this.savedMute = new Map();
+                this.desiredActive = false;
+                this.appliedActive = false;
+                this.applying = false;
+                this.retryTimer = null;
+            }
+
+            get enabled() {
+                return this.sources.length > 0 && Boolean(this.url);
+            }
+
+            setAlertActive(active) {
+                if (!this.enabled) {
+                    return;
+                }
+                this.desiredActive = Boolean(active);
+                this.applyDesiredState();
+            }
+
+            async applyDesiredState() {
+                if (this.applying || !this.enabled) {
+                    return;
+                }
+                this.applying = true;
+                try {
+                    while (this.appliedActive !== this.desiredActive) {
+                        const active = this.desiredActive;
+                        await this.connect();
+                        if (active) {
+                            await this.muteSources();
+                        } else {
+                            await this.restoreSources();
+                        }
+                        this.appliedActive = active;
+                    }
+                } catch (error) {
+                    console.error('OBS source mute sync failed.', error);
+                    this.scheduleRetry();
+                } finally {
+                    this.applying = false;
+                    if (this.appliedActive !== this.desiredActive) {
+                        this.applyDesiredState();
+                    }
+                }
+            }
+
+            connect() {
+                if (this.connected && this.socket?.readyState === WebSocket.OPEN) {
+                    return Promise.resolve();
+                }
+                if (this.connecting) {
+                    return this.connecting;
+                }
+                this.connecting = new Promise((resolve, reject) => {
+                    const socket = new WebSocket(this.url);
+                    let settled = false;
+                    const fail = (error) => {
+                        if (!settled) {
+                            settled = true;
+                            reject(error instanceof Error ? error : new Error(String(error || 'OBS websocket failed')));
+                        }
+                    };
+                    socket.onopen = () => {
+                        this.socket = socket;
+                    };
+                    socket.onerror = () => fail(new Error('OBS websocket connection failed'));
+                    socket.onclose = () => {
+                        this.connected = false;
+                        this.socket = null;
+                        fail(new Error('OBS websocket closed'));
+                        this.failPending(new Error('OBS websocket closed'));
+                        if (this.desiredActive || this.appliedActive) {
+                            this.scheduleRetry();
+                        }
+                    };
+                    socket.onmessage = (event) => {
+                        let message;
+                        try {
+                            message = JSON.parse(event.data);
+                        } catch {
+                            return;
+                        }
+                        this.handleMessage(message, () => {
+                            if (!settled) {
+                                settled = true;
+                                resolve();
+                            }
+                        }, fail).catch(fail);
+                    };
+                }).finally(() => {
+                    this.connecting = null;
+                });
+                return this.connecting;
+            }
+
+            async handleMessage(message, resolveIdentified, rejectIdentified) {
+                const op = Number(message?.op);
+                const data = message?.d || {};
+                if (op === 0) {
+                    try {
+                        await this.identify(data);
+                    } catch (error) {
+                        rejectIdentified(error);
+                    }
+                    return;
+                }
+                if (op === 2) {
+                    this.connected = true;
+                    resolveIdentified();
+                    return;
+                }
+                if (op === 7) {
+                    const requestId = String(data.requestId || '');
+                    const pending = this.pending.get(requestId);
+                    if (!pending) {
+                        return;
+                    }
+                    this.pending.delete(requestId);
+                    if (data.requestStatus?.result) {
+                        pending.resolve(data.responseData || {});
+                    } else {
+                        pending.reject(new Error(data.requestStatus?.comment || 'OBS request failed'));
+                    }
+                }
+            }
+
+            async identify(hello) {
+                const identify = {
+                    op: 1,
+                    d: {
+                        rpcVersion: Number(hello.rpcVersion) || 1,
+                        eventSubscriptions: 0,
+                    },
+                };
+                if (hello.authentication) {
+                    if (!this.password) {
+                        throw new Error('OBS websocket requires a password');
+                    }
+                    identify.d.authentication = await obsAuthentication(
+                        this.password,
+                        hello.authentication.salt,
+                        hello.authentication.challenge,
+                    );
+                }
+                this.send(identify);
+            }
+
+            request(requestType, requestData) {
+                if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+                    return Promise.reject(new Error('OBS websocket is not connected'));
+                }
+                const requestId = `haze-${Date.now()}-${++this.requestId}`;
+                return new Promise((resolve, reject) => {
+                    this.pending.set(requestId, { resolve, reject });
+                    this.send({
+                        op: 6,
+                        d: { requestType, requestId, requestData: requestData || {} },
+                    });
+                });
+            }
+
+            send(message) {
+                if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+                    throw new Error('OBS websocket is not connected');
+                }
+                this.socket.send(JSON.stringify(message));
+            }
+
+            async muteSources() {
+                for (const inputName of this.sources) {
+                    if (!this.savedMute.has(inputName)) {
+                        try {
+                            const current = await this.request('GetInputMute', { inputName });
+                            this.savedMute.set(inputName, Boolean(current.inputMuted));
+                        } catch {
+                            this.savedMute.set(inputName, false);
+                        }
+                    }
+                    await this.request('SetInputMute', { inputName, inputMuted: true });
+                }
+            }
+
+            async restoreSources() {
+                for (const inputName of this.sources) {
+                    const inputMuted = this.restore === 'unmute' ? false : Boolean(this.savedMute.get(inputName));
+                    await this.request('SetInputMute', { inputName, inputMuted });
+                }
+                this.savedMute.clear();
+            }
+
+            scheduleRetry() {
+                if (this.retryTimer || state.unloading || !this.enabled) {
+                    return;
+                }
+                this.retryTimer = window.setTimeout(() => {
+                    this.retryTimer = null;
+                    this.applyDesiredState();
+                }, 2000);
+            }
+
+            failPending(error) {
+                for (const pending of this.pending.values()) {
+                    pending.reject(error);
+                }
+                this.pending.clear();
+            }
+        }
+
+        async function obsAuthentication(password, salt, challenge) {
+            if (!window.crypto?.subtle) {
+                throw new Error('OBS authentication requires Web Crypto support');
+            }
+            const secret = await sha256Base64(`${password || ''}${salt || ''}`);
+            return sha256Base64(`${secret}${challenge || ''}`);
+        }
+
+        async function sha256Base64(value) {
+            const encoded = new TextEncoder().encode(value);
+            const digest = await window.crypto.subtle.digest('SHA-256', encoded);
+            let binary = '';
+            for (const byte of new Uint8Array(digest)) {
+                binary += String.fromCharCode(byte);
+            }
+            return window.btoa(binary);
+        }
+
+        function syncOBSAlertState(active) {
+            if (!state.obsController && query.obs.sources.length) {
+                state.obsController = new OBSMuteController(query.obs);
+            }
+            state.obsController?.setAlertActive(active);
         }
 
         function stopTicker() {
@@ -778,12 +1056,14 @@
             const signatureChanged = payload.signature !== state.signature;
             state.signature = payload.signature;
             state.payload = payload;
+            const hasActiveAlerts = Boolean(payload.active && (payload.alerts || []).length);
+            syncOBSAlertState(hasActiveAlerts);
 
             if (signatureChanged) {
                 state.tickerDormantSignature = '';
             }
 
-            if (!payload.active || !(payload.alerts || []).length) {
+            if (!hasActiveAlerts) {
                 renderIdle();
                 return;
             }
@@ -836,6 +1116,7 @@
                 const payload = JSON.parse(event.data || '{}');
                 renderPayload(payload);
             } catch {
+                syncOBSAlertState(false);
                 renderIdle();
                 console.error('Invalid banner data stream.');
             }
@@ -942,6 +1223,7 @@
         window.addEventListener('resize', applyViewportScale);
         window.addEventListener('beforeunload', () => {
             state.unloading = true;
+            syncOBSAlertState(false);
             closeStream();
             closeAudioStream();
         });
