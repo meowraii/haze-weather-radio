@@ -3,6 +3,7 @@ package productrender
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -332,6 +333,9 @@ func (r renderer) loadLiveClimateSnapshot(feed feedXML, snapshot *climateSnapsho
 }
 
 func (r renderer) loadLiveBulletinSnapshot(feed feedXML, snapshot *bulletinSnapshot) (string, bool) {
+	if input, ok := r.loadXMLBulletinSnapshot(feed, snapshot); ok {
+		return input, true
+	}
 	path := resolvePath(r.cfg.BaseDir, filepath.Join("managed", "userbulletins.json"))
 	var raw []struct {
 		Enabled   bool                         `json:"enabled"`
@@ -361,6 +365,170 @@ func (r renderer) loadLiveBulletinSnapshot(feed feedXML, snapshot *bulletinSnaps
 	}
 	*snapshot = bulletinSnapshot{Title: "User Bulletin", Lines: lines}
 	return path, true
+}
+
+type userBulletinsXML struct {
+	Bulletins []userBulletinXML `xml:"bulletin"`
+}
+
+type userBulletinXML struct {
+	ID       string                  `xml:"id,attr"`
+	Enabled  string                  `xml:"enabled,attr"`
+	Title    string                  `xml:"title"`
+	Active   userBulletinActiveXML   `xml:"active"`
+	Schedule userBulletinScheduleXML `xml:"schedule"`
+	Target   userBulletinTargetXML   `xml:"target"`
+	Content  userBulletinContentXML  `xml:"content"`
+}
+
+type userBulletinActiveXML struct {
+	Start  string `xml:"start,attr"`
+	Expire string `xml:"expire,attr"`
+}
+
+type userBulletinScheduleXML struct {
+	Mode    string   `xml:"mode,attr"`
+	EndEach string   `xml:"end_of_cycle,attr"`
+	Hours   []string `xml:"hours>hour"`
+	Days    []string `xml:"days>day"`
+}
+
+type userBulletinTargetXML struct {
+	Feeds []struct {
+		ID string `xml:"id,attr"`
+	} `xml:"feed"`
+}
+
+type userBulletinContentXML struct {
+	Type  string `xml:"type,attr"`
+	Langs []struct {
+		Code string `xml:"code,attr"`
+		Text string `xml:",chardata"`
+	} `xml:"lang"`
+}
+
+func (r renderer) loadXMLBulletinSnapshot(feed feedXML, snapshot *bulletinSnapshot) (string, bool) {
+	path := resolvePath(r.cfg.BaseDir, filepath.Join("managed", "configs", "userBulletins.xml"))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var parsed userBulletinsXML
+	if err := xml.Unmarshal(raw, &parsed); err != nil {
+		return "", false
+	}
+	now := time.Now()
+	lang := feedLanguage(feed)
+	lines := []string{}
+	title := "User Bulletin"
+	for _, bulletin := range parsed.Bulletins {
+		if !xmlBoolText(bulletin.Enabled, true) || !bulletinTargetsFeed(bulletin, feed.ID) || !xmlBulletinActive(bulletin, now) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(bulletin.Content.Type), "audio") {
+			continue
+		}
+		text := xmlBulletinText(bulletin, lang)
+		if text == "" {
+			continue
+		}
+		if strings.TrimSpace(bulletin.Title) != "" {
+			title = strings.TrimSpace(bulletin.Title)
+		}
+		lines = append(lines, text)
+	}
+	if len(lines) == 0 {
+		return "", false
+	}
+	*snapshot = bulletinSnapshot{Title: title, Lines: lines}
+	return path, true
+}
+
+func xmlBulletinActive(bulletin userBulletinXML, now time.Time) bool {
+	if !bulletinActive(stringPtrOrNil(bulletin.Active.Start), stringPtrOrNil(bulletin.Active.Expire), now) {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(bulletin.Schedule.Mode))
+	switch mode {
+	case "hours":
+		hour := fmt.Sprintf("%02d", now.Hour())
+		return stringListContains(bulletin.Schedule.Hours, hour) || stringListContains(bulletin.Schedule.Hours, fmt.Sprint(now.Hour()))
+	case "days":
+		day := strings.ToLower(now.Weekday().String()[:3])
+		return stringListContainsFold(bulletin.Schedule.Days, day)
+	default:
+		return true
+	}
+}
+
+func xmlBulletinText(bulletin userBulletinXML, lang string) string {
+	fallback := ""
+	for _, item := range bulletin.Content.Langs {
+		text := strings.TrimSpace(item.Text)
+		if text == "" {
+			continue
+		}
+		code := strings.TrimSpace(item.Code)
+		if strings.EqualFold(code, lang) {
+			return text
+		}
+		if fallback == "" && strings.HasPrefix(strings.ToLower(code), "en") {
+			fallback = text
+		}
+		if fallback == "" {
+			fallback = text
+		}
+	}
+	return fallback
+}
+
+func bulletinTargetsFeed(bulletin userBulletinXML, feedID string) bool {
+	if len(bulletin.Target.Feeds) == 0 {
+		return true
+	}
+	for _, feed := range bulletin.Target.Feeds {
+		if strings.EqualFold(strings.TrimSpace(feed.ID), feedID) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringPtrOrNil(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func stringListContains(values []string, needle string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func stringListContainsFold(values []string, needle string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func xmlBoolText(raw string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on", "enabled":
+		return true
+	case "0", "false", "no", "off", "disabled":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func (r renderer) loadStoreObservation(loc locationXML, target *liveObservationFile) (string, bool) {

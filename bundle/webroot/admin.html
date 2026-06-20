@@ -97,6 +97,28 @@
         .alert-preview-panel { margin-top: 8px; padding: 7px; border: 1px solid var(--border-deep); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg) 36%, transparent); box-shadow: var(--bevel-sunken); }
         .alert-preview-player { display: block; width: 100%; min-height: 34px; }
         .alert-details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .bulletin-page { padding: 10px 14px 34px; }
+        .bulletin-table-wrap { overflow: auto; }
+        .bulletin-table { width: 100%; border-collapse: collapse; table-layout: fixed; min-width: 980px; }
+        .bulletin-table th,
+        .bulletin-table td { padding: 7px 8px; border-bottom: 1px solid var(--border-subtle); text-align: left; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .bulletin-table th { position: sticky; top: 0; z-index: 1; background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 600; }
+        .bulletin-table td { color: var(--text); font-size: 12.5px; }
+        .bulletin-table th:first-child,
+        .bulletin-table td:first-child { width: 72px; text-align: center; }
+        .bulletin-table th:last-child,
+        .bulletin-table td:last-child { width: 160px; }
+        .bulletin-table tr.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+        .bulletin-title-cell strong,
+        .bulletin-title-cell span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .bulletin-title-cell span { color: var(--muted); font-family: var(--mono-font); font-size: 11px; }
+        .bulletin-row-actions { display: flex; gap: 4px; justify-content: flex-end; }
+        .bulletin-row-actions .btn-action,
+        .bulletin-row-actions .btn-danger { min-height: 26px; padding: 3px 7px; font-size: 11.5px; }
+        .bulletin-editor-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        .bulletin-wide { grid-column: 1 / -1; }
+        .bulletin-enabled-row { align-self: end; min-height: 32px; }
+        .bulletin-editor-grid textarea { resize: vertical; }
 
         @media (min-width: 900px) {
             .daemon-page { padding: 12px 14px 32px; }
@@ -132,7 +154,8 @@
 
         @media (max-width: 920px) {
             .breakin-grid,
-            .breakin-form-grid { grid-template-columns: 1fr; }
+            .breakin-form-grid,
+            .bulletin-editor-grid { grid-template-columns: 1fr; }
             .breakin-side { position: static; }
         }
 
@@ -192,6 +215,10 @@
                 <a class="sidebar-link" href="#/breakin" data-view="breakin">
                     <i data-lucide="mic-vocal" width="15" height="15"></i>
                     Operator Break-in
+                </a>
+                <a class="sidebar-link" href="#/bulletins" data-view="bulletins">
+                    <i data-lucide="newspaper" width="15" height="15"></i>
+                    Bulletins
                 </a>
                 <a class="sidebar-link" href="#/alerts" data-view="alerts">
                     <i data-lucide="bell-ring" width="15" height="15"></i>
@@ -595,6 +622,150 @@
                             </section>
                         </aside>
                     </div>
+                </main>
+            </div>
+
+            <div class="view" data-view="bulletins">
+                <header class="topbar">
+                    <div class="topbar-inner">
+                        <div class="topbar-title">
+                            <p class="topbar-eyebrow">Operator Messages</p>
+                            <h1>Bulletins</h1>
+                            <p>Create XML-backed user bulletins for the end of each broadcast cycle.</p>
+                        </div>
+                        <div class="metric-strip">
+                            <article class="metric-card">
+                                <p>Loaded</p>
+                                <strong id="bulletinCountMetric">0</strong>
+                            </article>
+                            <article class="metric-card">
+                                <p>Enabled</p>
+                                <strong id="bulletinEnabledMetric">0</strong>
+                            </article>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="dashboard bulletin-page">
+                    <p id="bulletinStatusBanner" class="status-banner">Loading bulletins...</p>
+                    <section class="section-block">
+                        <div class="section-hd">
+                            <span>Bulletin List</span>
+                            <span class="section-hd-sub" id="bulletinPathLabel">managed/configs/userBulletins.xml</span>
+                            <div class="section-hd-actions">
+                                <button id="bulletinAddButton" class="btn-action" type="button">
+                                    <i data-lucide="plus" width="13" height="13"></i>
+                                    Add Bulletin
+                                </button>
+                                <button id="bulletinImportButton" class="btn-action" type="button">
+                                    <i data-lucide="upload" width="13" height="13"></i>
+                                    Import XML
+                                </button>
+                                <button id="bulletinExportAllButton" class="btn-action" type="button">
+                                    <i data-lucide="download" width="13" height="13"></i>
+                                    Export All
+                                </button>
+                                <button id="bulletinSaveButton" class="btn-primary" type="button">Save</button>
+                            </div>
+                        </div>
+                        <div class="section-body pad-none">
+                            <div class="bulletin-table-wrap">
+                                <table class="bulletin-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Enabled</th>
+                                            <th>Title</th>
+                                            <th>Active Window</th>
+                                            <th>Schedule</th>
+                                            <th>Content</th>
+                                            <th>Feeds</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="bulletinTableBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="section-block">
+                        <div class="section-hd"><span>Selected Bulletin</span></div>
+                        <div class="section-body bulletin-editor-grid">
+                            <label class="daemon-field">
+                                <span>ID</span>
+                                <input id="bulletinID" type="text" placeholder="auto from title">
+                            </label>
+                            <label class="daemon-field">
+                                <span>Title</span>
+                                <input id="bulletinTitle" type="text">
+                            </label>
+                            <label class="ba-switch bulletin-enabled-row">
+                                <input id="bulletinEnabled" type="checkbox">
+                                <span>Enabled</span>
+                            </label>
+                            <label class="daemon-field">
+                                <span>Start</span>
+                                <input id="bulletinStart" type="datetime-local">
+                            </label>
+                            <label class="daemon-field">
+                                <span>Expire</span>
+                                <input id="bulletinExpire" type="datetime-local">
+                            </label>
+                            <label class="daemon-field">
+                                <span>Schedule</span>
+                                <select id="bulletinScheduleMode">
+                                    <option value="always">All times</option>
+                                    <option value="hours">Selected hours</option>
+                                    <option value="days">Selected days</option>
+                                </select>
+                            </label>
+                            <label class="daemon-field">
+                                <span>Hours</span>
+                                <input id="bulletinHours" type="text" placeholder="0, 6, 12, 18">
+                            </label>
+                            <label class="daemon-field">
+                                <span>Days</span>
+                                <input id="bulletinDays" type="text" placeholder="mon, wed, fri">
+                            </label>
+                            <label class="ba-switch bulletin-enabled-row">
+                                <input id="bulletinEndCycle" type="checkbox">
+                                <span>End of broadcast cycle</span>
+                            </label>
+                            <label class="daemon-field">
+                                <span>Content</span>
+                                <select id="bulletinContentType">
+                                    <option value="tts">TTS</option>
+                                    <option value="audio">Audio file / URL</option>
+                                </select>
+                            </label>
+                            <label class="daemon-field bulletin-wide" data-bulletin-content="tts">
+                                <span>English TTS</span>
+                                <textarea id="bulletinTextEn" rows="5"></textarea>
+                            </label>
+                            <label class="daemon-field bulletin-wide" data-bulletin-content="tts">
+                                <span>French TTS</span>
+                                <textarea id="bulletinTextFr" rows="5"></textarea>
+                            </label>
+                            <label class="daemon-field bulletin-wide" data-bulletin-content="audio">
+                                <span>Audio HTTP URL</span>
+                                <input id="bulletinAudioURL" type="url" placeholder="https://example.test/bulletin.mp3">
+                            </label>
+                            <label class="daemon-field bulletin-wide" data-bulletin-content="audio">
+                                <span>Audio file path</span>
+                                <input id="bulletinAudioFile" type="text" placeholder="managed/audio/bulletins/file.wav">
+                            </label>
+                            <label class="daemon-field bulletin-wide" data-bulletin-content="audio">
+                                <span>Upload audio</span>
+                                <input id="bulletinAudioUpload" type="file" accept=".wav,.mp3,.ogg,.opus,.m4a,.aac,.flac,audio/*">
+                            </label>
+                            <label class="daemon-field bulletin-wide">
+                                <span>Feeds</span>
+                                <input id="bulletinFeeds" type="text" placeholder="blank = all feeds; example: sk-0001, sk-0002">
+                            </label>
+                        </div>
+                    </section>
+
+                    <input id="bulletinImportFile" type="file" accept=".xml,text/xml,application/xml" hidden>
                 </main>
             </div>
 

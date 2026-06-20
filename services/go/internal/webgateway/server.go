@@ -423,6 +423,16 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 		return loadDictionaryPayload(s.configPath)
 	case "dictionary.save":
 		return writeDictionaryPayload(s.configPath, payload)
+	case "bulletins.get":
+		return loadBulletinsPayload(s.configPath)
+	case "bulletins.save":
+		return saveBulletinsPayload(s.configPath, payload)
+	case "bulletins.import":
+		return importBulletinsPayload(s.configPath, payload)
+	case "bulletins.export":
+		return exportBulletinsPayload(s.configPath, payload)
+	case "bulletins.upload_audio":
+		return uploadBulletinAudio(s.configPath, payload)
 	case "state":
 		return s.panelState()
 	case "wx.packages":

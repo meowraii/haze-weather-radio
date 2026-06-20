@@ -10,6 +10,7 @@ import { initBreakInView } from './breakin.js';
 import { initAlertsArchiveView } from './alerts.js';
 import { initAutomationsView } from './automations.js';
 import { initDictionaryView } from './dictionary.js';
+import { initBulletinsView } from './bulletins.js';
 
 const authPill = document.getElementById('authPill');
 const healthPill = document.getElementById('healthPill');
@@ -21,7 +22,7 @@ const refreshButton = document.getElementById('refreshButton');
 
 let healthState = { auth_required: true };
 let dashboardInitialized = false;
-const viewInit = { same: false, automations: false, wx: false, daemon: false, playlist: false, breakin: false, alerts: false, dictionary: false };
+const viewInit = { same: false, automations: false, wx: false, daemon: false, playlist: false, breakin: false, bulletins: false, alerts: false, dictionary: false };
 
 session.importUrlToken();
 initTheme(themeToggle);
@@ -138,6 +139,10 @@ function navigate(view) {
     if (view === 'breakin' && !viewInit.breakin) {
         viewInit.breakin = true;
         initBreakInView();
+    }
+    if (view === 'bulletins' && !viewInit.bulletins) {
+        viewInit.bulletins = true;
+        initBulletinsView();
     }
     if (view === 'alerts' && !viewInit.alerts) {
         viewInit.alerts = true;

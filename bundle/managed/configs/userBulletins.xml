@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bulletins version="1">
+  <bulletin id="haze-demo" enabled="false">
+    <title>Haze Demo Bulletin</title>
+    <active />
+    <schedule mode="always" end_of_cycle="true" />
+    <target />
+    <content type="tts">
+      <lang code="en-CA">You are listening to a live test broadcast and demonstration of the Haze Weather Radio open source project.</lang>
+      <lang code="fr-CA">Vous écoutez une diffusion de test en direct et une démonstration du projet open source Haze Weather Radio.</lang>
+    </content>
+  </bulletin>
+</bulletins>
