@@ -716,22 +716,23 @@ func (r renderer) thunderstormOutlookProduct(base Product, feed feedXML) (Produc
 	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
 	now := time.Now()
 	site := fallbackText(feedSiteName(feed), "the listening")
-	segments := []Segment{}
+	segments := []Segment{{
+		Kind:  "opener",
+		Label: "opener",
+		Text:  thunderstormOutlookOpener(snapshot, site, feed.Timezone),
+	}}
 	for _, item := range sortedThunderstormItems(snapshot.Items) {
 		if !specialtyItemCurrent(item, now) || specialtyString(item, "thunderstorm", base.Language) == "" {
 			continue
 		}
-		if header := thunderstormOutlookHeader(item, feed.Timezone, now); header != "" {
-			segments = append(segments, Segment{Kind: "opener", Label: "outlook_window", Text: header})
-		}
-		if hazard := thunderstormHazardText(item, site, base.Language); hazard != "" {
+		if hazard := thunderstormHazardText(item, site, base.Language, feed.Timezone, now); hazard != "" {
 			segments = append(segments, Segment{Kind: "package", Label: "convective_hazard", Text: hazard})
 		}
 		if len(segments) >= 6 {
 			break
 		}
 	}
-	if len(segments) == 0 {
+	if len(segments) <= 1 {
 		return Product{}, fmt.Errorf("thunderstorm outlook information is unavailable for feed %s", feed.ID)
 	}
 	base.Segments = segments
@@ -915,6 +916,11 @@ func (r renderer) thunderstormOutlookText(item map[string]any, lang string, time
 func sortedThunderstormItems(items []map[string]any) []map[string]any {
 	out := append([]map[string]any(nil), items...)
 	sort.SliceStable(out, func(i, j int) bool {
+		leftValid := specialtyString(out[i], "valid_at", "en")
+		rightValid := specialtyString(out[j], "valid_at", "en")
+		if leftValid != rightValid {
+			return leftValid < rightValid
+		}
 		leftRisk, _ := numberFromAny(out[i]["risk"])
 		rightRisk, _ := numberFromAny(out[j]["risk"])
 		if leftRisk != rightRisk {
@@ -925,9 +931,7 @@ func sortedThunderstormItems(items []map[string]any) []map[string]any {
 		if leftImpact != rightImpact {
 			return leftImpact > rightImpact
 		}
-		leftValid := specialtyString(out[i], "valid_at", "en")
-		rightValid := specialtyString(out[j], "valid_at", "en")
-		return leftValid < rightValid
+		return specialtyString(out[i], "id", "en") < specialtyString(out[j], "id", "en")
 	})
 	return out
 }
@@ -951,17 +955,139 @@ func thunderstormOutlookHeader(item map[string]any, timezone string, now time.Ti
 	return strings.Join(parts, " ")
 }
 
-func thunderstormHazardText(item map[string]any, site string, lang string) string {
+func thunderstormOutlookOpener(snapshot liveSpecialtyProductFile, site string, timezone string) string {
+	published := ""
+	for _, item := range snapshot.Items {
+		if candidate := specialtyString(item, "published_at", "en"); candidate != "" && candidate > published {
+			published = candidate
+		}
+	}
+	parts := []string{fmt.Sprintf("The Environment Canada Thunderstorm Outlook covering %s.", thunderstormAreaPhrase(site))}
+	if publishedText := thunderstormPublishedText(published, timezone); publishedText != "" {
+		parts = append(parts, sentence("Issued "+publishedText))
+	}
+	return strings.Join(parts, " ")
+}
+
+func thunderstormHazardText(item map[string]any, site string, lang string, timezone string, now time.Time) string {
+	period := thunderstormPeriodIntro(item, timezone, now)
+	if thunderstormNoHazardExpected(item, lang) {
+		return sentence(period + " no hazardous thunderstorm weather is expected for " + thunderstormAreaPhrase(site) + ".")
+	}
 	risk := fallbackText(thunderstormRiskLabel(item["risk"]), "minor")
 	coverage := fallbackText(readableSpecialtyToken(specialtyString(item, "thunderstorm", lang)), "isolated")
-	text := fmt.Sprintf("For the %s area, %s thunderstorms are possible. Overall convective risk is %s.", site, coverage, risk)
+	text := fmt.Sprintf("%s a %s convective risk is expected for %s, with %s thunderstorms possible.", period, risk, thunderstormAreaPhrase(site), coverage)
 	if specialtyBool(item, "tornado") {
 		text += " A tornado risk is also indicated."
 	}
 	if hazards := thunderstormAssociatedHazards(item); hazards != "" {
-		text += " Potential associated hazards include " + hazards + "."
+		text += " Associated hazards may include " + hazards + "."
 	}
 	return sentence(text)
+}
+
+func thunderstormAreaPhrase(site string) string {
+	site = strings.TrimSpace(site)
+	if site == "" {
+		return "the listening area"
+	}
+	lower := strings.ToLower(site)
+	if strings.HasPrefix(lower, "the ") || strings.HasSuffix(lower, " area") || strings.HasSuffix(lower, " region") {
+		return site
+	}
+	return "the " + site + " area"
+}
+
+func thunderstormNoHazardExpected(item map[string]any, lang string) bool {
+	if risk, ok := numberFromAny(item["risk"]); ok && risk <= 0 {
+		return true
+	}
+	thunderstorm := readableSpecialtyToken(specialtyString(item, "thunderstorm", lang))
+	switch thunderstorm {
+	case "none", "no", "nil", "no thunderstorms", "not expected":
+		return true
+	default:
+		return false
+	}
+}
+
+func thunderstormPeriodIntro(item map[string]any, timezone string, now time.Time) string {
+	label := thunderstormPeriodLabel(
+		specialtyString(item, "valid_at", "en"),
+		specialtyString(item, "expires_at", "en"),
+		timezone,
+		now,
+	)
+	if label == "" {
+		return "For this outlook period,"
+	}
+	return label + ","
+}
+
+func thunderstormPeriodLabel(startRaw string, endRaw string, timezone string, now time.Time) string {
+	start, err := parseLooseTime(startRaw)
+	if err != nil {
+		return ""
+	}
+	end, _ := parseLooseTime(endRaw)
+	loc := now.Location()
+	if loaded, locErr := time.LoadLocation(fallbackText(timezone, "Local")); locErr == nil {
+		loc = loaded
+	}
+	start = start.In(loc)
+	if !end.IsZero() {
+		end = end.In(loc)
+	}
+	now = now.In(loc)
+	period := thunderstormPeriodName(start, end)
+	if period == "" {
+		return thunderstormClockPeriodLabel(start, now)
+	}
+	switch {
+	case sameDate(start, now):
+		if period == "overnight" {
+			return "Tonight"
+		}
+		return "This " + period
+	case sameDate(start, now.AddDate(0, 0, 1)):
+		if period == "overnight" {
+			return "Overnight"
+		}
+		return "Tomorrow " + period
+	default:
+		return start.Format("Monday") + " " + period
+	}
+}
+
+func thunderstormPeriodName(start time.Time, end time.Time) string {
+	hour := start.Hour()
+	if hour >= 0 && hour < 6 {
+		return "overnight"
+	}
+	if hour >= 6 && hour < 12 {
+		return "morning"
+	}
+	if hour >= 12 && hour < 17 {
+		if !end.IsZero() && end.In(start.Location()).Day() != start.Day() {
+			return "afternoon and evening"
+		}
+		return "afternoon"
+	}
+	if hour >= 17 && hour < 22 {
+		return "evening"
+	}
+	return "overnight"
+}
+
+func thunderstormClockPeriodLabel(start time.Time, now time.Time) string {
+	switch {
+	case sameDate(start, now):
+		return "Around " + strings.ToLower(compactClock(start)) + " today"
+	case sameDate(start, now.AddDate(0, 0, 1)):
+		return "Around " + strings.ToLower(compactClock(start)) + " tomorrow"
+	default:
+		return "Around " + strings.ToLower(compactClock(start)) + " on " + start.Format("January 2")
+	}
 }
 
 func thunderstormAssociatedHazards(item map[string]any) string {

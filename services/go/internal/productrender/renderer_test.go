@@ -651,7 +651,7 @@ func TestSpecialtyProductsRenderStoredPayloads(t *testing.T) {
     "expires_at": "2099-06-18T23:00:00Z"
   }]
 }`,
-			want: []string{"Environment Canada thunderstorm outlook", "For the Saskatoon area, isolated thunderstorms are possible.", "Overall convective risk is minor.", "A tornado risk is also indicated.", "Potential associated hazards include 30 millimeters of rain, 1 centimeter of hail, and gusts up to 70 kilometers per hour."},
+			want: []string{"Environment Canada Thunderstorm Outlook covering the Saskatoon area.", "a minor convective risk is expected for the Saskatoon area", "with isolated thunderstorms possible.", "A tornado risk is also indicated.", "Associated hazards may include 30 millimeters of rain, 1 centimeter of hail, and gusts up to 70 kilometers per hour."},
 		},
 		{
 			name: "metnotes",
@@ -747,6 +747,47 @@ func TestSpecialtyProductsRenderStoredPayloads(t *testing.T) {
 				if !strings.Contains(product.Text, wanted) {
 					t.Fatalf("%s product missing %q:\n%s", tt.kind, wanted, product.Text)
 				}
+			}
+		})
+	}
+}
+
+func TestThunderstormPeriodLabelUsesNaturalBroadcastWording(t *testing.T) {
+	loc, err := time.LoadLocation("America/Regina")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 19, 10, 0, 0, 0, loc)
+	tests := []struct {
+		name  string
+		start string
+		end   string
+		want  string
+	}{
+		{
+			name:  "same day noon outlook",
+			start: "2026-06-19T18:00:00Z",
+			end:   "2026-06-20T06:00:00Z",
+			want:  "This afternoon and evening",
+		},
+		{
+			name:  "overnight outlook",
+			start: "2026-06-20T06:00:00Z",
+			end:   "2026-06-20T18:00:00Z",
+			want:  "Overnight",
+		},
+		{
+			name:  "tomorrow noon outlook",
+			start: "2026-06-20T18:00:00Z",
+			end:   "2026-06-21T06:00:00Z",
+			want:  "Tomorrow afternoon and evening",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := thunderstormPeriodLabel(test.start, test.end, "America/Regina", now)
+			if got != test.want {
+				t.Fatalf("period label = %q, want %q", got, test.want)
 			}
 		})
 	}
