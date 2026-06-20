@@ -224,13 +224,12 @@ func defaultPromptConfig() PromptConfig {
 				{Digit: "0", Action: "broadcast", Packages: "alerts,current_conditions,air_quality,forecast,geophysical_alert", Next: "broadcast_menu"},
 			}},
 			{ID: "specialty_menu", Lines: []promptLine{
-				{Key: "main", Text: "Specialty products. 1 for meteorological notes, 2 for river conditions, 3 for recent precipitation analysis, 4 for coastal flooding risk, or 5 for hurricane track information. Press pound to return to the previous menu."},
+				{Key: "main", Text: "Specialty products. 1 for river conditions, 2 for recent precipitation analysis, 3 for coastal flooding risk, or 4 for hurricane track information. Press pound to return to the previous menu."},
 			}, Options: []menuOption{
-				{Digit: "1", Action: "product", Packages: "metnotes"},
-				{Digit: "2", Action: "product", Packages: "hydrometric"},
-				{Digit: "3", Action: "product", Packages: "precipitation_analysis"},
-				{Digit: "4", Action: "product", Packages: "coastal_flood"},
-				{Digit: "5", Action: "product", Packages: "hurricane_tracks"},
+				{Digit: "1", Action: "product", Packages: "hydrometric"},
+				{Digit: "2", Action: "product", Packages: "precipitation_analysis"},
+				{Digit: "3", Action: "product", Packages: "coastal_flood"},
+				{Digit: "4", Action: "product", Packages: "hurricane_tracks"},
 			}},
 			{ID: "weather_product", Lines: []promptLine{{Key: "unavailable", Text: "Weather is unavailable for that code."}}},
 			{ID: "broadcast_menu", Lines: []promptLine{{Key: "main", Text: "{radio_service_name} broadcast. Press pound to return to the previous menu."}}},

@@ -1447,7 +1447,6 @@ func fetchFeedSpecialtyProducts(ctx context.Context, client *http.Client, publis
 		fn   func(context.Context, *http.Client, feedXML, map[string]map[string]any) (map[string]any, error)
 	}{
 		{"thunderstorm_outlook", fetchThunderstormOutlookProduct},
-		{"metnotes", fetchMetNotesProduct},
 		{"coastal_flood", fetchCoastalFloodProduct},
 		{"hurricane_tracks", fetchHurricaneTracksProduct},
 		{"hydrometric", fetchHydrometricProduct},
@@ -1534,36 +1533,6 @@ func fetchThunderstormOutlookProduct(ctx context.Context, client *http.Client, f
 		return left > right
 	})
 	return specialtyPayload("thunderstorm_outlook", "Thunderstorm Outlook", timestamp, items), nil
-}
-
-func fetchMetNotesProduct(ctx context.Context, client *http.Client, feed feedXML, _ map[string]map[string]any) (map[string]any, error) {
-	features, timestamp, err := fetchCollectionFeatures(ctx, client, "metnotes", "limit=1000&sortby=-publication_datetime")
-	if err != nil {
-		return nil, err
-	}
-	provinces := feedProvinceCodes(feed)
-	now := time.Now().UTC()
-	items := []map[string]any{}
-	for _, feature := range features {
-		props := feature.Properties
-		if !featureCurrent(props, now) || !metNoteMatchesFeed(props, provinces) {
-			continue
-		}
-		textEN := textValue(props["content_en"])
-		textFR := textValue(props["content_fr"])
-		if textEN == "" && textFR == "" {
-			continue
-		}
-		items = append(items, map[string]any{
-			"id":           firstNonBlank(feature.ID, textValue(props["id"]), textValue(props["metnote_id"])),
-			"text":         map[string]any{"en": textEN, "fr": textFR},
-			"area":         props["aors"],
-			"published_at": textValue(props["publication_datetime"]),
-			"valid_at":     textValue(props["start_datetime"]),
-			"expires_at":   firstNonBlank(textValue(props["expiration_datetime"]), textValue(props["end_datetime"])),
-		})
-	}
-	return specialtyPayload("metnotes", "Meteorological Notes", timestamp, items), nil
 }
 
 func fetchCoastalFloodProduct(ctx context.Context, client *http.Client, feed feedXML, _ map[string]map[string]any) (map[string]any, error) {
@@ -1743,22 +1712,6 @@ func featureSubtypeMatchesFeed(props map[string]any, subtypes map[string]struct{
 	}
 	_, ok := subtypes[subtype]
 	return ok
-}
-
-func metNoteMatchesFeed(props map[string]any, provinces map[string]struct{}) bool {
-	if len(provinces) == 0 {
-		return true
-	}
-	aors := strings.ToUpper(textValue(props["aors"]))
-	if strings.TrimSpace(aors) == "" {
-		return true
-	}
-	for province := range provinces {
-		if strings.Contains(aors, province) {
-			return true
-		}
-	}
-	return false
 }
 
 func feedSpecialtySubtypes(feed feedXML) map[string]struct{} {

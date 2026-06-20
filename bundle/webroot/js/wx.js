@@ -9,7 +9,6 @@ const PACKAGE_DESCRIPTIONS = {
     air_quality: 'Air quality',
     climate_summary: 'Climate summary',
     thunderstorm_outlook: 'Thunderstorm outlook',
-    metnotes: 'Meteorological notes',
     hydrometric: 'Hydrometric conditions',
     coastal_flood: 'Coastal flood guidance',
     hurricane_tracks: 'Hurricane tracks',

@@ -27,17 +27,34 @@ type rootConfig struct {
 			Webhook webhookServiceConfig `yaml:"webhook"`
 		} `yaml:"go"`
 	} `yaml:"services"`
+	Webpanel webpanelConfig `yaml:"webpanel"`
 }
 
 type webhookServiceConfig struct {
-	Webhooks string `yaml:"webhooks"`
-	Timeout  string `yaml:"timeout"`
+	Webhooks      string `yaml:"webhooks"`
+	Timeout       string `yaml:"timeout"`
+	ListenBaseURL string `yaml:"listen_base_url"`
+}
+
+type webpanelConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Host    string `yaml:"host"`
+	Port    int    `yaml:"port"`
+	Public  struct {
+		Enabled bool   `yaml:"enabled"`
+		Host    string `yaml:"host"`
+		Port    int    `yaml:"port"`
+	} `yaml:"public"`
+	TLS struct {
+		Enabled bool `yaml:"enabled"`
+	} `yaml:"tls"`
 }
 
 type loadedConfig struct {
-	Root         rootConfig
-	BaseDir      string
-	WebhooksPath string
+	Root          rootConfig
+	BaseDir       string
+	WebhooksPath  string
+	ListenBaseURL string
 }
 
 type webhooksXML struct {
@@ -84,9 +101,10 @@ func loadConfig(options Options) (loadedConfig, error) {
 	baseDir := filepath.Dir(filepath.Clean(options.ConfigPath))
 	webhooksPath := firstNonBlank(options.WebhooksPath, root.Services.Go.Webhook.Webhooks, "managed/configs/webhooks.xml")
 	return loadedConfig{
-		Root:         root,
-		BaseDir:      baseDir,
-		WebhooksPath: resolvePath(baseDir, webhooksPath),
+		Root:          root,
+		BaseDir:       baseDir,
+		WebhooksPath:  resolvePath(baseDir, webhooksPath),
+		ListenBaseURL: publicListenBaseURL(root),
 	}, nil
 }
 
@@ -213,4 +231,36 @@ func resolveEnvValue(raw string) string {
 	return os.Expand(text, func(key string) string {
 		return strings.TrimSpace(os.Getenv(key))
 	})
+}
+
+func publicListenBaseURL(root rootConfig) string {
+	if value := firstNonBlank(os.Getenv("HAZE_PUBLIC_BASE_URL"), root.Services.Go.Webhook.ListenBaseURL); value != "" {
+		return strings.TrimRight(value, "/")
+	}
+	host := firstNonBlank(root.Webpanel.Public.Host, root.Webpanel.Host, "127.0.0.1")
+	if host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	port := root.Webpanel.Public.Port
+	if port <= 0 {
+		port = root.Webpanel.Port
+	}
+	if port <= 0 {
+		port = 8086
+	}
+	scheme := "http"
+	if root.Webpanel.TLS.Enabled {
+		scheme = "https"
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	defaultPort := 80
+	if scheme == "https" {
+		defaultPort = 443
+	}
+	if port == defaultPort {
+		return scheme + "://" + host
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, host, port)
 }

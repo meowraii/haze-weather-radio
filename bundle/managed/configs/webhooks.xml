@@ -1,5 +1,5 @@
 <Webhooks> <!--webhooks for discord-->
-    <Webhook enabled="true" feed-id="sk-0001"> <!-- the feed ID that the webhook will log for. has to be an enabled feed on this haze instance -->
+    <Webhook enabled="true" feed-id="cwxr-sk01"> <!-- the feed ID that the webhook will log for. has to be an enabled feed on this haze instance -->
         <EmbedAudio enabled="true" codec="libopus" /> <!-- if enabled, will attempt to attach an audio file to the webhook message. takes any codec that ffmpeg supports. -->
         <Username>Saskatoon WXR</Username> <!-- name on discord -->
         <IconURL></IconURL> <!-- icon on discord -->

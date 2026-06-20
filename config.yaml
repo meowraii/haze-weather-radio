@@ -74,6 +74,7 @@ services:
     webhook:
       enabled: true
       webhooks: "managed/configs/webhooks.xml"
+      listen_base_url: "" # or set HAZE_PUBLIC_BASE_URL in .env for Discord-visible links
       timeout: "15s"
     ivr:
       enabled: true
@@ -202,7 +203,6 @@ playout:
     - forecast
     - climate_summary
     - thunderstorm_outlook
-    - metnotes
     - hydrometric
     - coastal_flood
     - hurricane_tracks

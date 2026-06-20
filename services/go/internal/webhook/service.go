@@ -9,6 +9,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,7 +132,7 @@ func (s *Service) handleEvent(ctx context.Context, event map[string]any) {
 }
 
 func (s *Service) dispatch(ctx context.Context, cfg WebhookConfig, feedID string, sameEvent string, data map[string]any) error {
-	payload := buildPayload(cfg, feedID, sameEvent, data)
+	payload := buildPayload(cfg, feedID, sameEvent, data, s.cfg.ListenBaseURL)
 	audioPath := resolvePath(s.cfg.BaseDir, firstText(nil, data, "audio_path"))
 	attached := false
 	var audio attachment
@@ -190,7 +191,7 @@ type discordFooter struct {
 	Text string `json:"text"`
 }
 
-func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[string]any) discordPayload {
+func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[string]any, listenBaseURL string) discordPayload {
 	title := firstNonBlank(firstText(nil, data, "headline"), firstText(nil, data, "title", "header"), sameEvent)
 	description := firstText(nil, data, "description")
 	generated := firstText(nil, data, "alert_text", "same_message", "message")
@@ -201,7 +202,7 @@ func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[s
 		firstText(nil, data, "background_color"),
 		alerttext.PickBannerColor([]alerttext.AlertVisualInput{{
 			Severity: firstText(nil, data, "severity"),
-			Event:    firstNonBlank(sameEvent, firstText(nil, data, "event"), title),
+			Event:    firstNonBlank(firstText(nil, data, "event"), title, sameEvent),
 		}}),
 	))
 	embed := discordEmbed{
@@ -227,6 +228,9 @@ func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[s
 	if generated != "" {
 		embed.Fields = append(embed.Fields, discordEmbedField{Name: "SAME Message", Value: codeBlockText(generated, 1024), Inline: false})
 	}
+	if listenURL := integratedListenURL(listenBaseURL, feedID); listenURL != "" {
+		embed.Fields = append(embed.Fields, discordEmbedField{Name: "Listen", Value: clipText(listenURL, 1024), Inline: false})
+	}
 	if authoritative := firstText(nil, data, "authoritative_url"); authoritative != "" {
 		embed.Fields = append(embed.Fields, discordEmbedField{Name: "CAP Audio", Value: clipText(authoritative, 1024), Inline: false})
 	}
@@ -238,6 +242,23 @@ func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[s
 		AvatarURL: cfg.IconURL,
 		Embeds:    []discordEmbed{embed},
 	}
+}
+
+func integratedListenURL(base string, feedID string) string {
+	base = strings.TrimSpace(base)
+	feedID = strings.TrimSpace(feedID)
+	if base == "" || feedID == "" {
+		return ""
+	}
+	parsed, err := url.Parse(strings.TrimRight(base, "/") + "/listen")
+	if err != nil {
+		return ""
+	}
+	query := parsed.Query()
+	query.Set("feed", feedID)
+	query.Set("codec", "pcm16")
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func (s *Service) post(ctx context.Context, url string, payload discordPayload, file attachment) (int, string, error) {

@@ -104,13 +104,38 @@ jobs:
 
       - name: Build Haze bundle
         shell: pwsh
-        run: ./scripts/build-haze.ps1 -Profile release
+        run: ./scripts/build-haze.ps1 -Profile release -OutputDir dist/Haze_UAP-Windows-x86_64-Portable
 
-      - name: Upload Haze bundle
+      - name: Verify synced bundle directories
+        shell: pwsh
+        run: |
+          $bundle = "dist/Haze_UAP-Windows-x86_64-Portable"
+          foreach ($dir in @("audio", "managed", "webroot")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $bundle $dir) -PathType Container)) {
+              throw "Missing synced bundle directory: $dir"
+            }
+          }
+
+      - name: Create portable tar.xz
+        shell: pwsh
+        run: |
+          $archive = "dist/Haze_UAP-Windows-x86_64-Portable.tar.xz"
+          if (Test-Path -LiteralPath $archive) {
+            Remove-Item -LiteralPath $archive -Force
+          }
+          tar -cJf $archive -C dist Haze_UAP-Windows-x86_64-Portable
+          if ($LASTEXITCODE -ne 0) {
+            throw "tar failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+            throw "Missing archive: $archive"
+          }
+
+      - name: Upload Haze portable tar.xz
         uses: actions/upload-artifact@v4
         with:
-          name: Haze_UAP-Windows-x86_64-Portable-${{ github.sha }}
-          path: dist/Haze_UAP-Windows-x86_64-Portable
+          name: Haze_UAP-Windows-x86_64-Portable-${{ github.sha }}.tar.xz
+          path: dist/Haze_UAP-Windows-x86_64-Portable.tar.xz
           if-no-files-found: error
           retention-days: 14
 
@@ -147,13 +172,23 @@ jobs:
         run: cargo fetch --locked
 
       - name: Build Haze bundle
-        run: bash scripts/build-haze.sh --profile release
+        run: bash scripts/build-haze.sh --profile release --output-dir dist/Haze_UAP-Linux-x86_64-Portable
 
-      - name: Upload Haze bundle
+      - name: Verify synced bundle directories
+        run: |
+          bundle="dist/Haze_UAP-Linux-x86_64-Portable"
+          for dir in audio managed webroot; do
+            test -d "$bundle/$dir" || { echo "Missing synced bundle directory: $dir" >&2; exit 1; }
+          done
+
+      - name: Create portable tar.xz
+        run: tar -cJf dist/Haze_UAP-Linux-x86_64-Portable.tar.xz -C dist Haze_UAP-Linux-x86_64-Portable
+
+      - name: Upload Haze portable tar.xz
         uses: actions/upload-artifact@v4
         with:
-          name: Haze_UAP-Linux-x86_64-Portable-${{ github.sha }}
-          path: dist/Haze_UAP-Linux-x86_64-Portable
+          name: Haze_UAP-Linux-x86_64-Portable-${{ github.sha }}.tar.xz
+          path: dist/Haze_UAP-Linux-x86_64-Portable.tar.xz
           if-no-files-found: error
           retention-days: 14
 

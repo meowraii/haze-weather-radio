@@ -654,20 +654,6 @@ func TestSpecialtyProductsRenderStoredPayloads(t *testing.T) {
 			want: []string{"Environment Canada Thunderstorm Outlook covering the City of Saskatoon area.", "a minor convective risk is anticipated.", "A tornado risk is also indicated.", "Wind gusts up to 70 kilometers per hour, 1 centimeter of hail, and 30 millimeters of rain are associated with this convective risk."},
 		},
 		{
-			name: "metnotes",
-			kind: "metnotes",
-			payload: `{
-  "source": "eccc",
-  "title": "Meteorological Notes",
-  "updated_at": "2026-06-18T18:00:00Z",
-  "items": [{
-    "text": {"en": "Localized heavy showers may cause brief ponding on roads."},
-    "expires_at": "2099-06-18T23:00:00Z"
-  }]
-}`,
-			want: []string{"Meteorological notes for the Saskatoon area.", "Localized heavy showers may cause brief ponding on roads."},
-		},
-		{
 			name: "hydrometric",
 			kind: "hydrometric",
 			payload: `{

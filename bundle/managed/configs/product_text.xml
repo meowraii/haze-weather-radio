@@ -25,9 +25,6 @@
   <package id="climate_summary">
     <text key="opener" lang="en-CA">The Environment Canada climate summary.</text>
   </package>
-  <package id="metnotes">
-    <text key="opener" lang="en-CA">Meteorological notes for the {site} area.</text>
-  </package>
   <package id="hydrometric">
     <text key="opener" lang="en-CA">River conditions for the {site} area.</text>
   </package>

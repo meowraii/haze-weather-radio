@@ -31,8 +31,6 @@
     <reader_id>00</reader_id>
   </package>
 
-  <package id="metnotes" enabled="true" />
-
   <package id="hydrometric" enabled="true" />
 
   <package id="coastal_flood" enabled="true" />

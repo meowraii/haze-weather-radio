@@ -586,8 +586,8 @@ func TestSpecialtyMenuProductAndPound(t *testing.T) {
 	service.handleConfiguredMenuOptionTwiML(productResponse, productRequest)
 
 	productBody := productResponse.Body.String()
-	if !strings.Contains(productBody, "/ivr/v1/audio") || !strings.Contains(productBody, "packages=metnotes") {
-		t.Fatalf("specialty menu digit 1 did not start metnotes: %s", productBody)
+	if !strings.Contains(productBody, "/ivr/v1/audio") || !strings.Contains(productBody, "packages=hydrometric") {
+		t.Fatalf("specialty menu digit 1 did not start hydrometric: %s", productBody)
 	}
 	if !strings.Contains(productBody, "state=ivr_menu") || !strings.Contains(productBody, "menu=specialty_menu") {
 		t.Fatalf("specialty menu product should return to specialty menu: %s", productBody)

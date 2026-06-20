@@ -140,8 +140,6 @@ func (r renderer) Render(request renderRequest) (Product, error) {
 		product, err = r.climateProduct(base, feed)
 	case "thunderstorm_outlook":
 		product, err = r.thunderstormOutlookProduct(base, feed)
-	case "metnotes":
-		product, err = r.metNotesProduct(base, feed)
 	case "hydrometric":
 		product, err = r.hydrometricProduct(base, feed)
 	case "coastal_flood":
@@ -664,37 +662,6 @@ func (r renderer) thunderstormOutlookProduct(base Product, feed feedXML) (Produc
 	}
 	if len(segments) <= 1 {
 		return Product{}, fmt.Errorf("thunderstorm outlook information is unavailable for feed %s", feed.ID)
-	}
-	base.Segments = segments
-	return base, nil
-}
-
-func (r renderer) metNotesProduct(base Product, feed feedXML) (Product, error) {
-	var snapshot liveSpecialtyProductFile
-	inputPath, ok := r.loadSpecialtyProductSnapshot("metnotes", feed, &snapshot)
-	if !ok {
-		return Product{}, fmt.Errorf("meteorological notes are unavailable for feed %s", feed.ID)
-	}
-	base.Title = "Meteorological Notes"
-	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
-	segments := []Segment{}
-	if opener := r.packageText(base.PackageID, "opener", base.Language, "Meteorological notes for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
-		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
-	}
-	now := time.Now()
-	for _, item := range snapshot.Items {
-		if !specialtyItemCurrent(item, now) {
-			continue
-		}
-		if text := sentence(localizedString(item["text"], base.Language)); text != "" {
-			segments = append(segments, Segment{Kind: "package", Label: "metnote", Text: text})
-		}
-		if len(segments) >= 6 {
-			break
-		}
-	}
-	if len(segments) <= 1 {
-		return Product{}, fmt.Errorf("meteorological notes are unavailable for feed %s", feed.ID)
 	}
 	base.Segments = segments
 	return base, nil
@@ -1987,8 +1954,6 @@ func titleForPackage(pkgID string) string {
 		return "Climate Summary"
 	case "thunderstorm_outlook":
 		return "Thunderstorm Outlook"
-	case "metnotes":
-		return "Meteorological Notes"
 	case "hydrometric":
 		return "River Conditions"
 	case "coastal_flood":
