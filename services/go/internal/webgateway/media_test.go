@@ -97,6 +97,34 @@ func TestMediaHubMutesSuspiciousPCM(t *testing.T) {
 	}
 }
 
+func TestMediaHubUsesIndependentFeedIngressQueues(t *testing.T) {
+	hub := newMemoryMediaHub()
+	left := hub.feedIngress("sk-0001")
+	right := hub.feedIngress("CAP-IT-ALL")
+	if left == right {
+		t.Fatal("feeds should not share media ingress queues")
+	}
+	for i := 0; i < feedIngressCapacity*4; i++ {
+		hub.publish(PCMChunk{
+			FeedID:     "CAP-IT-ALL",
+			SampleRate: 48000,
+			Channels:   1,
+			Duration:   20 * time.Millisecond,
+			Data:       make([]byte, 960),
+		})
+	}
+	hub.publish(PCMChunk{
+		FeedID:     "sk-0001",
+		SampleRate: 48000,
+		Channels:   1,
+		Duration:   20 * time.Millisecond,
+		Data:       sinePCM(480, 1000, 48000, 8000),
+	})
+	if !waitForRecentPCM(hub, "sk-0001", time.Second) {
+		t.Fatal("sk-0001 should still receive PCM while another feed is busy")
+	}
+}
+
 func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{}); err != nil || got != webRTCAudioPCMU {
 		t.Fatal("PCMU-only offers should use PCMU")
@@ -361,11 +389,23 @@ func newMemoryMediaHub() *MediaHub {
 		addr:        "memory",
 		subscribers: map[string]map[chan PCMChunk]struct{}{},
 		peers:       map[string]*webrtc.PeerConnection{},
+		ingress:     map[string]chan PCMChunk{},
 		last:        map[string]PCMChunk{},
 		lastAt:      map[string]time.Time{},
 		seenLogged:  map[string]bool{},
 		guard:       map[string]pcmGuardState{},
 	}
+}
+
+func waitForRecentPCM(hub *MediaHub, feedID string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if hub.HasRecentPCM(feedID, timeout) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func alternatingFullScalePCM(samples int) []byte {

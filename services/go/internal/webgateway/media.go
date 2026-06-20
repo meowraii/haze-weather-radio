@@ -21,18 +21,20 @@ import (
 )
 
 const (
-	opusSampleRate       = 48000
-	opusFrameSamples     = opusSampleRate / 50
-	g722SampleRate       = 16000
-	webrtcRTPClockRate   = 8000
-	pcmuSampleRate       = 8000
-	pcmuFrameSamples     = pcmuSampleRate / 50
-	webrtcChannels       = 1
-	opusRTPChannels      = 2
-	opusEncoderChannels  = 1
-	webrtcFrameDuration  = 20 * time.Millisecond
-	g722FrameSamples     = g722SampleRate / 50
-	bridgeReconnectDelay = 750 * time.Millisecond
+	opusSampleRate        = 48000
+	opusFrameSamples      = opusSampleRate / 50
+	g722SampleRate        = 16000
+	webrtcRTPClockRate    = 8000
+	pcmuSampleRate        = 8000
+	pcmuFrameSamples      = pcmuSampleRate / 50
+	webrtcChannels        = 1
+	opusRTPChannels       = 2
+	opusEncoderChannels   = 1
+	webrtcFrameDuration   = 20 * time.Millisecond
+	webrtcMaxQueuedFrames = 10
+	feedIngressCapacity   = 4
+	g722FrameSamples      = g722SampleRate / 50
+	bridgeReconnectDelay  = 750 * time.Millisecond
 )
 
 type webRTCAudioCodec int
@@ -66,6 +68,7 @@ type MediaHub struct {
 	mu          sync.Mutex
 	subscribers map[string]map[chan PCMChunk]struct{}
 	peers       map[string]*webrtc.PeerConnection
+	ingress     map[string]chan PCMChunk
 	last        map[string]PCMChunk
 	lastAt      map[string]time.Time
 	seenLogged  map[string]bool
@@ -82,6 +85,7 @@ func NewMediaHub(addr string) *MediaHub {
 		addr:        strings.TrimSpace(addr),
 		subscribers: map[string]map[chan PCMChunk]struct{}{},
 		peers:       map[string]*webrtc.PeerConnection{},
+		ingress:     map[string]chan PCMChunk{},
 		last:        map[string]PCMChunk{},
 		lastAt:      map[string]time.Time{},
 		seenLogged:  map[string]bool{},
@@ -445,6 +449,43 @@ func (h *MediaHub) publish(chunk PCMChunk) {
 		}
 		return
 	}
+	ingress := h.feedIngress(chunk.FeedID)
+	select {
+	case ingress <- chunk:
+	default:
+		select {
+		case <-ingress:
+		default:
+		}
+		select {
+		case ingress <- chunk:
+		default:
+		}
+	}
+}
+
+func (h *MediaHub) feedIngress(feedID string) chan PCMChunk {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.ingress == nil {
+		h.ingress = map[string]chan PCMChunk{}
+	}
+	ingress := h.ingress[feedID]
+	if ingress == nil {
+		ingress = make(chan PCMChunk, feedIngressCapacity)
+		h.ingress[feedID] = ingress
+		go h.runFeedIngress(feedID, ingress)
+	}
+	return ingress
+}
+
+func (h *MediaHub) runFeedIngress(_ string, ingress <-chan PCMChunk) {
+	for chunk := range ingress {
+		h.publishReady(chunk)
+	}
+}
+
+func (h *MediaHub) publishReady(chunk PCMChunk) {
 	staticLike := pcmLooksLikeStatic(chunk.Data)
 	if staticLike {
 		chunk.Data = silencePCMBytes(len(chunk.Data))
@@ -801,9 +842,8 @@ func appendG722Frames(queue [][]byte, encoder *g722.Encoder, chunk PCMChunk) [][
 		return queue
 	}
 	queue = append(queue, frames...)
-	const maxQueuedFrames = 100
-	if len(queue) > maxQueuedFrames {
-		queue = queue[len(queue)-maxQueuedFrames:]
+	if len(queue) > webrtcMaxQueuedFrames {
+		queue = queue[len(queue)-webrtcMaxQueuedFrames:]
 	}
 	return queue
 }
@@ -814,9 +854,8 @@ func appendOpusFrames(queue [][]byte, encoder opusFrameEncoder, chunk PCMChunk) 
 		return queue
 	}
 	queue = append(queue, frames...)
-	const maxQueuedFrames = 100
-	if len(queue) > maxQueuedFrames {
-		queue = queue[len(queue)-maxQueuedFrames:]
+	if len(queue) > webrtcMaxQueuedFrames {
+		queue = queue[len(queue)-webrtcMaxQueuedFrames:]
 	}
 	return queue
 }
@@ -890,9 +929,8 @@ func appendPCMUFrames(queue [][]byte, chunk PCMChunk) [][]byte {
 		return queue
 	}
 	queue = append(queue, frames...)
-	const maxQueuedFrames = 100
-	if len(queue) > maxQueuedFrames {
-		queue = queue[len(queue)-maxQueuedFrames:]
+	if len(queue) > webrtcMaxQueuedFrames {
+		queue = queue[len(queue)-webrtcMaxQueuedFrames:]
 	}
 	return queue
 }
