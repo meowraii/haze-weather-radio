@@ -40,6 +40,8 @@ type Resolver struct {
 	helloWeatherCodes  map[string]locationRecord
 	helloWeatherLoaded bool
 	lookupHelloWeather helloWeatherLookup
+	geocodeIndexOnce   sync.Once
+	geocodeNameIndex   map[string]locationRecord
 }
 
 type providerNameLookup func(context.Context, string) (string, bool)
@@ -56,6 +58,14 @@ var (
 	helloWeatherLinePattern = regexp.MustCompile(`(?i)^(.*?)\s+1-833-[0-9-]+\s*\([^)]*\)\s*Code:\s*([0-9]{5})`)
 	htmlTagPattern          = regexp.MustCompile(`(?s)<[^>]+>`)
 	htmlScriptStylePattern  = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>`)
+	resolverHTTPClient      = &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        16,
+			MaxIdleConnsPerHost: 4,
+			IdleConnTimeout:     30 * time.Second,
+		},
+	}
 )
 
 func NewResolver(cfg loadedConfig) *Resolver {
@@ -265,17 +275,44 @@ func (r *Resolver) helloWeatherDirectory() map[string]locationRecord {
 }
 
 func (r *Resolver) enrichHelloWeatherRecord(record locationRecord) locationRecord {
-	for _, candidate := range r.cfg.Geocodes {
-		if !sameProvince(candidate.Province, record.Province) {
-			continue
-		}
-		if normalizedLocationName(candidate.Name) == normalizedLocationName(record.Name) {
-			record.Latitude = firstNonBlank(record.Latitude, candidate.Latitude)
-			record.Longitude = firstNonBlank(record.Longitude, candidate.Longitude)
-			break
-		}
+	key := geocodeNameKey(record.Province, record.Name)
+	if key == "" {
+		return record
 	}
+	index := r.geocodeIndex()
+	candidate, ok := index[key]
+	if !ok {
+		return record
+	}
+	record.Latitude = firstNonBlank(record.Latitude, candidate.Latitude)
+	record.Longitude = firstNonBlank(record.Longitude, candidate.Longitude)
 	return record
+}
+
+func (r *Resolver) geocodeIndex() map[string]locationRecord {
+	r.geocodeIndexOnce.Do(func() {
+		index := make(map[string]locationRecord, len(r.cfg.Geocodes))
+		for _, candidate := range r.cfg.Geocodes {
+			key := geocodeNameKey(candidate.Province, candidate.Name)
+			if key == "" {
+				continue
+			}
+			if _, exists := index[key]; !exists {
+				index[key] = candidate
+			}
+		}
+		r.geocodeNameIndex = index
+	})
+	return r.geocodeNameIndex
+}
+
+func geocodeNameKey(province string, name string) string {
+	province = provinceCode(province)
+	name = normalizedLocationName(name)
+	if province == "" || name == "" {
+		return ""
+	}
+	return province + "|" + name
 }
 
 func (r *Resolver) forecastDisplayName(forecast string) string {
@@ -591,14 +628,19 @@ func helloWeatherCodeFromProvinceCity(province string, city string) (string, boo
 
 func deriveHelloWeatherRecord(code string) (locationRecord, bool) {
 	code = strings.TrimSpace(code)
-	if len(code) != 5 || code[0] != '0' || code[2] != '0' {
+	if len(code) != 5 || code[0] != '0' {
 		return locationRecord{}, false
 	}
 	meta, ok := helloWeatherProvinceDigit(code[1:2])
 	if !ok {
 		return locationRecord{}, false
 	}
-	city := strings.TrimLeft(code[3:], "0")
+	for _, digit := range code[2:] {
+		if digit < '0' || digit > '9' {
+			return locationRecord{}, false
+		}
+	}
+	city := strings.TrimLeft(code[2:], "0")
 	if city == "" {
 		return locationRecord{}, false
 	}
@@ -732,8 +774,7 @@ func fetchECCCCitypageName(ctx context.Context, forecastID string) (string, bool
 		return "", false
 	}
 	request.Header.Set("User-Agent", "HazeWeatherRadio/26.06 ivr")
-	client := &http.Client{Timeout: 2 * time.Second}
-	response, err := client.Do(request)
+	response, err := resolverHTTPClient.Do(request)
 	if err != nil {
 		return "", false
 	}
@@ -785,8 +826,7 @@ func fetchHelloWeatherCodes(ctx context.Context) map[string]locationRecord {
 		return map[string]locationRecord{}
 	}
 	request.Header.Set("User-Agent", "HazeWeatherRadio/26.06 ivr")
-	client := &http.Client{Timeout: 4 * time.Second}
-	response, err := client.Do(request)
+	response, err := resolverHTTPClient.Do(request)
 	if err != nil {
 		return map[string]locationRecord{}
 	}

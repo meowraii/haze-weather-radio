@@ -159,6 +159,8 @@ func (h *MediaHub) StreamWAV(ctx context.Context, feedID string, writer http.Res
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	queue := make([]int16, 0, httpWAVFrameSamples*20)
+	frame := make([]int16, httpWAVFrameSamples)
+	frameBytes := make([]byte, httpWAVFrameSamples*2)
 	for {
 		select {
 		case <-ctx.Done():
@@ -175,8 +177,9 @@ func (h *MediaHub) StreamWAV(ctx context.Context, feedID string, writer http.Res
 					drained = cap(updates)
 				}
 			}
-			frame := popWAVFrame(&queue, httpWAVFrameSamples)
-			if _, err := writer.Write(pcm16Bytes(frame)); err != nil {
+			popWAVFrameInto(&queue, frame)
+			pcm16BytesInto(frameBytes, frame)
+			if _, err := writer.Write(frameBytes); err != nil {
 				return err
 			}
 			if flusher != nil {
@@ -266,6 +269,8 @@ func (h *MediaHub) StreamEncodedAudio(ctx context.Context, feedID string, writer
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	queue := make([]int16, 0, httpWAVFrameSamples*20)
+	frame := make([]int16, httpWAVFrameSamples)
+	frameBytes := make([]byte, httpWAVFrameSamples*2)
 	for {
 		select {
 		case <-ctx.Done():
@@ -292,8 +297,9 @@ func (h *MediaHub) StreamEncodedAudio(ctx context.Context, feedID string, writer
 					drained = cap(updates)
 				}
 			}
-			frame := popWAVFrame(&queue, httpWAVFrameSamples)
-			if _, err := stdin.Write(pcm16Bytes(frame)); err != nil {
+			popWAVFrameInto(&queue, frame)
+			pcm16BytesInto(frameBytes, frame)
+			if _, err := stdin.Write(frameBytes); err != nil {
 				cancel()
 				_ = wait()
 				return err
@@ -336,20 +342,17 @@ func appendWAVSamples(queue []int16, chunk PCMChunk) []int16 {
 	return queue
 }
 
-func popWAVFrame(queue *[]int16, sampleCount int) []int16 {
-	frame := make([]int16, sampleCount)
+func popWAVFrameInto(queue *[]int16, frame []int16) {
+	clear(frame)
 	if len(*queue) == 0 {
-		return frame
+		return
 	}
-	copied := copy(frame, (*queue)[:min(sampleCount, len(*queue))])
+	copied := copy(frame, (*queue)[:min(len(frame), len(*queue))])
 	*queue = (*queue)[copied:]
-	return frame
 }
 
-func pcm16Bytes(samples []int16) []byte {
-	out := make([]byte, len(samples)*2)
+func pcm16BytesInto(out []byte, samples []int16) {
 	for i, sample := range samples {
 		binary.LittleEndian.PutUint16(out[i*2:i*2+2], uint16(sample))
 	}
-	return out
 }

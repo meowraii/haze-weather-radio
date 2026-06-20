@@ -313,6 +313,43 @@ func TestResolverDerivesHelloWeatherProviderWhenDirectoryUnavailable(t *testing.
 	}
 }
 
+func TestResolverDerivesThreeDigitHelloWeatherProviderIDs(t *testing.T) {
+	cfg := loadedConfig{
+		IVR:   Config{DefaultLanguage: "en-CA"},
+		Feeds: []feedXML{{ID: "default", EnabledRaw: "true", Timezone: "America/Toronto"}},
+	}
+	tests := map[string]struct {
+		Forecast string
+		Province string
+		Name     string
+	}{
+		"08074": {Forecast: "bc-74", Province: "BC", Name: "Vancouver"},
+		"04143": {Forecast: "on-143", Province: "ON", Name: "Toronto"},
+		"04137": {Forecast: "on-137", Province: "ON", Name: "London"},
+		"04118": {Forecast: "on-118", Province: "ON", Name: "Ottawa"},
+		"03133": {Forecast: "qc-133", Province: "QC", Name: "Quebec"},
+	}
+	for code, want := range tests {
+		t.Run(code, func(t *testing.T) {
+			resolver := resolverWithHelloWeather(cfg)
+			resolver.lookupProviderName = func(_ context.Context, forecastID string) (string, bool) {
+				if forecastID != want.Forecast {
+					t.Fatalf("forecastID = %q, want %q", forecastID, want.Forecast)
+				}
+				return want.Name, true
+			}
+
+			location, err := resolver.Resolve(code)
+			if err != nil {
+				t.Fatalf("Resolve returned error: %v", err)
+			}
+			if location.Forecast != want.Forecast || location.Province != want.Province || location.Name != want.Name {
+				t.Fatalf("location = %#v", location)
+			}
+		})
+	}
+}
+
 func TestResolverAcceptsProvinceAndLocationShorthand(t *testing.T) {
 	cfg := loadedConfig{
 		IVR:   Config{DefaultLanguage: "en-CA"},
