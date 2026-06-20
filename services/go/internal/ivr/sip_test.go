@@ -121,6 +121,52 @@ func TestSIPRegisterUsesLocalContactWithPublicHostConfigured(t *testing.T) {
 	}
 }
 
+func TestSIPRegisterCanUsePublicContactForProviderCompatibility(t *testing.T) {
+	supportedPath := false
+	service := &Service{cfg: loadedConfig{IVR: Config{
+		SIP: sipConfig{
+			PublicHost: "203.0.113.10",
+			Registration: sipRegistrationConfig{
+				ContactHost:   "public",
+				ViaHost:       "public",
+				UserAgent:     "MicroSIP/3.21.3",
+				SupportedPath: &supportedPath,
+			},
+		},
+	}}}
+	registrar := &sipRegistrar{
+		service:   service,
+		localAddr: &net.UDPAddr{IP: net.ParseIP("172.16.1.30"), Port: 5060},
+	}
+
+	request := registrar.buildRegister("sip:vancouver1.voip.ms:5060", "vancouver1.voip.ms", "529289_TeleWeather", "529289_TeleWeather", "call-id", "tag", 1, 120, "")
+
+	if !strings.Contains(request, "REGISTER sip:vancouver1.voip.ms:5060 SIP/2.0") {
+		t.Fatalf("REGISTER URI was not preserved:\n%s", request)
+	}
+	if !strings.Contains(request, "Via: SIP/2.0/UDP 203.0.113.10:5060") {
+		t.Fatalf("REGISTER should use public Via host, got:\n%s", request)
+	}
+	if !strings.Contains(request, "Contact: <sip:529289_TeleWeather@203.0.113.10:5060>") {
+		t.Fatalf("REGISTER should use public Contact host, got:\n%s", request)
+	}
+	if strings.Contains(strings.ToLower(request), "supported: path") {
+		t.Fatalf("REGISTER should be able to suppress Supported: path:\n%s", request)
+	}
+	if !strings.Contains(request, "User-Agent: MicroSIP/3.21.3") {
+		t.Fatalf("REGISTER should use configured User-Agent:\n%s", request)
+	}
+}
+
+func TestSIPRegisterURIAddsSIPScheme(t *testing.T) {
+	if got := sipRegisterURI("vancouver1.voip.ms:5060"); got != "sip:vancouver1.voip.ms:5060" {
+		t.Fatalf("uri = %q", got)
+	}
+	if got := sipRegisterURI("sip:vancouver1.voip.ms:5060"); got != "sip:vancouver1.voip.ms:5060" {
+		t.Fatalf("uri = %q", got)
+	}
+}
+
 func TestSIPInviteSetsCallDeadline(t *testing.T) {
 	service := &Service{cfg: loadedConfig{IVR: Config{
 		MaxCallSeconds: 7,

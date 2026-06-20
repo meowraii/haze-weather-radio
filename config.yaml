@@ -1,4 +1,4 @@
-version: 26.06.02
+version: 26.06.18
 daemon_settings_file: runtime/state/daemonSettings.json
 
 storage:
@@ -89,14 +89,19 @@ services:
           password_env: HAZE_IVR_SIP_PASSWORD
         registration:
           enabled: true
-          server: "ca.voip.ms:5060"
-          domain: "ca.voip.ms"
+          server: "vancouver1.voip.ms:5060"
+          domain: "vancouver1.voip.ms"
+          register_uri: "sip:vancouver1.voip.ms:5060"
           username: "529289_TeleWeather"
           auth_username: "529289_TeleWeather"
           password_env: HAZE_IVR_SIP_REGISTER_PASSWORD
           from_user: "529289_TeleWeather"
           contact_user: "529289_TeleWeather"
-          expires: 300
+          contact_host: "public"
+          via_host: "public"
+          user_agent: "MicroSIP/3.21.3"
+          supported_path: false
+          expires: 120
           retry_seconds: 30
       rtp:
         port_min: 30000

@@ -78,16 +78,21 @@ type sipConfig struct {
 }
 
 type sipRegistrationConfig struct {
-	Enabled      bool   `yaml:"enabled"`
-	Server       string `yaml:"server"`
-	Domain       string `yaml:"domain"`
-	Username     string `yaml:"username"`
-	AuthUsername string `yaml:"auth_username"`
-	PasswordEnv  string `yaml:"password_env"`
-	FromUser     string `yaml:"from_user"`
-	ContactUser  string `yaml:"contact_user"`
-	Expires      int    `yaml:"expires"`
-	RetrySeconds int    `yaml:"retry_seconds"`
+	Enabled       bool   `yaml:"enabled"`
+	Server        string `yaml:"server"`
+	Domain        string `yaml:"domain"`
+	RegisterURI   string `yaml:"register_uri"`
+	Username      string `yaml:"username"`
+	AuthUsername  string `yaml:"auth_username"`
+	PasswordEnv   string `yaml:"password_env"`
+	FromUser      string `yaml:"from_user"`
+	ContactUser   string `yaml:"contact_user"`
+	ContactHost   string `yaml:"contact_host"`
+	ViaHost       string `yaml:"via_host"`
+	UserAgent     string `yaml:"user_agent"`
+	SupportedPath *bool  `yaml:"supported_path"`
+	Expires       int    `yaml:"expires"`
+	RetrySeconds  int    `yaml:"retry_seconds"`
 }
 
 type rtpConfig struct {
@@ -258,6 +263,13 @@ func normalizeIVRConfig(cfg *Config) {
 	}
 	if cfg.SIP.Registration.RetrySeconds == 0 {
 		cfg.SIP.Registration.RetrySeconds = 30
+	}
+	if cfg.SIP.Registration.UserAgent == "" {
+		cfg.SIP.Registration.UserAgent = "Haze Weather Radio IVR"
+	}
+	if cfg.SIP.Registration.SupportedPath == nil {
+		defaultSupportedPath := true
+		cfg.SIP.Registration.SupportedPath = &defaultSupportedPath
 	}
 	if cfg.RTP.PortMin == 0 {
 		cfg.RTP.PortMin = 30000

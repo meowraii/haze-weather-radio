@@ -328,7 +328,7 @@ func (r *sipRegistrar) run(ctx context.Context) {
 func (r *sipRegistrar) registerOnce(ctx context.Context, remote *net.UDPAddr, password string) (int, error) {
 	cfg := r.service.cfg.IVR.SIP.Registration
 	domain := firstNonBlank(cfg.Domain, sipHostOnly(cfg.Server))
-	registerURI := "sip:" + sipRegisterTarget(cfg.Server, domain)
+	registerURI := sipRegisterURI(firstNonBlank(cfg.RegisterURI, sipRegisterTarget(cfg.Server, domain)))
 	username := strings.TrimSpace(cfg.Username)
 	if username == "" {
 		return 0, fmt.Errorf("username is not configured")
@@ -341,8 +341,8 @@ func (r *sipRegistrar) registerOnce(ctx context.Context, remote *net.UDPAddr, pa
 	fromTag := randomHex(6)
 	cseq := 1
 	request := r.buildRegister(registerURI, domain, fromUser, contactUser, callID, fromTag, cseq, expires, "")
-	r.service.sipDebugf("registrar sending REGISTER remote=%s call_id=%s cseq=%d auth=false domain=%s from_user=%s contact_user=%s",
-		remote, callID, cseq, domain, fromUser, contactUser)
+	r.service.sipDebugf("registrar sending REGISTER remote=%s call_id=%s cseq=%d auth=false domain=%s from_user=%s contact_user=%s uri=%s",
+		remote, callID, cseq, domain, fromUser, contactUser, registerURI)
 	response, err := r.sendRegister(ctx, remote, request, callID)
 	if err != nil {
 		return 0, err
@@ -374,19 +374,24 @@ func (r *sipRegistrar) registerOnce(ctx context.Context, remote *net.UDPAddr, pa
 	}
 	r.service.sipDebugf("registrar auth response call_id=%s status=%d reason=%q", callID, response.StatusCode, response.Reason)
 	if response.StatusCode != 200 {
+		r.service.sipDebugf("registrar auth failed call_id=%s %s", callID, sipResponseHeaderSummary(response))
 		return 0, fmt.Errorf("provider returned %d %s after auth", response.StatusCode, response.Reason)
 	}
 	return sipResponseExpires(response, expires), nil
 }
 
 func (r *sipRegistrar) buildRegister(registerURI string, domain string, fromUser string, contactUser string, callID string, fromTag string, cseq int, expires int, authHeader string) string {
-	contactHost := r.service.sipLocalAdvertiseHost(nil, r.localAddr)
+	cfg := r.service.cfg.IVR.SIP.Registration
+	viaHost := r.registrationHost(cfg.ViaHost, r.localAddr)
+	contactHost := r.registrationHost(cfg.ContactHost, r.localAddr)
 	contactPort := sipAddrPort(r.localAddr)
 	contact := fmt.Sprintf("<sip:%s@%s:%d>", contactUser, contactHost, contactPort)
 	branch := "z9hG4bK-" + randomHex(8)
+	userAgent := firstNonBlank(cfg.UserAgent, "Haze Weather Radio IVR")
+	supportedPath := cfg.SupportedPath == nil || *cfg.SupportedPath
 	var builder strings.Builder
 	builder.WriteString("REGISTER " + registerURI + " SIP/2.0\r\n")
-	builder.WriteString(fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=%s;rport\r\n", contactHost, contactPort, branch))
+	builder.WriteString(fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=%s;rport\r\n", viaHost, contactPort, branch))
 	builder.WriteString(fmt.Sprintf("Max-Forwards: 70\r\n"))
 	builder.WriteString(fmt.Sprintf("From: <sip:%s@%s>;tag=%s\r\n", fromUser, domain, fromTag))
 	builder.WriteString(fmt.Sprintf("To: <sip:%s@%s>\r\n", fromUser, domain))
@@ -394,11 +399,28 @@ func (r *sipRegistrar) buildRegister(registerURI string, domain string, fromUser
 	builder.WriteString(fmt.Sprintf("CSeq: %d REGISTER\r\n", cseq))
 	builder.WriteString("Contact: " + contact + "\r\n")
 	builder.WriteString(fmt.Sprintf("Expires: %d\r\n", expires))
-	builder.WriteString("Supported: path\r\n")
-	builder.WriteString("User-Agent: Haze Weather Radio IVR\r\n")
+	if supportedPath {
+		builder.WriteString("Supported: path\r\n")
+	}
+	builder.WriteString("User-Agent: " + userAgent + "\r\n")
 	builder.WriteString(authHeader)
 	builder.WriteString("Content-Length: 0\r\n\r\n")
 	return builder.String()
+}
+
+func (r *sipRegistrar) registrationHost(configured string, local net.Addr) string {
+	value := strings.TrimSpace(configured)
+	switch strings.ToLower(value) {
+	case "", "local":
+		return r.service.sipLocalAdvertiseHost(nil, local)
+	case "public", "public_host":
+		if host := strings.TrimSpace(r.service.cfg.IVR.SIP.PublicHost); host != "" {
+			return sipHostNameOnly(host)
+		}
+		return r.service.sipLocalAdvertiseHost(nil, local)
+	default:
+		return sipHostNameOnly(value)
+	}
 }
 
 func (r *sipRegistrar) sendRegister(ctx context.Context, remote *net.UDPAddr, request string, callID string) (sipResponse, error) {
@@ -1433,6 +1455,35 @@ func sipRegisterTarget(server string, domain string) string {
 	return strings.TrimSpace(domain)
 }
 
+func sipRegisterURI(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(value), "sip:") {
+		return value
+	}
+	return "sip:" + value
+}
+
+func sipHostNameOnly(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "<>")
+	if strings.HasPrefix(strings.ToLower(value), "sip:") {
+		value = strings.TrimSpace(value[4:])
+	}
+	if strings.Contains(value, "@") {
+		_, value, _ = strings.Cut(value, "@")
+	}
+	if strings.Contains(value, ";") {
+		value, _, _ = strings.Cut(value, ";")
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		return host
+	}
+	return value
+}
+
 func sipAddrPort(addr net.Addr) int {
 	if udp, ok := addr.(*net.UDPAddr); ok && udp.Port > 0 {
 		return udp.Port
@@ -1506,6 +1557,19 @@ func sipDigestChallengeSummary(challenge string) string {
 		params["opaque"] != "",
 		params["stale"],
 	)
+}
+
+func sipResponseHeaderSummary(response sipResponse) string {
+	parts := []string{}
+	for _, key := range []string{"server", "warning", "reason", "x-reason", "www-authenticate", "proxy-authenticate"} {
+		if value := sipHeader(response.Headers, key); value != "" {
+			parts = append(parts, key+"="+strconv.Quote(value))
+		}
+	}
+	if len(parts) == 0 {
+		return "headers=none"
+	}
+	return strings.Join(parts, " ")
 }
 
 func digestQOPIncludesAuth(value string) bool {
