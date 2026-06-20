@@ -25,6 +25,7 @@ const MEDIA_PUBLISH_CHUNK_MS: u32 = 200;
 const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 750;
 const MAX_CATCH_UP_CHUNKS: usize = 1;
 const PCM_PUBLISH_QUEUE_CAPACITY: usize = 4;
+const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Options {
@@ -641,10 +642,14 @@ impl FeedRunner {
                         chunks_due += 1;
                     }
                     if media_remainder >= chunk_interval {
-                        if last_lag_log.elapsed() >= Duration::from_secs(10) {
+                        let dropped_backlog = media_remainder;
+                        if dropped_backlog >= realtime_lag_warn_backlog()
+                            && last_lag_log.elapsed() >= Duration::from_secs(10)
+                        {
                             tracing::warn!(
                                 feed_id = self.feed.id,
                                 elapsed_ms = elapsed.as_millis(),
+                                backlog_ms = dropped_backlog.as_millis(),
                                 "playout tick lagged; dropping missed realtime audio instead of bursting stale chunks"
                             );
                             last_lag_log = Instant::now();
@@ -1092,6 +1097,10 @@ fn max_live_breakin_buffer_for(sample_rate: u32, channels: u16) -> usize {
 
 fn stale_pcm_publish_log_due(dropped: u64) -> bool {
     dropped == 1 || dropped.is_multiple_of(25)
+}
+
+fn realtime_lag_warn_backlog() -> Duration {
+    Duration::from_millis(REALTIME_LAG_WARN_BACKLOG_MS)
 }
 
 fn pcm_publish_queue_capacity() -> usize {
@@ -2138,5 +2147,10 @@ mod tests {
     fn realtime_pcm_publish_queue_stays_short_for_low_latency() {
         assert!(pcm_publish_queue_capacity() <= 4);
         assert_eq!(MAX_CATCH_UP_CHUNKS, 1);
+    }
+
+    #[test]
+    fn realtime_lag_warning_ignores_single_frame_jitter() {
+        assert!(realtime_lag_warn_backlog() > Duration::from_millis(u64::from(PCM_CHUNK_MS)));
     }
 }
