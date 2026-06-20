@@ -91,7 +91,7 @@ services:
           enabled: true
           server: "vancouver1.voip.ms:5060"
           domain: "vancouver1.voip.ms"
-          register_uri: "sip:vancouver1.voip.ms:5060"
+          register_uri: "sip:vancouver1.voip.ms"
           username: "529289_TeleWeather"
           auth_username: "529289_TeleWeather"
           password_env: HAZE_IVR_SIP_REGISTER_PASSWORD
