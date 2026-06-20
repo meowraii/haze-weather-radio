@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -56,6 +57,29 @@ func TestLogoutRevokesSignedSessionTokenForCurrentProcess(t *testing.T) {
 	manager.Logout(token)
 	if manager.ValidToken(token) {
 		t.Fatal("logged out token remained valid")
+	}
+}
+
+func TestSignedSessionLoginDoesNotRetainSessionMapEntry(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	t.Setenv("ADMIN_PASSWD_HASH", "")
+	manager := NewAuthManager(authEnabledConfig())
+	token, err := manager.Login("secret")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if token == "" {
+		t.Fatal("token was empty")
+	}
+	if len(manager.sessions) != 0 {
+		t.Fatalf("signed token was retained in legacy session map: %d", len(manager.sessions))
+	}
+	manager.sessions["legacy"] = time.Now().Add(-time.Second)
+	if !manager.ValidToken(token) {
+		t.Fatal("signed token was not valid")
+	}
+	if len(manager.sessions) != 0 {
+		t.Fatalf("expired legacy sessions were not pruned: %d", len(manager.sessions))
 	}
 }
 

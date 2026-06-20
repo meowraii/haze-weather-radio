@@ -10,13 +10,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 type BridgeResult<T> = std::result::Result<T, String>;
 type PendingReply<T> = oneshot::Sender<BridgeResult<T>>;
 type PendingMap<T> = Arc<Mutex<HashMap<String, PendingReply<T>>>>;
 type PendingSynth = PendingMap<String>;
 type PendingProducts = PendingMap<RenderedProduct>;
+
+const SYNTH_REPLY_TIMEOUT: Duration = Duration::from_secs(90);
+const PRODUCT_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub(crate) struct BridgeClient {
@@ -162,10 +165,18 @@ impl BridgeClient {
             self.pending_synth.lock().await.remove(&job_id);
             return Err(err);
         }
-        match rx
-            .await
-            .context("event bridge closed while waiting for TTS")?
-        {
+        let result = match timeout(SYNTH_REPLY_TIMEOUT, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                self.pending_synth.lock().await.remove(&job_id);
+                anyhow::bail!("event bridge closed while waiting for TTS");
+            }
+            Err(_) => {
+                self.pending_synth.lock().await.remove(&job_id);
+                anyhow::bail!("TTS request timed out");
+            }
+        };
+        match result {
             Ok(path) => Ok(path),
             Err(err) => anyhow::bail!("{err}"),
         }
@@ -207,10 +218,18 @@ impl BridgeClient {
             self.pending_products.lock().await.remove(&request_id);
             return Err(err);
         }
-        match rx
-            .await
-            .context("event bridge closed while waiting for product render")?
-        {
+        let result = match timeout(PRODUCT_REPLY_TIMEOUT, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                self.pending_products.lock().await.remove(&request_id);
+                anyhow::bail!("event bridge closed while waiting for product render");
+            }
+            Err(_) => {
+                self.pending_products.lock().await.remove(&request_id);
+                anyhow::bail!("product render request timed out");
+            }
+        };
+        match result {
             Ok(product) => Ok(product),
             Err(err) => anyhow::bail!("{err}"),
         }

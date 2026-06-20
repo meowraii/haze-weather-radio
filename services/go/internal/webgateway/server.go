@@ -201,7 +201,9 @@ func (s *Server) websocket(writer http.ResponseWriter, request *http.Request) {
 		startedAt:  s.startedAt,
 		media:      s.media,
 		server:     s,
+		breakIns:   map[string]struct{}{},
 	}
+	defer session.cancelOwnedOperatorBreakIns()
 	_ = session.send(ctx, "hello", map[string]any{
 		"service": "haze-web",
 	})
@@ -284,6 +286,7 @@ type wsSession struct {
 	lastStateSignature string
 	media              *MediaHub
 	server             *Server
+	breakIns           map[string]struct{}
 }
 
 func (s *wsSession) send(ctx context.Context, messageType string, data map[string]any) error {

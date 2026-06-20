@@ -635,6 +635,7 @@ func (h *MediaHub) streamG722(ctx context.Context, feedID string, track *webrtc.
 	frameQueue := make([][]byte, 0, 32)
 	frameHead := 0
 	encoder := g722.NewEncoder(g722.Rate64000, 0)
+	silenceFrame := make([]int16, g722FrameSamples)
 	for {
 		select {
 		case <-ctx.Done():
@@ -646,6 +647,7 @@ func (h *MediaHub) streamG722(ctx context.Context, feedID string, track *webrtc.
 					if !ok {
 						return
 					}
+					compactQueuedFrames(&frameQueue, &frameHead)
 					frameQueue = appendG722Frames(frameQueue, encoder, chunk)
 				default:
 					drained = cap(updates)
@@ -655,7 +657,7 @@ func (h *MediaHub) streamG722(ctx context.Context, feedID string, track *webrtc.
 			if next, ok := popQueuedFrame(&frameQueue, &frameHead); ok {
 				frame = next
 			} else {
-				frame = encodeG722Frame(encoder, make([]int16, g722FrameSamples))
+				frame = encodeG722Frame(encoder, silenceFrame)
 			}
 			if err := track.WriteSample(media.Sample{Data: frame, Duration: webrtcFrameDuration}); err != nil {
 				return
@@ -671,6 +673,7 @@ func (h *MediaHub) streamOpus(ctx context.Context, feedID string, track *webrtc.
 	defer ticker.Stop()
 	frameQueue := make([][]byte, 0, 32)
 	frameHead := 0
+	idleSamples := opusIdleFrameSamples()
 	loggedWrite := false
 	log.Printf("media bridge Opus stream started for feed %s", feedID)
 	for {
@@ -686,6 +689,7 @@ func (h *MediaHub) streamOpus(ctx context.Context, feedID string, track *webrtc.
 						log.Printf("media bridge Opus stream stopped for feed %s: subscription closed", feedID)
 						return
 					}
+					compactQueuedFrames(&frameQueue, &frameHead)
 					frameQueue = appendOpusFrames(frameQueue, encoder, chunk)
 				default:
 					drained = cap(updates)
@@ -694,7 +698,7 @@ func (h *MediaHub) streamOpus(ctx context.Context, feedID string, track *webrtc.
 			var frame []byte
 			if next, ok := popQueuedFrame(&frameQueue, &frameHead); ok {
 				frame = next
-			} else if encoded, err := encoder.Encode(opusIdleFrameSamples()); err == nil {
+			} else if encoded, err := encoder.Encode(idleSamples); err == nil {
 				frame = encoded
 			}
 			if len(frame) == 0 {
@@ -731,6 +735,7 @@ func (h *MediaHub) streamPCMU(ctx context.Context, feedID string, track *webrtc.
 					if !ok {
 						return
 					}
+					compactQueuedFrames(&frameQueue, &frameHead)
 					frameQueue = appendPCMUFrames(frameQueue, chunk)
 				default:
 					drained = cap(updates)
@@ -762,6 +767,20 @@ func popQueuedFrame(queue *[][]byte, head *int) ([]byte, bool) {
 		*head = 0
 	}
 	return frame, true
+}
+
+func compactQueuedFrames(queue *[][]byte, head *int) {
+	if *head <= 0 {
+		return
+	}
+	if *head >= len(*queue) {
+		*head = 0
+		*queue = (*queue)[:0]
+		return
+	}
+	copy(*queue, (*queue)[*head:])
+	*queue = (*queue)[:len(*queue)-*head]
+	*head = 0
 }
 
 func opusIdleFrameSamples() []int16 {

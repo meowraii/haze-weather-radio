@@ -10,7 +10,8 @@ use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tokio::time::{interval, timeout, Instant, MissedTickBehavior};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::time::{interval, Instant, MissedTickBehavior};
 
 use crate::bridge::{self, BridgeClient, ProductRenderRequest, RenderedProduct, SynthJob};
 use crate::config::{display_text, resolve_path, FeedConfig, LoadedConfig};
@@ -22,6 +23,7 @@ const ALERT_QUEUE_DIR: &str = "runtime/queues/alerts";
 const PCM_CHUNK_MS: u32 = 20;
 const MEDIA_PUBLISH_CHUNK_MS: u32 = 200;
 const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 2500;
+const MAX_CATCH_UP_CHUNKS: usize = 2;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Options {
@@ -543,6 +545,8 @@ impl FeedRunner {
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut last_media_tick = Instant::now() - chunk_interval;
         let mut media_remainder = Duration::from_millis(0);
+        let mut last_lag_log = Instant::now() - Duration::from_secs(60);
+        let mut dropped_pcm_publishes = 0u64;
         let mut current: Option<AudioItem> = None;
         let mut pending: Option<AudioItem> = None;
         let mut priority_pending = VecDeque::<AudioItem>::new();
@@ -627,14 +631,23 @@ impl FeedRunner {
                 }
                 _ = ticker.tick() => {
                     let tick_now = Instant::now();
-                    media_remainder += tick_now.saturating_duration_since(last_media_tick);
+                    let elapsed = tick_now.saturating_duration_since(last_media_tick);
+                    media_remainder += elapsed;
                     last_media_tick = tick_now;
                     let mut chunks_due = 0usize;
-                    while media_remainder >= chunk_interval && chunks_due < 8 {
+                    while media_remainder >= chunk_interval && chunks_due < MAX_CATCH_UP_CHUNKS {
                         media_remainder -= chunk_interval;
                         chunks_due += 1;
                     }
-                    if chunks_due == 8 {
+                    if media_remainder >= chunk_interval {
+                        if last_lag_log.elapsed() >= Duration::from_secs(10) {
+                            tracing::warn!(
+                                feed_id = self.feed.id,
+                                elapsed_ms = elapsed.as_millis(),
+                                "playout tick lagged; dropping missed realtime audio instead of bursting stale chunks"
+                            );
+                            last_lag_log = Instant::now();
+                        }
                         media_remainder = Duration::from_millis(0);
                     }
                     if chunks_due == 0 {
@@ -729,11 +742,24 @@ impl FeedRunner {
                             let duration_ms = publish_duration_ms;
                             publish_duration_ms = 0;
                             publish_buffer = Vec::with_capacity(chunk.len() * publish_chunk_count);
-                            if pcm_tx.send(PcmPublish { data, duration_ms }).await.is_err() {
-                                tracing::warn!(
-                                    feed_id = self.feed.id,
-                                    "media publisher stopped before PCM could be forwarded"
-                                );
+                            match pcm_tx.try_send(PcmPublish { data, duration_ms }) {
+                                Ok(()) => {}
+                                Err(TrySendError::Full(_)) => {
+                                    dropped_pcm_publishes = dropped_pcm_publishes.saturating_add(1);
+                                    if dropped_pcm_publishes == 1 || dropped_pcm_publishes.is_multiple_of(50) {
+                                        tracing::warn!(
+                                            feed_id = self.feed.id,
+                                            dropped_chunks = dropped_pcm_publishes,
+                                            "media publisher is behind; dropping stale bridge PCM"
+                                        );
+                                    }
+                                }
+                                Err(TrySendError::Closed(_)) => {
+                                    tracing::warn!(
+                                        feed_id = self.feed.id,
+                                        "media publisher stopped before PCM could be forwarded"
+                                    );
+                                }
                             }
                         }
                         if let Some(done) = completed_breakin {
@@ -1154,18 +1180,15 @@ async fn build_package(
         .join("runtime/audio/playout")
         .join(&feed.id)
         .join(format!("{job_id}.wav"));
-    let wav_path = timeout(
-        Duration::from_secs(90),
-        client.synthesize(SynthJob {
+    let wav_path = client
+        .synthesize(SynthJob {
             id: job_id.clone(),
             text: product.text,
             reader_id,
             language,
             output_path,
-        }),
-    )
-    .await
-    .context("TTS request timed out")??;
+        })
+        .await?;
     let pcm = read_wav_pcm(&PathBuf::from(wav_path), cfg).await?;
     Ok(AudioItem {
         id: job_id,
@@ -1196,9 +1219,7 @@ async fn render_product_with_fallback(
             package_id: package_id.to_string(),
             force: true,
         };
-        if let Ok(Ok(product)) =
-            timeout(Duration::from_secs(10), client.render_product(request)).await
-        {
+        if let Ok(product) = client.render_product(request).await {
             return Ok(product);
         }
     }

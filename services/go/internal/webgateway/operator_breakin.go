@@ -19,6 +19,8 @@ const operatorBreakInDir = "runtime/audio/operator-breakin"
 const operatorBreakInMaxPCMBytes = 48_000 * 2 * 180
 const operatorBreakInMaxChunkBytes = 512 << 10
 const operatorBreakInMaxUploadBytes = 8 << 20
+const operatorBreakInMaxSessions = 8
+const operatorBreakInSessionTTL = 5 * time.Minute
 
 type OperatorBreakInManager struct {
 	mu       sync.Mutex
@@ -148,7 +150,13 @@ func (s *wsSession) startOperatorBreakIn(payload map[string]any) (map[string]any
 			return nil, err
 		}
 	}
-	return s.server.breakIn.start(s.configPath, targets, strings.TrimSpace(stringValue(payload, "title")), sampleRate, channels, prerollPath)
+	result, err := s.server.breakIn.start(s.configPath, targets, strings.TrimSpace(stringValue(payload, "title")), sampleRate, channels, prerollPath)
+	if err == nil {
+		if id, _ := result["session_id"].(string); id != "" {
+			s.trackOperatorBreakInSession(id)
+		}
+	}
+	return result, err
 }
 
 func (s *wsSession) appendOperatorBreakInChunk(payload map[string]any) (map[string]any, error) {
@@ -162,6 +170,7 @@ func (s *wsSession) appendOperatorBreakInChunk(payload map[string]any) (map[stri
 
 func (s *wsSession) finishOperatorBreakIn(payload map[string]any) (map[string]any, error) {
 	id := strings.TrimSpace(stringValue(payload, "session_id"))
+	defer s.untrackOperatorBreakInSession(id)
 	result, err := s.server.breakIn.finish(id)
 	if err != nil {
 		return nil, err
@@ -203,6 +212,7 @@ func (s *wsSession) queueOperatorBreakInURL(payload map[string]any) (map[string]
 
 func (s *wsSession) cancelOperatorBreakIn(payload map[string]any) (map[string]any, error) {
 	id := strings.TrimSpace(stringValue(payload, "session_id"))
+	defer s.untrackOperatorBreakInSession(id)
 	if err := s.server.breakIn.cancel(id); err != nil {
 		return nil, err
 	}
@@ -210,11 +220,15 @@ func (s *wsSession) cancelOperatorBreakIn(payload map[string]any) (map[string]an
 }
 
 func (m *OperatorBreakInManager) start(configPath string, feedIDs []string, title string, sampleRate int, channels int, prerollPath string) (map[string]any, error) {
+	m.reapStale()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
 	if bridgeAddr == "" {
 		return nil, fmt.Errorf("event bridge is not available")
+	}
+	if len(m.sessions) >= operatorBreakInMaxSessions {
+		return nil, fmt.Errorf("too many active break-in sessions")
 	}
 	id := safeID(fmt.Sprintf("breakin-%d", time.Now().UTC().UnixNano()))
 	if id == "" {
@@ -275,6 +289,7 @@ func (m *OperatorBreakInManager) start(configPath string, feedIDs []string, titl
 }
 
 func (m *OperatorBreakInManager) appendChunk(id string, data []byte) (map[string]any, error) {
+	m.reapStale()
 	if id == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
@@ -450,6 +465,9 @@ func decodeBase64Payload(value string, maxBytes int) ([]byte, error) {
 	if value == "" {
 		return nil, fmt.Errorf("missing audio data")
 	}
+	if maxBytes > 0 && base64.StdEncoding.DecodedLen(len(value)) > maxBytes+2 {
+		return nil, fmt.Errorf("audio data exceeds %d bytes", maxBytes)
+	}
 	data, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
 		return nil, fmt.Errorf("decode audio data: %w", err)
@@ -458,6 +476,71 @@ func decodeBase64Payload(value string, maxBytes int) ([]byte, error) {
 		return nil, fmt.Errorf("audio data exceeds %d bytes", maxBytes)
 	}
 	return data, nil
+}
+
+func (s *wsSession) trackOperatorBreakInSession(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.breakIns == nil {
+		s.breakIns = map[string]struct{}{}
+	}
+	s.breakIns[id] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *wsSession) untrackOperatorBreakInSession(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.breakIns, id)
+	s.mu.Unlock()
+}
+
+func (s *wsSession) cancelOwnedOperatorBreakIns() {
+	if s == nil || s.server == nil || s.server.breakIn == nil {
+		return
+	}
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.breakIns))
+	for id := range s.breakIns {
+		ids = append(ids, id)
+	}
+	s.breakIns = map[string]struct{}{}
+	s.mu.Unlock()
+	for _, id := range ids {
+		_ = s.server.breakIn.cancel(id)
+	}
+}
+
+func (m *OperatorBreakInManager) reapStale() {
+	if m == nil {
+		return
+	}
+	now := time.Now().UTC()
+	expired := []*operatorBreakInSession{}
+	m.mu.Lock()
+	for id, session := range m.sessions {
+		if session == nil || session.StartedAt.IsZero() || now.Sub(session.StartedAt) > operatorBreakInSessionTTL {
+			delete(m.sessions, id)
+			if session != nil {
+				expired = append(expired, session)
+			}
+		}
+	}
+	m.mu.Unlock()
+	for _, session := range expired {
+		if session.Publisher != nil {
+			_ = publishOperatorBreakInEvent(session, "operator.breakin.cancel", map[string]any{
+				"reason": "stale session expired",
+			})
+			_ = session.Publisher.Close()
+		}
+	}
 }
 
 type wavInfoLite struct {

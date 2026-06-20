@@ -4,12 +4,14 @@ mod engine;
 mod sinks;
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
+
+#[cfg(not(windows))]
+use std::process::Command;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -111,13 +113,26 @@ async fn wait_for_parent_exit(pid: u32) {
 
 #[cfg(windows)]
 fn parent_alive(pid: u32) -> bool {
-    let Ok(output) = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .output()
-    else {
+    use std::ffi::c_void;
+
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut c_void;
+        fn WaitForSingleObject(hHandle: *mut c_void, dwMilliseconds: u32) -> u32;
+        fn CloseHandle(hObject: *mut c_void) -> i32;
+    }
+
+    // Avoid spawning tasklist once a second from the realtime playout process.
+    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
         return false;
-    };
-    output.status.success() && String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+    }
+    let result = unsafe { WaitForSingleObject(handle, 0) };
+    let _ = unsafe { CloseHandle(handle) };
+    result == WAIT_TIMEOUT
 }
 
 #[cfg(not(windows))]

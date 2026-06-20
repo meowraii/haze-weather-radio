@@ -92,7 +92,11 @@ func (a *AuthManager) Login(password string) (string, error) {
 		return "", err
 	}
 	a.mu.Lock()
-	a.sessions[token] = time.Now().Add(a.ttl)
+	now := time.Now()
+	a.cleanupSessionsLocked(now)
+	if _, signed := a.sessionTokenExpiry(token); !signed {
+		a.sessions[token] = now.Add(a.ttl)
+	}
 	a.mu.Unlock()
 	return token, nil
 }
@@ -128,6 +132,7 @@ func (a *AuthManager) ValidToken(token string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cleanupRevokedLocked(now)
+	a.cleanupSessionsLocked(now)
 	if _, revoked := a.revoked[tokenDigest(token)]; revoked {
 		return false
 	}
@@ -244,6 +249,14 @@ func (a *AuthManager) cleanupRevokedLocked(now time.Time) {
 	for digest, expires := range a.revoked {
 		if !expires.After(now) {
 			delete(a.revoked, digest)
+		}
+	}
+}
+
+func (a *AuthManager) cleanupSessionsLocked(now time.Time) {
+	for token, expires := range a.sessions {
+		if !expires.After(now) || strings.HasPrefix(token, "haze1.") {
+			delete(a.sessions, token)
 		}
 	}
 }
