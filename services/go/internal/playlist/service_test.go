@@ -2,6 +2,7 @@ package playlist
 
 import (
 	"context"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,49 @@ func TestItemScheduleDurationIncludesConfiguredGap(t *testing.T) {
 
 	if got != 3500*time.Millisecond {
 		t.Fatalf("schedule duration = %s", got)
+	}
+}
+
+func TestBuildProductAudioItemUsesRoutineQueueAudioPath(t *testing.T) {
+	dir := t.TempDir()
+	audioRel := filepath.Join("managed", "audio", "bulletins", "test.wav")
+	audioPath := filepath.Join(dir, audioRel)
+	writeTestWAV(t, audioPath, 48000, 1, 4800)
+	planner := &feedPlanner{
+		cfg: loadedConfig{
+			BaseDir:   dir,
+			OutputDir: filepath.Join(dir, "runtime", "audio", "playout"),
+			Root: rootConfig{
+				Playout: playoutConfig{SampleRate: 48000, Channels: 1},
+			},
+		},
+		feed: feedXML{ID: "sk-0001"},
+	}
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	item, ok, err := planner.buildProductAudioItem(context.Background(), renderedProduct{
+		PackageID: "user_bulletin",
+		Title:     "Operator Bulletin",
+		Metadata: map[string]string{
+			"content_type": "audio",
+			"audio_path":   audioRel,
+		},
+	}, "user_bulletin", "routine", "", now, now, "routine-audio-test")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("audio product metadata was not recognized")
+	}
+	if item.Kind != "audio" || item.PackageID != "user_bulletin" || item.Source != "routine" {
+		t.Fatalf("audio item = %#v", item)
+	}
+	if item.AudioPath != audioPath {
+		t.Fatalf("audio path = %q, want %q", item.AudioPath, audioPath)
+	}
+	if item.DurationMS <= 0 {
+		t.Fatalf("duration = %d", item.DurationMS)
 	}
 }
 
@@ -477,4 +521,29 @@ func playlistCAP() string {
     <description>Test alert.</description>
   </info>
 </alert>`
+}
+
+func writeTestWAV(t *testing.T, path string, sampleRate int, channels int, frames int) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataBytes := frames * channels * 2
+	raw := make([]byte, 44+dataBytes)
+	copy(raw[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(raw[4:8], uint32(36+dataBytes))
+	copy(raw[8:12], "WAVE")
+	copy(raw[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(raw[16:20], 16)
+	binary.LittleEndian.PutUint16(raw[20:22], 1)
+	binary.LittleEndian.PutUint16(raw[22:24], uint16(channels))
+	binary.LittleEndian.PutUint32(raw[24:28], uint32(sampleRate))
+	binary.LittleEndian.PutUint32(raw[28:32], uint32(sampleRate*channels*2))
+	binary.LittleEndian.PutUint16(raw[32:34], uint16(channels*2))
+	binary.LittleEndian.PutUint16(raw[34:36], 16)
+	copy(raw[36:40], "data")
+	binary.LittleEndian.PutUint32(raw[40:44], uint32(dataBytes))
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }

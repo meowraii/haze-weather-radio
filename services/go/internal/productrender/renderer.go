@@ -1305,6 +1305,19 @@ func (r renderer) userBulletinProduct(base Product, feed feedXML) (Product, erro
 	}
 	base.Title = fallbackText(snapshot.Title, "User Bulletin")
 	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
+	if strings.EqualFold(strings.TrimSpace(snapshot.ContentType), "audio") {
+		if base.Metadata == nil {
+			base.Metadata = map[string]string{}
+		}
+		base.Metadata["content_type"] = "audio"
+		if strings.TrimSpace(snapshot.AudioPath) != "" {
+			base.Metadata["audio_path"] = strings.TrimSpace(snapshot.AudioPath)
+		}
+		if strings.TrimSpace(snapshot.AudioURL) != "" {
+			base.Metadata["audio_url"] = strings.TrimSpace(snapshot.AudioURL)
+		}
+		return base, nil
+	}
 	for _, line := range snapshot.Lines {
 		if text := sentence(strings.TrimSpace(line)); text != "" {
 			base.Segments = append(base.Segments, Segment{Kind: "package", Text: text})

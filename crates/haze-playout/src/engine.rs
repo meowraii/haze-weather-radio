@@ -1229,6 +1229,9 @@ async fn build_package(
         anyhow::bail!("package {package_id} is disabled for feed {}", feed.id);
     }
     let product = render_product_with_fallback(cfg, client, feed, package_id).await?;
+    if let Some(item) = audio_item_from_rendered_product(cfg, feed, package_id, &product).await? {
+        return Ok(item);
+    }
     if product.text.trim().is_empty() {
         anyhow::bail!("package {package_id} rendered empty text");
     }
@@ -1266,6 +1269,54 @@ async fn build_package(
     })
 }
 
+async fn audio_item_from_rendered_product(
+    cfg: &LoadedConfig,
+    feed: &FeedConfig,
+    package_id: &str,
+    product: &RenderedProduct,
+) -> Result<Option<AudioItem>> {
+    let content_type = metadata_text(&product.metadata, "content_type");
+    if !content_type.eq_ignore_ascii_case("audio") {
+        return Ok(None);
+    }
+    let audio_path = metadata_text(&product.metadata, "audio_path");
+    if audio_path.is_empty() {
+        let audio_url = metadata_text(&product.metadata, "audio_url");
+        if audio_url.is_empty() {
+            anyhow::bail!("audio product {package_id} is missing audio_path or audio_url");
+        }
+        anyhow::bail!("audio URL products require the Go playlist downloader path");
+    }
+    let path = resolve_path(&cfg.base_dir, audio_path);
+    let pcm = read_wav_pcm(&path, cfg).await?;
+    Ok(Some(AudioItem {
+        id: queue_id(&format!("{}-{package_id}", feed.id)),
+        package_id: package_id.to_string(),
+        title: fallback_text(&product.title, &title_for_package(package_id)),
+        pcm: pcm.data,
+        gap_after: package_gap(cfg),
+        not_before: None,
+        queued_at: Utc::now().to_rfc3339(),
+        target_start: String::new(),
+        predicted_start: String::new(),
+        predicted_finish: String::new(),
+        source: ItemSource::Generated,
+    }))
+}
+
+fn metadata_text<'a>(metadata: &'a HashMap<String, String>, key: &str) -> &'a str {
+    metadata
+        .iter()
+        .find_map(|(raw_key, value)| {
+            if raw_key.trim().eq_ignore_ascii_case(key) {
+                Some(value.trim())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("")
+}
+
 async fn render_product_with_fallback(
     cfg: &LoadedConfig,
     client: &BridgeClient,
@@ -1296,6 +1347,7 @@ async fn render_product_with_fallback(
         text,
         reader_id: cfg.reader_id(package_id),
         language: feed.language(),
+        metadata: HashMap::new(),
     })
 }
 

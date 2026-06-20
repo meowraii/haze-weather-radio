@@ -843,6 +843,45 @@ The planetary A index was 5.`)
 	}
 }
 
+func TestUserBulletinXMLAudioBecomesProductMetadata(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "managed", "configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	xmlBody := `<?xml version="1.0" encoding="UTF-8"?>
+<userBulletins>
+  <bulletin id="audio-1" enabled="true">
+    <title>Road Closure</title>
+    <active />
+    <schedule mode="always" end_of_cycle="true" />
+    <target><feed id="sk-0001" /></target>
+    <content type="audio">
+      <audio file="managed/audio/bulletins/road.wav" />
+    </content>
+  </bulletin>
+</userBulletins>`
+	if err := os.WriteFile(filepath.Join(configDir, "userBulletins.xml"), []byte(xmlBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := renderer{cfg: loadedConfig{BaseDir: dir}}
+
+	product, err := r.userBulletinProduct(productBase(loadedConfig{}, feedXML{ID: "sk-0001"}, "user_bulletin", false), feedXML{ID: "sk-0001"})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if product.Text != "" || len(product.Segments) != 0 {
+		t.Fatalf("audio bulletin should not render TTS text: %#v", product)
+	}
+	if product.Metadata["content_type"] != "audio" || product.Metadata["audio_path"] != "managed/audio/bulletins/road.wav" {
+		t.Fatalf("metadata = %#v", product.Metadata)
+	}
+	if product.Title != "Road Closure" {
+		t.Fatalf("title = %q", product.Title)
+	}
+}
+
 func TestAlertsProductUsesNativeCAPRegistry(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)

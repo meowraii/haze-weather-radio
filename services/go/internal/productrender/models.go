@@ -126,6 +126,9 @@ type climateSnapshot struct {
 }
 
 type bulletinSnapshot struct {
-	Title string   `json:"title"`
-	Lines []string `json:"lines"`
+	Title       string   `json:"title"`
+	Lines       []string `json:"lines"`
+	ContentType string   `json:"content_type,omitempty"`
+	AudioPath   string   `json:"audio_path,omitempty"`
+	AudioURL    string   `json:"audio_url,omitempty"`
 }

@@ -32,13 +32,14 @@ type synthResult struct {
 }
 
 type renderedProduct struct {
-	ID        string `json:"id"`
-	FeedID    string `json:"feed_id"`
-	PackageID string `json:"package_id"`
-	Title     string `json:"title"`
-	Text      string `json:"text"`
-	ReaderID  string `json:"reader_id"`
-	Language  string `json:"language"`
+	ID        string            `json:"id"`
+	FeedID    string            `json:"feed_id"`
+	PackageID string            `json:"package_id"`
+	Title     string            `json:"title"`
+	Text      string            `json:"text"`
+	ReaderID  string            `json:"reader_id"`
+	Language  string            `json:"language"`
+	Metadata  map[string]string `json:"metadata"`
 }
 
 type synthJob struct {

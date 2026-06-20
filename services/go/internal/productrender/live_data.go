@@ -400,11 +400,17 @@ type userBulletinTargetXML struct {
 }
 
 type userBulletinContentXML struct {
-	Type  string `xml:"type,attr"`
+	Type  string               `xml:"type,attr"`
+	Audio userBulletinAudioXML `xml:"audio"`
 	Langs []struct {
 		Code string `xml:"code,attr"`
 		Text string `xml:",chardata"`
 	} `xml:"lang"`
+}
+
+type userBulletinAudioXML struct {
+	File string `xml:"file,attr"`
+	URL  string `xml:"url,attr"`
 }
 
 func (r renderer) loadXMLBulletinSnapshot(feed feedXML, snapshot *bulletinSnapshot) (string, bool) {
@@ -426,7 +432,19 @@ func (r renderer) loadXMLBulletinSnapshot(feed feedXML, snapshot *bulletinSnapsh
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(bulletin.Content.Type), "audio") {
-			continue
+			audioPath := strings.TrimSpace(bulletin.Content.Audio.File)
+			audioURL := strings.TrimSpace(bulletin.Content.Audio.URL)
+			if audioPath == "" && audioURL == "" {
+				continue
+			}
+			title := fallbackText(strings.TrimSpace(bulletin.Title), "User Bulletin")
+			*snapshot = bulletinSnapshot{
+				Title:       title,
+				ContentType: "audio",
+				AudioPath:   audioPath,
+				AudioURL:    audioURL,
+			}
+			return path, true
 		}
 		text := xmlBulletinText(bulletin, lang)
 		if text == "" {

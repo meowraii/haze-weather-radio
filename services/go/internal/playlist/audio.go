@@ -244,6 +244,44 @@ func convertAudioToPCM(ctx context.Context, inputPath string, outputPath string,
 	return os.Rename(tmp, outputPath)
 }
 
+func convertAudioToWAV(ctx context.Context, inputPath string, outputPath string, sampleRate int, channels int) error {
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	if channels <= 0 {
+		channels = 1
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	tmp := outputPath + ".tmp"
+	_ = os.Remove(tmp)
+	ffmpeg := strings.TrimSpace(os.Getenv("FFMPEG"))
+	if ffmpeg == "" {
+		ffmpeg = "ffmpeg"
+	}
+	cmd := exec.CommandContext(
+		ctx,
+		ffmpeg,
+		"-hide_banner",
+		"-loglevel", "error",
+		"-y",
+		"-i", inputPath,
+		"-vn",
+		"-ac", fmt.Sprintf("%d", channels),
+		"-ar", fmt.Sprintf("%d", sampleRate),
+		"-f", "wav",
+		"-acodec", "pcm_s16le",
+		tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("ffmpeg audio conversion failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return os.Rename(tmp, outputPath)
+}
+
 func writePriorityAlertManifest(path string, manifest priorityAlertManifest) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

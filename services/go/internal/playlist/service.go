@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -471,6 +472,9 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 		}
 		product = fallback
 	}
+	if item, ok, err := p.buildProductAudioItem(ctx, product, pkgID, source, targetRaw, timelineEnd, now, queueID); ok || err != nil {
+		return item, err
+	}
 	if strings.TrimSpace(product.Text) == "" {
 		return playlistItem{}, fmt.Errorf("product %s rendered empty text", pkgID)
 	}
@@ -510,6 +514,118 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 		Status:            "queued",
 		Source:            source,
 	}, nil
+}
+
+func (p *feedPlanner) buildProductAudioItem(ctx context.Context, product renderedProduct, pkgID string, source string, targetRaw string, timelineEnd time.Time, now time.Time, queueID string) (playlistItem, bool, error) {
+	if !strings.EqualFold(metadataText(product.Metadata, "content_type"), "audio") {
+		return playlistItem{}, false, nil
+	}
+	audioPath := metadataText(product.Metadata, "audio_path")
+	audioURL := metadataText(product.Metadata, "audio_url")
+	if audioPath == "" && audioURL == "" {
+		return playlistItem{}, true, fmt.Errorf("product %s declared audio content without audio_path or audio_url", pkgID)
+	}
+	outputPath := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID), queueID+".wav")
+	finalPath := ""
+	if audioURL != "" {
+		path, err := p.downloadRoutineAudio(ctx, audioURL, queueID, outputPath)
+		if err != nil {
+			return playlistItem{}, true, err
+		}
+		finalPath = path
+	} else {
+		path, err := p.prepareRoutineAudio(ctx, audioPath, outputPath)
+		if err != nil {
+			return playlistItem{}, true, err
+		}
+		finalPath = path
+	}
+	info, err := wavInfo(finalPath)
+	if err != nil {
+		return playlistItem{}, true, err
+	}
+	target := parseTime(targetRaw)
+	start := predictedStart(now, timelineEnd, target)
+	finish := start.Add(p.itemScheduleDuration(info.DurationMS))
+	return playlistItem{
+		QueueID:           queueID,
+		FeedID:            p.feed.ID,
+		Kind:              "audio",
+		PackageID:         pkgID,
+		Title:             fallbackText(product.Title, pkgID),
+		AudioPath:         finalPath,
+		DurationMS:        info.DurationMS,
+		QueuedAt:          now.UTC().Format(time.RFC3339Nano),
+		TargetStartAt:     formatOptionalTime(target),
+		PredictedStartAt:  start.UTC().Format(time.RFC3339Nano),
+		PredictedFinishAt: finish.UTC().Format(time.RFC3339Nano),
+		Status:            "queued",
+		Source:            source,
+	}, true, nil
+}
+
+func (p *feedPlanner) downloadRoutineAudio(ctx context.Context, sourceURL string, queueID string, outputPath string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(sourceURL))
+	if err != nil || parsed == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", fmt.Errorf("audio URL must be http or https")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	inputPath := filepath.Join(filepath.Dir(outputPath), queueID+".download")
+	if err := downloadFile(ctx, parsed.String(), inputPath, 20<<20); err != nil {
+		return "", err
+	}
+	if _, err := wavInfo(inputPath); err == nil {
+		return inputPath, nil
+	}
+	if err := convertAudioToWAV(ctx, inputPath, outputPath, p.cfg.Root.Playout.SampleRate, p.cfg.Root.Playout.Channels); err != nil {
+		return "", err
+	}
+	return outputPath, nil
+}
+
+func (p *feedPlanner) prepareRoutineAudio(ctx context.Context, rawPath string, outputPath string) (string, error) {
+	sourcePath, err := p.resolveRoutineAudioPath(rawPath)
+	if err != nil {
+		return "", err
+	}
+	if _, err := wavInfo(sourcePath); err == nil {
+		return sourcePath, nil
+	}
+	convertCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	if err := convertAudioToWAV(convertCtx, sourcePath, outputPath, p.cfg.Root.Playout.SampleRate, p.cfg.Root.Playout.Channels); err != nil {
+		return "", err
+	}
+	return outputPath, nil
+}
+
+func (p *feedPlanner) resolveRoutineAudioPath(rawPath string) (string, error) {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return "", fmt.Errorf("audio path is required")
+	}
+	clean := filepath.Clean(rawPath)
+	if filepath.IsAbs(clean) {
+		return clean, nil
+	}
+	slash := filepath.ToSlash(clean)
+	if slash == ".." || strings.HasPrefix(slash, "../") || strings.HasPrefix(slash, "/") {
+		return "", fmt.Errorf("audio path must stay inside the bundle directory")
+	}
+	return filepath.Join(p.cfg.BaseDir, clean), nil
+}
+
+func metadataText(metadata map[string]string, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	for rawKey, value := range metadata {
+		if strings.EqualFold(strings.TrimSpace(rawKey), key) {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (p *feedPlanner) staticProduct(pkgID string, now time.Time) (renderedProduct, error) {

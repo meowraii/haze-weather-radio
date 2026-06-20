@@ -67,6 +67,8 @@ pub(crate) struct RenderedProduct {
     pub(crate) reader_id: String,
     #[serde(default)]
     pub(crate) language: String,
+    #[serde(default)]
+    pub(crate) metadata: HashMap<String, String>,
 }
 
 pub(crate) async fn connect(addr: &str) -> Result<BridgeConnection> {
