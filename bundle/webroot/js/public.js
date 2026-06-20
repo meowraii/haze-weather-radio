@@ -12,7 +12,7 @@ const alertsNotice = document.getElementById('publicAlertsNotice');
 const alertsList = document.getElementById('publicAlertsList');
 const alertsLink = document.getElementById('publicAlertsLink');
 const publicSummarySection = document.getElementById('publicSummary');
-const publicAboutSection = document.getElementById('publicAboutSection');
+const publicSiteTitle = document.getElementById('publicSiteTitle');
 const publicFeedsSection = document.getElementById('publicFeedsSection');
 const publicListenSection = document.getElementById('publicListenSection');
 const listenNotice = document.getElementById('publicListenNotice');
@@ -25,7 +25,7 @@ let summaryState = null;
 const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
 const currentPage = currentPath === '/feeds' || currentPath === '/listen'
     ? 'feeds'
-    : (currentPath === '/about' ? 'about' : (currentPath === '/alerts' || currentPath === '/alerts/archive' ? 'alerts' : 'home'));
+    : (currentPath === '/alerts' || currentPath === '/alerts/archive' ? 'alerts' : 'home');
 const isListenPage = currentPath === '/listen';
 const publicClient = new PanelClient({
     base: API_BASE,
@@ -90,9 +90,6 @@ function applyNavState() {
 function applyPageLayout() {
     if (publicSummarySection) {
         publicSummarySection.hidden = currentPage !== 'home';
-    }
-    if (publicAboutSection) {
-        publicAboutSection.hidden = currentPage !== 'about';
     }
     if (publicFeedsSection) {
         publicFeedsSection.hidden = currentPage !== 'feeds' || isListenPage;
@@ -187,8 +184,11 @@ function renderSummary(summary) {
             : 'Open the admin panel for protected feeds and station controls.');
     }
 
+    const siteName = summary.name || 'Haze Weather Radio';
+    setTextIfChanged(publicSiteTitle, siteName);
+    document.title = siteName;
+
     const cards = [
-        ['Site', summary.name || 'Haze Weather Radio'],
         ['Operator', summary.operator || 'unconfigured'],
         ['IP Address', summary.ip_address || 'unknown'],
         ['Hostname', summary.hostname || 'unknown'],

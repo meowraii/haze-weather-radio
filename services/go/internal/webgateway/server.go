@@ -76,7 +76,6 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/", s.publicIndex)
 		mux.HandleFunc("/feeds", s.publicIndex)
 		mux.HandleFunc("/listen", s.publicIndex)
-		mux.HandleFunc("/about", s.publicIndex)
 		mux.HandleFunc("/alerts", s.publicIndex)
 		mux.HandleFunc("/alerts/archive", s.publicIndex)
 		mux.HandleFunc("/api/public/v1/panel/ws", s.websocket)
@@ -108,7 +107,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) publicIndex(writer http.ResponseWriter, request *http.Request) {
-	if request.URL.Path != "/" && request.URL.Path != "/feeds" && request.URL.Path != "/listen" && request.URL.Path != "/about" && request.URL.Path != "/alerts" && request.URL.Path != "/alerts/archive" {
+	if request.URL.Path != "/" && request.URL.Path != "/feeds" && request.URL.Path != "/listen" && request.URL.Path != "/alerts" && request.URL.Path != "/alerts/archive" {
 		http.NotFound(writer, request)
 		return
 	}

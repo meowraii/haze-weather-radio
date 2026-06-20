@@ -154,7 +154,7 @@ func TestPublicListenPageServedWhenFeedsAvailable(t *testing.T) {
 	}
 }
 
-func TestPublicAboutPageServesIndex(t *testing.T) {
+func TestPublicAboutPageIsRemoved(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "index.html"), "<!doctype html><title>about</title>")
 	server := NewServerWithSurface(Config{}, "config.yaml", dir, "public")
@@ -163,11 +163,8 @@ func TestPublicAboutPageServesIndex(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/about", nil)
 	server.Handler().ServeHTTP(response, request)
 
-	if response.Code != http.StatusOK {
+	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d", response.Code)
-	}
-	if !strings.Contains(response.Body.String(), "about") {
-		t.Fatalf("body = %q", response.Body.String())
 	}
 }
 

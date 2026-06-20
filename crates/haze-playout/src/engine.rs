@@ -22,8 +22,9 @@ const SOURCE_ID: &str = "haze-playout";
 const ALERT_QUEUE_DIR: &str = "runtime/queues/alerts";
 const PCM_CHUNK_MS: u32 = 20;
 const MEDIA_PUBLISH_CHUNK_MS: u32 = 200;
-const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 2500;
-const MAX_CATCH_UP_CHUNKS: usize = 2;
+const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 750;
+const MAX_CATCH_UP_CHUNKS: usize = 1;
+const PCM_PUBLISH_QUEUE_CAPACITY: usize = 4;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Options {
@@ -1040,28 +1041,72 @@ async fn complete_live_breakin(
 }
 
 fn drain_live_breakin_buffer(live: &mut LiveBreakIn, out: &mut [u8]) {
-    let mut offset = 0usize;
-    while offset < out.len() {
-        let Some(byte) = live.buffer.pop_front() else {
-            break;
-        };
-        out[offset] = byte;
-        offset += 1;
+    let take = out.len().min(live.buffer.len());
+    if take == 0 {
+        return;
     }
+    let pending = live.buffer.make_contiguous();
+    out[..take].copy_from_slice(&pending[..take]);
+    live.buffer.drain(..take);
 }
 
 fn trim_live_breakin_buffer(live: &mut LiveBreakIn, sample_rate: u32, channels: u16) {
-    let max_bytes = usize::try_from(
-        sample_rate
-            .saturating_mul(u32::from(channels.max(1)))
-            .saturating_mul(2)
-            .saturating_mul(LIVE_BREAKIN_MAX_BUFFER_MS)
-            / 1000,
-    )
-    .unwrap_or(usize::MAX);
-    while live.buffer.len() > max_bytes {
-        let _ = live.buffer.pop_front();
+    let drop = live_breakin_drop_bytes(live.buffer.len(), sample_rate, channels);
+    if drop > 0 {
+        live.buffer.drain(..drop);
     }
+}
+
+fn align_down_to_frame(bytes: usize, frame_bytes: usize) -> usize {
+    let frame_bytes = frame_bytes.max(1);
+    bytes - (bytes % frame_bytes)
+}
+
+fn align_up_to_frame(bytes: usize, frame_bytes: usize) -> usize {
+    let frame_bytes = frame_bytes.max(1);
+    if bytes == 0 {
+        return 0;
+    }
+    bytes + ((frame_bytes - (bytes % frame_bytes)) % frame_bytes)
+}
+
+fn live_breakin_max_buffer_bytes(sample_rate: u32, channels: u16) -> usize {
+    let frame_bytes = usize::from(channels.max(1)) * 2;
+    align_down_to_frame(
+        usize::try_from(
+            sample_rate
+                .saturating_mul(u32::from(channels.max(1)))
+                .saturating_mul(2)
+                .saturating_mul(LIVE_BREAKIN_MAX_BUFFER_MS)
+                / 1000,
+        )
+        .unwrap_or(usize::MAX),
+        frame_bytes,
+    )
+}
+
+#[cfg(test)]
+fn max_live_breakin_buffer_for(sample_rate: u32, channels: u16) -> usize {
+    live_breakin_max_buffer_bytes(sample_rate, channels)
+}
+
+fn stale_pcm_publish_log_due(dropped: u64) -> bool {
+    dropped == 1 || dropped.is_multiple_of(25)
+}
+
+fn pcm_publish_queue_capacity() -> usize {
+    PCM_PUBLISH_QUEUE_CAPACITY
+}
+
+fn live_breakin_frame_bytes(channels: u16) -> usize {
+    usize::from(channels.max(1)) * 2
+}
+
+fn live_breakin_drop_bytes(buffer_len: usize, sample_rate: u32, channels: u16) -> usize {
+    let frame_bytes = live_breakin_frame_bytes(channels);
+    let max_bytes = live_breakin_max_buffer_bytes(sample_rate, channels);
+    let overflow = buffer_len.saturating_sub(max_bytes);
+    align_up_to_frame(overflow, frame_bytes).min(buffer_len)
 }
 
 fn clears_deferred_routine(action: &str) -> bool {
@@ -1103,9 +1148,25 @@ fn spawn_pcm_publisher(
     sample_rate: u32,
     channels: u16,
 ) -> mpsc::Sender<PcmPublish> {
-    let (tx, mut rx) = mpsc::channel::<PcmPublish>(64);
+    let (tx, mut rx) = mpsc::channel::<PcmPublish>(pcm_publish_queue_capacity());
     tokio::spawn(async move {
-        while let Some(chunk) = rx.recv().await {
+        let mut dropped_stale = 0u64;
+        while let Some(mut chunk) = rx.recv().await {
+            let mut skipped = 0u64;
+            while let Ok(newer) = rx.try_recv() {
+                chunk = newer;
+                skipped = skipped.saturating_add(1);
+            }
+            if skipped > 0 {
+                dropped_stale = dropped_stale.saturating_add(skipped);
+                if stale_pcm_publish_log_due(dropped_stale) {
+                    tracing::warn!(
+                        feed_id = feed_id.as_str(),
+                        dropped_chunks = dropped_stale,
+                        "media publisher dropped stale bridge PCM to keep realtime audio current"
+                    );
+                }
+            }
             let pcm = base64::engine::general_purpose::STANDARD.encode(&chunk.data);
             let _ = client
                 .publish(json!({
@@ -1985,5 +2046,45 @@ mod tests {
             },
             now
         ));
+    }
+
+    #[test]
+    fn live_breakin_trim_drops_oldest_audio_on_frame_boundaries() {
+        let channels = 1;
+        let max = max_live_breakin_buffer_for(48_000, channels);
+        let mut live = LiveBreakIn {
+            id: "breakin".to_string(),
+            title: "Break-in".to_string(),
+            buffer: (0..(max + 8)).map(|value| (value % 251) as u8).collect(),
+            finishing: false,
+        };
+
+        trim_live_breakin_buffer(&mut live, 48_000, channels);
+
+        assert!(live.buffer.len() <= max);
+        assert_eq!(live.buffer.len() % live_breakin_frame_bytes(channels), 0);
+        assert_eq!(live.buffer.front().copied(), Some(8 % 251));
+    }
+
+    #[test]
+    fn live_breakin_drain_copies_available_audio_without_touching_tail() {
+        let mut live = LiveBreakIn {
+            id: "breakin".to_string(),
+            title: "Break-in".to_string(),
+            buffer: VecDeque::from(vec![1, 2, 3]),
+            finishing: false,
+        };
+        let mut out = [0u8; 6];
+
+        drain_live_breakin_buffer(&mut live, &mut out);
+
+        assert_eq!(out, [1, 2, 3, 0, 0, 0]);
+        assert!(live.buffer.is_empty());
+    }
+
+    #[test]
+    fn realtime_pcm_publish_queue_stays_short_for_low_latency() {
+        assert!(pcm_publish_queue_capacity() <= 4);
+        assert_eq!(MAX_CATCH_UP_CHUNKS, 1);
     }
 }

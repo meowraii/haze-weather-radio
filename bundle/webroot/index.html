@@ -29,10 +29,6 @@
                     <i data-lucide="radio" width="15" height="15"></i>
                     Feeds
                 </a>
-                <a class="sidebar-link" href="/about" data-public-link="about">
-                    <i data-lucide="info" width="15" height="15"></i>
-                    About
-                </a>
                 <a class="sidebar-link" href="/alerts" data-public-link="alerts" id="publicAlertsLink" hidden>
                     <i data-lucide="bell-ring" width="15" height="15"></i>
                     Alerts
@@ -46,7 +42,12 @@
 
         <div class="main-wrap">
             <main class="dashboard public-dashboard">
-                <section class="section-block public-home-section" id="publicSummary" hidden>
+                <section class="public-home-section public-home-floating" id="publicSummary" hidden>
+                    <div class="public-home-title">
+                        <h1 id="publicSiteTitle">Haze Weather Radio</h1>
+                        <p>Unified weather information, alerting, and public feed access.</p>
+                    </div>
+
                     <div class="public-status-card">
                         <div class="public-status-grid" id="publicSummaryCards"></div>
                         <div class="public-build-row" id="publicBuildInfo"></div>
@@ -59,25 +60,6 @@
                                 <i data-lucide="github" width="14" height="14"></i>
                                 <span>GitHub</span>
                             </a>
-                            <a class="text-link" href="/about">About Haze</a>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="section-block public-about-section" id="publicAboutSection" hidden>
-                    <div class="section-hd">
-                        <span>About</span>
-                    </div>
-                    <div class="section-body public-about-body">
-                        <p>Haze Unified Alerting Platform is an aggregator for weather information and emergency alerts.</p>
-                        <p>It brings public warning feeds, weather products, audio playout, public listening, and telephone access into one deployable system for communities, hobbyists, broadcasters, and emergency communications operators.</p>
-                        <p>The project is designed around an event-driven architecture so independent services can ingest data, render products, synthesize speech, broadcast audio, and expose public access without one component owning the entire workflow.</p>
-                        <div class="public-project-actions">
-                            <a class="btn-action" href="https://github.com/meowraii/haze-weather-radio" target="_blank" rel="noreferrer">
-                                <i data-lucide="github" width="14" height="14"></i>
-                                <span>GitHub</span>
-                            </a>
-                            <a class="text-link" href="/">Public status</a>
                         </div>
                     </div>
                 </section>

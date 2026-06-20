@@ -667,6 +667,89 @@ a:focus-visible {
     overflow-wrap: anywhere;
 }
 
+.public-dashboard {
+    align-items: stretch;
+}
+
+.public-home-floating {
+    align-self: stretch;
+    width: 100%;
+    max-width: none;
+    margin-top: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.public-home-title {
+    width: 100%;
+}
+
+.public-home-title h1 {
+    color: var(--text);
+    font-size: 36px;
+    line-height: 1.12;
+    font-weight: 750;
+    letter-spacing: 0;
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+    overflow-wrap: anywhere;
+}
+
+.public-home-title p {
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.public-home-floating .public-status-card {
+    width: 100%;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    padding: 0;
+}
+
+.public-home-floating .public-status-grid {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+}
+
+.public-home-floating .public-status-item,
+.public-home-floating .public-build-row span,
+.public-home-floating .public-project-strip {
+    border: 1px solid var(--border-deep);
+    border-radius: var(--radius-sm);
+    background: linear-gradient(180deg, var(--surface-raised-top), var(--surface-raised-bot));
+    box-shadow: var(--bevel-raised);
+}
+
+.public-home-floating .public-status-item {
+    min-height: 68px;
+    padding: 10px 12px;
+}
+
+.public-home-floating .public-build-row {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.public-home-floating .public-build-row span {
+    flex: 1 1 190px;
+    padding: 7px 10px;
+}
+
+.public-home-floating .public-project-strip {
+    width: 100%;
+    padding: 12px 14px;
+}
+
 @media (max-width: 1280px) {
     .sidebar {
         width: var(--sidebar-w);
@@ -720,6 +803,10 @@ a:focus-visible {
 }
 
 @media (max-width: 560px) {
+    .public-home-title h1 {
+        font-size: 28px;
+    }
+
     .public-feed-main {
         padding: 14px 14px 13px 17px;
     }
