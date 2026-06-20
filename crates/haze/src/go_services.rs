@@ -58,6 +58,7 @@ struct GoServicesConfig {
     tts: Option<TtsConfig>,
     product_render: Option<ProductRenderConfig>,
     playlist: Option<PlaylistConfig>,
+    webhook: Option<WebhookConfig>,
     ivr: Option<IvrConfig>,
 }
 
@@ -140,6 +141,14 @@ struct PlaylistConfig {
     tick: Option<String>,
     lookahead: Option<String>,
     out_dir: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct WebhookConfig {
+    enabled: Option<bool>,
+    executable: Option<PathBuf>,
+    webhooks: Option<String>,
+    timeout: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -927,6 +936,36 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
             }
         }
 
+        if let Some(webhook) = &go.webhook {
+            if webhook.enabled.unwrap_or(false) {
+                let mut args = vec![
+                    "--config".to_string(),
+                    host.config_path.to_string_lossy().into_owned(),
+                    "--bridge".to_string(),
+                    std::env::var("HAZE_HOST_BRIDGE_ADDR").unwrap_or_default(),
+                    "--webhooks".to_string(),
+                    webhook
+                        .webhooks
+                        .clone()
+                        .unwrap_or_else(|| "managed/configs/webhooks.xml".to_string()),
+                ];
+                if let Some(timeout) = webhook
+                    .timeout
+                    .as_ref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    args.extend(["--timeout".to_string(), timeout.to_string()]);
+                }
+                specs.push(ServiceSpec {
+                    id: "svc:webhook",
+                    kind: "managed",
+                    binary: executable_name("haze-webhook"),
+                    configured_executable: webhook.executable.clone(),
+                    args,
+                });
+            }
+        }
+
         if let Some(ivr) = &go.ivr {
             if ivr.enabled.unwrap_or(false) {
                 let mut args = vec![
@@ -1130,6 +1169,7 @@ fn executable_name(base: &'static str) -> &'static str {
             "haze-tts" => "haze-tts.exe",
             "haze-product-render" => "haze-product-render.exe",
             "haze-playlist" => "haze-playlist.exe",
+            "haze-webhook" => "haze-webhook.exe",
             "haze-ivr" => "haze-ivr.exe",
             "haze-playout-rs" => "haze-playout-rs.exe",
             _ => base,
@@ -1297,6 +1337,7 @@ fn is_known_managed_executable(path: &str) -> bool {
         executable_name("haze-tts"),
         executable_name("haze-product-render"),
         executable_name("haze-playlist"),
+        executable_name("haze-webhook"),
         executable_name("haze-ivr"),
         executable_name("haze-playout-rs"),
     ]
@@ -1511,6 +1552,7 @@ fn service_label(service_id: &str) -> &str {
         "aux:tts" => "TTS",
         "svc:product_render" => "Product render",
         "svc:playlist" => "Playlist",
+        "svc:webhook" => "Webhook",
         "svc:ivr" => "IVR",
         "svc:playout" => "Playout",
         _ => service_id,

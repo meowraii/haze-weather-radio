@@ -857,106 +857,6 @@ The planetary A index was 5.`)
 	}
 }
 
-func TestDiscussionProductFiltersToConfiguredSKMentions(t *testing.T) {
-	dir := t.TempDir()
-	writeFixture(t, dir)
-	cfg := loadFixtureConfig(t, dir)
-	storeTextProduct(t, cfg.Store, "eccc", "focn45.cwwg", `FOCN45 CWWG 161900 SIGNIFICANT WEATHER DISCUSSION ISSUED BY THE PRAIRIE AND ARCTIC STORM PREDICTION CENTRE OF ENVIRONMENT CANADA AT 2:00 PM CDT TUESDAY JUNE 16 2026.
-ALERTS IN EFFECT...SEVERE THUNDERSTORM WATCHES FOR SOUTHERN ALBERTA AND PORTIONS OF SOUTHERN SASKATCHEWAN.
-OVERVIEW...A LARGE UPPER LOW COMPLEX OVER HUDSON BAY.
-DISCUSSION... ALBERTA...LOW AND ASSOCIATED FRONTS MOVING THROUGH ALBERTA TODAY WILL TRIGGER WIDESPREAD THUNDERSTORMS. THE PRIMARY THREAT AREA IS FROM NORTHWEST OF CALGARY THROUGH THE SOUTHEAST AND INTO SOUTHERN SASKATCHEWAN.
-SOUTHERN SK...LOW PRESSURE MOVING ACROSS SOUTHERN ALBERTA WILL TRACK INTO EASTERN MONTANA TODAY. SCATTERED THUNDERSTORMS, SEVERAL OF WHICH COULD BECOME SEVERE.
-SOUTHERN MB...NIL SIG WX. END/FULTON`)
-
-	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "eccc_discussion"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, wanted := range []string{
-		"southern saskatchewan",
-		"Southern Saskatchewan. low pressure",
-		"scattered thunderstorms",
-	} {
-		if !strings.Contains(product.Text, wanted) {
-			t.Fatalf("discussion product missing %q:\n%s", wanted, product.Text)
-		}
-	}
-	for _, unwanted := range []string{
-		"ALERTS IN EFFECT",
-		"SEVERE THUNDERSTORM WATCHES",
-		"SOUTHERN MB",
-		"NIL SIG WX",
-		"LOW AND ASSOCIATED FRONTS MOVING THROUGH ALBERTA TODAY WILL TRIGGER WIDESPREAD THUNDERSTORMS",
-		"END/FULTON",
-	} {
-		if strings.Contains(product.Text, unwanted) {
-			t.Fatalf("discussion product leaked %q:\n%s", unwanted, product.Text)
-		}
-	}
-}
-
-func TestDiscussionProductAddsOpenerAndNormalizesBulletinShorthand(t *testing.T) {
-	dir := t.TempDir()
-	writeFixture(t, dir)
-	cfg := loadFixtureConfig(t, dir)
-	storeTextProduct(t, cfg.Store, "eccc", "focn45.cwwg", `FOCN45 CWWG 161900 SIGNIFICANT WEATHER DISCUSSION.
-OVERVIEW...A 500 MB LOW WILL BRING 20-40 MM QPF AND 70 KM/H WINDS INTO SRN SK.
-SOUTHERN SK...NIL SIG WX EARLY, THEN TSTMS OVER SRN SK WITH 8 C TEMPS. END/FULTON`)
-
-	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "eccc_discussion"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(product.Segments) < 2 || product.Segments[0].Kind != "opener" {
-		t.Fatalf("discussion opener segment missing: %#v", product.Segments)
-	}
-	for _, wanted := range []string{
-		"Here is the latest significant weather discussion",
-		"500 millibars",
-		"20 to 40 millimetres",
-		"quantitative precipitation forecast",
-		"70 kilometres per hour",
-		"southern Saskatchewan",
-		"no significant weather",
-		"thunderstorms",
-		"8 degrees Celsius",
-	} {
-		if !strings.Contains(product.Text, wanted) {
-			t.Fatalf("discussion product missing %q:\n%s", wanted, product.Text)
-		}
-	}
-	for _, unwanted := range []string{"QPF", "KM/H", "NIL SIG WX", "TSTMS", "SRN SK", "8 C"} {
-		if strings.Contains(product.Text, unwanted) {
-			t.Fatalf("discussion product leaked shorthand %q:\n%s", unwanted, product.Text)
-		}
-	}
-}
-
-func TestNormalizeDiscussionForSpeechLowersUppercaseProse(t *testing.T) {
-	got := normalizeDiscussionForSpeech("AN UPPER LOW OVER SOUTHERN SK WILL BRING VFR CONDITIONS BY 3 PM CDT. END/FULTON")
-	for _, wanted := range []string{
-		"an upper low over southern Saskatchewan will bring V F R conditions by 3 P.M. Central Daylight Time.",
-	} {
-		if !strings.Contains(got, wanted) {
-			t.Fatalf("discussion cleanup missing %q:\n%s", wanted, got)
-		}
-	}
-	for _, unwanted := range []string{"AN UPPER LOW", "OVER", "WILL", "VFR", "END/FULTON"} {
-		if strings.Contains(got, unwanted) {
-			t.Fatalf("discussion cleanup leaked %q:\n%s", unwanted, got)
-		}
-	}
-}
-
-func TestNormalizeDiscussionForSpeechPreservesParagraphBreaks(t *testing.T) {
-	got := normalizeDiscussionForSpeech("SOUTHERN SK...TSTMS OVER SRN SK.\n\nNEXT SYSTEM BRINGS 20-40 MM QPF.")
-	want := "southern Saskatchewan...thunderstorms over southern Saskatchewan.\n\nnext system brings 20 to 40 millimetres quantitative precipitation forecast."
-	if got != want {
-		t.Fatalf("discussion paragraph cleanup = %q, want %q", got, want)
-	}
-}
-
 func TestAlertsProductUsesNativeCAPRegistry(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
@@ -1264,7 +1164,6 @@ CODE,NAME,NOM,PROGRAMS,PROGRAMMES,PROVINCE/WATERBODY 2 PROVINCE/PLAN D'EAU 2,PRO
   <package id="current_conditions" enabled="true"/>
   <package id="forecast" enabled="true"/>
   <package id="air_quality" enabled="true"/>
-  <package id="eccc_discussion" enabled="true"><locations stateProv="SK"/></package>
   <package id="alerts" enabled="true"/>
   <package id="geophysical_alert" enabled="true"/>
 </Packages>

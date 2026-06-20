@@ -330,7 +330,6 @@ pub(crate) fn load_config(config_path: &Path) -> Result<LoadedConfig> {
             "air_quality".to_string(),
             "forecast".to_string(),
             "climate_summary".to_string(),
-            "eccc_discussion".to_string(),
             "geophysical_alert".to_string(),
             "user_bulletin".to_string(),
         ];

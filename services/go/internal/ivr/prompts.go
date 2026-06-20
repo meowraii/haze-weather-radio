@@ -212,16 +212,15 @@ func defaultPromptConfig() PromptConfig {
 				{Key: "search_unavailable", Text: "Location search is not available yet."},
 			}},
 			{ID: "location_menu", Lines: []promptLine{
-				{Key: "main", Text: "You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for the weather discussion, 7 for specialty products, or 0 to listen to a corresponding, 10 minute {radio_service_name} broadcast."},
-				{Key: "main_no_broadcast", Text: "You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for the weather discussion, or 7 for specialty products."},
+				{Key: "main", Text: "You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for specialty products, or 0 to listen to a corresponding, 10 minute {radio_service_name} broadcast."},
+				{Key: "main_no_broadcast", Text: "You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, or 6 for specialty products."},
 			}, Options: []menuOption{
 				{Digit: "1", Action: "product", Packages: "current_conditions"},
 				{Digit: "2", Action: "product", Packages: "forecast"},
 				{Digit: "3", Action: "product", Packages: "air_quality"},
 				{Digit: "4", Action: "product", Packages: "climate_summary"},
 				{Digit: "5", Action: "product", Packages: "thunderstorm_outlook"},
-				{Digit: "6", Action: "product", Packages: "eccc_discussion"},
-				{Digit: "7", Action: "menu", Next: "specialty_menu"},
+				{Digit: "6", Action: "menu", Next: "specialty_menu"},
 				{Digit: "0", Action: "broadcast", Packages: "alerts,current_conditions,air_quality,forecast,geophysical_alert", Next: "broadcast_menu"},
 			}},
 			{ID: "specialty_menu", Lines: []promptLine{

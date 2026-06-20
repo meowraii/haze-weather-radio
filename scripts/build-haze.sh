@@ -210,6 +210,7 @@ rm -f \
   "$out_full/haze-tts" \
   "$out_full/haze-product-render" \
   "$out_full/haze-playlist" \
+  "$out_full/haze-webhook" \
   "$out_full/haze-ivr" \
   "$out_full/haze-playout" \
   "$out_full/haze-playout-rs" \
@@ -219,6 +220,7 @@ rm -f \
   "$bin_full/haze-tts" \
   "$bin_full/haze-product-render" \
   "$bin_full/haze-playlist" \
+  "$bin_full/haze-webhook" \
   "$bin_full/haze-ivr" \
   "$bin_full/haze-playout" \
   "$bin_full/haze-playout-rs"

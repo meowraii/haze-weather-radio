@@ -10,9 +10,6 @@
     <text key="issued_at" lang="en-CA">Issued at {time}.</text>
     <text key="region" lang="en-CA">For the {region}.</text>
   </package>
-  <package id="eccc_discussion">
-    <text key="opener" lang="en-CA">Here is the latest significant weather discussion from Environment and Climate Change Canada for the {callsign} listening area.</text>
-  </package>
   <package id="air_quality">
     <text key="unavailable_report" lang="en-CA">The air quality information for {name} was unavailable.</text>
     <text key="now_eccc" lang="en-CA">The air quality health index was observed at {name} and reported a value of {val} at {time}.</text>

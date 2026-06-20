@@ -1807,7 +1807,6 @@ fn title_for_package(package_id: &str) -> String {
         "forecast" => "Forecast".to_string(),
         "air_quality" => "Air Quality".to_string(),
         "climate_summary" => "Climate Summary".to_string(),
-        "eccc_discussion" => "Weather Discussion".to_string(),
         "geophysical_alert" => "Geophysical Alert".to_string(),
         "user_bulletin" => "User Bulletin".to_string(),
         "alerts" => "Weather Alerts".to_string(),

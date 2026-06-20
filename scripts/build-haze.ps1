@@ -414,6 +414,7 @@ try {
         "haze-tts.exe",
         "haze-product-render.exe",
         "haze-playlist.exe",
+        "haze-webhook.exe",
         "haze-ivr.exe",
         "haze-playout.exe",
         "haze-playout-rs.exe",

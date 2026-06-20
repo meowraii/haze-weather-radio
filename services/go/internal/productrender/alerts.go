@@ -83,6 +83,31 @@ func (s *Service) handleCAPAlert(event map[string]any) {
 				"package_id":    "alerts",
 				"title":         alertBroadcastTitle(alert),
 			}
+			if item.Headline != "" {
+				data["headline"] = item.Headline
+				data["title"] = item.Headline
+			}
+			if item.Event != "" {
+				data["event"] = item.Event
+			}
+			if item.Severity != "" {
+				data["severity"] = item.Severity
+			}
+			if item.Urgency != "" {
+				data["urgency"] = item.Urgency
+			}
+			if item.Certainty != "" {
+				data["certainty"] = item.Certainty
+			}
+			if item.Description != "" {
+				data["description"] = item.Description
+			}
+			if item.Instruction != "" {
+				data["instruction"] = item.Instruction
+			}
+			if item.BackgroundColor != "" {
+				data["background_color"] = item.BackgroundColor
+			}
 			if expires := alertExpiresAt(alert); !expires.IsZero() {
 				data["alert_expires_at"] = expires.Format(time.RFC3339Nano)
 			}
@@ -309,6 +334,14 @@ type capRegistryUpdate struct {
 	Cancelled        bool
 	CancelledIDs     []string
 	AlertText        string
+	Headline         string
+	Event            string
+	Severity         string
+	Urgency          string
+	Certainty        string
+	Description      string
+	Instruction      string
+	BackgroundColor  string
 	AudioURL         string
 	AudioMimeType    string
 	AudioLanguage    string
@@ -409,6 +442,14 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 		})
 		info := chooseAlertInfo(alert, feedLanguage(feed))
 		alertText := ""
+		headline := ""
+		eventName := ""
+		severity := ""
+		urgency := ""
+		certainty := ""
+		description := ""
+		instruction := ""
+		backgroundColor := ""
 		if info != nil {
 			alertText = renderCAPAlertSentence(capRegistryEntry{
 				ID:        alert.Identifier,
@@ -416,6 +457,17 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 				Alert:     alert,
 				RawXML:    alert.RawXML,
 			}, *info, feed, s.cfg.BaseDir, s.cfg.ForecastNames, now)
+			headline = alerttext.NormalizeHeadline(firstNonBlank(info.Headline, info.Event, "Weather Alert"))
+			eventName = firstNonBlank(info.Event, alertSubject(*info), "CAP")
+			severity = info.Severity
+			urgency = info.Urgency
+			certainty = info.Certainty
+			description = info.Description
+			instruction = info.Instruction
+			backgroundColor = alerttext.PickBannerColor([]alerttext.AlertVisualInput{{
+				Severity: info.Severity,
+				Event:    firstNonBlank(sameEventForCAP(alert, *info), info.Event, info.Headline),
+			}})
 		}
 		audio := alertBroadcastAudio(alert, feedLanguage(feed))
 		updates = append(updates, capRegistryUpdate{
@@ -425,6 +477,14 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 			Cancelled:        isCAPEnded(alert, now),
 			CancelledIDs:     cancelledAlertIDs(alert),
 			AlertText:        alertText,
+			Headline:         headline,
+			Event:            eventName,
+			Severity:         severity,
+			Urgency:          urgency,
+			Certainty:        certainty,
+			Description:      description,
+			Instruction:      instruction,
+			BackgroundColor:  backgroundColor,
 			AudioURL:         audio.URL,
 			AudioMimeType:    audio.MimeType,
 			AudioLanguage:    audio.Language,

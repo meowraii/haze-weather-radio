@@ -41,13 +41,6 @@
 
   <package id="precipitation_analysis" enabled="true" />
 
-  <package id="eccc_discussion" enabled="true">
-    <languages>
-      <lang>en-CA</lang>
-    </languages>
-    <locations stateProv="SK" />
-  </package>
-
   <package id="geophysical_alert" enabled="true">
     <reader_id>01</reader_id>
     <languages>

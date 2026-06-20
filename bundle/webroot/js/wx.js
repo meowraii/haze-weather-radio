@@ -14,7 +14,6 @@ const PACKAGE_DESCRIPTIONS = {
     coastal_flood: 'Coastal flood guidance',
     hurricane_tracks: 'Hurricane tracks',
     precipitation_analysis: 'Precipitation analysis',
-    eccc_discussion: 'ECCC discussion',
     geophysical_alert: 'Geophysical alert',
     alerts: 'Active alerts',
     user_bulletin: 'User bulletin',

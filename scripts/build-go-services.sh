@@ -98,6 +98,7 @@ rm -f \
   "$out_full/haze-tts" \
   "$out_full/haze-product-render" \
   "$out_full/haze-playlist" \
+  "$out_full/haze-webhook" \
   "$out_full/haze-ivr"
 
 copy_bundle_dir() {
@@ -188,6 +189,7 @@ go build -o "$bin_full/haze-cap-ingest" ./cmd/haze-cap-ingest
 go build -o "$bin_full/haze-tts" ./cmd/haze-tts
 go build -o "$bin_full/haze-product-render" ./cmd/haze-product-render
 go build -o "$bin_full/haze-playlist" ./cmd/haze-playlist
+go build -o "$bin_full/haze-webhook" ./cmd/haze-webhook
 go build -o "$bin_full/haze-ivr" ./cmd/haze-ivr
 
 chmod +x \
@@ -197,6 +199,7 @@ chmod +x \
   "$bin_full/haze-tts" \
   "$bin_full/haze-product-render" \
   "$bin_full/haze-playlist" \
+  "$bin_full/haze-webhook" \
   "$bin_full/haze-ivr"
 
 copy_sherpa_onnx_runtime_libraries "$bin_full"

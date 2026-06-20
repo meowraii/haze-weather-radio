@@ -71,6 +71,10 @@ services:
       out_dir: "runtime/audio/playlist"
       fixed_tolerance_s: 4
       routine_estimate_s: 35
+    webhook:
+      enabled: true
+      webhooks: "managed/configs/webhooks.xml"
+      timeout: "15s"
     ivr:
       enabled: true
       mode: sip-edge # sip-edge or provider-webhook
@@ -80,7 +84,7 @@ services:
         addr: "127.0.0.1:8096"
       sip:
         enabled: true
-        listen: "0.0.0.0:5060"
+        listen: "0.0.0.0:42867"
         public_host: "71.17.68.130"
         allowed_sources: []
         auth:
@@ -88,8 +92,8 @@ services:
           username: "haze"
           password_env: HAZE_IVR_SIP_PASSWORD
         registration:
-          enabled: true
-          server: "vancouver1.voip.ms:5060"
+          enabled: false
+          server: "vancouver1.voip.ms:42867"
           domain: "vancouver1.voip.ms"
           register_uri: "sip:vancouver1.voip.ms"
           username: "529289_TeleWeather"
@@ -203,7 +207,6 @@ playout:
     - coastal_flood
     - hurricane_tracks
     - precipitation_analysis
-    - eccc_discussion
     - geophysical_alert
     - user_bulletin
 

@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -248,15 +247,6 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 		} else {
 			log.Printf("geophysical alert store failed: %v", err)
 		}
-	}
-	if text, sourceURL, err := fetchLatestECCCDiscussion(ctx, client, time.Now().UTC()); err == nil && strings.TrimSpace(text) != "" {
-		if err := store.StoreTextProduct(ctx, datastore.TextProductRecord{Source: "eccc", ID: "focn45.cwwg", Text: text, Metadata: map[string]any{"source_url": sourceURL}}); err == nil {
-			publishDataReady(publisher, "", "eccc_discussion", sourceURL)
-		} else {
-			log.Printf("ECCC discussion store failed: %v", err)
-		}
-	} else if err != nil {
-		log.Printf("ECCC discussion fetch failed: %v", err)
 	}
 	return nil
 }
@@ -1993,64 +1983,6 @@ func fetchText(ctx context.Context, client *http.Client, url string) (string, er
 	}
 	raw, err := io.ReadAll(resp.Body)
 	return string(raw), err
-}
-
-var ecccDiscussionLinkPattern = regexp.MustCompile(`href="([^"]*FOCN45_CWWG[^"]*)"`)
-
-func fetchLatestECCCDiscussion(ctx context.Context, client *http.Client, now time.Time) (string, string, error) {
-	var lastErr error
-	for _, day := range []time.Time{now, now.Add(-24 * time.Hour)} {
-		date := day.Format("20060102")
-		for hour := 23; hour >= 0; hour-- {
-			dirURL := fmt.Sprintf("https://dd.weather.gc.ca/today/bulletins/alphanumeric/%s/FO/CWWG/%02d/", date, hour)
-			index, err := fetchText(ctx, client, dirURL)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			links := ecccDiscussionLinks(index)
-			if len(links) == 0 {
-				continue
-			}
-			sort.Strings(links)
-			for i := len(links) - 1; i >= 0; i-- {
-				sourceURL := dirURL + strings.TrimLeft(links[i], "/")
-				text, err := fetchText(ctx, client, sourceURL)
-				if err != nil {
-					lastErr = err
-					continue
-				}
-				if strings.TrimSpace(text) != "" {
-					return text, sourceURL, nil
-				}
-			}
-		}
-	}
-	if lastErr != nil {
-		return "", "", lastErr
-	}
-	return "", "", fmt.Errorf("no FOCN45 CWWG discussion bulletin found")
-}
-
-func ecccDiscussionLinks(index string) []string {
-	matches := ecccDiscussionLinkPattern.FindAllStringSubmatch(index, -1)
-	links := make([]string, 0, len(matches))
-	seen := map[string]struct{}{}
-	for _, match := range matches {
-		if len(match) < 2 {
-			continue
-		}
-		link := strings.TrimSpace(match[1])
-		if link == "" || strings.Contains(link, "/") {
-			continue
-		}
-		if _, ok := seen[link]; ok {
-			continue
-		}
-		seen[link] = struct{}{}
-		links = append(links, link)
-	}
-	return links
 }
 
 func firstFeatureProperties(raw map[string]any) map[string]any {

@@ -545,8 +545,7 @@ func TestLocationMenuNewProductDigits(t *testing.T) {
 	}{
 		{digit: "4", pkg: "climate_summary", wantURL: "/ivr/v1/audio"},
 		{digit: "5", pkg: "thunderstorm_outlook", wantURL: "/ivr/v1/audio"},
-		{digit: "6", pkg: "eccc_discussion", wantURL: "/ivr/v1/audio"},
-		{digit: "7", state: "ivr_menu", wantURL: "/ivr/v1/prompt"},
+		{digit: "6", state: "ivr_menu", wantURL: "/ivr/v1/prompt"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.digit, func(t *testing.T) {

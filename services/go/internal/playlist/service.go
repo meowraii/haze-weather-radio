@@ -791,8 +791,56 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		p.writeState()
 		return
 	}
+	p.publishAlertAudioReady(manifest, data, alertText, sameHeader.Header)
 	p.lastError = ""
 	p.writeState()
+}
+
+func (p *feedPlanner) publishAlertAudioReady(manifest priorityAlertManifest, data map[string]any, alertText string, sameHeader string) {
+	payload := map[string]any{
+		"feed_id":           p.feed.ID,
+		"alert_id":          manifest.AlertID,
+		"queue_id":          manifest.ID,
+		"manifest_id":       manifest.ID,
+		"audio_path":        manifest.AudioPath,
+		"audio_format":      manifest.Format,
+		"sample_rate":       manifest.SampleRate,
+		"channels":          manifest.Channels,
+		"audio_bytes":       manifest.AudioBytes,
+		"source":            manifest.Source,
+		"priority":          manifest.Priority,
+		"message_type":      manifest.MessageType,
+		"alert_sent_at":     manifest.AlertSentAt,
+		"alert_expires_at":  manifest.AlertExpiresAt,
+		"authoritative_url": manifest.AuthoritativeURL,
+		"title":             fallbackText(firstText(nil, data, "headline", "title", "header"), manifest.Header),
+		"header":            manifest.Header,
+		"event":             fallbackText(firstText(nil, data, "same_event", "event"), manifest.Event),
+		"alert_text":        fallbackText(alertText, firstText(nil, data, "alert_text", "tts_text", "text", "message")),
+		"description":       firstText(nil, data, "description"),
+		"instruction":       firstText(nil, data, "instruction"),
+		"severity":          firstText(nil, data, "severity"),
+		"urgency":           firstText(nil, data, "urgency"),
+		"certainty":         firstText(nil, data, "certainty"),
+		"same_event":        firstText(nil, data, "same_event"),
+		"same_originator":   firstText(nil, data, "same_originator"),
+		"same_duration":     firstText(nil, data, "same_duration"),
+		"same_tone":         firstText(nil, data, "same_tone"),
+		"same_header":       sameHeader,
+		"background_color":  firstText(nil, data, "background_color"),
+	}
+	if locations := stringListAny(firstValue(nil, data, "same_locations", "locations")); len(locations) > 0 {
+		payload["same_locations"] = locations
+	}
+	if err := p.bridge.Publish(map[string]any{
+		"type":    "cap.alert.audio.ready",
+		"source":  serviceID,
+		"feed_id": p.feed.ID,
+		"subject": manifest.AlertID,
+		"data":    payload,
+	}); err != nil {
+		log.Printf("[%s] alert webhook event publish failed: %v", p.feed.ID, err)
+	}
 }
 
 func (p *feedPlanner) cancelPriorityAlerts(data map[string]any) {
