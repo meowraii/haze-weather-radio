@@ -26,6 +26,9 @@ struct Args {
     #[arg(long, env = "HAZE_HOST_BRIDGE_ADDR")]
     bridge: String,
 
+    #[arg(long, env = "HAZE_MEDIA_BRIDGE_ADDR", default_value = "")]
+    media_bridge: String,
+
     #[arg(long, default_value = "500ms")]
     alert_poll: String,
 }
@@ -37,6 +40,7 @@ async fn main() -> Result<()> {
     let options = engine::Options {
         config_path: args.config,
         bridge_addr: args.bridge,
+        media_bridge_addr: args.media_bridge,
         alert_poll: parse_duration_ms(&args.alert_poll, Duration::from_millis(500)),
     };
     match parent_pid() {

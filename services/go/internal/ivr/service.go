@@ -42,12 +42,13 @@ type staticPromptFile struct {
 }
 
 type Service struct {
-	cfg       loadedConfig
-	resolver  *Resolver
-	cache     *ProductCache
-	bridge    *bridgeClient
-	broadcast *broadcastHub
-	metrics   metrics
+	cfg         loadedConfig
+	resolver    *Resolver
+	cache       *ProductCache
+	bridge      *bridgeClient
+	mediaBridge *bridgeClient
+	broadcast   *broadcastHub
+	metrics     metrics
 }
 
 type metrics struct {
@@ -80,14 +81,26 @@ func Run(ctx context.Context, options Options) error {
 			sleepOrDone(ctx, time.Second)
 			continue
 		}
+		mediaBridgeAddr := firstNonBlank(options.MediaBridgeAddr, options.BridgeAddr)
+		var mediaBridge *bridgeClient
+		if strings.TrimSpace(mediaBridgeAddr) != "" && strings.TrimSpace(mediaBridgeAddr) != strings.TrimSpace(options.BridgeAddr) {
+			mediaBridge, err = connectBridge(ctx, mediaBridgeAddr)
+			if err != nil {
+				log.Printf("IVR media bridge unavailable; live broadcast monitoring disabled until reconnect: %v", err)
+			}
+		}
 		service := &Service{
-			cfg:      cfg,
-			resolver: NewResolver(cfg),
-			bridge:   bridge,
+			cfg:         cfg,
+			resolver:    NewResolver(cfg),
+			bridge:      bridge,
+			mediaBridge: mediaBridge,
 		}
 		service.cache = NewProductCache(cfg, bridge)
 		err = service.runConnected(ctx)
 		_ = bridge.Close()
+		if mediaBridge != nil {
+			_ = mediaBridge.Close()
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -120,6 +133,19 @@ func loadDotEnv(path string) {
 	}
 }
 
+func drainBridgeEvents(ctx context.Context, events <-chan map[string]any) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-events:
+			if !ok {
+				return
+			}
+		}
+	}
+}
+
 func (s *Service) runConnected(ctx context.Context) error {
 	if err := s.bridge.Publish(map[string]any{
 		"type":   "service.ready",
@@ -136,7 +162,12 @@ func (s *Service) runConnected(ctx context.Context) error {
 		return err
 	}
 	s.broadcast = newBroadcastHub()
-	go s.broadcast.run(ctx, s.bridge.Events())
+	broadcastEvents := s.bridge.Events()
+	if s.mediaBridge != nil {
+		go drainBridgeEvents(ctx, s.bridge.Events())
+		broadcastEvents = s.mediaBridge.Events()
+	}
+	go s.broadcast.run(ctx, broadcastEvents)
 
 	errCh := make(chan error, 2)
 	if s.cfg.IVR.HTTP.Enabled {

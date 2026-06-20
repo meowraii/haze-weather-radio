@@ -96,7 +96,11 @@ pub(crate) struct DaemonServices {
 }
 
 impl DaemonServices {
-    pub(crate) fn start(host: &ServiceHostConfig, publisher: Sender<Value>) -> Result<Self> {
+    pub(crate) fn start(
+        host: &ServiceHostConfig,
+        publisher: Sender<Value>,
+        media_publisher: Sender<Value>,
+    ) -> Result<Self> {
         let config: RootConfig = decode_config_with_overlay(&host.config_path, &host.runtime_dir)?;
         let stop = Arc::new(AtomicBool::new(false));
         let Some(daemon_cfg) = config
@@ -147,9 +151,10 @@ impl DaemonServices {
                 .clamp(100, 10_000);
             let runtime_dir = host.runtime_dir.clone();
             let tx = publisher.clone();
+            let media_tx = media_publisher.clone();
             let stop_flag = Arc::clone(&stop);
             threads.push(thread::spawn(move || {
-                alert_queue_loop(runtime_dir, interval_ms, tx, stop_flag);
+                alert_queue_loop(runtime_dir, interval_ms, tx, media_tx, stop_flag);
             }));
             info!(interval_ms, "daemon alert queue service enabled");
         }
@@ -808,12 +813,17 @@ fn alert_queue_loop(
     runtime_dir: PathBuf,
     interval_ms: u64,
     publisher: Sender<Value>,
+    media_publisher: Sender<Value>,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::SeqCst) {
-        if let Err(err) =
-            process_alert_queue_once_with_stop(&runtime_dir, &publisher, true, Some(&stop))
-        {
+        if let Err(err) = process_alert_queue_once_with_stop(
+            &runtime_dir,
+            &publisher,
+            &media_publisher,
+            true,
+            Some(&stop),
+        ) {
             warn!("alert queue processing failed: {err}");
         }
         sleep_or_stopped(&stop, Duration::from_millis(interval_ms));
@@ -826,12 +836,13 @@ fn process_alert_queue_once(
     publisher: &Sender<Value>,
     sleep_for_audio: bool,
 ) -> Result<usize> {
-    process_alert_queue_once_with_stop(runtime_dir, publisher, sleep_for_audio, None)
+    process_alert_queue_once_with_stop(runtime_dir, publisher, publisher, sleep_for_audio, None)
 }
 
 fn process_alert_queue_once_with_stop(
     runtime_dir: &Path,
     publisher: &Sender<Value>,
+    media_publisher: &Sender<Value>,
     sleep_for_audio: bool,
     stop: Option<&AtomicBool>,
 ) -> Result<usize> {
@@ -857,7 +868,14 @@ fn process_alert_queue_once_with_stop(
         if should_stop(stop) {
             break;
         }
-        match process_alert_manifest(runtime_dir, &manifest, publisher, sleep_for_audio, stop) {
+        match process_alert_manifest(
+            runtime_dir,
+            &manifest,
+            publisher,
+            media_publisher,
+            sleep_for_audio,
+            stop,
+        ) {
             Ok(true) => processed += 1,
             Ok(false) => {}
             Err(err) => {
@@ -872,6 +890,7 @@ fn process_alert_manifest(
     runtime_dir: &Path,
     manifest: &Path,
     publisher: &Sender<Value>,
+    media_publisher: &Sender<Value>,
     sleep_for_audio: bool,
     stop: Option<&AtomicBool>,
 ) -> Result<bool> {
@@ -905,7 +924,7 @@ fn process_alert_manifest(
     publish_alert_event(publisher, "alert.playout.started", &item, Some(&audio_path));
 
     let delivered_in_realtime =
-        match deliver_alert_outputs(&item, &audio_path, publisher, sleep_for_audio, stop) {
+        match deliver_alert_outputs(&item, &audio_path, media_publisher, sleep_for_audio, stop) {
             Ok(value) => value,
             Err(err) => {
                 item.status = "failed".to_string();

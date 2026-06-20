@@ -12,6 +12,23 @@ use tracing::{debug, error, info, warn};
 const CAP_REPLAY_WINDOW: Duration = Duration::from_secs(15 * 60);
 const CAP_REPLAY_LIMIT: usize = 512;
 
+struct BridgeEnvelope {
+    origin: Option<usize>,
+    value: Value,
+}
+
+struct BridgeClientHandle {
+    id: usize,
+    sender: SyncSender<Vec<u8>>,
+    receive_events: bool,
+}
+
+enum ClientMessage {
+    Event(Value),
+    SetReceiveEvents(bool),
+    Consumed,
+}
+
 /// Local event bridge used by daemon services and playout.
 pub(crate) struct HostBridge {
     addr: String,
@@ -33,42 +50,77 @@ impl HostBridge {
             .context("failed to inspect host event bridge address")?
             .to_string();
         let (sender, receiver) = mpsc::channel::<Value>();
-        let (client_sender, client_receiver) = mpsc::channel::<SyncSender<Vec<u8>>>();
+        let (envelope_sender, envelope_receiver) = mpsc::channel::<BridgeEnvelope>();
+        let (client_sender, client_receiver) = mpsc::channel::<BridgeClientHandle>();
         let (event_sender, event_receiver) = mpsc::channel::<Value>();
 
+        thread::spawn({
+            let envelope_sender = envelope_sender.clone();
+            move || {
+                for value in receiver {
+                    if envelope_sender
+                        .send(BridgeEnvelope {
+                            origin: None,
+                            value,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+
         thread::spawn(move || {
-            let mut clients: Vec<SyncSender<Vec<u8>>> = Vec::new();
+            let mut clients: Vec<BridgeClientHandle> = Vec::new();
             let mut cap_replay = VecDeque::<(Instant, Vec<u8>)>::new();
             loop {
-                while let Ok(client) = client_receiver.try_recv() {
-                    prune_replay(&mut cap_replay);
-                    for (_, raw) in &cap_replay {
-                        let _ = client.try_send(raw.clone());
-                    }
-                    clients.push(client);
-                }
-                match receiver.recv() {
-                    Ok(message) => {
-                        let _ = event_sender.send(message.clone());
-                        let Ok(mut raw) = serde_json::to_vec(&message) else {
-                            continue;
-                        };
-                        raw.push(b'\n');
-                        if replayable_event(&message) {
-                            cap_replay.push_back((Instant::now(), raw.clone()));
-                            prune_replay(&mut cap_replay);
-                            while cap_replay.len() > CAP_REPLAY_LIMIT {
-                                cap_replay.pop_front();
+                drain_new_clients(&client_receiver, &mut clients, &mut cap_replay);
+                match envelope_receiver.recv() {
+                    Ok(envelope) => {
+                        drain_new_clients(&client_receiver, &mut clients, &mut cap_replay);
+                        match handle_client_message(envelope.value) {
+                            ClientMessage::Event(message) => {
+                                let _ = event_sender.send(message.clone());
+                                let Ok(mut raw) = serde_json::to_vec(&message) else {
+                                    continue;
+                                };
+                                raw.push(b'\n');
+                                if replayable_event(&message) {
+                                    cap_replay.push_back((Instant::now(), raw.clone()));
+                                    prune_replay(&mut cap_replay);
+                                    while cap_replay.len() > CAP_REPLAY_LIMIT {
+                                        cap_replay.pop_front();
+                                    }
+                                }
+                                clients.retain(|client| {
+                                    if !client.receive_events
+                                        || envelope.origin.is_some_and(|id| id == client.id)
+                                    {
+                                        return true;
+                                    }
+                                    match client.sender.try_send(raw.clone()) {
+                                        Ok(()) => true,
+                                        Err(TrySendError::Full(_)) => {
+                                            warn!("dropped slow host bridge client");
+                                            false
+                                        }
+                                        Err(TrySendError::Disconnected(_)) => false,
+                                    }
+                                });
                             }
+                            ClientMessage::SetReceiveEvents(receive_events) => {
+                                if let Some(origin) = envelope.origin {
+                                    for client in &mut clients {
+                                        if client.id == origin {
+                                            client.receive_events = receive_events;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            ClientMessage::Consumed => {}
                         }
-                        clients.retain(|client| match client.try_send(raw.clone()) {
-                            Ok(()) => true,
-                            Err(TrySendError::Full(_)) => {
-                                warn!("dropped slow host bridge client");
-                                false
-                            }
-                            Err(TrySendError::Disconnected(_)) => false,
-                        });
                     }
                     Err(_) => break,
                 }
@@ -77,12 +129,15 @@ impl HostBridge {
 
         thread::spawn({
             let addr_for_log = addr.clone();
-            let accept_publisher = sender.clone();
+            let accept_publisher = envelope_sender.clone();
             move || {
                 info!("event bridge listening on {addr_for_log}");
+                let mut next_client_id = 1usize;
                 for accepted in listener.incoming() {
                     match accepted {
                         Ok(stream) => {
+                            let client_id = next_client_id;
+                            next_client_id = next_client_id.saturating_add(1);
                             let peer = stream
                                 .peer_addr()
                                 .map(|addr| addr.to_string())
@@ -91,18 +146,25 @@ impl HostBridge {
                             match stream.try_clone() {
                                 Ok(writer) => {
                                     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(256);
-                                    if client_sender.send(tx).is_err() {
+                                    if client_sender
+                                        .send(BridgeClientHandle {
+                                            id: client_id,
+                                            sender: tx,
+                                            receive_events: true,
+                                        })
+                                        .is_err()
+                                    {
                                         break;
                                     }
                                     spawn_client_writer(writer, rx);
                                 }
                                 Err(err) => warn!("failed to clone host bridge stream: {err}"),
                             }
-                            spawn_client_reader(stream, accept_publisher.clone());
+                            spawn_client_reader(stream, accept_publisher.clone(), client_id);
                         }
                         Err(err) => {
                             warn!("host event bridge accept failed: {err}");
-                            break;
+                            continue;
                         }
                     }
                 }
@@ -131,7 +193,23 @@ impl HostBridge {
     }
 }
 
-fn spawn_client_reader<R>(reader: R, publisher: Sender<Value>)
+fn drain_new_clients(
+    client_receiver: &Receiver<BridgeClientHandle>,
+    clients: &mut Vec<BridgeClientHandle>,
+    cap_replay: &mut VecDeque<(Instant, Vec<u8>)>,
+) {
+    while let Ok(client) = client_receiver.try_recv() {
+        prune_replay(cap_replay);
+        if client.receive_events {
+            for (_, raw) in cap_replay.iter() {
+                let _ = client.sender.try_send(raw.clone());
+            }
+        }
+        clients.push(client);
+    }
+}
+
+fn spawn_client_reader<R>(reader: R, publisher: Sender<BridgeEnvelope>, client_id: usize)
 where
     R: Read + Send + 'static,
 {
@@ -143,9 +221,10 @@ where
             }
             match serde_json::from_str::<Value>(&line) {
                 Ok(value) => {
-                    if let Some(event) = handle_client_message(value) {
-                        let _ = publisher.send(event);
-                    }
+                    let _ = publisher.send(BridgeEnvelope {
+                        origin: Some(client_id),
+                        value,
+                    });
                 }
                 Err(err) => warn!("host bridge received invalid JSON: {err}"),
             }
@@ -165,8 +244,17 @@ fn spawn_client_writer(mut writer: TcpStream, receiver: Receiver<Vec<u8>>) {
     });
 }
 
-fn handle_client_message(value: Value) -> Option<Value> {
+fn handle_client_message(value: Value) -> ClientMessage {
     let msg_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+    if msg_type == "bridge.client" {
+        let receive_events = value
+            .get("data")
+            .and_then(|data| data.get("receive_events"))
+            .and_then(Value::as_bool)
+            .or_else(|| value.get("receive_events").and_then(Value::as_bool))
+            .unwrap_or(true);
+        return ClientMessage::SetReceiveEvents(receive_events);
+    }
     if msg_type == "log_record" {
         let level = value
             .get("level")
@@ -184,9 +272,9 @@ fn handle_client_message(value: Value) -> Option<Value> {
             "DEBUG" => debug!("[{}] {message}", logger_label(logger)),
             _ => info!("[{}] {message}", logger_label(logger)),
         }
-        return None;
+        return ClientMessage::Consumed;
     }
-    Some(value)
+    ClientMessage::Event(value)
 }
 
 fn logger_label(logger: &str) -> &str {
@@ -227,7 +315,7 @@ mod tests {
             "message": "hello",
         }));
 
-        assert!(result.is_none());
+        assert!(matches!(result, ClientMessage::Consumed));
     }
 
     #[test]
@@ -239,6 +327,21 @@ mod tests {
         });
         let result = handle_client_message(event.clone());
 
-        assert_eq!(result, Some(event));
+        match result {
+            ClientMessage::Event(value) => assert_eq!(value, event),
+            _ => panic!("service event was not republished"),
+        }
+    }
+
+    #[test]
+    fn clients_can_disable_event_receives() {
+        let result = handle_client_message(json!({
+            "type": "bridge.client",
+            "data": {
+                "receive_events": false,
+            },
+        }));
+
+        assert!(matches!(result, ClientMessage::SetReceiveEvents(false)));
     }
 }

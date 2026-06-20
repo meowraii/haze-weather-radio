@@ -107,6 +107,21 @@ pub(crate) async fn connect_retry(addr: &str) -> Result<BridgeConnection> {
     }
 }
 
+pub(crate) async fn connect_publish_only_retry(addr: &str) -> Result<BridgeClient> {
+    loop {
+        match connect(addr).await {
+            Ok(connection) => {
+                connection.client.set_receive_events(false).await?;
+                return Ok(connection.client);
+            }
+            Err(err) => {
+                tracing::warn!("waiting for host media bridge at {addr}: {err}");
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
 impl BridgeClient {
     pub(crate) async fn publish(&self, mut value: Value) -> Result<()> {
         if value.get("timestamp").is_none() {
@@ -119,6 +134,17 @@ impl BridgeClient {
             .write_all(&raw)
             .await
             .context("failed to write host event bridge event")
+    }
+
+    pub(crate) async fn set_receive_events(&self, receive_events: bool) -> Result<()> {
+        self.publish(json!({
+            "type": "bridge.client",
+            "source": "haze-playout",
+            "data": {
+                "receive_events": receive_events,
+            }
+        }))
+        .await
     }
 
     pub(crate) async fn service_ready(&self, feeds: usize) {

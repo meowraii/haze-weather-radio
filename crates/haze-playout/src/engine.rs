@@ -31,6 +31,7 @@ const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
 pub(crate) struct Options {
     pub(crate) config_path: PathBuf,
     pub(crate) bridge_addr: String,
+    pub(crate) media_bridge_addr: String,
     pub(crate) alert_poll: Duration,
 }
 
@@ -187,9 +188,20 @@ pub(crate) async fn run(options: Options) -> Result<()> {
     loop {
         let cfg = Arc::new(crate::config::load_config(&options.config_path)?);
         let connection = bridge::connect_retry(&options.bridge_addr).await?;
+        let media_bridge_addr = if options.media_bridge_addr.trim().is_empty() {
+            options.bridge_addr.trim()
+        } else {
+            options.media_bridge_addr.trim()
+        };
+        let media_client = if media_bridge_addr == options.bridge_addr.trim() {
+            connection.client.clone()
+        } else {
+            bridge::connect_publish_only_retry(media_bridge_addr).await?
+        };
         match run_connected(
             Arc::clone(&cfg),
             connection.client,
+            media_client,
             connection.events,
             &options,
         )
@@ -206,12 +218,19 @@ pub(crate) async fn run(options: Options) -> Result<()> {
 async fn run_connected(
     cfg: Arc<LoadedConfig>,
     client: BridgeClient,
+    media_client: BridgeClient,
     mut events: mpsc::Receiver<Value>,
     options: &Options,
 ) -> ConnectedOutcome {
     let mut handles = HashMap::<String, FeedHandle>::new();
     for feed in cfg.enabled_feeds().cloned() {
-        let handle = FeedHandle::spawn(Arc::clone(&cfg), client.clone(), feed, options.alert_poll);
+        let handle = FeedHandle::spawn(
+            Arc::clone(&cfg),
+            client.clone(),
+            media_client.clone(),
+            feed,
+            options.alert_poll,
+        );
         handles.insert(handle.feed.id.clone(), handle);
     }
     client.service_ready(handles.len()).await;
@@ -438,6 +457,7 @@ impl FeedHandle {
     fn spawn(
         cfg: Arc<LoadedConfig>,
         client: BridgeClient,
+        media_client: BridgeClient,
         feed: FeedConfig,
         alert_poll: Duration,
     ) -> Self {
@@ -478,6 +498,7 @@ impl FeedHandle {
             FeedRunner {
                 cfg,
                 client,
+                media_client,
                 feed: feed.clone(),
                 audio_rx,
                 priority_rx,
@@ -503,6 +524,7 @@ impl FeedHandle {
 struct FeedRunner {
     cfg: Arc<LoadedConfig>,
     client: BridgeClient,
+    media_client: BridgeClient,
     feed: FeedConfig,
     audio_rx: mpsc::Receiver<AudioItem>,
     priority_rx: mpsc::Receiver<AudioItem>,
@@ -517,7 +539,7 @@ impl FeedRunner {
     async fn run(mut self) {
         self.sinks = sinks_for_feed(&self.cfg, &self.feed);
         let pcm_tx = spawn_pcm_publisher(
-            self.client.clone(),
+            self.media_client.clone(),
             self.feed.id.clone(),
             self.cfg.root.playout.sample_rate,
             self.cfg.root.playout.channels,

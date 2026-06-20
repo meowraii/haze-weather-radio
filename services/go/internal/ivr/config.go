@@ -15,11 +15,12 @@ import (
 
 // Options are command-line/runtime settings for the IVR edge service.
 type Options struct {
-	ConfigPath string
-	BridgeAddr string
-	HTTPAddr   string
-	SIPAddr    string
-	CacheDir   string
+	ConfigPath      string
+	BridgeAddr      string
+	MediaBridgeAddr string
+	HTTPAddr        string
+	SIPAddr         string
+	CacheDir        string
 }
 
 type rootConfig struct {

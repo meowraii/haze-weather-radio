@@ -105,6 +105,10 @@ pub fn run(args: DaemonArgs) -> Result<()> {
     env::set_var("HAZE_HOST_BRIDGE_ADDR", host_bridge.addr());
     env::set_var("HAZE_LOG_BRIDGE_ADDR", host_bridge.addr());
     let service_events = host_bridge.take_events();
+    let mut media_bridge = host_bridge::HostBridge::start()?;
+    env::set_var("HAZE_MEDIA_BRIDGE_ADDR", media_bridge.addr());
+    let media_events = media_bridge.take_events();
+    thread::spawn(move || while media_events.recv().is_ok() {});
 
     let host = ServiceHostConfig {
         app_dir: layout.app_dir,
@@ -124,8 +128,11 @@ pub fn run(args: DaemonArgs) -> Result<()> {
         return Ok(());
     }
     signals::install_shutdown_handler()?;
-    let mut daemon_services =
-        daemon_services::DaemonServices::start(&host, host_bridge.publisher())?;
+    let mut daemon_services = daemon_services::DaemonServices::start(
+        &host,
+        host_bridge.publisher(),
+        media_bridge.publisher(),
+    )?;
     let mut go_services = go_services::GoServiceSupervisor::start(&host)?;
     wait_for_shutdown(
         &mut daemon_services,
