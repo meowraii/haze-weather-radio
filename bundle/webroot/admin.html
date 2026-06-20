@@ -1055,7 +1055,7 @@
                             <section id="breakinUrlPanel" class="section-block breakin-source-panel">
                                 <div class="section-hd">
                                     <span>Stream URL</span>
-                                    <span class="section-hd-sub">HTTP or HTTPS audio is queued through the alert priority path.</span>
+                                    <span class="section-hd-sub">HTTP or HTTPS audio is streamed live until stopped.</span>
                                 </div>
                                 <div class="section-body breakin-source-panel active">
                                     <label class="daemon-field">
@@ -1067,7 +1067,8 @@
                                         <input id="breakinStreamUrl" type="url" placeholder="https://example.com/live.mp3">
                                     </label>
                                     <div class="breakin-actions">
-                                        <button id="breakinQueueUrl" class="btn-primary" type="button"><i data-lucide="radio" width="15" height="15"></i> Queue Stream</button>
+                                        <button id="breakinQueueUrl" class="btn-primary" type="button"><i data-lucide="radio" width="15" height="15"></i> Start Stream</button>
+                                        <button id="breakinStopUrl" class="btn-action" type="button" disabled><i data-lucide="square" width="15" height="15"></i> Stop</button>
                                     </div>
                                 </div>
                             </section>

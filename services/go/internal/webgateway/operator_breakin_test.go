@@ -3,9 +3,13 @@ package webgateway
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"net"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
 )
 
 func TestOperatorBreakInPublishesLiveEvents(t *testing.T) {
@@ -66,4 +70,82 @@ func TestOperatorBreakInRejectsUnsafePrerollPath(t *testing.T) {
 	if _, err := operatorBreakInWAVFromRelPath(filepath.Join(t.TempDir(), "config.yaml"), "../secret.wav"); err == nil {
 		t.Fatal("expected unsafe preroll path to be rejected")
 	}
+}
+
+func TestOperatorBreakInStreamURLValidation(t *testing.T) {
+	for _, raw := range []string{"ftp://example.com/live.mp3", "file:///tmp/audio.wav", "http://"} {
+		if err := validateOperatorBreakInStreamURL(raw); err == nil {
+			t.Fatalf("expected %q to be rejected", raw)
+		}
+	}
+	for _, raw := range []string{"http://example.com/live.mp3", "https://example.com/live.ogg"} {
+		if err := validateOperatorBreakInStreamURL(raw); err != nil {
+			t.Fatalf("expected %q to be accepted: %v", raw, err)
+		}
+	}
+}
+
+func TestOperatorBreakInReaperKeepsLiveURLStreams(t *testing.T) {
+	manager := NewOperatorBreakInManager()
+	cancelled := false
+	manager.sessions["stream"] = &operatorBreakInSession{
+		ID:        "stream",
+		StreamURL: "https://example.com/live.mp3",
+		StartedAt: time.Now().Add(-operatorBreakInSessionTTL * 2),
+		Cancel: func() {
+			cancelled = true
+		},
+	}
+
+	manager.reapStale()
+
+	if manager.sessions["stream"] == nil {
+		t.Fatal("live URL stream session was reaped")
+	}
+	if cancelled {
+		t.Fatal("live URL stream session was cancelled by stale reaper")
+	}
+}
+
+func TestOperatorBreakInStreamChunksAreUnlimitedUntilStopped(t *testing.T) {
+	manager := NewOperatorBreakInManager()
+	manager.sessions["stream"] = &operatorBreakInSession{
+		ID:         "stream",
+		FeedIDs:    []string{"sk-0001"},
+		Title:      "Stream",
+		SampleRate: 48000,
+		Channels:   1,
+		Publisher:  nil,
+		MaxBytes:   0,
+		StartedAt:  time.Now(),
+	}
+
+	if _, err := manager.appendChunk("stream", []byte{0, 0, 1, 0}); err == nil {
+		t.Fatal("inactive publisher should still be rejected")
+	}
+
+	manager.sessions["stream"].Publisher = eventsTestPublisher(t)
+	defer manager.sessions["stream"].Publisher.Close()
+	manager.sessions["stream"].Bytes = operatorBreakInMaxPCMBytes
+	if _, err := manager.appendChunk("stream", []byte{0, 0, 1, 0}); err != nil {
+		t.Fatalf("stream chunk should not be capped by mic duration: %v", err)
+	}
+}
+
+func eventsTestPublisher(t *testing.T) *events.HostBridgePublisher {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	return events.NewHostBridgePublisher(listener.Addr().String())
 }

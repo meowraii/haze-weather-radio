@@ -25,6 +25,7 @@ const toneButton = document.getElementById('breakinGenerateTone');
 const urlTitle = document.getElementById('breakinUrlTitle');
 const streamUrl = document.getElementById('breakinStreamUrl');
 const queueUrlButton = document.getElementById('breakinQueueUrl');
+const stopUrlButton = document.getElementById('breakinStopUrl');
 
 let bound = false;
 let state = { feeds: [] };
@@ -39,6 +40,7 @@ let elapsedTimer = null;
 let pendingPCM = [];
 let pendingBytes = 0;
 let sendChain = Promise.resolve();
+let urlSession = null;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -216,6 +218,13 @@ function setRecordingUI(active) {
     recordState.textContent = active ? 'Recording' : 'Idle';
 }
 
+function setUrlUI(active) {
+    queueUrlButton.disabled = active;
+    stopUrlButton.disabled = !active;
+    streamUrl.disabled = active;
+    urlTitle.disabled = active;
+}
+
 async function startMic() {
     const feedIDs = requireFeeds();
     pendingPCM = [];
@@ -328,15 +337,36 @@ async function generateTone() {
     setStatus('Tone preroll generated.', 'ok');
 }
 
-async function queueURL() {
+async function startURL() {
     const feedIDs = requireFeeds();
     const result = await panelClient.command('operator_breakin.url', {
         feed_ids: feedIDs,
         title: urlTitle.value.trim() || 'Operator Break-in Stream',
         audio_url: streamUrl.value.trim(),
     }, 15000);
+    if (!result?.session_id) {
+        throw new Error('Stream did not return a live break-in session.');
+    }
+    urlSession = {
+        id: result.session_id,
+        startedAt: Date.now(),
+    };
+    setUrlUI(true);
     await loadFeeds();
-    setStatus(`Stream queued for ${result.feed_ids?.length || feedIDs.length} feed(s).`, 'ok');
+    setStatus(`Live stream break-in on air for ${result.feed_ids?.length || feedIDs.length} feed(s).`, 'pending');
+}
+
+async function stopURL() {
+    if (!urlSession) return;
+    const activeSession = urlSession;
+    setStatus('Stopping stream break-in...', 'pending');
+    const result = await panelClient.command('operator_breakin.finish', { session_id: activeSession.id }, 15000);
+    if (urlSession?.id === activeSession.id) {
+        urlSession = null;
+    }
+    setUrlUI(false);
+    await loadFeeds();
+    setStatus(`Live stream break-in stopped for ${result?.feed_ids?.length || selectedFeedIDs().length} feed(s).`, 'ok');
 }
 
 function bind() {
@@ -381,7 +411,18 @@ function bind() {
         generateTone().catch((error) => setStatus(error.message || 'Unable to generate tone.', 'err'));
     });
     queueUrlButton.addEventListener('click', () => {
-        queueURL().catch((error) => setStatus(error.message || 'Unable to queue stream URL.', 'err'));
+        startURL().catch((error) => {
+            urlSession = null;
+            setUrlUI(false);
+            setStatus(error.message || 'Unable to start stream URL.', 'err');
+        });
+    });
+    stopUrlButton.addEventListener('click', () => {
+        stopURL().catch((error) => {
+            urlSession = null;
+            setUrlUI(false);
+            setStatus(error.message || 'Unable to stop stream URL.', 'err');
+        });
     });
     window.addEventListener('haze:admin-state', (event) => {
         if (event.detail?.playlist?.feeds) {

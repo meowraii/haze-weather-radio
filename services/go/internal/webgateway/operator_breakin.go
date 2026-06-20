@@ -1,11 +1,16 @@
 package webgateway
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"math"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,7 +40,10 @@ type operatorBreakInSession struct {
 	SampleRate  int
 	Channels    int
 	PrerollPath string
+	StreamURL   string
 	Publisher   *events.HostBridgePublisher
+	Cancel      context.CancelFunc
+	MaxBytes    int64
 	Bytes       int64
 	Chunks      int
 	StartedAt   time.Time
@@ -183,31 +191,26 @@ func (s *wsSession) queueOperatorBreakInURL(payload map[string]any) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	url := strings.TrimSpace(firstNonBlank(stringValue(payload, "audio_url"), stringValue(payload, "stream_url"), stringValue(payload, "url")))
-	if url == "" {
+	streamURL := strings.TrimSpace(firstNonBlank(stringValue(payload, "audio_url"), stringValue(payload, "stream_url"), stringValue(payload, "url")))
+	if streamURL == "" {
 		return nil, fmt.Errorf("audio_url is required")
 	}
-	if !strings.HasPrefix(strings.ToLower(url), "http://") && !strings.HasPrefix(strings.ToLower(url), "https://") {
-		return nil, fmt.Errorf("audio stream URL must use http or https")
-	}
-	alertID := safeID(firstNonBlank(stringValue(payload, "alert_id"), fmt.Sprintf("operator-stream-%d", time.Now().UTC().UnixNano())))
-	title := fallbackText(strings.TrimSpace(stringValue(payload, "title")), "Operator Break-in Stream")
-	data := map[string]any{
-		"feed_ids":      targets,
-		"alert_id":      alertID,
-		"message_type":  "Operator",
-		"title":         title,
-		"event":         "OPR",
-		"audio_url":     url,
-		"alert_text":    title,
-		"include_same":  false,
-		"alert_sent_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"source":        "operator-breakin",
-	}
-	if err := publishAlertBroadcast(s.configPath, targets, data); err != nil {
+	if err := validateOperatorBreakInStreamURL(streamURL); err != nil {
 		return nil, err
 	}
-	return map[string]any{"queued": true, "alert_id": alertID, "feed_ids": targets, "audio_url": url}, nil
+	title := fallbackText(strings.TrimSpace(stringValue(payload, "title")), "Operator Break-in Stream")
+	ctx, cancel := context.WithCancel(context.Background())
+	result, err := s.server.breakIn.startStream(s.configPath, targets, title, streamURL, cancel)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	id, _ := result["session_id"].(string)
+	if id != "" {
+		s.trackOperatorBreakInSession(id)
+		go s.server.breakIn.streamURL(ctx, id, streamURL)
+	}
+	return result, nil
 }
 
 func (s *wsSession) cancelOperatorBreakIn(payload map[string]any) (map[string]any, error) {
@@ -220,6 +223,14 @@ func (s *wsSession) cancelOperatorBreakIn(payload map[string]any) (map[string]an
 }
 
 func (m *OperatorBreakInManager) start(configPath string, feedIDs []string, title string, sampleRate int, channels int, prerollPath string) (map[string]any, error) {
+	return m.startSession(configPath, feedIDs, title, sampleRate, channels, prerollPath, "", nil, operatorBreakInMaxPCMBytes)
+}
+
+func (m *OperatorBreakInManager) startStream(configPath string, feedIDs []string, title string, streamURL string, cancel context.CancelFunc) (map[string]any, error) {
+	return m.startSession(configPath, feedIDs, title, 48000, 1, "", streamURL, cancel, 0)
+}
+
+func (m *OperatorBreakInManager) startSession(configPath string, feedIDs []string, title string, sampleRate int, channels int, prerollPath string, streamURL string, cancel context.CancelFunc, maxBytes int64) (map[string]any, error) {
 	m.reapStale()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -244,7 +255,10 @@ func (m *OperatorBreakInManager) start(configPath string, feedIDs []string, titl
 		SampleRate:  sampleRate,
 		Channels:    channels,
 		PrerollPath: prerollPath,
+		StreamURL:   streamURL,
 		Publisher:   publisher,
+		Cancel:      cancel,
+		MaxBytes:    maxBytes,
 		StartedAt:   time.Now().UTC(),
 	}
 	if err := publishOperatorBreakInEvent(session, "operator.breakin.start", nil); err != nil {
@@ -259,7 +273,10 @@ func (m *OperatorBreakInManager) start(configPath string, feedIDs []string, titl
 		SampleRate:  session.SampleRate,
 		Channels:    session.Channels,
 		PrerollPath: session.PrerollPath,
+		StreamURL:   session.StreamURL,
 		Publisher:   session.Publisher,
+		Cancel:      session.Cancel,
+		MaxBytes:    session.MaxBytes,
 		StartedAt:   session.StartedAt,
 	}
 	if prerollPath != "" {
@@ -283,8 +300,9 @@ func (m *OperatorBreakInManager) start(configPath string, feedIDs []string, titl
 		"session_id":    id,
 		"alert_id":      alertID,
 		"feed_ids":      feedIDs,
-		"max_pcm_bytes": operatorBreakInMaxPCMBytes,
+		"max_pcm_bytes": maxBytes,
 		"live":          true,
+		"stream_url":    streamURL,
 	}, nil
 }
 
@@ -305,7 +323,7 @@ func (m *OperatorBreakInManager) appendChunk(id string, data []byte) (map[string
 	if session == nil || session.Publisher == nil {
 		return nil, fmt.Errorf("break-in session is not active")
 	}
-	if session.Bytes+int64(len(data)) > operatorBreakInMaxPCMBytes {
+	if session.MaxBytes > 0 && session.Bytes+int64(len(data)) > session.MaxBytes {
 		return nil, fmt.Errorf("break-in audio exceeds maximum duration")
 	}
 	if err := publishOperatorBreakInPCM(session, data, session.SampleRate, session.Channels); err != nil {
@@ -325,6 +343,9 @@ func (m *OperatorBreakInManager) finish(id string) (map[string]any, error) {
 	}
 	delete(m.sessions, id)
 	m.mu.Unlock()
+	if session.Cancel != nil {
+		session.Cancel()
+	}
 	err := publishOperatorBreakInEvent(session, "operator.breakin.finish", nil)
 	_ = session.Publisher.Close()
 	if err != nil {
@@ -351,6 +372,9 @@ func (m *OperatorBreakInManager) cancel(id string) error {
 	m.mu.Unlock()
 	if session == nil {
 		return fmt.Errorf("break-in session is not active")
+	}
+	if session.Cancel != nil {
+		session.Cancel()
 	}
 	if session.Publisher != nil {
 		_ = publishOperatorBreakInEvent(session, "operator.breakin.cancel", nil)
@@ -517,6 +541,123 @@ func (s *wsSession) cancelOwnedOperatorBreakIns() {
 	}
 }
 
+func (m *OperatorBreakInManager) streamURL(ctx context.Context, id string, streamURL string) {
+	err := m.pipeStreamURL(ctx, id, streamURL)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		_ = m.cancelWithReason(id, "stream ended with error: "+err.Error())
+		return
+	}
+	_, _ = m.finish(id)
+}
+
+func (m *OperatorBreakInManager) pipeStreamURL(ctx context.Context, id string, streamURL string) error {
+	ffmpeg := strings.TrimSpace(os.Getenv("FFMPEG"))
+	if ffmpeg == "" {
+		ffmpeg = "ffmpeg"
+	}
+	cmd := exec.CommandContext(
+		ctx,
+		ffmpeg,
+		"-hide_banner",
+		"-loglevel", "error",
+		"-re",
+		"-i", streamURL,
+		"-vn",
+		"-ac", "1",
+		"-ar", "48000",
+		"-f", "s16le",
+		"-acodec", "pcm_s16le",
+		"pipe:1",
+	)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	readErr := m.readStreamPCM(ctx, id, stdout)
+	waitErr := cmd.Wait()
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return ctx.Err()
+	}
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return readErr
+	}
+	if waitErr != nil {
+		return waitErr
+	}
+	return nil
+}
+
+func (m *OperatorBreakInManager) readStreamPCM(ctx context.Context, id string, reader io.Reader) error {
+	buf := make([]byte, 48000*2/10)
+	carry := make([]byte, 0, 1)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			if len(carry) > 0 {
+				merged := make([]byte, 0, len(carry)+len(chunk))
+				merged = append(merged, carry...)
+				merged = append(merged, chunk...)
+				chunk = merged
+				carry = carry[:0]
+			}
+			if len(chunk)%2 != 0 {
+				carry = append(carry[:0], chunk[len(chunk)-1])
+				chunk = chunk[:len(chunk)-1]
+			}
+			if len(chunk) > 0 {
+				if _, appendErr := m.appendChunk(id, append([]byte(nil), chunk...)); appendErr != nil {
+					return appendErr
+				}
+			}
+		}
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+}
+
+func (m *OperatorBreakInManager) cancelWithReason(id string, reason string) error {
+	m.mu.Lock()
+	session := m.sessions[id]
+	delete(m.sessions, id)
+	m.mu.Unlock()
+	if session == nil {
+		return nil
+	}
+	if session.Cancel != nil {
+		session.Cancel()
+	}
+	if session.Publisher != nil {
+		_ = publishOperatorBreakInEvent(session, "operator.breakin.cancel", map[string]any{"reason": reason})
+		_ = session.Publisher.Close()
+	}
+	return nil
+}
+
+func validateOperatorBreakInStreamURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return fmt.Errorf("audio stream URL is invalid")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return nil
+	default:
+		return fmt.Errorf("audio stream URL must use http or https")
+	}
+}
+
 func (m *OperatorBreakInManager) reapStale() {
 	if m == nil {
 		return
@@ -525,6 +666,9 @@ func (m *OperatorBreakInManager) reapStale() {
 	expired := []*operatorBreakInSession{}
 	m.mu.Lock()
 	for id, session := range m.sessions {
+		if session != nil && strings.TrimSpace(session.StreamURL) != "" {
+			continue
+		}
 		if session == nil || session.StartedAt.IsZero() || now.Sub(session.StartedAt) > operatorBreakInSessionTTL {
 			delete(m.sessions, id)
 			if session != nil {
@@ -535,6 +679,9 @@ func (m *OperatorBreakInManager) reapStale() {
 	m.mu.Unlock()
 	for _, session := range expired {
 		if session.Publisher != nil {
+			if session.Cancel != nil {
+				session.Cancel()
+			}
 			_ = publishOperatorBreakInEvent(session, "operator.breakin.cancel", map[string]any{
 				"reason": "stale session expired",
 			})
