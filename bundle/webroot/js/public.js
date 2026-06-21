@@ -40,6 +40,7 @@ let lastNoticeText = '';
 let activeAlertTab = 'accepted';
 const feedPlayers = new Map();
 const feedPreferences = new Map();
+const feedCodecFallbacks = new Map();
 window.hazeFeedPlayers = feedPlayers;
 
 function recordWebRTCEvent(feedId, event, details = {}) {
@@ -59,6 +60,7 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
     for (const [id, player] of feedPlayers.entries()) {
         if (requestedFeed && id !== requestedFeed) continue;
         const audio = player.audio || null;
+        const codecFallback = feedCodecFallbacks.get(id) || null;
         players[id] = {
             mode: player.mode || '',
             connection_state: player.pc?.connectionState || '',
@@ -78,7 +80,8 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
             requested_codec: player.requestedCodec || 'auto',
             negotiated_codec: player.negotiatedCodec || '',
             negotiated_payload_type: player.negotiatedPayloadType,
-            codec_fallback_applied: Boolean(player.codecFallbackApplied),
+            codec_fallback_applied: Boolean(player.codecFallbackApplied || codecFallback),
+            codec_fallback: codecFallback,
             track_mute_pending: Boolean(player.trackMuteTimer),
             track_muted_reported: Boolean(player.trackMutedReported),
             output_mixer_active: Boolean(player.audioOutputMixer),
@@ -645,6 +648,7 @@ function attachFeedControls() {
         select.dataset.hazeBound = '1';
         select.addEventListener('change', () => {
             const feedId = select.dataset.feedMode;
+            feedCodecFallbacks.delete(feedId);
             setFeedMode(feedId, select.value);
             stopFeed(feedId, { silent: true });
             setPlayerStatus(feedId, select.value === 'http' ? 'HTTP selected' : 'WebRTC selected');
@@ -658,6 +662,7 @@ function attachFeedControls() {
             const prefs = normalizedFeedPreferences(feedId);
             prefs.codec = select.value;
             feedPreferences.set(feedId, prefs);
+            feedCodecFallbacks.delete(feedId);
             stopFeed(feedId, { silent: true });
             setPlayerStatus(feedId, 'Codec changed');
         });
@@ -1008,6 +1013,13 @@ function maybeFallbackWebRTCCodecToPCMU(feedId, player, reason) {
     prefs.mode = 'webrtc';
     prefs.codec = 'pcmu';
     feedPreferences.set(feedId, prefs);
+    feedCodecFallbacks.set(feedId, {
+        reason,
+        previous_codec: negotiated,
+        requested_codec: requested,
+        fallback_codec: 'pcmu',
+        at: new Date().toISOString(),
+    });
     const codecSelect = findFeedElement('feed-codec', feedId);
     if (codecSelect) codecSelect.value = 'pcmu';
     recordWebRTCEvent(feedId, 'codec_fallback_pcmu', {
@@ -1367,7 +1379,7 @@ async function startFeedWebRTC(feedId) {
         reconnectTimer: null,
         reconnectAttempts: 0,
         reconnectPending: false,
-        codecFallbackApplied: false,
+        codecFallbackApplied: feedCodecFallbacks.has(feedId),
         trackMutedReported: false,
         stopping: false,
     };
