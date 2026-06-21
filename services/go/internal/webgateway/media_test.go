@@ -128,13 +128,10 @@ func TestFrameConcealerBridgesShortUnderruns(t *testing.T) {
 	}
 
 	queue = append(queue, []byte{5, 6})
-	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string(silence) {
-		t.Fatalf("single recovery frame should be held for priming, got %v", got)
-	}
-	queue = append(queue, []byte{7, 8})
 	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{5, 6}) {
 		t.Fatalf("new frame after underrun = %v", got)
 	}
+	queue = append(queue, []byte{7, 8})
 	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{7, 8}) {
 		t.Fatalf("second recovery frame = %v", got)
 	}
@@ -150,18 +147,12 @@ func TestFrameConcealerPrimesAfterUnderrun(t *testing.T) {
 		t.Fatalf("empty startup frame = %v, want silence", got)
 	}
 	queue = append(queue, []byte{1})
-	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string(silence) {
-		t.Fatalf("single recovery frame should be held for priming, got %v", got)
-	}
-	if queuedFrameCount(queue, head) != 1 {
-		t.Fatalf("single recovery frame was consumed before priming")
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{1}) {
+		t.Fatalf("single recovery frame = %v, want queued frame", got)
 	}
 	queue = append(queue, []byte{2})
-	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{1}) {
-		t.Fatalf("primed recovery frame = %v, want first queued frame", got)
-	}
 	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{2}) {
-		t.Fatalf("second primed frame = %v, want second queued frame", got)
+		t.Fatalf("second recovery frame = %v, want second queued frame", got)
 	}
 }
 

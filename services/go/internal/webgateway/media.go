@@ -34,7 +34,7 @@ const (
 	webrtcFrameDuration        = 20 * time.Millisecond
 	webrtcMaxQueuedFrames      = 10
 	webrtcPeerFrameMailbox     = 1
-	webrtcResumeQueuedFrames   = 2
+	webrtcResumeQueuedFrames   = 1
 	webrtcConcealmentFrames    = 6
 	feedIngressCapacity        = 4
 	g722FrameSamples           = g722SampleRate / 50
