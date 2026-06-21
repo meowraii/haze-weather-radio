@@ -19,14 +19,15 @@ import (
 )
 
 type archiveCAPRecord struct {
-	ID        string          `json:"id"`
-	FeedID    string          `json:"feed_id,omitempty"`
-	Status    string          `json:"status"`
-	Reason    string          `json:"reason,omitempty"`
-	UpdatedAt time.Time       `json:"updated_at"`
-	Alert     capingest.Alert `json:"alert"`
-	RawXML    string          `json:"raw_xml,omitempty"`
-	AlertText string          `json:"alert_text,omitempty"`
+	ID         string          `json:"id"`
+	FeedID     string          `json:"feed_id,omitempty"`
+	Status     string          `json:"status"`
+	Reason     string          `json:"reason,omitempty"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	Alert      capingest.Alert `json:"alert"`
+	RawXML     string          `json:"raw_xml,omitempty"`
+	AlertText  string          `json:"alert_text,omitempty"`
+	BannerText string          `json:"banner_text,omitempty"`
 }
 
 func alertsArchivePayload(configPath string) (map[string]any, error) {
@@ -405,7 +406,7 @@ func queueArchiveSAME(configPath string, record archiveCAPRecord) (sameQueueItem
 	if err != nil {
 		return sameQueueItem{}, err
 	}
-	return persistSameQueueItemWithID(configPath, "000_"+safeID(record.FeedID+"_"+record.ID+"_same"), request, []string{record.FeedID}, result)
+	return persistSameQueueItemWithID(configPath, "000_"+safeID(record.FeedID+"_"+record.ID+"_same"), request, []string{record.FeedID}, result, "")
 }
 
 func findArchiveAlert(configPath string, id string, feedID string) (archiveCAPRecord, bool) {

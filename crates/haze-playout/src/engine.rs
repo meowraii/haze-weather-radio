@@ -189,6 +189,8 @@ struct AlertQueueItem {
     #[serde(default)]
     alert_text: String,
     #[serde(default)]
+    banner_text: String,
+    #[serde(default)]
     alert_sent_at: String,
     #[serde(default)]
     alert_expires_at: String,
@@ -2532,7 +2534,8 @@ mod tests {
   "status": "pending",
   "header": "DMO - Practice/demo Warning",
   "event": "DMO",
-  "alert_text": "This is the actual alert script."
+  "alert_text": "This is the actual alert script.",
+  "banner_text": "This is the actual banner script."
 }"#,
         )
         .expect("write manifest");
@@ -2540,10 +2543,12 @@ mod tests {
         mark_alert_started(&path).expect("mark started");
         let started = read_alert_item(&path).expect("read started");
         assert_eq!(started.alert_text, "This is the actual alert script.");
+        assert_eq!(started.banner_text, "This is the actual banner script.");
 
         mark_alert_played(&path).expect("mark played");
         let played = read_alert_item(&path).expect("read played");
         assert_eq!(played.alert_text, "This is the actual alert script.");
+        assert_eq!(played.banner_text, "This is the actual banner script.");
     }
 
     #[test]

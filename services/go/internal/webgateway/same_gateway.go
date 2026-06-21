@@ -41,7 +41,7 @@ func (s *wsSession) generateSameTest(payload map[string]any) (map[string]any, er
 		if err != nil {
 			return nil, err
 		}
-		item, err := persistSameQueueItem(s.configPath, request, targets, result)
+		item, err := persistSameQueueItem(s.configPath, request, targets, result, bannerTextFromTemplate(template))
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +94,7 @@ func (s *wsSession) generateSameTest(payload map[string]any) (map[string]any, er
 	if err != nil {
 		return nil, err
 	}
-	item, err := persistSameQueueItem(s.configPath, request, []string{feedID}, result)
+	item, err := persistSameQueueItem(s.configPath, request, []string{feedID}, result, "")
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func (s *wsSession) airSame(payload map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	item, err := persistSameQueueItem(s.configPath, request, targets, result)
+	item, err := persistSameQueueItem(s.configPath, request, targets, result, bannerTextFromManualAlert("", stringPayload(payload, "alert_text", ""), stringPayload(payload, "description", ""), stringPayload(payload, "instruction", "")))
 	if err != nil {
 		return nil, err
 	}
@@ -161,6 +161,7 @@ type sameQueueItem struct {
 	Originator   string             `json:"originator"`
 	Event        string             `json:"event"`
 	AlertText    string             `json:"alert_text,omitempty"`
+	BannerText   string             `json:"banner_text,omitempty"`
 	Locations    []string           `json:"locations"`
 	Duration     string             `json:"duration"`
 	Callsign     string             `json:"callsign"`
@@ -228,6 +229,23 @@ func buildTemplateSameRequest(configPath string, template map[string]any, payloa
 		Callsign:   senderID,
 		Tone:       tone,
 	}, nil
+}
+
+func bannerTextFromTemplate(template map[string]any) string {
+	if text := strings.TrimSpace(stringFromMap(template, "alert_text")); text != "" {
+		return text
+	}
+	msg := mapFromAny(template["msg"])
+	if text := strings.TrimSpace(fmt.Sprint(msg["en"])); text != "" && text != "<nil>" {
+		return text
+	}
+	same := mapFromAny(template["same"])
+	content := mapFromAny(same["content"])
+	langs := mapFromAny(content["lang"])
+	if text := strings.TrimSpace(fmt.Sprint(langs["en"])); text != "" && text != "<nil>" {
+		return text
+	}
+	return ""
 }
 
 func buildSameRequest(configPath string, payload map[string]any) (sameGenerateRequest, error) {
@@ -491,11 +509,11 @@ func runSameGenerator(configPath string, request sameGenerateRequest) (map[strin
 	return result, nil
 }
 
-func persistSameQueueItem(configPath string, request sameGenerateRequest, feedIDs []string, result map[string]any) (sameQueueItem, error) {
-	return persistSameQueueItemWithID(configPath, "", request, feedIDs, result)
+func persistSameQueueItem(configPath string, request sameGenerateRequest, feedIDs []string, result map[string]any, bannerText string) (sameQueueItem, error) {
+	return persistSameQueueItemWithID(configPath, "", request, feedIDs, result, bannerText)
 }
 
-func persistSameQueueItemWithID(configPath string, forcedID string, request sameGenerateRequest, feedIDs []string, result map[string]any) (sameQueueItem, error) {
+func persistSameQueueItemWithID(configPath string, forcedID string, request sameGenerateRequest, feedIDs []string, result map[string]any, bannerText string) (sameQueueItem, error) {
 	audioBase64, _ := result["audio_base64"].(string)
 	if audioBase64 == "" {
 		return sameQueueItem{}, fmt.Errorf("SAME generator returned no audio payload")
@@ -542,6 +560,7 @@ func persistSameQueueItemWithID(configPath string, forcedID string, request same
 		Header:       header,
 		Originator:   request.Originator,
 		Event:        request.Event,
+		BannerText:   strings.TrimSpace(bannerText),
 		Locations:    request.Locations,
 		Duration:     request.Duration,
 		Callsign:     request.Callsign,

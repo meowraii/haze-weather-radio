@@ -181,13 +181,13 @@ func buildBannerPayload(configPath string, feedID string, hub *BannerHub) banner
 			"cap",
 			now,
 		)
-		if text := strings.TrimSpace(record.AlertText); text != "" {
+		if text := strings.TrimSpace(fallbackString(record.BannerText, record.AlertText)); text != "" {
 			serialized.Message = text
 		}
 		alerts = append(alerts, serialized)
 		visuals = append(visuals, alerttext.AlertVisualInput{
 			Severity: info.Severity,
-			Event:    fallbackString(info.Event, info.Headline),
+			Event:    bannerVisualEvent(info, record),
 		})
 	}
 	gradient := alerttext.PickBannerGradient(visuals)
@@ -205,6 +205,17 @@ func buildBannerPayload(configPath string, feedID string, hub *BannerHub) banner
 	}
 	payload.Signature = bannerSignature(payload)
 	return payload
+}
+
+func bannerVisualEvent(info capingest.AlertInfo, record archiveCAPRecord) string {
+	parts := []string{info.Event, info.Headline, record.BannerText, record.AlertText}
+	out := parts[:0]
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 func activeBannerRecords(configPath string, feedID string, now time.Time) []archiveCAPRecord {
@@ -251,6 +262,9 @@ func onAirBannerRecords(configPath string, feedID string, hub *BannerHub, now ti
 		if text := strings.TrimSpace(item.AlertText); text != "" {
 			record.AlertText = text
 		}
+		if text := strings.TrimSpace(item.BannerText); text != "" {
+			record.BannerText = text
+		}
 		if archiveAlertExpired(record.Alert, now) {
 			continue
 		}
@@ -291,14 +305,15 @@ func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []
 				}
 			}
 			out = append(out, bannerOnAirAlert{
-				FeedID:    targetFeedID,
-				AlertID:   item.AlertID,
-				QueueID:   item.ID,
-				Event:     item.Event,
-				Header:    item.Header,
-				AlertText: item.AlertText,
-				ExpiresAt: expires,
-				UpdatedAt: now,
+				FeedID:     targetFeedID,
+				AlertID:    item.AlertID,
+				QueueID:    item.ID,
+				Event:      item.Event,
+				Header:     item.Header,
+				AlertText:  item.AlertText,
+				BannerText: item.BannerText,
+				ExpiresAt:  expires,
+				UpdatedAt:  now,
 			})
 		}
 	}
@@ -387,13 +402,15 @@ func bannerRecordFromOnAirAlert(item bannerOnAirAlert, now time.Time) archiveCAP
 	event := fallbackString(item.Event, "Alert")
 	headline := fallbackString(item.Header, event, "Weather Alert")
 	alertText := strings.TrimSpace(fallbackString(item.AlertText, headline))
+	bannerText := strings.TrimSpace(fallbackString(item.BannerText, alertText))
 	sent := updated.UTC().Format(time.RFC3339Nano)
 	return archiveCAPRecord{
-		ID:        alertID,
-		FeedID:    item.FeedID,
-		Status:    "on_air",
-		UpdatedAt: updated,
-		AlertText: alertText,
+		ID:         alertID,
+		FeedID:     item.FeedID,
+		Status:     "on_air",
+		UpdatedAt:  updated,
+		AlertText:  alertText,
+		BannerText: bannerText,
 		Alert: capingest.Alert{
 			Identifier:  alertID,
 			Sent:        sent,

@@ -1008,7 +1008,16 @@ func stripAlertHeadlineState(headline string) string {
 }
 
 func deriveSameCategory(event string) string {
-	words := strings.Fields(strings.ToLower(strings.TrimSpace(event)))
+	lower := strings.ToLower(strings.TrimSpace(event))
+	switch {
+	case strings.Contains(lower, "warning"):
+		return "warning"
+	case strings.Contains(lower, "watch"):
+		return "watch"
+	case strings.Contains(lower, "advisory"), strings.Contains(lower, "statement"), strings.Contains(lower, "outlook"):
+		return "advisory"
+	}
+	words := strings.Fields(lower)
 	if len(words) > 0 {
 		if category := sameCategoryTerminal[words[len(words)-1]]; category != "" {
 			return category

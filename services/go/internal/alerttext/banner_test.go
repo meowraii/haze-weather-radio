@@ -79,6 +79,26 @@ func TestBuildCAPAlertTextUsesSharedWeatherSpeech(t *testing.T) {
 	}
 }
 
+func TestPickBannerGradientUsesWarningWatchAdvisoryWords(t *testing.T) {
+	cases := []struct {
+		name  string
+		event string
+		want  string
+	}{
+		{name: "warning", event: "DMO - Practice/demo Warning", want: "#931102"},
+		{name: "watch", event: "Severe Thunderstorm Watch", want: "#929301"},
+		{name: "advisory", event: "Yellow Advisory - Fog", want: "#019310"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PickBannerColor([]AlertVisualInput{{Severity: "Unknown", Event: tc.event}})
+			if got != tc.want {
+				t.Fatalf("color = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func mustWrite(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

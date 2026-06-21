@@ -659,6 +659,34 @@ func TestAlertTextFromDataFallsBackToDescriptionAndInstruction(t *testing.T) {
 	}
 }
 
+func TestBannerTextFromDataUsesSameIntroEvenWhenSameAudioDisabled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "managed", "csv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "managed", "sameMapping.json"), []byte(`{"eas":{"DMO":"Practice/demo Warning"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv"), []byte("FIPS|COUNTYNAME\n001217|Talladega, AL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planner := &feedPlanner{cfg: loadedConfig{BaseDir: dir}, feed: feedXML{ID: "CAP-IT-ALL"}}
+	text := planner.bannerTextFromData(map[string]any{
+		"include_same":    false,
+		"same_event":      "DMO",
+		"same_originator": "WXR",
+		"same_locations":  []any{"001217"},
+		"same_duration":   "0015",
+		"same_callsign":   "meowraii",
+		"alert_text":      "Custom text.",
+		"mimic_endec":     "SAGE",
+	}, "Custom text.")
+
+	if !strings.Contains(text, "Environment Canada has issued a Practice/demo Warning") || !strings.Contains(text, "Custom text.") {
+		t.Fatalf("banner text = %q", text)
+	}
+}
+
 func TestIncludeSameAlertRequiresExplicitOptIn(t *testing.T) {
 	if includeSameAlert(map[string]any{}) {
 		t.Fatal("missing include_same should not default to SAME tones")

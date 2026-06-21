@@ -1018,6 +1018,10 @@ func TestBroadcastAlertDataDoesNotPrependSameTranslationWhenDisabled(t *testing.
 	if text != "This is only a drill." {
 		t.Fatalf("alert_text = %q", text)
 	}
+	bannerText, _ := data["banner_text"].(string)
+	if !strings.Contains(bannerText, "Environment Canada has issued") || !strings.Contains(bannerText, "This is only a drill.") {
+		t.Fatalf("banner_text = %q", bannerText)
+	}
 }
 
 func TestPersistSameQueueItemCreatesManifestAndStateDepth(t *testing.T) {
@@ -1038,12 +1042,15 @@ func TestPersistSameQueueItemCreatesManifestAndStateDepth(t *testing.T) {
 		"sample_rate":  float64(48000),
 		"channels":     float64(1),
 		"audio_base64": "AQIDBA==",
-	})
+	}, "This is only a drill.")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if item.Status != "pending" || item.AudioBytes != 4 {
 		t.Fatalf("item = %#v", item)
+	}
+	if item.BannerText != "This is only a drill." {
+		t.Fatalf("banner text = %q", item.BannerText)
 	}
 	if len(item.Outputs) != 1 || item.Outputs[0].Type != "udp" || item.Outputs[0].Address != "127.0.0.1:8898" {
 		t.Fatalf("outputs = %#v", item.Outputs)

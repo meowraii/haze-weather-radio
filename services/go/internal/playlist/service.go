@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -266,6 +267,7 @@ type priorityAlertManifest struct {
 	Header           string   `json:"header"`
 	Event            string   `json:"event"`
 	AlertText        string   `json:"alert_text,omitempty"`
+	BannerText       string   `json:"banner_text,omitempty"`
 	AlertSentAt      string   `json:"alert_sent_at,omitempty"`
 	AlertExpiresAt   string   `json:"alert_expires_at,omitempty"`
 	MessageType      string   `json:"message_type,omitempty"`
@@ -920,6 +922,7 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 	title := fallbackText(firstText(nil, data, "title", "header"), "Weather Alert")
 	eventName := fallbackText(firstText(nil, data, "event"), "CAP")
 	alertText := alertTextFromData(data)
+	bannerText := p.bannerTextFromData(data, alertText)
 	source := "cap-tts"
 	authoritativeURL := strings.TrimSpace(firstText(nil, data, "audio_url", "authoritative_url"))
 	var lastErr error
@@ -980,6 +983,7 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		Header:           title,
 		Event:            eventName,
 		AlertText:        strings.TrimSpace(alertText),
+		BannerText:       strings.TrimSpace(bannerText),
 		AlertSentAt:      firstText(nil, data, "alert_sent_at", "sent"),
 		AlertExpiresAt:   firstText(nil, data, "alert_expires_at", "expires"),
 		MessageType:      firstText(nil, data, "message_type", "msg_type"),
@@ -1032,6 +1036,7 @@ func (p *feedPlanner) publishAlertAudioReady(manifest priorityAlertManifest, dat
 		"header":            manifest.Header,
 		"event":             fallbackText(firstText(nil, data, "same_event", "event"), manifest.Event),
 		"alert_text":        fallbackText(alertText, firstText(nil, data, "alert_text", "tts_text", "text", "message")),
+		"banner_text":       fallbackText(manifest.BannerText, firstText(nil, data, "banner_text")),
 		"description":       firstText(nil, data, "description"),
 		"instruction":       firstText(nil, data, "instruction"),
 		"severity":          firstText(nil, data, "severity"),
@@ -1127,6 +1132,111 @@ func (p *feedPlanner) downloadAndConvertAlertAudio(ctx context.Context, sourceUR
 
 func alertTextFromData(data map[string]any) string {
 	return alerttext.SpeechFromData(data)
+}
+
+func (p *feedPlanner) bannerTextFromData(data map[string]any, alertText string) string {
+	if text := strings.TrimSpace(firstText(nil, data, "banner_text")); text != "" {
+		return text
+	}
+	parts := []string{}
+	if intro := p.sameIntroFromData(data); intro != "" {
+		parts = append(parts, intro)
+	}
+	if description := strings.TrimSpace(firstText(nil, data, "description")); description != "" {
+		parts = append(parts, alerttext.CleanAlertText(description))
+	}
+	if instruction := strings.TrimSpace(firstText(nil, data, "instruction")); instruction != "" {
+		parts = append(parts, alerttext.CleanAlertText(instruction))
+	}
+	if len(parts) <= 1 {
+		if custom := customAlertTextFromData(data); custom != "" && !sameText(parts, custom) {
+			parts = append(parts, custom)
+		}
+	}
+	if len(parts) == 0 {
+		return strings.TrimSpace(alertText)
+	}
+	return strings.TrimSpace(strings.Join(nonEmptyStrings(parts), " "))
+}
+
+func (p *feedPlanner) sameIntroFromData(data map[string]any) string {
+	if intro := strings.TrimSpace(firstText(nil, data, "same_translation", "same_intro")); intro != "" {
+		return intro
+	}
+	event := strings.TrimSpace(firstText(nil, data, "same_event", "event"))
+	locations := stringListAny(firstValue(nil, data, "same_locations", "locations"))
+	if event == "" || len(locations) == 0 {
+		return ""
+	}
+	configPath := filepath.Join(p.cfg.BaseDir, "config.yaml")
+	duration := normalizeSAMEDuration(fallbackText(firstText(nil, data, "same_duration", "duration"), "0015"))
+	now := time.Now()
+	return alerttext.BuildSAMETranslation(alerttext.SAMERequest{
+		Originator: fallbackText(firstText(nil, data, "same_originator", "originator"), "WXR"),
+		Event:      event,
+		EventName:  alerttext.EventName(configPath, event),
+		Locations:  locations,
+		AreaNames:  alerttext.ResolveAreaNames(configPath, stringListAny(firstValue(nil, data, "area_names")), locations),
+		Callsign:   fallbackText(firstText(nil, data, "same_callsign", "callsign"), feedCallsign(p.feed)),
+		SentAt:     now,
+		ExpiresAt:  now.Add(sameDurationToDuration(duration)),
+		MimicENDEC: fallbackText(firstText(nil, data, "mimic_endec"), "SAGE"),
+	})
+}
+
+func customAlertTextFromData(data map[string]any) string {
+	text := strings.TrimSpace(firstText(nil, data, "alert_text", "tts_text", "text", "message"))
+	if text == "" {
+		return ""
+	}
+	for _, intro := range []string{
+		firstText(nil, data, "same_translation"),
+		firstText(nil, data, "same_intro"),
+	} {
+		intro = strings.TrimSpace(intro)
+		if intro != "" && strings.HasPrefix(strings.ToLower(text), strings.ToLower(intro)) {
+			return strings.TrimSpace(text[len(intro):])
+		}
+	}
+	return text
+}
+
+func sameDurationToDuration(raw string) time.Duration {
+	raw = normalizeSAMEDuration(raw)
+	hours := intFromString(raw[:2], 0)
+	minutes := intFromString(raw[2:], 15)
+	if hours == 0 && minutes == 0 {
+		minutes = 15
+	}
+	return time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute
+}
+
+func intFromString(raw string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func nonEmptyStrings(values []string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if clean := strings.TrimSpace(value); clean != "" {
+			out = append(out, clean)
+		}
+	}
+	return out
+}
+
+func sameText(parts []string, value string) bool {
+	value = strings.TrimSpace(value)
+	for _, part := range parts {
+		if strings.EqualFold(strings.TrimSpace(part), value) {
+			return true
+		}
+	}
+	return false
 }
 
 func alertAttentionToneEnabled(data map[string]any) bool {

@@ -209,6 +209,26 @@ func TestBannerPayloadPrefersAudioReadyAlertText(t *testing.T) {
 	}
 }
 
+func TestBannerPayloadUsesBannerTextAndWarningColorForManualAlert(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	bannerText := "Environment Canada has issued a Practice/demo Warning for Talladega, AL ending at 5:15 pm (meowraii). Custom text."
+	hub := NewBannerHub(configPath, "")
+	hub.handleEvent([]byte(`{"type":"cap.alert.audio.ready","feed_ids":["CAP-IT-ALL"],"queue_id":"manual-warning-1","data":{"alert_id":"manual-warning","event":"DMO","title":"DMO - Practice/demo Warning","alert_text":"tts script should not be the crawl","banner_text":"`+bannerText+`"}}`), time.Now().UTC())
+
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
+
+	if !payload.Active || len(payload.Alerts) != 1 {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.PrimaryColor != "#931102" {
+		t.Fatalf("primary color = %q", payload.PrimaryColor)
+	}
+	if payload.Alerts[0].Message != bannerText {
+		t.Fatalf("message = %q, want %q", payload.Alerts[0].Message, bannerText)
+	}
+}
+
 func TestBannerHubFallsBackToOnAirMetadataWithoutArchive(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)

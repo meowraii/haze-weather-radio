@@ -77,6 +77,7 @@ func (s *wsSession) broadcastAlertData(payload map[string]any, targets []string,
 	if alertText == "" && (includeSame || boolPayload(payload, "prepend_same_translation", false)) {
 		alertText = intro
 	}
+	bannerText := bannerTextFromManualAlert(intro, customText, stringPayload(payload, "description", ""), stringPayload(payload, "instruction", ""))
 	event := strings.ToUpper(firstNonBlank(stringPayload(payload, "same_event", ""), stringPayload(payload, "event", "ADR")))
 	title := strings.TrimSpace(firstNonBlank(
 		stringPayload(payload, "title", ""),
@@ -89,6 +90,7 @@ func (s *wsSession) broadcastAlertData(payload map[string]any, targets []string,
 		"title":                    title,
 		"event":                    event,
 		"alert_text":               alertText,
+		"banner_text":              bannerText,
 		"description":              stringPayload(payload, "description", ""),
 		"instruction":              stringPayload(payload, "instruction", ""),
 		"include_same":             includeSame,
@@ -108,6 +110,17 @@ func (s *wsSession) broadcastAlertData(payload map[string]any, targets []string,
 		data["scheduled_for"] = scheduleAt.UTC().Format(time.RFC3339Nano)
 	}
 	return data
+}
+
+func bannerTextFromManualAlert(intro string, customText string, description string, instruction string) string {
+	parts := []string{}
+	for _, value := range []string{intro, customText, description, instruction} {
+		clean := strings.TrimSpace(value)
+		if clean != "" {
+			parts = append(parts, clean)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
 func withFeedFallback(payload map[string]any, feedID string) map[string]any {
