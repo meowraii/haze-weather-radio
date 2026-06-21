@@ -1703,11 +1703,6 @@
         function bindBannerAudioOutput(sourceStream, audio = state.audioElement) {
             if (!sourceStream || !audio) return sourceStream;
             const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-            if (state.audioOutputMixer?.outputStream === sourceStream) {
-                audio.srcObject = sourceStream;
-                state.audioOutputMixer.context?.resume?.().catch(() => {});
-                return sourceStream;
-            }
             if (!AudioContextCtor || !sourceStream.getAudioTracks?.().length) {
                 closeBannerAudioOutput();
                 audio.srcObject = sourceStream;
