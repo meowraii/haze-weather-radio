@@ -315,6 +315,7 @@
         const AUDIO_OUTPUT_BED_GAIN = 0.0025;
         const AUDIO_OUTPUT_BED_FREQUENCY = 180;
         const AUDIO_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
+        const AUDIO_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS = 10000;
         const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu']);
 
         const frame = document.getElementById('frame');
@@ -365,6 +366,7 @@
             audioLastStats: null,
             audioLastPacketAt: 0,
             audioLastProgressAt: 0,
+            audioLastOutputMixerRecoveryAt: 0,
             audioStartedAt: 0,
             audioTrackAttached: false,
             audioTrackMutedReported: false,
@@ -424,6 +426,7 @@
                 track_states: bannerAudioTrackStates(audio),
                 output_mixer_active: Boolean(state.audioOutputMixer),
                 output_mixer_state: state.audioOutputMixer?.context?.state || '',
+                last_output_mixer_recovery_age_ms: state.audioLastOutputMixerRecoveryAt ? Date.now() - state.audioLastOutputMixerRecoveryAt : null,
                 audio: audio ? {
                     paused: audio.paused,
                     ended: audio.ended,
@@ -1772,9 +1775,23 @@
                             window.clearTimeout(state.audioOutputMixer.outputTrackMuteTimer);
                         }
                         state.audioOutputMixer.outputTrackMuteTimer = window.setTimeout(() => {
-                            if (state.audioOutputMixer?.outputStream !== outputStream
-                                || hasRecentBannerAudioPackets()
-                                || !hasHardStaleBannerAudioPackets()) {
+                            if (state.audioOutputMixer?.outputStream !== outputStream) {
+                                return;
+                            }
+                            if (hasRecentBannerAudioPackets() || !hasHardStaleBannerAudioPackets()) {
+                                const now = Date.now();
+                                if (now - Number(state.audioLastOutputMixerRecoveryAt || 0) >= AUDIO_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS) {
+                                    state.audioLastOutputMixerRecoveryAt = now;
+                                    recordBannerAudioEvent('audio_output_mixer_rebind', {
+                                        track_id: track.id || '',
+                                        ready_state: track.readyState || '',
+                                        context_state: context.state,
+                                        packets_recent: hasRecentBannerAudioPackets(),
+                                    });
+                                    closeBannerAudioOutput();
+                                    bindBannerAudioOutput(sourceStream, audio);
+                                    ensureBannerAudioPlaying();
+                                }
                                 return;
                             }
                             state.audioOutputMixer.outputTrackMutedReported = true;

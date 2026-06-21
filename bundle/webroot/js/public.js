@@ -94,6 +94,7 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
             track_states: webRTCAudioTrackStates(player, audio),
             output_mixer_active: Boolean(player.audioOutputMixer),
             output_mixer_state: player.audioOutputMixer?.context?.state || '',
+            last_output_mixer_recovery_age_ms: player.lastOutputMixerRecoveryAt ? now - player.lastOutputMixerRecoveryAt : null,
             audio: audio ? {
                 paused: audio.paused,
                 ended: audio.ended,
@@ -156,6 +157,7 @@ const WEBRTC_TRACK_MUTE_GRACE_MS = 2500;
 const WEBRTC_OUTPUT_BED_GAIN = 0.0025;
 const WEBRTC_OUTPUT_BED_FREQUENCY = 180;
 const WEBRTC_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
+const WEBRTC_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS = 10000;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -896,9 +898,23 @@ function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
                     window.clearTimeout(player.audioOutputMixer.outputTrackMuteTimer);
                 }
                 player.audioOutputMixer.outputTrackMuteTimer = window.setTimeout(() => {
-                    if (player.audioOutputMixer?.outputStream !== outputStream
-                        || hasRecentWebRTCPackets(player)
-                        || !hasHardStaleWebRTCPackets(player)) {
+                    if (player.audioOutputMixer?.outputStream !== outputStream) {
+                        return;
+                    }
+                    if (hasRecentWebRTCPackets(player) || !hasHardStaleWebRTCPackets(player)) {
+                        const now = Date.now();
+                        if (now - Number(player.lastOutputMixerRecoveryAt || 0) >= WEBRTC_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS) {
+                            player.lastOutputMixerRecoveryAt = now;
+                            recordWebRTCEvent(feedId, 'audio_output_mixer_rebind', {
+                                track_id: track.id || '',
+                                ready_state: track.readyState || '',
+                                context_state: context.state,
+                                packets_recent: hasRecentWebRTCPackets(player),
+                            });
+                            closeWebRTCAudioOutput(player);
+                            bindWebRTCAudioOutput(feedId, player, sourceStream, audio);
+                            ensureWebRTCAudioPlaying(feedId, player, audio);
+                        }
                         return;
                     }
                     player.audioOutputMixer.outputTrackMutedReported = true;
@@ -1520,6 +1536,7 @@ async function startFeedWebRTC(feedId) {
         startedAt: Date.now(),
         lastPacketAt: 0,
         lastAudioProgressAt: 0,
+        lastOutputMixerRecoveryAt: 0,
         stagnantStatsPolls: 0,
         missingStatsPolls: 0,
         reconnectTimer: null,
