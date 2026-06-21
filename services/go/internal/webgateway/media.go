@@ -929,6 +929,7 @@ func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, track *webrtc.TrackLocalStaticSample, frames <-chan []byte, unsubscribe func()) {
 	defer unsubscribe()
 	loggedWrite := false
+	stats := webRTCPeerStreamStats{lastReport: time.Now()}
 	for {
 		select {
 		case <-ctx.Done():
@@ -940,13 +941,76 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			if len(frame) == 0 {
 				continue
 			}
+			frame, skipped := latestWebRTCFrame(frame, frames)
+			stats.recordSkipped(skipped)
 			if err := track.WriteSample(media.Sample{Data: append([]byte(nil), frame...), Duration: webrtcFrameDuration}); err != nil {
+				stats.writeErrors++
+				log.Printf("media bridge WebRTC stream write failed feed=%s codec=%s skipped_frames=%d write_errors=%d: %v", feedID, codec, stats.skippedFrames, stats.writeErrors, err)
 				return
 			}
+			stats.written++
+			maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
 			if !loggedWrite {
 				log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame))
 				loggedWrite = true
 			}
+		}
+	}
+}
+
+type webRTCPeerStreamStats struct {
+	written       uint64
+	skippedFrames uint64
+	writeErrors   uint64
+	lastReport    time.Time
+}
+
+func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
+	if skipped > 0 {
+		s.skippedFrames += uint64(skipped)
+	}
+}
+
+func (s *webRTCPeerStreamStats) resetInterval() {
+	s.written = 0
+	s.skippedFrames = 0
+	s.writeErrors = 0
+}
+
+func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats *webRTCPeerStreamStats) {
+	now := time.Now()
+	if now.Sub(stats.lastReport) < webrtcDiagnosticsInterval {
+		return
+	}
+	if stats.skippedFrames > 0 || stats.writeErrors > 0 {
+		log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d write_errors=%d",
+			feedID,
+			codec,
+			stats.written,
+			stats.skippedFrames,
+			stats.writeErrors,
+		)
+	}
+	stats.lastReport = now
+	stats.resetInterval()
+}
+
+func latestWebRTCFrame(first []byte, frames <-chan []byte) ([]byte, int) {
+	latest := first
+	skipped := 0
+	for {
+		select {
+		case frame, ok := <-frames:
+			if !ok {
+				return latest, skipped
+			}
+			if len(frame) == 0 {
+				continue
+			}
+			latest = frame
+			skipped++
+		default:
+			return latest, skipped
 		}
 	}
 }

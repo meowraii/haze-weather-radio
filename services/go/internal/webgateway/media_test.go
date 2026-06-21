@@ -177,6 +177,22 @@ func TestWebRTCFrameSourceBroadcastCountsSlowSubscribers(t *testing.T) {
 	}
 }
 
+func TestLatestWebRTCFrameSkipsStaleFrames(t *testing.T) {
+	frames := make(chan []byte, 4)
+	frames <- []byte{2}
+	frames <- nil
+	frames <- []byte{3}
+	frames <- []byte{4}
+
+	latest, skipped := latestWebRTCFrame([]byte{1}, frames)
+	if string(latest) != string([]byte{4}) {
+		t.Fatalf("latest frame = %v, want [4]", latest)
+	}
+	if skipped != 3 {
+		t.Fatalf("skipped = %d, want 3", skipped)
+	}
+}
+
 func TestMediaHubUsesIndependentFeedIngressQueues(t *testing.T) {
 	hub := newMemoryMediaHub()
 	left := hub.feedIngress("sk-0001")
