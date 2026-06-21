@@ -1597,6 +1597,40 @@ func TestMediaHubMaintainsG722RTPCadenceThroughSourceJitter(t *testing.T) {
 	assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t, "g722", webRTCAudioG722)
 }
 
+func TestMediaHubKeepsSimultaneousFeedWebRTCPeersIndependent(t *testing.T) {
+	hub := newMemoryMediaHub()
+	weatherTrack := newTestWebRTCReceiver(t, hub, "sk-0001", "g722")
+	catchallTrack := newTestWebRTCReceiver(t, hub, "CAP-IT-ALL", "g722")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pcm := sinePCM(960, 900, 48000, 16000)
+		for i := 0; i < 28; i++ {
+			hub.publish(PCMChunk{FeedID: "sk-0001", SampleRate: 48000, Channels: 1, Duration: 20 * time.Millisecond, Data: pcm})
+			if i%5 == 4 {
+				time.Sleep(48 * time.Millisecond)
+			} else {
+				time.Sleep(15 * time.Millisecond)
+			}
+		}
+	}()
+
+	errs := make(chan error, 2)
+	go func() {
+		errs <- readRTPPacketsAtWallClockCadence("sk-0001", weatherTrack, 24, 90*time.Millisecond)
+	}()
+	go func() {
+		errs <- readRTPPacketsAtWallClockCadence("CAP-IT-ALL", catchallTrack, 24, 90*time.Millisecond)
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-done
+}
+
 func assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T, preferredCodec string, codec webRTCAudioCodec) {
 	t.Helper()
 	hub := newMemoryMediaHub()
@@ -1963,6 +1997,64 @@ func waitForRemoteTrack(t *testing.T, tracks <-chan *webrtc.TrackRemote) *webrtc
 		t.Fatal("timed out waiting for WebRTC track")
 		return nil
 	}
+}
+
+func newTestWebRTCReceiver(t *testing.T, hub *MediaHub, feedID string, preferredCodec string) *webrtc.TrackRemote {
+	t.Helper()
+	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		offerPeer.Close()
+	})
+	tracks := make(chan *webrtc.TrackRemote, 1)
+	offerPeer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		tracks <- track
+	})
+	if _, err := offerPeer.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := offerPeer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatheringComplete := webrtc.GatheringCompletePromise(offerPeer)
+	if err := offerPeer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-gatheringComplete
+	answer, err := hub.AnswerWithOptions(t.Context(), feedID, offerPeer.LocalDescription().SDP, WebRTCAnswerOptions{PreferredCodec: preferredCodec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := offerPeer.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer.SDP}); err != nil {
+		t.Fatal(err)
+	}
+	return waitForRemoteTrack(t, tracks)
+}
+
+func readRTPPacketsAtWallClockCadence(name string, track *webrtc.TrackRemote, count int, maxGap time.Duration) error {
+	var previous time.Time
+	for i := 0; i < count; i++ {
+		packet, _, err := track.ReadRTP()
+		if err != nil {
+			return fmt.Errorf("%s RTP read failed: %w", name, err)
+		}
+		if len(packet.Payload) == 0 {
+			return fmt.Errorf("%s RTP payload %d is empty", name, i+1)
+		}
+		now := time.Now()
+		if !previous.IsZero() {
+			if gap := now.Sub(previous); gap > maxGap {
+				return fmt.Errorf("%s RTP receiver wall-clock gap = %s, want <= %s", name, gap, maxGap)
+			}
+		}
+		previous = now
+	}
+	return nil
 }
 
 func waitForRTPPacket(t *testing.T, track *webrtc.TrackRemote) []byte {
