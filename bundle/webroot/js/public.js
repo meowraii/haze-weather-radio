@@ -868,11 +868,10 @@ function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
         context.resume?.().catch(() => {});
         player.audioOutputMixer.resumeFallbackTimer = window.setTimeout(() => {
             if (player.audioOutputMixer?.outputStream !== outputStream || context.state === 'running') return;
-            recordWebRTCEvent(feedId, 'audio_output_mixer_suspended_fallback', {
+            recordWebRTCEvent(feedId, 'audio_output_mixer_resume_retry', {
                 context_state: context.state,
             });
-            closeWebRTCAudioOutput(player);
-            audio.srcObject = sourceStream;
+            context.resume?.().catch(() => {});
         }, WEBRTC_OUTPUT_MIXER_RESUME_GRACE_MS);
         recordWebRTCEvent(feedId, 'audio_output_mixer_bound', {
             source_track_count: sourceStream.getAudioTracks?.().length || 0,

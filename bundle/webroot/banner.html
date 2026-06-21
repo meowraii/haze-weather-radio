@@ -1688,11 +1688,10 @@
                 context.resume?.().catch(() => {});
                 state.audioOutputMixer.resumeFallbackTimer = window.setTimeout(() => {
                     if (state.audioOutputMixer?.outputStream !== outputStream || context.state === 'running') return;
-                    recordBannerAudioEvent('audio_output_mixer_suspended_fallback', {
+                    recordBannerAudioEvent('audio_output_mixer_resume_retry', {
                         context_state: context.state,
                     });
-                    closeBannerAudioOutput();
-                    audio.srcObject = sourceStream;
+                    context.resume?.().catch(() => {});
                 }, AUDIO_OUTPUT_MIXER_RESUME_GRACE_MS);
                 recordBannerAudioEvent('audio_output_mixer_bound', {
                     source_track_count: sourceStream.getAudioTracks?.().length || 0,
