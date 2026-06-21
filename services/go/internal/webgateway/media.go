@@ -1156,18 +1156,21 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	var pendingSkipped int
 	var lastSourceSequence uint64
 	var fillerFramesSinceSource int
-	handleIncomingFrame := func(frame webRTCFrame, ok bool) bool {
+	writeNextFrame := func() bool {
+		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
 		if !ok {
 			failPeer("frame_source_closed")
 			return false
 		}
-		if len(frame.payload) == 0 {
+		if !hasFrame {
+			if len(lastFrame.payload) == 0 {
+				return true
+			}
+			if !writeFrame(lastFrame, 0, 0, true) {
+				return false
+			}
+			fillerFramesSinceSource++
 			return true
-		}
-		frame, drainSkipped, ok := latestWebRTCFrame(frame, frames)
-		if !ok {
-			failPeer("frame_source_closed")
-			return false
 		}
 		sourceSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
 		sourceGap := webRTCSourceGapFramesAfterFiller(sourceSkipped, fillerFramesSinceSource)
@@ -1179,36 +1182,17 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		pendingSkipped = 0
 		return writeFrame(frame, skipped, sourceGap, false)
 	}
+	if !writeNextFrame() {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case frame, ok := <-frames:
-			if !handleIncomingFrame(frame, ok) {
-				return
-			}
 		case <-idleTicker.C:
-			select {
-			case frame, ok := <-frames:
-				if shouldPreferWebRTCFrameOverFiller(frame, ok) {
-					if !handleIncomingFrame(frame, ok) {
-						return
-					}
-					continue
-				}
-				if !ok {
-					failPeer("frame_source_closed")
-					return
-				}
-			default:
-			}
-			if len(lastFrame.payload) == 0 || !shouldSendWebRTCFiller(stats.lastWriteAt, time.Now()) {
-				continue
-			}
-			if !writeFrame(lastFrame, 0, 0, true) {
+			if !writeNextFrame() {
 				return
 			}
-			fillerFramesSinceSource++
 		}
 	}
 }
@@ -1412,6 +1396,25 @@ func latestWebRTCFrame(current webRTCFrame, frames <-chan webRTCFrame) (webRTCFr
 		default:
 			return latest, skippedCollectedFrames(current, collected), true
 		}
+	}
+}
+
+func drainLatestWebRTCFrame(frames <-chan webRTCFrame) (webRTCFrame, int, bool, bool) {
+	select {
+	case frame, ok := <-frames:
+		if !ok {
+			return webRTCFrame{}, 0, false, false
+		}
+		latest, skipped, ok := latestWebRTCFrame(frame, frames)
+		if !ok {
+			return webRTCFrame{}, skipped, false, false
+		}
+		if len(latest.payload) == 0 {
+			return webRTCFrame{}, skipped, true, false
+		}
+		return latest, skipped, true, true
+	default:
+		return webRTCFrame{}, 0, true, false
 	}
 }
 

@@ -292,6 +292,29 @@ func TestLatestWebRTCFrameDoesNotSkipStartupFrame(t *testing.T) {
 	}
 }
 
+func TestDrainLatestWebRTCFrameReturnsLatestWithoutBlocking(t *testing.T) {
+	frames := make(chan webRTCFrame, 4)
+	frames <- webRTCFrame{sequence: 1, payload: []byte{1}}
+	frames <- webRTCFrame{sequence: 2, payload: []byte{2}}
+	frames <- webRTCFrame{sequence: 3, payload: []byte{3}}
+
+	latest, skipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
+	if !ok || !hasFrame {
+		t.Fatalf("drain ok=%v hasFrame=%v, want true/true", ok, hasFrame)
+	}
+	if latest.sequence != 3 || string(latest.payload) != string([]byte{3}) {
+		t.Fatalf("latest frame = %+v, want sequence 3", latest)
+	}
+	if skipped != 2 {
+		t.Fatalf("skipped = %d, want 2", skipped)
+	}
+
+	_, skipped, ok, hasFrame = drainLatestWebRTCFrame(frames)
+	if !ok || hasFrame || skipped != 0 {
+		t.Fatalf("empty drain = ok %v hasFrame %v skipped %d, want true false 0", ok, hasFrame, skipped)
+	}
+}
+
 func TestRTPTimestampForFrameStaysPacketContinuous(t *testing.T) {
 	base := uint32(4000)
 	if got := rtpTimestampForFrame(base); got != base {
