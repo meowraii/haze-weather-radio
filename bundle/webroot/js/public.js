@@ -214,6 +214,22 @@ function publicWebRTCAudioElement(feedId) {
         audio.style.pointerEvents = 'none';
         document.body.appendChild(audio);
     }
+    if (audio.dataset.hazeSinkBound !== '1') {
+        audio.dataset.hazeSinkBound = '1';
+        audio.addEventListener('pause', () => {
+            recordWebRTCEvent(audio.dataset.feedAudioSink, 'audio_pause', {
+                ready_state: audio.readyState,
+                network_state: audio.networkState,
+                ended: audio.ended,
+            });
+        });
+        audio.addEventListener('playing', () => {
+            recordWebRTCEvent(audio.dataset.feedAudioSink, 'audio_playing', {
+                ready_state: audio.readyState,
+                network_state: audio.networkState,
+            });
+        });
+    }
     return audio;
 }
 
@@ -640,18 +656,31 @@ function setHealthyWebRTCStatus(feedId, player, audio = player?.audio) {
 function ensureWebRTCAudioPlaying(feedId, player, audio = player?.audio) {
     if (!isActivePlayer(feedId, player) || player?.mode !== 'webrtc' || !audio) return;
     if (!audio.paused || audio.dataset.hazePlayerState === 'play-blocked' || audio.dataset.hazePlayerState === 'needs-play') return;
+    recordWebRTCEvent(feedId, 'audio_resume_attempt', {
+        ready_state: audio.readyState,
+        network_state: audio.networkState,
+        has_live_track: hasLiveWebRTCAudioTrack(player),
+        packets_recent: hasRecentWebRTCPackets(player),
+    });
     const playPromise = audio.play();
     if (playPromise && typeof playPromise.catch === 'function') {
         playPromise
             .then(() => {
                 if (isActivePlayer(feedId, player)) {
                     audio.dataset.hazePlayerState = audio.paused ? 'audio-ready' : 'playing';
+                    recordWebRTCEvent(feedId, 'audio_resume_ok', {
+                        paused: audio.paused,
+                        ready_state: audio.readyState,
+                    });
                 }
             })
-            .catch(() => {
+            .catch((error) => {
                 if (isActivePlayer(feedId, player)) {
                     audio.dataset.hazePlayerState = 'needs-play';
                     setPlayerStatus(feedId, 'Press Play to start audio');
+                    recordWebRTCEvent(feedId, 'audio_resume_blocked', {
+                        error: error?.name || 'play_failed',
+                    });
                 }
             });
     }
