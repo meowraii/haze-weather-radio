@@ -1495,8 +1495,8 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		nextWriteAt = nextWriteAt.Add(webrtcFrameDuration)
 		wait := time.Until(nextWriteAt)
 		if wait <= 0 {
-			nextWriteAt = time.Now()
-			continue
+			nextWriteAt = time.Now().Add(webrtcFrameDuration)
+			wait = webrtcFrameDuration
 		}
 		pacingTimer.Reset(wait)
 		select {
