@@ -1204,7 +1204,7 @@
                                     at: new Date().toISOString(),
                                 });
                             }
-                            if (!state.audioTrackAttached && state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                            if (!hasUsableBannerAudio() && state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
                                 scheduleAudioReconnect({ force: true });
                             }
                         }
@@ -1226,7 +1226,7 @@
                         if (state.audioStagnantStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stalled.', window.hazeBannerWebRTCStats);
                         }
-                        if (!state.audioTrackAttached && state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                        if (!hasUsableBannerAudio() && state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeBannerWebRTCStats);
                             scheduleAudioReconnect({ force: true });
                         }
@@ -1289,6 +1289,15 @@
 
         function hasRecentBannerAudioPackets(now = Date.now()) {
             return state.audioLastPacketAt > 0 && now - state.audioLastPacketAt <= AUDIO_RECENT_PACKET_GRACE_MS;
+        }
+
+        function hasLiveBannerAudioTrack() {
+            const tracks = state.audioElement?.srcObject?.getAudioTracks?.() || [];
+            return tracks.some((track) => track.readyState === 'live');
+        }
+
+        function hasUsableBannerAudio() {
+            return Boolean(state.audioTrackAttached || hasLiveBannerAudioTrack());
         }
 
         function markBannerAudioPacketsRecent() {

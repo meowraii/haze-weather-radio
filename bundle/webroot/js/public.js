@@ -610,6 +610,17 @@ function hasRecentWebRTCPackets(player, now = Date.now()) {
     return lastPacketAt > 0 && now - lastPacketAt <= WEBRTC_RECENT_PACKET_GRACE_MS;
 }
 
+function hasLiveWebRTCAudioTrack(player) {
+    const tracks = player?.audio?.srcObject?.getAudioTracks?.()
+        || player?.remoteStream?.getAudioTracks?.()
+        || [];
+    return tracks.some((track) => track.readyState === 'live');
+}
+
+function hasUsableWebRTCAudio(player) {
+    return Boolean(player?.trackAttached || hasLiveWebRTCAudioTrack(player));
+}
+
 function markWebRTCPacketsRecent(player, audio = player?.audio) {
     if (!player) return;
     player.lastPacketAt = Date.now();
@@ -655,11 +666,11 @@ function startWebRTCStatsMonitor(feedId, player) {
                             track_attached: Boolean(player.trackAttached),
                             at: new Date().toISOString(),
                         });
-                        if (isActivePlayer(feedId, player) && !player.trackAttached) {
+                        if (isActivePlayer(feedId, player) && !hasUsableWebRTCAudio(player)) {
                             setPlayerStatus(feedId, 'Waiting for audio frames...');
                         }
                     }
-                    if (!player.trackAttached && player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                    if (!hasUsableWebRTCAudio(player) && player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                         scheduleWebRTCReconnect(feedId, player, 'Reconnecting missing audio stream...');
                     }
                 }
@@ -684,11 +695,11 @@ function startWebRTCStatsMonitor(feedId, player) {
                 player.stagnantStatsPolls = (player.stagnantStatsPolls || 0) + 1;
                 if (player.stagnantStatsPolls === WEBRTC_STAGNANT_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stalled.', window.hazeLastWebRTCStats[feedId]);
-                    if (isActivePlayer(feedId, player) && !player.trackAttached) {
+                    if (isActivePlayer(feedId, player) && !hasUsableWebRTCAudio(player)) {
                         setPlayerStatus(feedId, 'Waiting for audio frames...');
                     }
                 }
-                if (!player.trackAttached && player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                if (!hasUsableWebRTCAudio(player) && player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeLastWebRTCStats[feedId]);
                     scheduleWebRTCReconnect(feedId, player, 'Reconnecting stalled audio...');
                 }
