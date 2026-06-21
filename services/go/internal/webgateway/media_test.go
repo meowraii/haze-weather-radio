@@ -41,6 +41,23 @@ func TestPCM16ToG722SilenceFrame(t *testing.T) {
 	}
 }
 
+func TestWebRTCIdleFramesCarryDither(t *testing.T) {
+	g722Idle := g722IdleFrameSamples()
+	if len(g722Idle) != g722FrameSamples {
+		t.Fatalf("G.722 idle samples = %d, want %d", len(g722Idle), g722FrameSamples)
+	}
+	if g722Idle[0] == 0 || g722Idle[1] == 0 || g722Idle[0] == g722Idle[1] {
+		t.Fatalf("G.722 idle dither should alternate tiny non-zero samples: %v %v", g722Idle[0], g722Idle[1])
+	}
+	pcmuIdle := pcmuIdleFrame()
+	if len(pcmuIdle) != pcmuFrameSamples {
+		t.Fatalf("PCMU idle frame = %d, want %d", len(pcmuIdle), pcmuFrameSamples)
+	}
+	if pcmuIdle[0] == pcmuIdle[1] {
+		t.Fatalf("PCMU idle dither should not collapse to a constant byte: %x %x", pcmuIdle[0], pcmuIdle[1])
+	}
+}
+
 func TestValidatePCMChunkRejectsImpossibleShape(t *testing.T) {
 	_, ok, _ := validatePCMChunk(PCMChunk{
 		FeedID:     "sk-0001",

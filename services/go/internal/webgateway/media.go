@@ -861,9 +861,9 @@ func (s *webRTCFrameSource) run() {
 	frameHead := 0
 	concealer := frameConcealer{}
 	g722Encoder := g722.NewEncoder(g722.Rate64000, 0)
-	g722Silence := make([]int16, g722FrameSamples)
+	g722Idle := g722IdleFrameSamples()
 	opusIdle := opusIdleFrameSamples()
-	pcmuIdle := pcmuSilence()
+	pcmuIdle := pcmuIdleFrame()
 	loggedFirstFrame := false
 	stats := webRTCFrameSourceStats{lastReport: time.Now()}
 
@@ -881,7 +881,7 @@ func (s *webRTCFrameSource) run() {
 			}
 		}
 		frame, kind := concealer.nextWithKind(&frameQueue, &frameHead, func() []byte {
-			return s.idleFrame(g722Encoder, g722Silence, opusIdle, pcmuIdle)
+			return s.idleFrame(g722Encoder, g722Idle, opusIdle, pcmuIdle)
 		})
 		if len(frame) == 0 {
 			return true
@@ -922,7 +922,7 @@ func (s *webRTCFrameSource) appendFrames(queue [][]byte, g722Encoder *g722.Encod
 	}
 }
 
-func (s *webRTCFrameSource) idleFrame(g722Encoder *g722.Encoder, g722Silence []int16, opusIdle []int16, pcmuIdle []byte) []byte {
+func (s *webRTCFrameSource) idleFrame(g722Encoder *g722.Encoder, g722Idle []int16, opusIdle []int16, pcmuIdle []byte) []byte {
 	switch s.key.codec {
 	case webRTCAudioOpus:
 		encoded, err := s.encoder.Encode(opusIdle)
@@ -933,7 +933,7 @@ func (s *webRTCFrameSource) idleFrame(g722Encoder *g722.Encoder, g722Silence []i
 	case webRTCAudioPCMU:
 		return pcmuIdle
 	default:
-		return encodeG722Frame(g722Encoder, g722Silence)
+		return encodeG722Frame(g722Encoder, g722Idle)
 	}
 }
 
@@ -1308,6 +1308,18 @@ func opusIdleFrameSamples() []int16 {
 	return samples
 }
 
+func g722IdleFrameSamples() []int16 {
+	samples := make([]int16, g722FrameSamples)
+	for i := range samples {
+		if i%2 == 0 {
+			samples[i] = 1
+		} else {
+			samples[i] = -1
+		}
+	}
+	return samples
+}
+
 func appendG722Frames(queue [][]byte, encoder *g722.Encoder, chunk PCMChunk) [][]byte {
 	frames := pcm16ToG722Frames(encoder, chunk)
 	if len(frames) == 0 {
@@ -1410,7 +1422,7 @@ func appendPCMUFrames(queue [][]byte, chunk PCMChunk) [][]byte {
 func pcm16ToPCMU(chunk PCMChunk) []byte {
 	frames := pcm16ToPCMUFrames(chunk)
 	if len(frames) == 0 {
-		return pcmuSilence()
+		return pcmuIdleFrame()
 	}
 	return frames[0]
 }
@@ -1501,10 +1513,14 @@ func linearToMuLaw(sample int16) byte {
 	return ^byte(sign | (exponent << 4) | mantissa)
 }
 
-func pcmuSilence() []byte {
+func pcmuIdleFrame() []byte {
 	frame := make([]byte, pcmuFrameSamples)
 	for i := range frame {
-		frame[i] = 0xff
+		sample := int16(1)
+		if i%2 == 1 {
+			sample = -1
+		}
+		frame[i] = linearToMuLaw(sample)
 	}
 	return frame
 }
