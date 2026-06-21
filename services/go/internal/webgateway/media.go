@@ -20,21 +20,22 @@ import (
 )
 
 const (
-	opusSampleRate          = 48000
-	opusFrameSamples        = opusSampleRate / 50
-	g722SampleRate          = 16000
-	webrtcRTPClockRate      = 8000
-	pcmuSampleRate          = 8000
-	pcmuFrameSamples        = pcmuSampleRate / 50
-	webrtcChannels          = 1
-	opusRTPChannels         = 2
-	opusEncoderChannels     = 1
-	webrtcFrameDuration     = 20 * time.Millisecond
-	webrtcMaxQueuedFrames   = 10
-	webrtcConcealmentFrames = 6
-	feedIngressCapacity     = 4
-	g722FrameSamples        = g722SampleRate / 50
-	bridgeReconnectDelay    = 750 * time.Millisecond
+	opusSampleRate           = 48000
+	opusFrameSamples         = opusSampleRate / 50
+	g722SampleRate           = 16000
+	webrtcRTPClockRate       = 8000
+	pcmuSampleRate           = 8000
+	pcmuFrameSamples         = pcmuSampleRate / 50
+	webrtcChannels           = 1
+	opusRTPChannels          = 2
+	opusEncoderChannels      = 1
+	webrtcFrameDuration      = 20 * time.Millisecond
+	webrtcMaxQueuedFrames    = 10
+	webrtcResumeQueuedFrames = 2
+	webrtcConcealmentFrames  = 6
+	feedIngressCapacity      = 4
+	g722FrameSamples         = g722SampleRate / 50
+	bridgeReconnectDelay     = 750 * time.Millisecond
 )
 
 type webRTCAudioCodec int
@@ -233,11 +234,11 @@ func preferredWebRTCAudioCodec(offerSDP string, options WebRTCAnswerOptions) (we
 	if options.RequireOpus {
 		return requiredWebRTCAudioCodec(upper, webRTCAudioOpus)
 	}
-	if opusBackendAvailable() && strings.Contains(upper, "OPUS/48000") {
-		return webRTCAudioOpus, nil
-	}
 	if !options.DisableG722 && (strings.Contains(upper, "G722/8000") || strings.Contains(upper, " G722")) {
 		return webRTCAudioG722, nil
+	}
+	if opusBackendAvailable() && strings.Contains(upper, "OPUS/48000") {
+		return webRTCAudioOpus, nil
 	}
 	return webRTCAudioPCMU, nil
 }
@@ -718,21 +719,38 @@ func (h *MediaHub) streamPCMU(ctx context.Context, feedID string, track *webrtc.
 }
 
 type frameConcealer struct {
-	last     []byte
-	repeated int
+	last       []byte
+	repeated   int
+	needsPrime bool
 }
 
 func (c *frameConcealer) next(queue *[][]byte, head *int, silence func() []byte) []byte {
+	if c.needsPrime && queuedFrameCount(*queue, *head) < webrtcResumeQueuedFrames {
+		return c.fallback(silence)
+	}
 	if frame, ok := popQueuedFrame(queue, head); ok {
 		c.last = append([]byte(nil), frame...)
 		c.repeated = 0
+		c.needsPrime = false
 		return frame
 	}
+	c.needsPrime = true
+	return c.fallback(silence)
+}
+
+func (c *frameConcealer) fallback(silence func() []byte) []byte {
 	if len(c.last) > 0 && c.repeated < webrtcConcealmentFrames {
 		c.repeated++
-		return c.last
+		return append([]byte(nil), c.last...)
 	}
 	return silence()
+}
+
+func queuedFrameCount(queue [][]byte, head int) int {
+	if head < 0 || head >= len(queue) {
+		return 0
+	}
+	return len(queue) - head
 }
 
 func popQueuedFrame(queue *[][]byte, head *int) ([]byte, bool) {

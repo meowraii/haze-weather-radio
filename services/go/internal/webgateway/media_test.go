@@ -109,11 +109,40 @@ func TestFrameConcealerBridgesShortUnderruns(t *testing.T) {
 	}
 
 	queue = append(queue, []byte{5, 6})
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string(silence) {
+		t.Fatalf("single recovery frame should be held for priming, got %v", got)
+	}
+	queue = append(queue, []byte{7, 8})
 	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{5, 6}) {
 		t.Fatalf("new frame after underrun = %v", got)
 	}
-	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{5, 6}) {
-		t.Fatalf("concealment did not reset after new frame: %v", got)
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{7, 8}) {
+		t.Fatalf("second recovery frame = %v", got)
+	}
+}
+
+func TestFrameConcealerPrimesAfterUnderrun(t *testing.T) {
+	queue := [][]byte{}
+	head := 0
+	concealer := frameConcealer{}
+	silence := []byte{0}
+
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string(silence) {
+		t.Fatalf("empty startup frame = %v, want silence", got)
+	}
+	queue = append(queue, []byte{1})
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string(silence) {
+		t.Fatalf("single recovery frame should be held for priming, got %v", got)
+	}
+	if queuedFrameCount(queue, head) != 1 {
+		t.Fatalf("single recovery frame was consumed before priming")
+	}
+	queue = append(queue, []byte{2})
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{1}) {
+		t.Fatalf("primed recovery frame = %v, want first queued frame", got)
+	}
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{2}) {
+		t.Fatalf("second primed frame = %v, want second queued frame", got)
 	}
 }
 
@@ -153,8 +182,12 @@ func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 		t.Fatal("G.722-capable offers should use G.722")
 	}
 	got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\n", WebRTCAnswerOptions{})
-	if !opusBackendAvailable() && (err != nil || got != webRTCAudioG722) {
-		t.Fatal("default builds should not advertise Opus without the native encoder")
+	if err != nil || got != webRTCAudioG722 {
+		t.Fatal("auto codec should prefer G.722 for low-latency radio streams")
+	}
+	got, err = preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n", WebRTCAnswerOptions{})
+	if opusBackendAvailable() && (err != nil || got != webRTCAudioOpus) {
+		t.Fatal("Opus-only offers should use Opus when the native encoder is available")
 	}
 	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 9 0\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{DisableG722: true}); err != nil || got != webRTCAudioPCMU {
 		t.Fatal("G.722 can still be disabled for emergency compatibility fallback")
@@ -283,9 +316,6 @@ func TestMediaHubAnswersAudioOffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantCodec := "G722"
-	if opusBackendAvailable() {
-		wantCodec = "opus"
-	}
 	if !strings.Contains(answer, wantCodec) {
 		t.Fatalf("answer did not include %s: %s", wantCodec, answer)
 	}
@@ -321,9 +351,6 @@ func TestMediaHubReceiverAnswerUsesG722WhenAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantCodec := "G722"
-	if opusBackendAvailable() {
-		wantCodec = "opus"
-	}
 	if !strings.Contains(answer, wantCodec) {
 		t.Fatalf("receiver answer should include %s: %s", wantCodec, answer)
 	}
