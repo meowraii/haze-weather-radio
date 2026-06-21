@@ -575,16 +575,41 @@ function stopWebRTCStatsMonitor(player) {
     }
 }
 
+function detachWebRTCPlayerForReconnect(feedId, player) {
+    if (!isActivePlayer(feedId, player) || player.mode === 'http') return;
+    clearPlayerTimer(player, 'trackMuteTimer');
+    clearPlayerTimer(player, 'connectionStateTimer');
+    stopWebRTCStatsMonitor(player);
+    player.trackAttached = false;
+    player.connected = false;
+    player.remoteStream = player.fallbackStream || new MediaStream();
+    player.lastStats = null;
+    player.stagnantStatsPolls = 0;
+    try {
+        player.pc?.close();
+    } catch {
+        // Closing an already-failed peer is best-effort cleanup.
+    }
+    const audio = findFeedElement('feed-audio', feedId) || player.audio;
+    if (audio) {
+        audio.srcObject = player.remoteStream;
+        audio.dataset.hazeTrackAttached = '0';
+        audio.dataset.hazeTrackMuted = '1';
+        audio.dataset.hazePlayerState = 'reconnecting';
+    }
+}
+
 function scheduleWebRTCReconnect(feedId, player, reason = 'Reconnecting audio...') {
     if (!isActivePlayer(feedId, player) || player.mode === 'http' || player.stopping) return;
     if (player.reconnectTimer) return;
     const attempts = Math.max(0, Number(player.reconnectAttempts || 0));
     const delay = Math.min(WEBRTC_RECONNECT_BASE_DELAY_MS * (2 ** attempts), WEBRTC_RECONNECT_MAX_DELAY_MS);
     player.reconnectAttempts = attempts + 1;
+    detachWebRTCPlayerForReconnect(feedId, player);
     player.reconnectTimer = window.setTimeout(() => {
         player.reconnectTimer = null;
         if (!isActivePlayer(feedId, player) || player.stopping) return;
-        stopFeed(feedId, { silent: true });
+        feedPlayers.delete(String(feedId || ''));
         startFeedWebRTC(feedId);
     }, delay);
     setPlayerStatus(feedId, reason);
