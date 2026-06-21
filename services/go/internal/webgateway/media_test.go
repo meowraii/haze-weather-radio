@@ -959,14 +959,22 @@ func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 9\r\na=rtpmap:9 G722/8000\r\n", WebRTCAnswerOptions{}); err != nil || got != webRTCAudioG722 {
 		t.Fatal("G.722-capable offers should use G.722")
 	}
+	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "")
 	got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9 0\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{})
-	if err != nil || got != webRTCAudioG722 {
-		t.Fatal("auto codec should prefer G.722 for stable browser WebRTC playout")
+	if err != nil || got != webRTCAudioPCMU {
+		t.Fatal("auto codec should honor the stable default codec before browser offer preference")
 	}
+	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "g722")
+	got, err = preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9 0\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{})
+	if err != nil || got != webRTCAudioG722 {
+		t.Fatal("auto codec should honor a configured G.722 default")
+	}
+	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "pcmu")
 	got, err = preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\n", WebRTCAnswerOptions{})
 	if err != nil || got != webRTCAudioG722 {
-		t.Fatal("auto codec should prefer G.722 when Opus is also available")
+		t.Fatal("auto codec should fall back to G.722 when the default codec is not offered")
 	}
+	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "")
 	got, err = preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n", WebRTCAnswerOptions{})
 	if opusBackendAvailable() && (err != nil || got != webRTCAudioOpus) {
 		t.Fatal("Opus-only offers should use Opus when the native encoder is available")
@@ -1190,7 +1198,7 @@ func TestMediaHubReceiverAnswerUsesAutoCodecPolicy(t *testing.T) {
 }
 
 func expectedAutoWebRTCSDPCodec() string {
-	return "G722"
+	return "PCMU"
 }
 
 func TestMediaHubStreamsRTPToPeer(t *testing.T) {
