@@ -973,6 +973,11 @@ function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
             };
             track.onunmute = () => {
                 if (player.audioOutputMixer?.outputStream !== outputStream) return;
+                markWebRTCPlaybackProgress(feedId, player, audio);
+                if (!hasRecentWebRTCPackets(player)) {
+                    ensureWebRTCAudioPlaying(feedId, player, audio);
+                    return;
+                }
                 if (player.audioOutputMixer.outputTrackMuteTimer) {
                     window.clearTimeout(player.audioOutputMixer.outputTrackMuteTimer);
                     player.audioOutputMixer.outputTrackMuteTimer = null;
@@ -1690,6 +1695,11 @@ async function startFeedWebRTC(feedId) {
         };
         event.track.onunmute = () => {
             if (isActivePlayer(feedId, player)) {
+                markWebRTCPlaybackProgress(feedId, player, currentAudio);
+                if (!hasRecentWebRTCPackets(player)) {
+                    ensureWebRTCAudioPlaying(feedId, player, currentAudio);
+                    return;
+                }
                 if (!player.trackMuteTimer && !player.trackMutedReported) {
                     return;
                 }

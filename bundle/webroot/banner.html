@@ -1881,6 +1881,11 @@
                     };
                     track.onunmute = () => {
                         if (state.audioOutputMixer?.outputStream !== outputStream) return;
+                        markBannerAudioPlaybackProgress(audio);
+                        if (!hasRecentBannerAudioPackets()) {
+                            ensureBannerAudioPlaying();
+                            return;
+                        }
                         if (state.audioOutputMixer.outputTrackMuteTimer) {
                             window.clearTimeout(state.audioOutputMixer.outputTrackMuteTimer);
                             state.audioOutputMixer.outputTrackMuteTimer = null;
@@ -2008,6 +2013,11 @@
                     scheduleBannerAudioTrackMuteReport();
                 };
                 event.track.onunmute = () => {
+                    markBannerAudioPlaybackProgress(audio);
+                    if (!hasRecentBannerAudioPackets()) {
+                        ensureBannerAudioPlaying();
+                        return;
+                    }
                     if (!state.audioTrackMuteTimer && !state.audioTrackMutedReported) {
                         return;
                     }
