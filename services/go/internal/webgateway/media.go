@@ -47,6 +47,19 @@ const (
 	webRTCAudioPCMU
 )
 
+func (c webRTCAudioCodec) String() string {
+	switch c {
+	case webRTCAudioOpus:
+		return "opus"
+	case webRTCAudioG722:
+		return "g722"
+	case webRTCAudioPCMU:
+		return "pcmu"
+	default:
+		return "unknown"
+	}
+}
+
 type WebRTCAnswerOptions struct {
 	DisableG722    bool
 	RequireOpus    bool
@@ -66,25 +79,27 @@ type PCMChunk struct {
 }
 
 type MediaHub struct {
-	addr        string
-	mu          sync.Mutex
-	subscribers map[string]map[chan PCMChunk]struct{}
-	peers       map[string]*webrtc.PeerConnection
-	ingress     map[string]chan PCMChunk
-	last        map[string]PCMChunk
-	lastAt      map[string]time.Time
-	seenLogged  map[string]bool
+	addr         string
+	mu           sync.Mutex
+	subscribers  map[string]map[chan PCMChunk]struct{}
+	peers        map[string]*webrtc.PeerConnection
+	ingress      map[string]chan PCMChunk
+	frameSources map[webRTCFrameSourceKey]*webRTCFrameSource
+	last         map[string]PCMChunk
+	lastAt       map[string]time.Time
+	seenLogged   map[string]bool
 }
 
 func NewMediaHub(addr string) *MediaHub {
 	hub := &MediaHub{
-		addr:        strings.TrimSpace(addr),
-		subscribers: map[string]map[chan PCMChunk]struct{}{},
-		peers:       map[string]*webrtc.PeerConnection{},
-		ingress:     map[string]chan PCMChunk{},
-		last:        map[string]PCMChunk{},
-		lastAt:      map[string]time.Time{},
-		seenLogged:  map[string]bool{},
+		addr:         strings.TrimSpace(addr),
+		subscribers:  map[string]map[chan PCMChunk]struct{}{},
+		peers:        map[string]*webrtc.PeerConnection{},
+		ingress:      map[string]chan PCMChunk{},
+		frameSources: map[webRTCFrameSourceKey]*webRTCFrameSource{},
+		last:         map[string]PCMChunk{},
+		lastAt:       map[string]time.Time{},
+		seenLogged:   map[string]bool{},
 	}
 	if hub.addr != "" {
 		go hub.run(context.Background())
@@ -236,18 +251,12 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		return "", errors.New("could not create local WebRTC description")
 	}
 
-	if codec == webRTCAudioOpus {
-		encoder, err := newOpusFrameEncoder(opusSampleRate, opusEncoderChannels)
-		if err != nil {
-			cleanup()
-			return "", err
-		}
-		go h.streamOpus(peerCtx, feedID, track, encoder)
-	} else if codec == webRTCAudioPCMU {
-		go h.streamPCMU(peerCtx, feedID, track)
-	} else {
-		go h.streamG722(peerCtx, feedID, track)
+	frames, unsubscribeFrames, err := h.SubscribeWebRTCFrames(feedID, codec)
+	if err != nil {
+		cleanup()
+		return "", err
 	}
+	go h.streamWebRTCFrames(peerCtx, feedID, codec, track, frames, unsubscribeFrames)
 	return localDescription.SDP, nil
 }
 
@@ -633,124 +642,237 @@ func (h *MediaHub) Subscribe(feedID string) (<-chan PCMChunk, func()) {
 	}
 }
 
-func (h *MediaHub) streamG722(ctx context.Context, feedID string, track *webrtc.TrackLocalStaticSample) {
-	updates, unsubscribe := h.Subscribe(feedID)
-	defer unsubscribe()
-	ticker := time.NewTicker(webrtcFrameDuration)
-	defer ticker.Stop()
-	frameQueue := make([][]byte, 0, 32)
-	frameHead := 0
-	concealer := frameConcealer{}
-	encoder := g722.NewEncoder(g722.Rate64000, 0)
-	silenceFrame := make([]int16, g722FrameSamples)
+type webRTCFrameSourceKey struct {
+	feedID string
+	codec  webRTCAudioCodec
+}
+
+type webRTCFrameSource struct {
+	hub      *MediaHub
+	key      webRTCFrameSourceKey
+	encoder  opusFrameEncoder
+	mu       sync.Mutex
+	subs     map[chan []byte]struct{}
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	closed   bool
+}
+
+func (h *MediaHub) SubscribeWebRTCFrames(feedID string, codec webRTCAudioCodec) (<-chan []byte, func(), error) {
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			for drained := 0; drained < cap(updates); drained++ {
-				select {
-				case chunk, ok := <-updates:
-					if !ok {
-						return
-					}
-					compactQueuedFrames(&frameQueue, &frameHead)
-					frameQueue = appendG722Frames(frameQueue, encoder, chunk)
-				default:
-					drained = cap(updates)
-				}
-			}
-			frame := concealer.next(&frameQueue, &frameHead, func() []byte {
-				return encodeG722Frame(encoder, silenceFrame)
-			})
-			if err := track.WriteSample(media.Sample{Data: frame, Duration: webrtcFrameDuration}); err != nil {
-				return
-			}
+		source, err := h.webRTCFrameSource(feedID, codec)
+		if err != nil {
+			return nil, nil, err
 		}
+		frames, unsubscribe, ok := source.subscribe()
+		if ok {
+			return frames, unsubscribe, nil
+		}
+		h.removeWebRTCFrameSource(source)
 	}
 }
 
-func (h *MediaHub) streamOpus(ctx context.Context, feedID string, track *webrtc.TrackLocalStaticSample, encoder opusFrameEncoder) {
-	updates, unsubscribe := h.Subscribe(feedID)
+func (h *MediaHub) webRTCFrameSource(feedID string, codec webRTCAudioCodec) (*webRTCFrameSource, error) {
+	key := webRTCFrameSourceKey{feedID: strings.TrimSpace(feedID), codec: codec}
+	h.mu.Lock()
+	if h.frameSources == nil {
+		h.frameSources = map[webRTCFrameSourceKey]*webRTCFrameSource{}
+	}
+	source := h.frameSources[key]
+	h.mu.Unlock()
+	if source != nil {
+		return source, nil
+	}
+
+	var encoder opusFrameEncoder
+	var err error
+	if codec == webRTCAudioOpus {
+		encoder, err = newOpusFrameEncoder(opusSampleRate, opusEncoderChannels)
+		if err != nil {
+			return nil, err
+		}
+	}
+	source = &webRTCFrameSource{
+		hub:     h,
+		key:     key,
+		encoder: encoder,
+		subs:    map[chan []byte]struct{}{},
+		stopCh:  make(chan struct{}),
+	}
+
+	h.mu.Lock()
+	if existing := h.frameSources[key]; existing != nil {
+		h.mu.Unlock()
+		source.stop()
+		return existing, nil
+	}
+	h.frameSources[key] = source
+	h.mu.Unlock()
+
+	go source.run()
+	return source, nil
+}
+
+func (s *webRTCFrameSource) subscribe() (<-chan []byte, func(), bool) {
+	ch := make(chan []byte, webrtcMaxQueuedFrames)
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, nil, false
+	}
+	s.subs[ch] = struct{}{}
+	s.mu.Unlock()
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.subs, ch)
+			empty := len(s.subs) == 0
+			s.mu.Unlock()
+			if empty {
+				s.hub.removeWebRTCFrameSource(s)
+			}
+		})
+	}, true
+}
+
+func (h *MediaHub) removeWebRTCFrameSource(source *webRTCFrameSource) {
+	shouldStop := false
+	h.mu.Lock()
+	source.mu.Lock()
+	if h.frameSources[source.key] == source && len(source.subs) == 0 {
+		delete(h.frameSources, source.key)
+		source.closed = true
+		shouldStop = true
+	}
+	source.mu.Unlock()
+	h.mu.Unlock()
+	if shouldStop {
+		source.stop()
+	}
+}
+
+func (s *webRTCFrameSource) stop() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+	})
+}
+
+func (s *webRTCFrameSource) run() {
+	updates, unsubscribe := s.hub.Subscribe(s.key.feedID)
 	defer unsubscribe()
 	ticker := time.NewTicker(webrtcFrameDuration)
 	defer ticker.Stop()
+
 	frameQueue := make([][]byte, 0, 32)
 	frameHead := 0
 	concealer := frameConcealer{}
-	idleSamples := opusIdleFrameSamples()
-	loggedWrite := false
-	log.Printf("media bridge Opus stream started for feed %s", feedID)
+	g722Encoder := g722.NewEncoder(g722.Rate64000, 0)
+	g722Silence := make([]int16, g722FrameSamples)
+	opusIdle := opusIdleFrameSamples()
+	pcmuIdle := pcmuSilence()
+	loggedFirstFrame := false
+
 	for {
 		select {
-		case <-ctx.Done():
-			log.Printf("media bridge Opus stream stopped for feed %s: %v", feedID, ctx.Err())
+		case <-s.stopCh:
 			return
 		case <-ticker.C:
 			for drained := 0; drained < cap(updates); drained++ {
 				select {
 				case chunk, ok := <-updates:
 					if !ok {
-						log.Printf("media bridge Opus stream stopped for feed %s: subscription closed", feedID)
 						return
 					}
 					compactQueuedFrames(&frameQueue, &frameHead)
-					frameQueue = appendOpusFrames(frameQueue, encoder, chunk)
+					frameQueue = s.appendFrames(frameQueue, g722Encoder, chunk)
 				default:
 					drained = cap(updates)
 				}
 			}
 			frame := concealer.next(&frameQueue, &frameHead, func() []byte {
-				encoded, err := encoder.Encode(idleSamples)
-				if err != nil {
-					return nil
-				}
-				return encoded
+				return s.idleFrame(g722Encoder, g722Silence, opusIdle, pcmuIdle)
 			})
 			if len(frame) == 0 {
 				continue
 			}
-			if err := track.WriteSample(media.Sample{Data: frame, Duration: webrtcFrameDuration}); err != nil {
-				log.Printf("media bridge Opus stream write failed for feed %s: %v", feedID, err)
-				return
-			}
-			if !loggedWrite {
-				log.Printf("media bridge Opus stream wrote first frame for feed %s (%d bytes)", feedID, len(frame))
-				loggedWrite = true
+			s.broadcast(frame)
+			if !loggedFirstFrame {
+				log.Printf("media bridge WebRTC frame source started for feed %s codec=%s (%d bytes)", s.key.feedID, s.key.codec, len(frame))
+				loggedFirstFrame = true
 			}
 		}
 	}
 }
 
-func (h *MediaHub) streamPCMU(ctx context.Context, feedID string, track *webrtc.TrackLocalStaticSample) {
-	updates, unsubscribe := h.Subscribe(feedID)
+func (s *webRTCFrameSource) appendFrames(queue [][]byte, g722Encoder *g722.Encoder, chunk PCMChunk) [][]byte {
+	switch s.key.codec {
+	case webRTCAudioOpus:
+		return appendOpusFrames(queue, s.encoder, chunk)
+	case webRTCAudioPCMU:
+		return appendPCMUFrames(queue, chunk)
+	default:
+		return appendG722Frames(queue, g722Encoder, chunk)
+	}
+}
+
+func (s *webRTCFrameSource) idleFrame(g722Encoder *g722.Encoder, g722Silence []int16, opusIdle []int16, pcmuIdle []byte) []byte {
+	switch s.key.codec {
+	case webRTCAudioOpus:
+		encoded, err := s.encoder.Encode(opusIdle)
+		if err != nil {
+			return nil
+		}
+		return encoded
+	case webRTCAudioPCMU:
+		return pcmuIdle
+	default:
+		return encodeG722Frame(g722Encoder, g722Silence)
+	}
+}
+
+func (s *webRTCFrameSource) broadcast(frame []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for subscriber := range s.subs {
+		select {
+		case subscriber <- frame:
+		default:
+			select {
+			case <-subscriber:
+			default:
+			}
+			select {
+			case subscriber <- frame:
+			default:
+			}
+		}
+	}
+}
+
+func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, track *webrtc.TrackLocalStaticSample, frames <-chan []byte, unsubscribe func()) {
 	defer unsubscribe()
-	ticker := time.NewTicker(webrtcFrameDuration)
-	defer ticker.Stop()
-	silence := pcmuSilence()
-	frameQueue := make([][]byte, 0, 32)
-	frameHead := 0
-	concealer := frameConcealer{}
+	loggedWrite := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			for drained := 0; drained < cap(updates); drained++ {
-				select {
-				case chunk, ok := <-updates:
-					if !ok {
-						return
-					}
-					compactQueuedFrames(&frameQueue, &frameHead)
-					frameQueue = appendPCMUFrames(frameQueue, chunk)
-				default:
-					drained = cap(updates)
-				}
-			}
-			frame := concealer.next(&frameQueue, &frameHead, func() []byte { return silence })
-			if err := track.WriteSample(media.Sample{Data: frame, Duration: webrtcFrameDuration}); err != nil {
+		case frame, ok := <-frames:
+			if !ok {
 				return
+			}
+			if len(frame) == 0 {
+				continue
+			}
+			if err := track.WriteSample(media.Sample{Data: append([]byte(nil), frame...), Duration: webrtcFrameDuration}); err != nil {
+				return
+			}
+			if !loggedWrite {
+				log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame))
+				loggedWrite = true
 			}
 		}
 	}

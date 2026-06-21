@@ -174,6 +174,53 @@ func TestMediaHubUsesIndependentFeedIngressQueues(t *testing.T) {
 	}
 }
 
+func TestMediaHubSharesWebRTCFrameSourcePerFeedCodec(t *testing.T) {
+	hub := newMemoryMediaHub()
+	left, unsubscribeLeft, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioG722)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribeLeft()
+	right, unsubscribeRight, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioG722)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribeRight()
+
+	hub.mu.Lock()
+	sourceCount := len(hub.frameSources)
+	hub.mu.Unlock()
+	if sourceCount != 1 {
+		t.Fatalf("frame source count = %d, want 1", sourceCount)
+	}
+
+	hub.publish(PCMChunk{
+		FeedID:     "sk-0001",
+		SampleRate: 48000,
+		Channels:   1,
+		Duration:   20 * time.Millisecond,
+		Data:       sinePCM(960, 1000, 48000, 8000),
+	})
+	if frame := waitForWebRTCFrame(t, left); len(frame) == 0 {
+		t.Fatal("left subscriber received an empty frame")
+	}
+	if frame := waitForWebRTCFrame(t, right); len(frame) == 0 {
+		t.Fatal("right subscriber received an empty frame")
+	}
+
+	unsubscribeLeft()
+	hub.mu.Lock()
+	sourceCount = len(hub.frameSources)
+	hub.mu.Unlock()
+	if sourceCount != 1 {
+		t.Fatalf("frame source should stay alive for the remaining subscriber, got %d", sourceCount)
+	}
+	unsubscribeRight()
+	if !waitForWebRTCFrameSources(hub, 0, time.Second) {
+		t.Fatal("frame source was not removed after the final subscriber left")
+	}
+}
+
 func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{}); err != nil || got != webRTCAudioPCMU {
 		t.Fatal("PCMU-only offers should use PCMU")
@@ -445,14 +492,40 @@ func (e *testError) Error() string {
 
 func newMemoryMediaHub() *MediaHub {
 	return &MediaHub{
-		addr:        "memory",
-		subscribers: map[string]map[chan PCMChunk]struct{}{},
-		peers:       map[string]*webrtc.PeerConnection{},
-		ingress:     map[string]chan PCMChunk{},
-		last:        map[string]PCMChunk{},
-		lastAt:      map[string]time.Time{},
-		seenLogged:  map[string]bool{},
+		addr:         "memory",
+		subscribers:  map[string]map[chan PCMChunk]struct{}{},
+		peers:        map[string]*webrtc.PeerConnection{},
+		ingress:      map[string]chan PCMChunk{},
+		frameSources: map[webRTCFrameSourceKey]*webRTCFrameSource{},
+		last:         map[string]PCMChunk{},
+		lastAt:       map[string]time.Time{},
+		seenLogged:   map[string]bool{},
 	}
+}
+
+func waitForWebRTCFrame(t *testing.T, frames <-chan []byte) []byte {
+	t.Helper()
+	select {
+	case frame := <-frames:
+		return frame
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for WebRTC frame")
+		return nil
+	}
+}
+
+func waitForWebRTCFrameSources(hub *MediaHub, want int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		hub.mu.Lock()
+		got := len(hub.frameSources)
+		hub.mu.Unlock()
+		if got == want {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func waitForRecentPCM(hub *MediaHub, feedID string, timeout time.Duration) bool {
