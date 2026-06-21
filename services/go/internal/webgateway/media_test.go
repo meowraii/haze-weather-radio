@@ -1650,9 +1650,11 @@ func assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T, preferre
 	}()
 
 	var previousTimestamp uint32
+	var previousPacketAt time.Time
 	wantDelta := rtpTimestampStep(codec)
 	for i := 0; i < 24; i++ {
 		timestamp, payloadLength := waitForRTPPacketInfo(t, track)
+		packetAt := time.Now()
 		if payloadLength == 0 {
 			t.Fatal("RTP payload must not be empty under source jitter")
 		}
@@ -1660,8 +1662,12 @@ func assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T, preferre
 			if delta := timestamp - previousTimestamp; delta != wantDelta {
 				t.Fatalf("RTP timestamp delta under source jitter = %d, want %d", delta, wantDelta)
 			}
+			if gap := packetAt.Sub(previousPacketAt); gap > 90*time.Millisecond {
+				t.Fatalf("RTP receiver wall-clock gap under source jitter = %s, want <= 90ms", gap)
+			}
 		}
 		previousTimestamp = timestamp
+		previousPacketAt = packetAt
 	}
 	<-done
 }

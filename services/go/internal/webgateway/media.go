@@ -45,8 +45,6 @@ const (
 	webrtcWriteTimeout         = 3 * time.Second
 	webrtcFrameSourceIdleGrace = 15 * time.Second
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
-	webrtcPeerFrameWait        = 5 * time.Millisecond
-	webrtcPeerSourceTimeout    = webrtcFrameDuration + webrtcPeerFrameWait
 	webrtcIdleDitherAmplitude  = 256
 	webrtcSourceBedAmplitude   = 192
 )
@@ -1471,7 +1469,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		return true
 	}
 	writeNextSourceFrame := func() bool {
-		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrameWithWait(frames, webrtcPeerSourceTimeout)
+		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
 		if !ok {
 			failPeer("frame_source_closed")
 			return false
@@ -1481,12 +1479,30 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		}
 		return writeSourceFrame(frame, drainSkipped)
 	}
+	nextWriteAt := time.Now()
+	pacingTimer := time.NewTimer(webrtcFrameDuration)
+	if !pacingTimer.Stop() {
+		<-pacingTimer.C
+	}
+	defer pacingTimer.Stop()
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		if !writeNextSourceFrame() {
 			return
+		}
+		nextWriteAt = nextWriteAt.Add(webrtcFrameDuration)
+		wait := time.Until(nextWriteAt)
+		if wait <= 0 {
+			nextWriteAt = time.Now()
+			continue
+		}
+		pacingTimer.Reset(wait)
+		select {
+		case <-ctx.Done():
+			return
+		case <-pacingTimer.C:
 		}
 	}
 }
