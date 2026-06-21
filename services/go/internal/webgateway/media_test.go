@@ -741,7 +741,7 @@ func TestMediaHubClosesPeerWhenWebRTCFrameSourceEnds(t *testing.T) {
 	cleanup := make(chan struct{})
 	var cleanupOnce sync.Once
 
-	go hub.streamWebRTCFrames(t.Context(), "sk-0001", webRTCAudioPCMU, 0, nil, frames, func() {}, ready, func() {
+	go hub.streamWebRTCFrames(t.Context(), "peer-test", "sk-0001", webRTCAudioPCMU, 0, nil, frames, func() {}, ready, func() {
 		cleanupOnce.Do(func() {
 			close(cleanup)
 		})
@@ -1587,6 +1587,7 @@ func newMemoryMediaHub() *MediaHub {
 		addr:         "memory",
 		subscribers:  map[string]map[chan PCMChunk]struct{}{},
 		peers:        map[string]*webrtc.PeerConnection{},
+		peerStats:    map[string]webRTCPeerSnapshot{},
 		ingress:      map[string]chan PCMChunk{},
 		frameSources: map[webRTCFrameSourceKey]*webRTCFrameSource{},
 		last:         map[string]PCMChunk{},

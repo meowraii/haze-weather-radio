@@ -174,11 +174,14 @@ func (s *Server) serveHTML(writer http.ResponseWriter, request *http.Request, na
 }
 
 func (s *Server) health(writer http.ResponseWriter, request *http.Request) {
+	webrtcPeers := s.media.WebRTCPeerSnapshots()
 	writeJSON(writer, map[string]any{
-		"ok":           true,
-		"service":      "haze-web",
-		"started_at":   s.startedAt,
-		"capabilities": WebRTCAudioCapabilities(),
+		"ok":                true,
+		"service":           "haze-web",
+		"started_at":        s.startedAt,
+		"capabilities":      WebRTCAudioCapabilities(),
+		"webrtc_peers":      webrtcPeers,
+		"webrtc_peer_count": len(webrtcPeers),
 	})
 }
 

@@ -68,6 +68,12 @@ func TestHealth(t *testing.T) {
 	if strings.TrimSpace(fmt.Sprint(capabilities["webrtc_default_codec"])) == "" {
 		t.Fatalf("missing webrtc_default_codec capability: %#v", capabilities)
 	}
+	if _, ok := payload["webrtc_peer_count"].(float64); !ok {
+		t.Fatalf("missing webrtc_peer_count: %#v", payload)
+	}
+	if _, ok := payload["webrtc_peers"].([]any); !ok {
+		t.Fatalf("missing webrtc_peers: %#v", payload)
+	}
 }
 
 func TestAdminRedirectsWithoutSession(t *testing.T) {

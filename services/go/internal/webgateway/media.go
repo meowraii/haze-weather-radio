@@ -95,6 +95,26 @@ type WebRTCAnswer struct {
 	MediaRecent bool
 }
 
+type webRTCPeerSnapshot struct {
+	PeerID           string
+	FeedID           string
+	Codec            string
+	PayloadType      uint8
+	StartedAt        time.Time
+	UpdatedAt        time.Time
+	Written          uint64
+	FillerFrames     uint64
+	SkippedFrames    uint64
+	SourceGapFrames  uint64
+	LateWrites       uint64
+	WriteErrors      uint64
+	MaxWriteGapMS    int64
+	SequenceNumber   uint16
+	Timestamp        uint32
+	LastPayloadBytes int
+	LastWriteAt      time.Time
+}
+
 type opusFrameEncoder interface {
 	Encode([]int16) ([]byte, error)
 }
@@ -110,8 +130,10 @@ type PCMChunk struct {
 type MediaHub struct {
 	addr         string
 	mu           sync.Mutex
+	peerStatsMu  sync.Mutex
 	subscribers  map[string]map[chan PCMChunk]struct{}
 	peers        map[string]*webrtc.PeerConnection
+	peerStats    map[string]webRTCPeerSnapshot
 	ingress      map[string]chan PCMChunk
 	frameSources map[webRTCFrameSourceKey]*webRTCFrameSource
 	last         map[string]PCMChunk
@@ -124,6 +146,7 @@ func NewMediaHub(addr string) *MediaHub {
 		addr:         strings.TrimSpace(addr),
 		subscribers:  map[string]map[chan PCMChunk]struct{}{},
 		peers:        map[string]*webrtc.PeerConnection{},
+		peerStats:    map[string]webRTCPeerSnapshot{},
 		ingress:      map[string]chan PCMChunk{},
 		frameSources: map[webRTCFrameSourceKey]*webRTCFrameSource{},
 		last:         map[string]PCMChunk{},
@@ -138,6 +161,42 @@ func NewMediaHub(addr string) *MediaHub {
 
 func (h *MediaHub) Available() bool {
 	return h != nil && h.addr != ""
+}
+
+func (h *MediaHub) WebRTCPeerSnapshots() []map[string]any {
+	if h == nil {
+		return nil
+	}
+	h.peerStatsMu.Lock()
+	defer h.peerStatsMu.Unlock()
+	out := make([]map[string]any, 0, len(h.peerStats))
+	for _, snapshot := range h.peerStats {
+		lastWriteAgeMS := int64(-1)
+		if !snapshot.LastWriteAt.IsZero() {
+			lastWriteAgeMS = time.Since(snapshot.LastWriteAt).Milliseconds()
+		}
+		out = append(out, map[string]any{
+			"peer_id":                    snapshot.PeerID,
+			"feed_id":                    snapshot.FeedID,
+			"codec":                      snapshot.Codec,
+			"payload_type":               snapshot.PayloadType,
+			"started_at":                 snapshot.StartedAt,
+			"updated_at":                 snapshot.UpdatedAt,
+			"interval_written":           snapshot.Written,
+			"interval_filler_frames":     snapshot.FillerFrames,
+			"interval_skipped_frames":    snapshot.SkippedFrames,
+			"interval_source_gap_frames": snapshot.SourceGapFrames,
+			"interval_late_writes":       snapshot.LateWrites,
+			"interval_write_errors":      snapshot.WriteErrors,
+			"max_write_gap_ms":           snapshot.MaxWriteGapMS,
+			"next_seq":                   snapshot.SequenceNumber,
+			"next_ts":                    snapshot.Timestamp,
+			"last_payload_bytes":         snapshot.LastPayloadBytes,
+			"last_write_at":              snapshot.LastWriteAt,
+			"last_write_age_ms":          lastWriteAgeMS,
+		})
+	}
+	return out
 }
 
 func (h *MediaHub) Answer(ctx context.Context, feedID string, offerSDP string) (string, error) {
@@ -214,6 +273,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 			h.mu.Lock()
 			delete(h.peers, peerID)
 			h.mu.Unlock()
+			h.removeWebRTCPeerSnapshot(peerID)
 			_ = peerConnection.Close()
 		})
 	}
@@ -315,7 +375,15 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		cleanup()
 		return WebRTCAnswer{}, err
 	}
-	go h.streamWebRTCFrames(peerCtx, feedID, codec, payloadType, track, frames, unsubscribeFrames, mediaReady, cleanup)
+	h.recordWebRTCPeerSnapshot(peerID, webRTCPeerSnapshot{
+		PeerID:      peerID,
+		FeedID:      feedID,
+		Codec:       codec.String(),
+		PayloadType: payloadType,
+		StartedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	})
+	go h.streamWebRTCFrames(peerCtx, peerID, feedID, codec, payloadType, track, frames, unsubscribeFrames, mediaReady, cleanup)
 	return WebRTCAnswer{SDP: localDescription.SDP, Codec: codec, PayloadType: payloadType, MediaRecent: mediaRecent}, nil
 }
 
@@ -1102,7 +1170,7 @@ func cloneWebRTCFrame(frame webRTCFrame) webRTCFrame {
 	return frame
 }
 
-func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, payloadType uint8, track *webrtc.TrackLocalStaticRTP, frames <-chan webRTCFrame, unsubscribe func(), ready <-chan struct{}, onWriteStall func()) {
+func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID string, codec webRTCAudioCodec, payloadType uint8, track *webrtc.TrackLocalStaticRTP, frames <-chan webRTCFrame, unsubscribe func(), ready <-chan struct{}, onWriteStall func()) {
 	var unsubscribeOnce sync.Once
 	unsubscribePeer := func() {
 		if unsubscribe != nil {
@@ -1170,6 +1238,25 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		stats.timestamp = rtpTimestampAfterFrame(codec, packetTimestamp)
 		stats.lastWriteAt = writeCompletedAt
 		stats.lastPayloadBytes = len(frame.payload)
+		h.recordWebRTCPeerSnapshot(peerID, webRTCPeerSnapshot{
+			PeerID:           peerID,
+			FeedID:           feedID,
+			Codec:            codec.String(),
+			PayloadType:      payloadType,
+			StartedAt:        stats.startedAt,
+			UpdatedAt:        writeCompletedAt,
+			Written:          stats.written,
+			FillerFrames:     stats.fillerFrames,
+			SkippedFrames:    stats.skippedFrames,
+			SourceGapFrames:  stats.sourceGapFrames,
+			LateWrites:       stats.lateWrites,
+			WriteErrors:      stats.writeErrors,
+			MaxWriteGapMS:    stats.maxWriteGapMS,
+			SequenceNumber:   stats.sequenceNumber,
+			Timestamp:        stats.timestamp,
+			LastPayloadBytes: stats.lastPayloadBytes,
+			LastWriteAt:      stats.lastWriteAt,
+		})
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
 		if !loggedWrite {
 			log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame.payload))
@@ -1346,6 +1433,7 @@ type webRTCPeerStreamStats struct {
 	sourceGapFrames  uint64
 	lateWrites       uint64
 	writeErrors      uint64
+	startedAt        time.Time
 	lastReport       time.Time
 	sequenceNumber   uint16
 	timestamp        uint32
@@ -1362,10 +1450,41 @@ func newWebRTCPeerStreamStats(now time.Time) webRTCPeerStreamStats {
 		binary.BigEndian.PutUint32(seed[2:6], uint32(nanos>>16))
 	}
 	return webRTCPeerStreamStats{
+		startedAt:      now,
 		lastReport:     now,
 		sequenceNumber: binary.BigEndian.Uint16(seed[0:2]),
 		timestamp:      binary.BigEndian.Uint32(seed[2:6]),
 	}
+}
+
+func (h *MediaHub) recordWebRTCPeerSnapshot(peerID string, snapshot webRTCPeerSnapshot) {
+	if h == nil || strings.TrimSpace(peerID) == "" {
+		return
+	}
+	if snapshot.StartedAt.IsZero() {
+		snapshot.StartedAt = time.Now()
+	}
+	if snapshot.UpdatedAt.IsZero() {
+		snapshot.UpdatedAt = time.Now()
+	}
+	h.peerStatsMu.Lock()
+	if h.peerStats == nil {
+		h.peerStats = map[string]webRTCPeerSnapshot{}
+	}
+	if existing, ok := h.peerStats[peerID]; ok && !existing.StartedAt.IsZero() {
+		snapshot.StartedAt = existing.StartedAt
+	}
+	h.peerStats[peerID] = snapshot
+	h.peerStatsMu.Unlock()
+}
+
+func (h *MediaHub) removeWebRTCPeerSnapshot(peerID string) {
+	if h == nil || strings.TrimSpace(peerID) == "" {
+		return
+	}
+	h.peerStatsMu.Lock()
+	delete(h.peerStats, peerID)
+	h.peerStatsMu.Unlock()
 }
 
 func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
