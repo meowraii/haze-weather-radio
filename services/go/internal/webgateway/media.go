@@ -1153,26 +1153,12 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		}
 		return true
 	}
-	idleTicker := time.NewTicker(webrtcFrameDuration)
-	defer idleTicker.Stop()
 	fillerFrame := webRTCFrame{payload: webRTCFillerFrame(codec)}
 	var pendingSkipped int
 	var lastSourceSequence uint64
 	var fillerFramesSinceSource int
-	writeNextFrame := func() bool {
-		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
-		if !ok {
-			failPeer("frame_source_closed")
-			return false
-		}
-		if !hasFrame {
-			if len(fillerFrame.payload) == 0 {
-				return true
-			}
-			if !writeFrame(fillerFrame, 0, 0, true) {
-				return false
-			}
-			fillerFramesSinceSource++
+	writeSourceFrame := func(frame webRTCFrame, drainSkipped int) bool {
+		if len(frame.payload) == 0 {
 			return true
 		}
 		sourceSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
@@ -1184,17 +1170,64 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		pendingSkipped = 0
 		return writeFrame(frame, skipped, sourceGap, false)
 	}
-	if !writeNextFrame() {
+	writeFillerFrame := func() bool {
+		if len(fillerFrame.payload) == 0 {
+			return true
+		}
+		if !writeFrame(fillerFrame, 0, 0, true) {
+			return false
+		}
+		fillerFramesSinceSource++
+		return true
+	}
+	writeInitialFrame := func() bool {
+		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
+		if !ok {
+			failPeer("frame_source_closed")
+			return false
+		}
+		if !hasFrame {
+			return writeFillerFrame()
+		}
+		return writeSourceFrame(frame, drainSkipped)
+	}
+	if !writeInitialFrame() {
 		return
+	}
+	fillerTimer := time.NewTimer(webrtcFrameDuration)
+	defer fillerTimer.Stop()
+	resetFillerTimer := func() {
+		if !fillerTimer.Stop() {
+			select {
+			case <-fillerTimer.C:
+			default:
+			}
+		}
+		fillerTimer.Reset(webrtcFrameDuration)
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-idleTicker.C:
-			if !writeNextFrame() {
+		case frame, ok := <-frames:
+			if !ok {
+				failPeer("frame_source_closed")
 				return
 			}
+			latest, skipped, ok := latestWebRTCFrame(frame, frames)
+			if !ok {
+				failPeer("frame_source_closed")
+				return
+			}
+			if !writeSourceFrame(latest, skipped) {
+				return
+			}
+			resetFillerTimer()
+		case <-fillerTimer.C:
+			if !writeFillerFrame() {
+				return
+			}
+			fillerTimer.Reset(webrtcFrameDuration)
 		}
 	}
 }
