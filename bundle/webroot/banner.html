@@ -345,7 +345,6 @@
             audioReconnectTimer: null,
             audioReconnectPending: false,
             audioDisconnectTimer: null,
-            audioTrackMuteTimer: null,
             audioStatsTimer: null,
             audioPlaybackWatchdogTimer: null,
             audioLastStats: null,
@@ -1222,10 +1221,6 @@
                 window.clearTimeout(state.audioDisconnectTimer);
                 state.audioDisconnectTimer = null;
             }
-            if (state.audioTrackMuteTimer) {
-                window.clearTimeout(state.audioTrackMuteTimer);
-                state.audioTrackMuteTimer = null;
-            }
             stopAudioStatsMonitor();
             stopAudioPlaybackWatchdog();
             state.audioTrackAttached = false;
@@ -1425,10 +1420,6 @@
                 window.clearTimeout(state.audioDisconnectTimer);
                 state.audioDisconnectTimer = null;
             }
-            if (state.audioTrackMuteTimer) {
-                window.clearTimeout(state.audioTrackMuteTimer);
-                state.audioTrackMuteTimer = null;
-            }
         }
 
         function hasRecentBannerAudioPackets(now = Date.now()) {
@@ -1462,10 +1453,6 @@
             if (state.audioDisconnectTimer) {
                 window.clearTimeout(state.audioDisconnectTimer);
                 state.audioDisconnectTimer = null;
-            }
-            if (state.audioTrackMuteTimer) {
-                window.clearTimeout(state.audioTrackMuteTimer);
-                state.audioTrackMuteTimer = null;
             }
         }
 
@@ -1563,51 +1550,6 @@
                 state.audioStagnantStatsPolls = 0;
                 state.audioMissingStatsPolls = 0;
                 state.audioTrackAttached = true;
-                event.track.onmute = () => {
-                    if (hasRecentBannerAudioPackets()) {
-                        recordBannerAudioEvent('track_mute_ignored', {
-                            connection_state: pc.connectionState,
-                            ice_state: pc.iceConnectionState,
-                            last_packet_age_ms: Date.now() - state.audioLastPacketAt,
-                            track_state: event.track.readyState || '',
-                        });
-                        return;
-                    }
-                    recordBannerAudioEvent('track_mute', {
-                        connection_state: pc.connectionState,
-                        ice_state: pc.iceConnectionState,
-                        packets_recent: hasRecentBannerAudioPackets(),
-                        last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
-                        track_state: event.track.readyState || '',
-                    });
-                    if (state.audioTrackMuteTimer) {
-                        window.clearTimeout(state.audioTrackMuteTimer);
-                    }
-                    state.audioTrackMuteTimer = window.setTimeout(() => {
-                        state.audioTrackMuteTimer = null;
-                        if (!hasRecentBannerAudioPackets()) {
-                            recordBannerAudioEvent('track_mute_stale', {
-                                connection_state: pc.connectionState,
-                                ice_state: pc.iceConnectionState,
-                                last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
-                            });
-                        }
-                    }, AUDIO_MEDIA_EVENT_GRACE_MS);
-                };
-                event.track.onunmute = () => {
-                    recordBannerAudioEvent('track_unmute', {
-                        connection_state: pc.connectionState,
-                        ice_state: pc.iceConnectionState,
-                        last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
-                        track_state: event.track.readyState || '',
-                        packets_recent: hasRecentBannerAudioPackets(),
-                    });
-                    if (state.audioTrackMuteTimer) {
-                        window.clearTimeout(state.audioTrackMuteTimer);
-                        state.audioTrackMuteTimer = null;
-                    }
-                    ensureBannerAudioPlaying();
-                };
                 event.track.onended = () => {
                     recordBannerAudioEvent('track_ended', {
                         connection_state: pc.connectionState,
