@@ -1471,6 +1471,18 @@ func TestMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T) {
 }
 
 func TestMediaHubDeliversRTPAtSteadyWallClockCadence(t *testing.T) {
+	assertMediaHubDeliversRTPAtSteadyWallClockCadence(t, "pcmu")
+}
+
+func TestMediaHubDeliversOpusRTPAtSteadyWallClockCadence(t *testing.T) {
+	if !opusBackendAvailable() {
+		t.Skip("native Opus encoder is not available")
+	}
+	assertMediaHubDeliversRTPAtSteadyWallClockCadence(t, "opus")
+}
+
+func assertMediaHubDeliversRTPAtSteadyWallClockCadence(t *testing.T, preferredCodec string) {
+	t.Helper()
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
 	if err != nil {
@@ -1495,7 +1507,7 @@ func TestMediaHubDeliversRTPAtSteadyWallClockCadence(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-gatheringComplete
-	answer, err := hub.AnswerWithOptions(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP, WebRTCAnswerOptions{PreferredCodec: "pcmu"})
+	answer, err := hub.AnswerWithOptions(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP, WebRTCAnswerOptions{PreferredCodec: preferredCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
