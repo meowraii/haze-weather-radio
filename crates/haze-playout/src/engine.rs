@@ -187,6 +187,8 @@ struct AlertQueueItem {
     #[serde(default)]
     event: String,
     #[serde(default)]
+    alert_text: String,
+    #[serde(default)]
     alert_sent_at: String,
     #[serde(default)]
     alert_expires_at: String,
@@ -2516,6 +2518,32 @@ mod tests {
 
         active.remove("alert-1");
         assert!(remember_priority_item(&mut active, "alert-1"));
+    }
+
+    #[test]
+    fn alert_manifest_status_updates_preserve_alert_text() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("alert.json");
+        fs::write(
+            &path,
+            r#"{
+  "id": "alert-1",
+  "type": "same_alert",
+  "status": "pending",
+  "header": "DMO - Practice/demo Warning",
+  "event": "DMO",
+  "alert_text": "This is the actual alert script."
+}"#,
+        )
+        .expect("write manifest");
+
+        mark_alert_started(&path).expect("mark started");
+        let started = read_alert_item(&path).expect("read started");
+        assert_eq!(started.alert_text, "This is the actual alert script.");
+
+        mark_alert_played(&path).expect("mark played");
+        let played = read_alert_item(&path).expect("read played");
+        assert_eq!(played.alert_text, "This is the actual alert script.");
     }
 
     #[test]

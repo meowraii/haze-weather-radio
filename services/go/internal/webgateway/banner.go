@@ -386,13 +386,14 @@ func bannerRecordFromOnAirAlert(item bannerOnAirAlert, now time.Time) archiveCAP
 	alertID := fallbackString(item.AlertID, item.QueueID, fmt.Sprintf("on-air-%d", updated.UnixNano()))
 	event := fallbackString(item.Event, "Alert")
 	headline := fallbackString(item.Header, event, "Weather Alert")
+	alertText := strings.TrimSpace(fallbackString(item.AlertText, headline))
 	sent := updated.UTC().Format(time.RFC3339Nano)
 	return archiveCAPRecord{
 		ID:        alertID,
 		FeedID:    item.FeedID,
 		Status:    "on_air",
 		UpdatedAt: updated,
-		AlertText: strings.TrimSpace(item.AlertText),
+		AlertText: alertText,
 		Alert: capingest.Alert{
 			Identifier:  alertID,
 			Sent:        sent,

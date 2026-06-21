@@ -223,6 +223,9 @@ func TestBannerHubFallsBackToOnAirMetadataWithoutArchive(t *testing.T) {
 	if payload.Alerts[0].Headline != "Required Weekly Test" || payload.Alerts[0].FeedID != "CAP-IT-ALL" {
 		t.Fatalf("alert = %#v", payload.Alerts[0])
 	}
+	if payload.Alerts[0].Message != "Required Weekly Test" {
+		t.Fatalf("message = %q", payload.Alerts[0].Message)
+	}
 }
 
 func TestBannerPayloadUsesQueuedQueueItemWhenHubMissedEvent(t *testing.T) {
