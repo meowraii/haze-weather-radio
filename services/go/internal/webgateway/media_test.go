@@ -44,19 +44,49 @@ func TestPCM16ToG722SilenceFrame(t *testing.T) {
 }
 
 func TestWebRTCIdleFramesCarryDither(t *testing.T) {
+	opusIdle := opusIdleFrameSamples()
+	if len(opusIdle) != opusFrameSamples*opusEncoderChannels {
+		t.Fatalf("Opus idle samples = %d, want %d", len(opusIdle), opusFrameSamples*opusEncoderChannels)
+	}
+	assertIdleDither(t, "Opus", opusIdle)
 	g722Idle := g722IdleFrameSamples()
 	if len(g722Idle) != g722FrameSamples {
 		t.Fatalf("G.722 idle samples = %d, want %d", len(g722Idle), g722FrameSamples)
 	}
-	if g722Idle[0] == 0 || g722Idle[1] == 0 || g722Idle[0] == g722Idle[1] {
-		t.Fatalf("G.722 idle dither should alternate tiny non-zero samples: %v %v", g722Idle[0], g722Idle[1])
-	}
+	assertIdleDither(t, "G.722", g722Idle)
 	pcmuIdle := pcmuIdleFrame()
 	if len(pcmuIdle) != pcmuFrameSamples {
 		t.Fatalf("PCMU idle frame = %d, want %d", len(pcmuIdle), pcmuFrameSamples)
 	}
 	if pcmuIdle[0] == pcmuIdle[1] {
 		t.Fatalf("PCMU idle dither should not collapse to a constant byte: %x %x", pcmuIdle[0], pcmuIdle[1])
+	}
+}
+
+func assertIdleDither(t *testing.T, codec string, samples []int16) {
+	t.Helper()
+	seen := map[int16]struct{}{}
+	peak := 0
+	sum := 0
+	for _, sample := range samples {
+		seen[sample] = struct{}{}
+		value := int(sample)
+		if value < 0 {
+			value = -value
+		}
+		if value > peak {
+			peak = value
+		}
+		sum += int(sample)
+	}
+	if len(seen) < 8 {
+		t.Fatalf("%s idle dither collapsed to %d unique samples", codec, len(seen))
+	}
+	if peak <= 1 || peak > webrtcIdleDitherAmplitude {
+		t.Fatalf("%s idle dither peak = %d, want 2..%d", codec, peak, webrtcIdleDitherAmplitude)
+	}
+	if average := math.Abs(float64(sum) / float64(len(samples))); average > float64(webrtcIdleDitherAmplitude)/2 {
+		t.Fatalf("%s idle dither average = %.2f, want near zero", codec, average)
 	}
 }
 

@@ -47,6 +47,7 @@ const (
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
 	webrtcPeerFrameWait        = 5 * time.Millisecond
 	webrtcPeerSourceTimeout    = webrtcFrameDuration + webrtcPeerFrameWait
+	webrtcIdleDitherAmplitude  = 24
 )
 
 type webRTCAudioCodec int
@@ -1901,11 +1902,7 @@ func compactQueuedFrames(queue *[][]byte, head *int) {
 func opusIdleFrameSamples() []int16 {
 	samples := make([]int16, opusFrameSamples*opusEncoderChannels)
 	for i := range samples {
-		if i%2 == 0 {
-			samples[i] = 1
-		} else {
-			samples[i] = -1
-		}
+		samples[i] = webRTCIdleDitherSample(i)
 	}
 	return samples
 }
@@ -1913,13 +1910,14 @@ func opusIdleFrameSamples() []int16 {
 func g722IdleFrameSamples() []int16 {
 	samples := make([]int16, g722FrameSamples)
 	for i := range samples {
-		if i%2 == 0 {
-			samples[i] = 1
-		} else {
-			samples[i] = -1
-		}
+		samples[i] = webRTCIdleDitherSample(i)
 	}
 	return samples
+}
+
+func webRTCIdleDitherSample(index int) int16 {
+	value := ((index*1103515245 + 12345) >> 16) & 0x7fff
+	return int16((value % (webrtcIdleDitherAmplitude*2 + 1)) - webrtcIdleDitherAmplitude)
 }
 
 func appendG722Frames(queue [][]byte, encoder *g722.Encoder, chunk PCMChunk) [][]byte {
@@ -2118,11 +2116,7 @@ func linearToMuLaw(sample int16) byte {
 func pcmuIdleFrame() []byte {
 	frame := make([]byte, pcmuFrameSamples)
 	for i := range frame {
-		sample := int16(1)
-		if i%2 == 1 {
-			sample = -1
-		}
-		frame[i] = linearToMuLaw(sample)
+		frame[i] = linearToMuLaw(webRTCIdleDitherSample(i))
 	}
 	return frame
 }
