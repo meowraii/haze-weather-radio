@@ -1298,8 +1298,15 @@
         }
 
         function closeAudioPeerOnly() {
+            clearAudioTransientTimers();
+            stopAudioStatsMonitor();
             state.audioTrackAttached = false;
             state.audioTrackMuted = true;
+            state.audioLastStats = null;
+            state.audioLastPacketAt = 0;
+            state.audioStagnantStatsPolls = 0;
+            state.audioMissingStatsPolls = 0;
+            state.audioFallbackStream = null;
             if (state.audioPeer) {
                 state.audioPeer.ontrack = null;
                 state.audioPeer.onconnectionstatechange = null;
