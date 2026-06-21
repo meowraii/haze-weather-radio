@@ -227,6 +227,18 @@ func TestOfferedAudioPayloadTypeUsesDynamicOpusPayload(t *testing.T) {
 	}
 }
 
+func TestWebRTCPeerStateCleanupPolicyKeepsTransientDisconnects(t *testing.T) {
+	if shouldCleanupWebRTCPeer(webrtc.PeerConnectionStateDisconnected) {
+		t.Fatal("transient WebRTC disconnects should be given a recovery window")
+	}
+	if !shouldCleanupWebRTCPeer(webrtc.PeerConnectionStateFailed) {
+		t.Fatal("failed WebRTC peers should be cleaned up")
+	}
+	if !shouldCleanupWebRTCPeer(webrtc.PeerConnectionStateClosed) {
+		t.Fatal("closed WebRTC peers should be cleaned up")
+	}
+}
+
 func TestWriteWAVStreamHeader(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	if err := writeWAVStreamHeader(recorder, 48000, 1, 16); err != nil {

@@ -36,6 +36,7 @@ const (
 	feedIngressCapacity      = 4
 	g722FrameSamples         = g722SampleRate / 50
 	bridgeReconnectDelay     = 750 * time.Millisecond
+	webrtcDisconnectGrace    = 15 * time.Second
 )
 
 type webRTCAudioCodec int
@@ -124,8 +125,35 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 	h.peers[peerID] = peerConnection
 	h.mu.Unlock()
 	var cleanupOnce sync.Once
-	cleanup := func() {
+	var disconnectMu sync.Mutex
+	var disconnectTimer *time.Timer
+	var cleanup func()
+	stopDisconnectTimer := func() {
+		disconnectMu.Lock()
+		defer disconnectMu.Unlock()
+		if disconnectTimer != nil {
+			disconnectTimer.Stop()
+			disconnectTimer = nil
+		}
+	}
+	scheduleDisconnectCleanup := func() {
+		disconnectMu.Lock()
+		defer disconnectMu.Unlock()
+		if disconnectTimer != nil {
+			return
+		}
+		disconnectTimer = time.AfterFunc(webrtcDisconnectGrace, func() {
+			if peerConnection.ConnectionState() == webrtc.PeerConnectionStateDisconnected {
+				cleanup()
+			}
+			disconnectMu.Lock()
+			disconnectTimer = nil
+			disconnectMu.Unlock()
+		})
+	}
+	cleanup = func() {
 		cleanupOnce.Do(func() {
+			stopDisconnectTimer()
 			cancelPeer()
 			h.mu.Lock()
 			delete(h.peers, peerID)
@@ -166,9 +194,15 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 	go drainRTCP(sender)
 
 	peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		switch state {
-		case webrtc.PeerConnectionStateClosed, webrtc.PeerConnectionStateDisconnected, webrtc.PeerConnectionStateFailed:
+		if shouldCleanupWebRTCPeer(state) {
 			cleanup()
+			return
+		}
+		switch state {
+		case webrtc.PeerConnectionStateConnected:
+			stopDisconnectTimer()
+		case webrtc.PeerConnectionStateDisconnected:
+			scheduleDisconnectCleanup()
 		}
 	})
 
@@ -215,6 +249,10 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		go h.streamG722(peerCtx, feedID, track)
 	}
 	return localDescription.SDP, nil
+}
+
+func shouldCleanupWebRTCPeer(state webrtc.PeerConnectionState) bool {
+	return state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed
 }
 
 func newWebRTCPeerConnection(configuration webrtc.Configuration) (*webrtc.PeerConnection, error) {
