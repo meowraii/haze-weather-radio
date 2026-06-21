@@ -815,6 +815,11 @@ function closeWebRTCAudioOutput(player) {
 function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
     if (!sourceStream || !audio) return sourceStream;
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (player.audioOutputMixer?.outputStream === sourceStream) {
+        audio.srcObject = sourceStream;
+        player.audioOutputMixer.context?.resume?.().catch(() => {});
+        return sourceStream;
+    }
     if (!AudioContextCtor || !sourceStream.getAudioTracks?.().length) {
         closeWebRTCAudioOutput(player);
         audio.srcObject = sourceStream;
