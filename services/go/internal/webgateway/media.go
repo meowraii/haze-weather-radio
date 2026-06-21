@@ -96,23 +96,29 @@ type WebRTCAnswer struct {
 }
 
 type webRTCPeerSnapshot struct {
-	PeerID           string
-	FeedID           string
-	Codec            string
-	PayloadType      uint8
-	StartedAt        time.Time
-	UpdatedAt        time.Time
-	Written          uint64
-	FillerFrames     uint64
-	SkippedFrames    uint64
-	SourceGapFrames  uint64
-	LateWrites       uint64
-	WriteErrors      uint64
-	MaxWriteGapMS    int64
-	SequenceNumber   uint16
-	Timestamp        uint32
-	LastPayloadBytes int
-	LastWriteAt      time.Time
+	PeerID               string
+	FeedID               string
+	Codec                string
+	PayloadType          uint8
+	StartedAt            time.Time
+	UpdatedAt            time.Time
+	Written              uint64
+	FillerFrames         uint64
+	SkippedFrames        uint64
+	SourceGapFrames      uint64
+	LateWrites           uint64
+	WriteErrors          uint64
+	TotalWritten         uint64
+	TotalFillerFrames    uint64
+	TotalSkippedFrames   uint64
+	TotalSourceGapFrames uint64
+	TotalLateWrites      uint64
+	TotalWriteErrors     uint64
+	MaxWriteGapMS        int64
+	SequenceNumber       uint16
+	Timestamp            uint32
+	LastPayloadBytes     int
+	LastWriteAt          time.Time
 }
 
 type opusFrameEncoder interface {
@@ -188,6 +194,12 @@ func (h *MediaHub) WebRTCPeerSnapshots() []map[string]any {
 			"interval_source_gap_frames": snapshot.SourceGapFrames,
 			"interval_late_writes":       snapshot.LateWrites,
 			"interval_write_errors":      snapshot.WriteErrors,
+			"total_written":              snapshot.TotalWritten,
+			"total_filler_frames":        snapshot.TotalFillerFrames,
+			"total_skipped_frames":       snapshot.TotalSkippedFrames,
+			"total_source_gap_frames":    snapshot.TotalSourceGapFrames,
+			"total_late_writes":          snapshot.TotalLateWrites,
+			"total_write_errors":         snapshot.TotalWriteErrors,
 			"max_write_gap_ms":           snapshot.MaxWriteGapMS,
 			"next_seq":                   snapshot.SequenceNumber,
 			"next_ts":                    snapshot.Timestamp,
@@ -1227,11 +1239,13 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		writeInFlight.Store(false)
 		if err != nil {
 			stats.writeErrors++
+			stats.totalWriteErrors++
 			log.Printf("media bridge WebRTC stream write failed feed=%s codec=%s skipped_frames=%d write_errors=%d: %v", feedID, codec, stats.skippedFrames, stats.writeErrors, err)
 			failPeer("write_error")
 			return false
 		}
 		stats.written++
+		stats.totalWritten++
 		writeCompletedAt := time.Now()
 		stats.recordWriteCadence(writeCompletedAt)
 		stats.sequenceNumber++
@@ -1239,23 +1253,29 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		stats.lastWriteAt = writeCompletedAt
 		stats.lastPayloadBytes = len(frame.payload)
 		h.recordWebRTCPeerSnapshot(peerID, webRTCPeerSnapshot{
-			PeerID:           peerID,
-			FeedID:           feedID,
-			Codec:            codec.String(),
-			PayloadType:      payloadType,
-			StartedAt:        stats.startedAt,
-			UpdatedAt:        writeCompletedAt,
-			Written:          stats.written,
-			FillerFrames:     stats.fillerFrames,
-			SkippedFrames:    stats.skippedFrames,
-			SourceGapFrames:  stats.sourceGapFrames,
-			LateWrites:       stats.lateWrites,
-			WriteErrors:      stats.writeErrors,
-			MaxWriteGapMS:    stats.maxWriteGapMS,
-			SequenceNumber:   stats.sequenceNumber,
-			Timestamp:        stats.timestamp,
-			LastPayloadBytes: stats.lastPayloadBytes,
-			LastWriteAt:      stats.lastWriteAt,
+			PeerID:               peerID,
+			FeedID:               feedID,
+			Codec:                codec.String(),
+			PayloadType:          payloadType,
+			StartedAt:            stats.startedAt,
+			UpdatedAt:            writeCompletedAt,
+			Written:              stats.written,
+			FillerFrames:         stats.fillerFrames,
+			SkippedFrames:        stats.skippedFrames,
+			SourceGapFrames:      stats.sourceGapFrames,
+			LateWrites:           stats.lateWrites,
+			WriteErrors:          stats.writeErrors,
+			TotalWritten:         stats.totalWritten,
+			TotalFillerFrames:    stats.totalFillerFrames,
+			TotalSkippedFrames:   stats.totalSkippedFrames,
+			TotalSourceGapFrames: stats.totalSourceGapFrames,
+			TotalLateWrites:      stats.totalLateWrites,
+			TotalWriteErrors:     stats.totalWriteErrors,
+			MaxWriteGapMS:        stats.maxWriteGapMS,
+			SequenceNumber:       stats.sequenceNumber,
+			Timestamp:            stats.timestamp,
+			LastPayloadBytes:     stats.lastPayloadBytes,
+			LastWriteAt:          stats.lastWriteAt,
 		})
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
 		if !loggedWrite {
@@ -1427,19 +1447,25 @@ func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAud
 }
 
 type webRTCPeerStreamStats struct {
-	written          uint64
-	fillerFrames     uint64
-	skippedFrames    uint64
-	sourceGapFrames  uint64
-	lateWrites       uint64
-	writeErrors      uint64
-	startedAt        time.Time
-	lastReport       time.Time
-	sequenceNumber   uint16
-	timestamp        uint32
-	lastWriteAt      time.Time
-	maxWriteGapMS    int64
-	lastPayloadBytes int
+	written              uint64
+	fillerFrames         uint64
+	skippedFrames        uint64
+	sourceGapFrames      uint64
+	lateWrites           uint64
+	writeErrors          uint64
+	totalWritten         uint64
+	totalFillerFrames    uint64
+	totalSkippedFrames   uint64
+	totalSourceGapFrames uint64
+	totalLateWrites      uint64
+	totalWriteErrors     uint64
+	startedAt            time.Time
+	lastReport           time.Time
+	sequenceNumber       uint16
+	timestamp            uint32
+	lastWriteAt          time.Time
+	maxWriteGapMS        int64
+	lastPayloadBytes     int
 }
 
 func newWebRTCPeerStreamStats(now time.Time) webRTCPeerStreamStats {
@@ -1489,19 +1515,24 @@ func (h *MediaHub) removeWebRTCPeerSnapshot(peerID string) {
 
 func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
 	if skipped > 0 {
-		s.skippedFrames += uint64(skipped)
+		value := uint64(skipped)
+		s.skippedFrames += value
+		s.totalSkippedFrames += value
 	}
 }
 
 func (s *webRTCPeerStreamStats) recordSourceGap(frames int) {
 	if frames > 0 {
-		s.sourceGapFrames += uint64(frames)
+		value := uint64(frames)
+		s.sourceGapFrames += value
+		s.totalSourceGapFrames += value
 	}
 }
 
 func (s *webRTCPeerStreamStats) recordFiller(filler bool) {
 	if filler {
 		s.fillerFrames++
+		s.totalFillerFrames++
 	}
 }
 
@@ -1516,6 +1547,7 @@ func (s *webRTCPeerStreamStats) recordWriteCadence(now time.Time) {
 	}
 	if gap >= webrtcLateWriteThreshold {
 		s.lateWrites++
+		s.totalLateWrites++
 	}
 }
 

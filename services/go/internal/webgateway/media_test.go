@@ -442,9 +442,15 @@ func TestWebRTCPeerStreamStatsTracksFillerAndSourceGaps(t *testing.T) {
 	if stats.fillerFrames != 1 {
 		t.Fatalf("filler frames = %d, want 1", stats.fillerFrames)
 	}
+	if stats.totalSkippedFrames != 2 || stats.totalSourceGapFrames != 1 || stats.totalFillerFrames != 1 {
+		t.Fatalf("total frame stats = skipped %d source_gap %d filler %d, want 2/1/1", stats.totalSkippedFrames, stats.totalSourceGapFrames, stats.totalFillerFrames)
+	}
 	stats.resetInterval()
 	if stats.skippedFrames != 0 || stats.sourceGapFrames != 0 || stats.fillerFrames != 0 {
 		t.Fatalf("stats were not reset: %+v", stats)
+	}
+	if stats.totalSkippedFrames != 2 || stats.totalSourceGapFrames != 1 || stats.totalFillerFrames != 1 {
+		t.Fatalf("total stats should survive reset: %+v", stats)
 	}
 }
 
@@ -461,12 +467,18 @@ func TestWebRTCPeerStreamStatsTracksWriteCadence(t *testing.T) {
 	if stats.lateWrites != 1 {
 		t.Fatalf("late writes = %d, want 1", stats.lateWrites)
 	}
+	if stats.totalLateWrites != 1 {
+		t.Fatalf("total late writes = %d, want 1", stats.totalLateWrites)
+	}
 	if stats.maxWriteGapMS != webrtcLateWriteThreshold.Milliseconds() {
 		t.Fatalf("max write gap = %d, want %d", stats.maxWriteGapMS, webrtcLateWriteThreshold.Milliseconds())
 	}
 	stats.resetInterval()
 	if stats.lateWrites != 0 || stats.maxWriteGapMS != 0 {
 		t.Fatalf("cadence stats were not reset: %+v", stats)
+	}
+	if stats.totalLateWrites != 1 {
+		t.Fatalf("total cadence stats should survive reset: %+v", stats)
 	}
 }
 
