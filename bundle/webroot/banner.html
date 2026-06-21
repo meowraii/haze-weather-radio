@@ -319,7 +319,7 @@
         const AUDIO_OUTPUT_MIXER_RECOVERY_WINDOW_MS = 60000;
         const AUDIO_OUTPUT_MIXER_RECOVERY_LIMIT = 3;
         const AUDIO_OUTPUT_MIXER_BYPASS_MS = 60000;
-        const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu']);
+        const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu', 'pcma']);
 
         const frame = document.getElementById('frame');
         const tickerWindow = document.getElementById('tickerWindow');
@@ -620,6 +620,7 @@
             if (!codec) return 'auto';
             if (codec === 'stable') return 'pcmu';
             if (codec === 'g711u' || codec === 'ulaw' || codec === 'mulaw' || codec === 'u-law') return 'pcmu';
+            if (codec === 'g711a' || codec === 'alaw' || codec === 'a-law') return 'pcma';
             if (codec === 'g722' || codec === 'g.722') return 'g722';
             return WEBRTC_AUDIO_CODECS.has(codec) ? codec : 'pcmu';
         }

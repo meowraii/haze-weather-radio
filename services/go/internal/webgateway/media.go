@@ -48,8 +48,6 @@ const (
 	webrtcFrameSourceIdleGrace = 15 * time.Second
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
 	webrtcPeerSourceWait       = 15 * time.Millisecond
-	webrtcIdleDitherAmplitude  = 768
-	webrtcSourceBedAmplitude   = 512
 )
 
 type webRTCAudioCodec int
@@ -58,6 +56,7 @@ const (
 	webRTCAudioOpus webRTCAudioCodec = iota
 	webRTCAudioG722
 	webRTCAudioPCMU
+	webRTCAudioPCMA
 )
 
 func (c webRTCAudioCodec) String() string {
@@ -68,6 +67,8 @@ func (c webRTCAudioCodec) String() string {
 		return "g722"
 	case webRTCAudioPCMU:
 		return "pcmu"
+	case webRTCAudioPCMA:
+		return "pcma"
 	default:
 		return "unknown"
 	}
@@ -77,13 +78,14 @@ func defaultWebRTCAudioCodec() webRTCAudioCodec {
 	if codec, ok := parseWebRTCAudioCodec(os.Getenv("HAZE_WEBRTC_DEFAULT_CODEC")); ok {
 		return codec
 	}
-	return webRTCAudioPCMU
+	return webRTCAudioOpus
 }
 
 func WebRTCAudioCapabilities() map[string]any {
 	return map[string]any{
 		"webrtc_opus":          opusBackendAvailable(),
 		"webrtc_default_codec": defaultWebRTCAudioCodec().String(),
+		"webrtc_codecs":        []string{"auto", "opus", "g722", "pcmu", "pcma"},
 	}
 }
 
@@ -375,6 +377,8 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		capability = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeG722, ClockRate: webrtcRTPClockRate, Channels: webrtcChannels}
 	} else if codec == webRTCAudioPCMU {
 		capability = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU, ClockRate: pcmuSampleRate, Channels: webrtcChannels}
+	} else if codec == webRTCAudioPCMA {
+		capability = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMA, ClockRate: pcmuSampleRate, Channels: webrtcChannels}
 	}
 	track, err := webrtc.NewTrackLocalStaticRTP(capability, "haze-"+mediaSafeID(feedID), "haze-"+mediaSafeID(feedID))
 	if err != nil {
@@ -567,6 +571,9 @@ func preferredWebRTCAudioCodec(offerSDP string, options WebRTCAnswerOptions) (we
 	if strings.Contains(upper, "PCMU/8000") {
 		return webRTCAudioPCMU, nil
 	}
+	if strings.Contains(upper, "PCMA/8000") {
+		return webRTCAudioPCMA, nil
+	}
 	if opusBackendAvailable() && strings.Contains(upper, "OPUS/48000") {
 		return webRTCAudioOpus, nil
 	}
@@ -583,6 +590,8 @@ func parseWebRTCAudioCodec(value string) (webRTCAudioCodec, bool) {
 		return webRTCAudioG722, true
 	case "pcmu", "mulaw", "ulaw", "u-law":
 		return webRTCAudioPCMU, true
+	case "pcma", "alaw", "a-law":
+		return webRTCAudioPCMA, true
 	default:
 		return webRTCAudioOpus, false
 	}
@@ -608,6 +617,11 @@ func requiredWebRTCAudioCodec(upperOfferSDP string, codec webRTCAudioCodec) (web
 			return webRTCAudioPCMU, errors.New("receiver requires PCMU but the offer did not include PCMU")
 		}
 		return webRTCAudioPCMU, nil
+	case webRTCAudioPCMA:
+		if !strings.Contains(upperOfferSDP, "PCMA/8000") {
+			return webRTCAudioPCMA, errors.New("receiver requires PCMA but the offer did not include PCMA")
+		}
+		return webRTCAudioPCMA, nil
 	default:
 		return webRTCAudioOpus, errors.New("unsupported requested WebRTC audio codec")
 	}
@@ -623,6 +637,12 @@ func offeredAudioPayloadType(offerSDP string, codec webRTCAudioCodec) uint8 {
 	case webRTCAudioG722:
 		target = "G722/8000"
 		fallback = 9
+	case webRTCAudioPCMU:
+		target = "PCMU/8000"
+		fallback = 0
+	case webRTCAudioPCMA:
+		target = "PCMA/8000"
+		fallback = 8
 	default:
 		target = "PCMU/8000"
 		fallback = 0
@@ -673,7 +693,7 @@ func codecPreferences(codec webRTCAudioCodec, payloadType uint8) []webrtc.RTPCod
 			},
 			PayloadType: webrtc.PayloadType(payloadType),
 		}}
-	default:
+	case webRTCAudioPCMU:
 		return []webrtc.RTPCodecParameters{{
 			RTPCodecCapability: webrtc.RTPCodecCapability{
 				MimeType:  webrtc.MimeTypePCMU,
@@ -682,6 +702,20 @@ func codecPreferences(codec webRTCAudioCodec, payloadType uint8) []webrtc.RTPCod
 			},
 			PayloadType: webrtc.PayloadType(payloadType),
 		}}
+	case webRTCAudioPCMA:
+		if payloadType == 0 {
+			payloadType = 8
+		}
+		return []webrtc.RTPCodecParameters{{
+			RTPCodecCapability: webrtc.RTPCodecCapability{
+				MimeType:  webrtc.MimeTypePCMA,
+				ClockRate: pcmuSampleRate,
+				Channels:  webrtcChannels,
+			},
+			PayloadType: webrtc.PayloadType(payloadType),
+		}}
+	default:
+		return nil
 	}
 }
 
@@ -1221,6 +1255,8 @@ func (s *webRTCFrameSource) appendFrames(queue [][]byte, g722Encoder *g722.Encod
 		return appendOpusFrames(queue, s.encoder, chunk)
 	case webRTCAudioPCMU:
 		return appendPCMUFrames(queue, chunk)
+	case webRTCAudioPCMA:
+		return appendPCMAFrames(queue, chunk)
 	default:
 		return appendG722Frames(queue, g722Encoder, chunk)
 	}
@@ -1229,15 +1265,17 @@ func (s *webRTCFrameSource) appendFrames(queue [][]byte, g722Encoder *g722.Encod
 func (s *webRTCFrameSource) idleFrame(g722Encoder *g722.Encoder, g722Idle []int16, opusIdle []int16, phase int) []byte {
 	switch s.key.codec {
 	case webRTCAudioOpus:
-		encoded, err := s.encoder.Encode(idleFrameSamplesWithPhase(opusIdle, phase))
+		encoded, err := s.encoder.Encode(opusIdle)
 		if err != nil {
 			return nil
 		}
 		return encoded
 	case webRTCAudioPCMU:
 		return pcmuIdleFrameWithPhase(phase)
+	case webRTCAudioPCMA:
+		return pcmaIdleFrame()
 	default:
-		return encodeG722Frame(g722Encoder, idleFrameSamplesWithPhase(g722Idle, phase))
+		return encodeG722Frame(g722Encoder, g722Idle)
 	}
 }
 
@@ -1580,14 +1618,16 @@ func initialWebRTCFrameWithPhase(codec webRTCAudioCodec, phase int) []byte {
 	switch codec {
 	case webRTCAudioPCMU:
 		return pcmuIdleFrameWithPhase(phase)
+	case webRTCAudioPCMA:
+		return pcmaIdleFrame()
 	case webRTCAudioG722:
-		return encodeG722Frame(g722.NewEncoder(g722.Rate64000, 0), idleFrameSamplesWithPhase(g722IdleFrameSamples(), phase))
+		return encodeG722Frame(g722.NewEncoder(g722.Rate64000, 0), g722IdleFrameSamples())
 	case webRTCAudioOpus:
 		encoder, err := newOpusFrameEncoder(opusSampleRate, opusEncoderChannels)
 		if err != nil {
 			return nil
 		}
-		encoded, err := encoder.Encode(idleFrameSamplesWithPhase(opusIdleFrameSamples(), phase))
+		encoded, err := encoder.Encode(opusIdleFrameSamples())
 		if err != nil {
 			return nil
 		}
@@ -1989,32 +2029,15 @@ func compactQueuedFrames(queue *[][]byte, head *int) {
 }
 
 func opusIdleFrameSamples() []int16 {
-	samples := make([]int16, opusFrameSamples*opusEncoderChannels)
-	for i := range samples {
-		samples[i] = webRTCIdleDitherSample(i)
-	}
-	return samples
+	return make([]int16, opusFrameSamples*opusEncoderChannels)
 }
 
 func g722IdleFrameSamples() []int16 {
-	samples := make([]int16, g722FrameSamples)
-	for i := range samples {
-		samples[i] = webRTCIdleDitherSample(i)
-	}
-	return samples
+	return make([]int16, g722FrameSamples)
 }
 
 func idleFrameSamplesWithPhase(base []int16, phase int) []int16 {
-	samples := make([]int16, len(base))
-	for i := range samples {
-		samples[i] = webRTCIdleDitherSample(i + phase*len(base))
-	}
-	return samples
-}
-
-func webRTCIdleDitherSample(index int) int16 {
-	value := ((index*1103515245 + 12345) >> 16) & 0x7fff
-	return int16((value % (webrtcIdleDitherAmplitude*2 + 1)) - webrtcIdleDitherAmplitude)
+	return append([]int16(nil), base...)
 }
 
 func appendG722Frames(queue [][]byte, encoder *g722.Encoder, chunk PCMChunk) [][]byte {
@@ -2046,7 +2069,6 @@ func pcm16ToOpusFrames(encoder opusFrameEncoder, chunk PCMChunk) [][]byte {
 	if len(samples) == 0 {
 		return nil
 	}
-	applyWebRTCSourceBed(samples)
 	frameCount := (len(samples) + opusFrameSamples - 1) / opusFrameSamples
 	frames := make([][]byte, 0, frameCount)
 	for frameIndex := 0; frameIndex < frameCount; frameIndex++ {
@@ -2085,7 +2107,6 @@ func pcm16ToG722Frames(encoder *g722.Encoder, chunk PCMChunk) [][]byte {
 	if len(samples) == 0 {
 		return nil
 	}
-	applyWebRTCSourceBed(samples)
 	frameCount := (len(samples) + g722FrameSamples - 1) / g722FrameSamples
 	frames := make([][]byte, 0, frameCount)
 	for frameIndex := 0; frameIndex < frameCount; frameIndex++ {
@@ -2131,7 +2152,6 @@ func pcm16ToPCMUFrames(chunk PCMChunk) [][]byte {
 	if len(samples) == 0 {
 		return nil
 	}
-	applyWebRTCSourceBed(samples)
 	frameCount := (len(samples) + pcmuFrameSamples - 1) / pcmuFrameSamples
 	frames := make([][]byte, 0, frameCount)
 	for frameIndex := 0; frameIndex < frameCount; frameIndex++ {
@@ -2192,21 +2212,6 @@ func resamplePCM16ToMono(chunk PCMChunk, outputSampleRate int) []int16 {
 	return out
 }
 
-func applyWebRTCSourceBed(samples []int16) {
-	if len(samples) == 0 {
-		return
-	}
-	for _, sample := range samples {
-		if sample < -1 || sample > 1 {
-			return
-		}
-	}
-	for i := range samples {
-		value := ((i*1664525 + 1013904223) >> 16) & 0x7fff
-		samples[i] = int16((value % (webrtcSourceBedAmplitude*2 + 1)) - webrtcSourceBedAmplitude)
-	}
-}
-
 func linearToMuLaw(sample int16) byte {
 	const bias = 0x84
 	const clip = 32635
@@ -2235,7 +2240,84 @@ func pcmuIdleFrame() []byte {
 func pcmuIdleFrameWithPhase(phase int) []byte {
 	frame := make([]byte, pcmuFrameSamples)
 	for i := range frame {
-		frame[i] = linearToMuLaw(webRTCIdleDitherSample(i + phase*pcmuFrameSamples))
+		frame[i] = 0xff
+	}
+	return frame
+}
+
+func appendPCMAFrames(queue [][]byte, chunk PCMChunk) [][]byte {
+	frames := pcm16ToPCMAFrames(chunk)
+	if len(frames) == 0 {
+		return queue
+	}
+	queue = append(queue, frames...)
+	if len(queue) > webrtcMaxQueuedFrames {
+		queue = queue[len(queue)-webrtcMaxQueuedFrames:]
+	}
+	return queue
+}
+
+func pcm16ToPCMA(chunk PCMChunk) []byte {
+	frames := pcm16ToPCMAFrames(chunk)
+	if len(frames) == 0 {
+		return pcmaIdleFrame()
+	}
+	return frames[0]
+}
+
+func pcm16ToPCMAFrames(chunk PCMChunk) [][]byte {
+	samples := resamplePCM16ToMono(chunk, pcmuSampleRate)
+	if len(samples) == 0 {
+		return nil
+	}
+	frameCount := (len(samples) + pcmuFrameSamples - 1) / pcmuFrameSamples
+	frames := make([][]byte, 0, frameCount)
+	for frameIndex := 0; frameIndex < frameCount; frameIndex++ {
+		start := frameIndex * pcmuFrameSamples
+		end := min(start+pcmuFrameSamples, len(samples))
+		out := make([]byte, pcmuFrameSamples)
+		for i := range out {
+			sampleIndex := start + i
+			if sampleIndex >= end {
+				out[i] = 0xd5
+			} else {
+				out[i] = linearToALaw(samples[sampleIndex])
+			}
+		}
+		frames = append(frames, out)
+	}
+	return frames
+}
+
+func linearToALaw(sample int16) byte {
+	pcm := int(sample)
+	mask := byte(0xd5)
+	if pcm < 0 {
+		pcm = -pcm - 1
+		mask = 0x55
+	}
+	if pcm > 32635 {
+		pcm = 32635
+	}
+	pcm >>= 3
+	var encoded byte
+	if pcm >= 256 {
+		exponent := 7
+		for expMask := 0x4000 >> 3; exponent > 0 && pcm&expMask == 0; exponent-- {
+			expMask >>= 1
+		}
+		mantissa := (pcm >> (exponent + 3)) & 0x0f
+		encoded = byte((exponent << 4) | mantissa)
+	} else {
+		encoded = byte(pcm >> 4)
+	}
+	return encoded ^ mask
+}
+
+func pcmaIdleFrame() []byte {
+	frame := make([]byte, pcmuFrameSamples)
+	for i := range frame {
+		frame[i] = 0xd5
 	}
 	return frame
 }

@@ -128,9 +128,10 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
 
 const WEBRTC_CODECS = [
     ['auto', 'Auto'],
+    ['opus', 'Opus'],
     ['g722', 'G.722'],
     ['pcmu', 'PCMU'],
-    ['opus', 'Opus'],
+    ['pcma', 'PCMA'],
 ];
 const HTTP_CODECS = [
     ['pcm16', 'PCM16 / WAV'],

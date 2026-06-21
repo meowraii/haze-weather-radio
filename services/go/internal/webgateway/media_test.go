@@ -43,50 +43,45 @@ func TestPCM16ToG722SilenceFrame(t *testing.T) {
 	}
 }
 
-func TestWebRTCIdleFramesCarryDither(t *testing.T) {
+func TestWebRTCIdleFramesAreSilent(t *testing.T) {
 	opusIdle := opusIdleFrameSamples()
 	if len(opusIdle) != opusFrameSamples*opusEncoderChannels {
 		t.Fatalf("Opus idle samples = %d, want %d", len(opusIdle), opusFrameSamples*opusEncoderChannels)
 	}
-	assertIdleDither(t, "Opus", opusIdle)
+	assertAllPCM16Zero(t, "Opus", opusIdle)
 	g722Idle := g722IdleFrameSamples()
 	if len(g722Idle) != g722FrameSamples {
 		t.Fatalf("G.722 idle samples = %d, want %d", len(g722Idle), g722FrameSamples)
 	}
-	assertIdleDither(t, "G.722", g722Idle)
+	assertAllPCM16Zero(t, "G.722", g722Idle)
 	pcmuIdle := pcmuIdleFrame()
 	if len(pcmuIdle) != pcmuFrameSamples {
 		t.Fatalf("PCMU idle frame = %d, want %d", len(pcmuIdle), pcmuFrameSamples)
 	}
-	if pcmuIdle[0] == pcmuIdle[1] {
-		t.Fatalf("PCMU idle dither should not collapse to a constant byte: %x %x", pcmuIdle[0], pcmuIdle[1])
+	for i, sample := range pcmuIdle {
+		if sample != 0xff {
+			t.Fatalf("PCMU idle byte %d = %#x, want 0xff", i, sample)
+		}
+	}
+	pcmaIdle := pcmaIdleFrame()
+	if len(pcmaIdle) != pcmuFrameSamples {
+		t.Fatalf("PCMA idle frame = %d, want %d", len(pcmaIdle), pcmuFrameSamples)
+	}
+	for i, sample := range pcmaIdle {
+		if sample != 0xd5 {
+			t.Fatalf("PCMA idle byte %d = %#x, want 0xd5", i, sample)
+		}
 	}
 }
 
-func TestWebRTCIdleFramesAdvanceDitherPhase(t *testing.T) {
-	first := pcmuIdleFrameWithPhase(0)
-	second := pcmuIdleFrameWithPhase(1)
-	if len(first) != pcmuFrameSamples || len(second) != pcmuFrameSamples {
-		t.Fatalf("PCMU idle frame lengths = %d/%d, want %d", len(first), len(second), pcmuFrameSamples)
-	}
-	if string(first) == string(second) {
-		t.Fatal("consecutive PCMU idle frames should not repeat the exact same dither payload")
-	}
-	samples := idleFrameSamplesWithPhase(g722IdleFrameSamples(), 1)
-	if len(samples) != g722FrameSamples {
-		t.Fatalf("phase-shifted G.722 idle samples = %d, want %d", len(samples), g722FrameSamples)
-	}
-	assertIdleDither(t, "phase-shifted G.722", samples)
-}
-
-func TestWebRTCPeerFillerFramesAdvanceDitherPhase(t *testing.T) {
+func TestWebRTCPeerFillerFramesAreSilent(t *testing.T) {
 	firstPCMU := webRTCFillerFrameWithPhase(webRTCAudioPCMU, 0)
 	secondPCMU := webRTCFillerFrameWithPhase(webRTCAudioPCMU, 1)
 	if len(firstPCMU) != pcmuFrameSamples || len(secondPCMU) != pcmuFrameSamples {
 		t.Fatalf("PCMU filler lengths = %d/%d, want %d", len(firstPCMU), len(secondPCMU), pcmuFrameSamples)
 	}
-	if string(firstPCMU) == string(secondPCMU) {
-		t.Fatal("consecutive PCMU peer filler frames should not repeat the exact same payload")
+	if string(firstPCMU) != string(secondPCMU) || firstPCMU[0] != 0xff {
+		t.Fatal("PCMU filler should be stable neutral silence")
 	}
 
 	firstG722 := webRTCFillerFrameWithPhase(webRTCAudioG722, 0)
@@ -94,19 +89,24 @@ func TestWebRTCPeerFillerFramesAdvanceDitherPhase(t *testing.T) {
 	if len(firstG722) == 0 || len(secondG722) == 0 {
 		t.Fatalf("G.722 filler should not be empty: %d/%d", len(firstG722), len(secondG722))
 	}
-	if string(firstG722) == string(secondG722) {
-		t.Fatal("consecutive G.722 peer filler frames should not repeat the exact same payload")
+	if string(firstG722) != string(secondG722) {
+		t.Fatal("G.722 filler should be stable neutral silence")
+	}
+
+	pcma := webRTCFillerFrame(webRTCAudioPCMA)
+	if len(pcma) != pcmuFrameSamples || pcma[0] != 0xd5 {
+		t.Fatalf("PCMA filler = len %d first %#x, want neutral A-law", len(pcma), pcma[0])
 	}
 }
 
-func TestDefaultWebRTCAudioCodecPrefersStablePlayout(t *testing.T) {
+func TestDefaultWebRTCAudioCodecPrefersOpus(t *testing.T) {
 	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "")
-	if got := defaultWebRTCAudioCodec(); got != webRTCAudioPCMU {
-		t.Fatalf("default WebRTC codec = %s, want pcmu", got)
+	if got := defaultWebRTCAudioCodec(); got != webRTCAudioOpus {
+		t.Fatalf("default WebRTC codec = %s, want opus", got)
 	}
 	capabilities := WebRTCAudioCapabilities()
-	if got := fmt.Sprint(capabilities["webrtc_default_codec"]); got != "pcmu" {
-		t.Fatalf("reported default WebRTC codec = %s, want pcmu", got)
+	if got := fmt.Sprint(capabilities["webrtc_default_codec"]); got != "opus" {
+		t.Fatalf("reported default WebRTC codec = %s, want opus", got)
 	}
 }
 
@@ -121,35 +121,17 @@ func TestDefaultWebRTCAudioCodecCanBeOverridden(t *testing.T) {
 	}
 
 	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "not-a-codec")
-	if got := defaultWebRTCAudioCodec(); got != webRTCAudioPCMU {
-		t.Fatalf("invalid default WebRTC codec fallback = %s, want pcmu", got)
+	if got := defaultWebRTCAudioCodec(); got != webRTCAudioOpus {
+		t.Fatalf("invalid default WebRTC codec fallback = %s, want opus", got)
 	}
 }
 
-func assertIdleDither(t *testing.T, codec string, samples []int16) {
+func assertAllPCM16Zero(t *testing.T, codec string, samples []int16) {
 	t.Helper()
-	seen := map[int16]struct{}{}
-	peak := 0
-	sum := 0
-	for _, sample := range samples {
-		seen[sample] = struct{}{}
-		value := int(sample)
-		if value < 0 {
-			value = -value
+	for i, sample := range samples {
+		if sample != 0 {
+			t.Fatalf("%s idle sample %d = %d, want 0", codec, i, sample)
 		}
-		if value > peak {
-			peak = value
-		}
-		sum += int(sample)
-	}
-	if len(seen) < 8 {
-		t.Fatalf("%s idle dither collapsed to %d unique samples", codec, len(seen))
-	}
-	if peak < webrtcIdleDitherAmplitude/2 || peak > webrtcIdleDitherAmplitude {
-		t.Fatalf("%s idle dither peak = %d, want %d..%d", codec, peak, webrtcIdleDitherAmplitude/2, webrtcIdleDitherAmplitude)
-	}
-	if average := math.Abs(float64(sum) / float64(len(samples))); average > float64(webrtcIdleDitherAmplitude)/2 {
-		t.Fatalf("%s idle dither average = %.2f, want near zero", codec, average)
 	}
 }
 
@@ -1022,8 +1004,12 @@ func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 	}
 	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "")
 	got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9 0\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{})
-	if err != nil || got != webRTCAudioPCMU {
-		t.Fatal("auto codec should honor the stable default codec before browser offer preference")
+	if opusBackendAvailable() {
+		if err != nil || got != webRTCAudioOpus {
+			t.Fatal("auto codec should honor the Opus default when the native encoder is available")
+		}
+	} else if err != nil || got != webRTCAudioG722 {
+		t.Fatal("auto codec should fall back when the native Opus encoder is unavailable")
 	}
 	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "g722")
 	got, err = preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9 0\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{})
@@ -1043,6 +1029,9 @@ func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 9 0\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{DisableG722: true}); err != nil || got != webRTCAudioPCMU {
 		t.Fatal("G.722 can still be disabled for emergency compatibility fallback")
 	}
+	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=rtpmap:8 PCMA/8000\r\n", WebRTCAnswerOptions{}); err != nil || got != webRTCAudioPCMA {
+		t.Fatal("PCMA-only offers should use PCMA")
+	}
 }
 
 func TestPreferredWebRTCAudioCodecRequiresOpus(t *testing.T) {
@@ -1059,12 +1048,15 @@ func TestPreferredWebRTCAudioCodecRequiresOpus(t *testing.T) {
 }
 
 func TestPreferredWebRTCAudioCodecHonorsExplicitSelection(t *testing.T) {
-	offer := "m=audio 9 UDP/TLS/RTP/SAVPF 111 9 0\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n"
+	offer := "m=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n"
 	if got, err := preferredWebRTCAudioCodec(offer, WebRTCAnswerOptions{PreferredCodec: "g722"}); err != nil || got != webRTCAudioG722 {
 		t.Fatalf("explicit G.722 codec = %v, %v", got, err)
 	}
 	if got, err := preferredWebRTCAudioCodec(offer, WebRTCAnswerOptions{PreferredCodec: "pcmu"}); err != nil || got != webRTCAudioPCMU {
 		t.Fatalf("explicit PCMU codec = %v, %v", got, err)
+	}
+	if got, err := preferredWebRTCAudioCodec(offer, WebRTCAnswerOptions{PreferredCodec: "pcma"}); err != nil || got != webRTCAudioPCMA {
+		t.Fatalf("explicit PCMA codec = %v, %v", got, err)
 	}
 	if _, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 9\r\na=rtpmap:9 G722/8000\r\n", WebRTCAnswerOptions{PreferredCodec: "pcmu"}); err == nil {
 		t.Fatal("explicit PCMU should fail when the receiver offer does not include PCMU")
@@ -1075,6 +1067,9 @@ func TestOfferedAudioPayloadTypeUsesDynamicOpusPayload(t *testing.T) {
 	offer := "m=audio 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 opus/48000/2\r\n"
 	if got := offeredAudioPayloadType(offer, webRTCAudioOpus); got != 96 {
 		t.Fatalf("Opus payload type = %d, want 96", got)
+	}
+	if got := offeredAudioPayloadType("m=audio 9 UDP/TLS/RTP/SAVPF 97\r\na=rtpmap:97 PCMA/8000\r\n", webRTCAudioPCMA); got != 97 {
+		t.Fatalf("PCMA payload type = %d, want 97", got)
 	}
 }
 
@@ -1341,7 +1336,10 @@ func TestMediaHubReceiverAnswerUsesAutoCodecPolicy(t *testing.T) {
 }
 
 func expectedAutoWebRTCSDPCodec() string {
-	return "PCMU"
+	if opusBackendAvailable() {
+		return "opus/48000"
+	}
+	return "G722"
 }
 
 func TestMediaHubStreamsRTPToPeer(t *testing.T) {
@@ -2021,7 +2019,7 @@ func TestFrameConcealerRequiresSmallResumeBuffer(t *testing.T) {
 	}
 }
 
-func TestWebRTCSilentSourcePCMGetsBedBeforeEncoding(t *testing.T) {
+func TestWebRTCSilentSourcePCMStaysSilent(t *testing.T) {
 	chunk := PCMChunk{
 		FeedID:     "sk-0001",
 		SampleRate: 48000,
@@ -2033,11 +2031,8 @@ func TestWebRTCSilentSourcePCMGetsBedBeforeEncoding(t *testing.T) {
 	if len(frames) != 1 {
 		t.Fatalf("PCMU frame count = %d, want 1", len(frames))
 	}
-	if allBytesEqual(frames[0], linearToMuLaw(0)) {
-		t.Fatal("silent source PCM encoded as absolute PCMU silence instead of a low-level WebRTC bed")
-	}
-	if allBytesEqual(frames[0], frames[0][0]) {
-		t.Fatal("silent source PCM bed should have sample variation")
+	if !allBytesEqual(frames[0], linearToMuLaw(0)) {
+		t.Fatal("silent source PCM should remain neutral PCMU silence")
 	}
 }
 
