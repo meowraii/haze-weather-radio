@@ -36,7 +36,7 @@ const (
 	webrtcMaxQueuedFrames      = 10
 	webrtcPeerFrameMailbox     = 3
 	webrtcResumeQueuedFrames   = 1
-	webrtcConcealmentFrames    = 6
+	webrtcConcealmentFrames    = 25
 	feedIngressCapacity        = 4
 	g722FrameSamples           = g722SampleRate / 50
 	bridgeReconnectDelay       = 750 * time.Millisecond
@@ -46,7 +46,6 @@ const (
 	webrtcFrameSourceIdleGrace = 15 * time.Second
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
 	webrtcSourceFallbackDelay  = 2 * webrtcFrameDuration
-	webrtcFrameSourceGrace     = 15 * time.Millisecond
 )
 
 type webRTCAudioCodec int
@@ -929,11 +928,6 @@ func (s *webRTCFrameSource) run() {
 	pcmuIdle := pcmuIdleFrame()
 	loggedFirstFrame := false
 	stats := webRTCFrameSourceStats{lastReport: time.Now()}
-	graceTimer := time.NewTimer(0)
-	if !graceTimer.Stop() {
-		<-graceTimer.C
-	}
-	defer graceTimer.Stop()
 
 	appendChunk := func(chunk PCMChunk) {
 		compactQueuedFrames(&frameQueue, &frameHead)
@@ -953,38 +947,9 @@ func (s *webRTCFrameSource) run() {
 		}
 		return true
 	}
-	waitBrieflyForUpdate := func() bool {
-		if queuedFrameCount(frameQueue, frameHead) > 0 {
-			return true
-		}
-		graceTimer.Reset(webrtcFrameSourceGrace)
-		select {
-		case chunk, ok := <-updates:
-			if !ok {
-				if !graceTimer.Stop() {
-					<-graceTimer.C
-				}
-				return false
-			}
-			if !graceTimer.Stop() {
-				select {
-				case <-graceTimer.C:
-				default:
-				}
-			}
-			appendChunk(chunk)
-		case <-s.stopCh:
-			if !graceTimer.Stop() {
-				<-graceTimer.C
-			}
-			return false
-		case <-graceTimer.C:
-		}
-		return true
-	}
 
 	emitFrame := func() bool {
-		if !drainUpdates() || !waitBrieflyForUpdate() {
+		if !drainUpdates() {
 			return false
 		}
 		frame, kind := concealer.nextWithKind(&frameQueue, &frameHead, func() []byte {

@@ -177,6 +177,29 @@ func TestFrameConcealerReportsFrameKind(t *testing.T) {
 	}
 }
 
+func TestFrameConcealerExtendsLiveAudioAcrossSchedulerJitter(t *testing.T) {
+	queue := [][]byte{{9, 9}}
+	head := 0
+	concealer := frameConcealer{}
+	silence := []byte{0}
+
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{9, 9}) {
+		t.Fatalf("priming frame = %v", got)
+	}
+	for i := 0; i < webrtcConcealmentFrames; i++ {
+		got, kind := concealer.nextWithKind(&queue, &head, func() []byte { return silence })
+		if kind != webRTCFrameConcealed {
+			t.Fatalf("jitter bridge frame %d kind = %v, want concealed", i, kind)
+		}
+		if string(got) != string([]byte{9, 9}) {
+			t.Fatalf("jitter bridge frame %d = %v", i, got)
+		}
+	}
+	if _, kind := concealer.nextWithKind(&queue, &head, func() []byte { return silence }); kind != webRTCFrameIdle {
+		t.Fatalf("post-concealment kind = %v, want idle", kind)
+	}
+}
+
 func TestWebRTCFrameSourceBroadcastCountsSlowSubscribers(t *testing.T) {
 	source := &webRTCFrameSource{subs: map[chan webRTCFrame]struct{}{make(chan webRTCFrame): {}}}
 	dropped, subscribers := source.broadcast([]byte{1})
@@ -603,37 +626,6 @@ func TestWebRTCFrameSourcePrimesIdleFrame(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("timed out waiting for primed idle frame")
-	}
-}
-
-func TestWebRTCFrameSourceWaitsBrieflyForJitteredPCM(t *testing.T) {
-	hub := newMemoryMediaHub()
-	frames, unsubscribe, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioPCMU)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unsubscribe()
-	go func() {
-		time.Sleep(webrtcFrameDuration + webrtcFrameSourceGrace/2)
-		hub.publish(PCMChunk{
-			FeedID:     "sk-0001",
-			SampleRate: 48000,
-			Channels:   1,
-			Duration:   20 * time.Millisecond,
-			Data:       sinePCM(960, 600, 48000, 12000),
-		})
-	}()
-	_ = waitForWebRTCFrame(t, frames)
-	select {
-	case frame, ok := <-frames:
-		if !ok {
-			t.Fatal("frame source closed")
-		}
-		if len(frame.payload) == 0 || isPCMUIdlePayload(frame.payload) {
-			t.Fatalf("next frame after jittered PCM was idle: len=%d", len(frame.payload))
-		}
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("timed out waiting for jittered PCM frame")
 	}
 }
 
