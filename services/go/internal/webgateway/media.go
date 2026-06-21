@@ -813,14 +813,21 @@ func (s *webRTCFrameSource) subscribe() (<-chan []byte, func(), bool) {
 	return ch, func() {
 		once.Do(func() {
 			var idleEpoch uint64
+			existed := false
 			s.mu.Lock()
-			delete(s.subs, ch)
+			if s.subs != nil {
+				_, existed = s.subs[ch]
+				delete(s.subs, ch)
+			}
 			empty := len(s.subs) == 0
 			if empty {
 				s.idleEpoch++
 				idleEpoch = s.idleEpoch
 			}
 			s.mu.Unlock()
+			if existed {
+				close(ch)
+			}
 			if empty {
 				s.hub.removeWebRTCFrameSourceAfter(s, webrtcFrameSourceIdleGrace, idleEpoch)
 			}
@@ -867,10 +874,20 @@ func (h *MediaHub) removeWebRTCFrameSourceIfIdle(source *webRTCFrameSource, idle
 }
 
 func (s *webRTCFrameSource) stop() {
+	var subscribers []chan []byte
 	s.mu.Lock()
-	s.closed = true
+	if !s.closed {
+		s.closed = true
+	}
+	for subscriber := range s.subs {
+		subscribers = append(subscribers, subscriber)
+		delete(s.subs, subscriber)
+	}
 	s.mu.Unlock()
 	s.stopOnce.Do(func() {
+		for _, subscriber := range subscribers {
+			close(subscriber)
+		}
 		close(s.stopCh)
 	})
 }
@@ -1052,15 +1069,19 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	var writeInFlight atomic.Bool
 	var writeStartedAt atomic.Int64
 	var stallOnce sync.Once
-	watchdogCtx, stopWatchdog := context.WithCancel(ctx)
-	defer stopWatchdog()
-	go watchWebRTCSampleWrites(watchdogCtx, feedID, codec, &writeInFlight, &writeStartedAt, webrtcWriteTimeout, func() {
+	failPeer := func(reason string) {
 		stallOnce.Do(func() {
+			log.Printf("media bridge WebRTC stream ending feed=%s codec=%s reason=%s", feedID, codec, reason)
 			unsubscribePeer()
 			if onWriteStall != nil {
 				onWriteStall()
 			}
 		})
+	}
+	watchdogCtx, stopWatchdog := context.WithCancel(ctx)
+	defer stopWatchdog()
+	go watchWebRTCSampleWrites(watchdogCtx, feedID, codec, &writeInFlight, &writeStartedAt, webrtcWriteTimeout, func() {
+		failPeer("write_stall")
 	})
 	writeFrame := func(frame []byte, skipped int) bool {
 		if len(frame) == 0 {
@@ -1082,12 +1103,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		if err != nil {
 			stats.writeErrors++
 			log.Printf("media bridge WebRTC stream write failed feed=%s codec=%s skipped_frames=%d write_errors=%d: %v", feedID, codec, stats.skippedFrames, stats.writeErrors, err)
-			stallOnce.Do(func() {
-				unsubscribePeer()
-				if onWriteStall != nil {
-					onWriteStall()
-				}
-			})
+			failPeer("write_error")
 			return false
 		}
 		stats.written++
@@ -1111,6 +1127,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		case <-ticker.C:
 			frame, drainSkipped, ok := latestWebRTCFrame(nil, frames)
 			if !ok {
+				failPeer("frame_source_closed")
 				return
 			}
 			if len(frame) == 0 {

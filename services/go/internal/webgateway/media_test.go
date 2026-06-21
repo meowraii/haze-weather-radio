@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -463,6 +464,51 @@ func TestWebRTCFrameSourceReusesIdleSourceDuringGrace(t *testing.T) {
 	hub.mu.Unlock()
 	if second != first {
 		t.Fatal("frame source should be reused during idle grace")
+	}
+}
+
+func TestWebRTCFrameSourceStopClosesSubscribers(t *testing.T) {
+	hub := newMemoryMediaHub()
+	source, err := hub.webRTCFrameSource("sk-0001", webRTCAudioPCMU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, unsubscribe, ok := source.subscribe()
+	if !ok {
+		t.Fatal("subscriber could not attach to frame source")
+	}
+
+	source.stop()
+	select {
+	case _, ok := <-frames:
+		if ok {
+			t.Fatal("frame source subscriber channel stayed open after stop")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for frame source subscriber close")
+	}
+	unsubscribe()
+}
+
+func TestMediaHubClosesPeerWhenWebRTCFrameSourceEnds(t *testing.T) {
+	hub := newMemoryMediaHub()
+	frames := make(chan []byte)
+	close(frames)
+	ready := make(chan struct{})
+	close(ready)
+	cleanup := make(chan struct{})
+	var cleanupOnce sync.Once
+
+	go hub.streamWebRTCFrames(t.Context(), "sk-0001", webRTCAudioPCMU, nil, frames, func() {}, ready, func() {
+		cleanupOnce.Do(func() {
+			close(cleanup)
+		})
+	})
+
+	select {
+	case <-cleanup:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for peer cleanup after frame source close")
 	}
 }
 
