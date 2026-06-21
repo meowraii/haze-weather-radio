@@ -1111,11 +1111,13 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	go watchWebRTCSampleWrites(watchdogCtx, feedID, codec, &writeInFlight, &writeStartedAt, webrtcWriteTimeout, func() {
 		failPeer("write_stall")
 	})
-	writeFrame := func(frame webRTCFrame, skipped int, timestampSkipped int) bool {
+	writeFrame := func(frame webRTCFrame, skipped int, timestampSkipped int, filler bool) bool {
 		if len(frame.payload) == 0 {
 			return true
 		}
 		stats.recordSkipped(skipped)
+		stats.recordTimestampSkipped(timestampSkipped)
+		stats.recordFiller(filler)
 		writeStartedAt.Store(time.Now().UnixNano())
 		writeInFlight.Store(true)
 		packetTimestamp := rtpTimestampForFrame(codec, stats.timestamp, timestampSkipped)
@@ -1175,7 +1177,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		lastFrame = cloneWebRTCFrame(frame)
 		skipped := pendingSkipped
 		pendingSkipped = 0
-		return writeFrame(frame, skipped, timestampSkipped)
+		return writeFrame(frame, skipped, timestampSkipped, false)
 	}
 	for {
 		select {
@@ -1203,7 +1205,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			if len(lastFrame.payload) == 0 || !shouldSendWebRTCFiller(stats.lastWriteAt, time.Now()) {
 				continue
 			}
-			if !writeFrame(lastFrame, 0, 0) {
+			if !writeFrame(lastFrame, 0, 0, true) {
 				return
 			}
 			fillerFramesSinceSource++
@@ -1318,14 +1320,16 @@ func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAud
 }
 
 type webRTCPeerStreamStats struct {
-	written          uint64
-	skippedFrames    uint64
-	writeErrors      uint64
-	lastReport       time.Time
-	sequenceNumber   uint16
-	timestamp        uint32
-	lastWriteAt      time.Time
-	lastPayloadBytes int
+	written                uint64
+	fillerFrames           uint64
+	skippedFrames          uint64
+	timestampSkippedFrames uint64
+	writeErrors            uint64
+	lastReport             time.Time
+	sequenceNumber         uint16
+	timestamp              uint32
+	lastWriteAt            time.Time
+	lastPayloadBytes       int
 }
 
 func newWebRTCPeerStreamStats(now time.Time) webRTCPeerStreamStats {
@@ -1348,9 +1352,23 @@ func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
 	}
 }
 
+func (s *webRTCPeerStreamStats) recordTimestampSkipped(skipped int) {
+	if skipped > 0 {
+		s.timestampSkippedFrames += uint64(skipped)
+	}
+}
+
+func (s *webRTCPeerStreamStats) recordFiller(filler bool) {
+	if filler {
+		s.fillerFrames++
+	}
+}
+
 func (s *webRTCPeerStreamStats) resetInterval() {
 	s.written = 0
+	s.fillerFrames = 0
 	s.skippedFrames = 0
+	s.timestampSkippedFrames = 0
 	s.writeErrors = 0
 }
 
@@ -1363,11 +1381,13 @@ func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats 
 	if !stats.lastWriteAt.IsZero() {
 		lastWriteAgeMS = now.Sub(stats.lastWriteAt).Milliseconds()
 	}
-	log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d write_errors=%d next_seq=%d next_ts=%d last_payload_bytes=%d last_write_age_ms=%d",
+	log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d filler_frames=%d skipped_stale_frames=%d timestamp_skipped_frames=%d write_errors=%d next_seq=%d next_ts=%d last_payload_bytes=%d last_write_age_ms=%d",
 		feedID,
 		codec,
 		stats.written,
+		stats.fillerFrames,
 		stats.skippedFrames,
+		stats.timestampSkippedFrames,
 		stats.writeErrors,
 		stats.sequenceNumber,
 		stats.timestamp,

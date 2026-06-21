@@ -385,6 +385,27 @@ func TestWebRTCDiagnosticSkippedFramesDoesNotDoubleCount(t *testing.T) {
 	}
 }
 
+func TestWebRTCPeerStreamStatsTracksFillerAndTimestampSkips(t *testing.T) {
+	stats := webRTCPeerStreamStats{}
+	stats.recordSkipped(2)
+	stats.recordTimestampSkipped(1)
+	stats.recordFiller(true)
+	stats.recordFiller(false)
+	if stats.skippedFrames != 2 {
+		t.Fatalf("skipped frames = %d, want 2", stats.skippedFrames)
+	}
+	if stats.timestampSkippedFrames != 1 {
+		t.Fatalf("timestamp skipped frames = %d, want 1", stats.timestampSkippedFrames)
+	}
+	if stats.fillerFrames != 1 {
+		t.Fatalf("filler frames = %d, want 1", stats.fillerFrames)
+	}
+	stats.resetInterval()
+	if stats.skippedFrames != 0 || stats.timestampSkippedFrames != 0 || stats.fillerFrames != 0 {
+		t.Fatalf("stats were not reset: %+v", stats)
+	}
+}
+
 func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
 	var inFlight atomic.Bool
 	var startedAt atomic.Int64
