@@ -70,6 +70,8 @@ const WEBRTC_RECOVER_STATS_POLLS = 6;
 const WEBRTC_RECONNECT_BASE_DELAY_MS = 1000;
 const WEBRTC_RECONNECT_MAX_DELAY_MS = 10000;
 const WEBRTC_DISCONNECT_GRACE_MS = 15000;
+const WEBRTC_MEDIA_EVENT_GRACE_MS = 3000;
+const WEBRTC_RECENT_PACKET_GRACE_MS = 5000;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -519,12 +521,31 @@ function setHealthyWebRTCStatus(feedId, player, audio = player?.audio) {
     clearPlayerTimer(player, 'trackMuteTimer');
     clearPlayerTimer(player, 'connectionStateTimer');
     clearPlayerTimer(player, 'disconnectReconnectTimer');
+    clearPlayerTimer(player, 'mediaEventTimer');
     if (!isActivePlayer(feedId, player)) return;
     if (audio?.dataset.hazePlayerState === 'play-blocked' || audio?.dataset.hazePlayerState === 'needs-play') {
         setPlayerStatus(feedId, 'Press Play to start audio');
         return;
     }
     setPlayerStatus(feedId, audio?.paused ? 'Audio ready' : 'Playing');
+}
+
+function hasRecentWebRTCPackets(player, now = Date.now()) {
+    const lastPacketAt = Number(player?.lastPacketAt || 0);
+    return lastPacketAt > 0 && now - lastPacketAt <= WEBRTC_RECENT_PACKET_GRACE_MS;
+}
+
+function scheduleWebRTCMediaEventStatus(feedId, player, state, message) {
+    clearPlayerTimer(player, 'mediaEventTimer');
+    player.mediaEventTimer = window.setTimeout(() => {
+        player.mediaEventTimer = null;
+        if (!isActivePlayer(feedId, player) || hasRecentWebRTCPackets(player)) return;
+        const audio = player.audio;
+        if (audio) {
+            audio.dataset.hazePlayerState = state;
+        }
+        setPlayerStatus(feedId, message);
+    }, WEBRTC_MEDIA_EVENT_GRACE_MS);
 }
 
 function startWebRTCStatsMonitor(feedId, player) {
@@ -588,7 +609,12 @@ function startWebRTCStatsMonitor(feedId, player) {
                 }
             } else {
                 if ((packetsDelta > 0 || !previous) && player.audio) {
+                    if (packetsDelta > 0 || snapshot.packetsReceived > 0) {
+                        player.lastPacketAt = Date.now();
+                    }
                     player.audio.dataset.hazeTrackMuted = '0';
+                    clearPlayerTimer(player, 'trackMuteTimer');
+                    clearPlayerTimer(player, 'mediaEventTimer');
                 }
                 if (player.stagnantStatsPolls > 0 && isActivePlayer(feedId, player)) {
                     setHealthyWebRTCStatus(feedId, player);
@@ -613,6 +639,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     clearPlayerTimer(player, 'trackMuteTimer');
     clearPlayerTimer(player, 'connectionStateTimer');
     clearPlayerTimer(player, 'disconnectReconnectTimer');
+    clearPlayerTimer(player, 'mediaEventTimer');
     stopWebRTCStatsMonitor(player);
     player.trackAttached = false;
     player.connected = false;
@@ -791,8 +818,10 @@ async function startFeedWebRTC(feedId) {
         trackMuteTimer: null,
         connectionStateTimer: null,
         disconnectReconnectTimer: null,
+        mediaEventTimer: null,
         statsPollTimer: null,
         lastStats: null,
+        lastPacketAt: 0,
         stagnantStatsPolls: 0,
         missingStatsPolls: 0,
         reconnectTimer: null,
@@ -812,20 +841,21 @@ async function startFeedWebRTC(feedId) {
     audio.dataset.hazeTrackAttached = '0';
     audio.onplaying = () => {
         if (isActivePlayer(feedId, player)) {
+            clearPlayerTimer(player, 'mediaEventTimer');
             audio.dataset.hazePlayerState = 'playing';
             setPlayerStatus(feedId, 'Playing');
         }
     };
     audio.onwaiting = () => {
         if (isActivePlayer(feedId, player)) {
-            audio.dataset.hazePlayerState = 'waiting';
-            setPlayerStatus(feedId, 'Buffering...');
+            if (hasRecentWebRTCPackets(player)) return;
+            scheduleWebRTCMediaEventStatus(feedId, player, 'waiting', 'Buffering...');
         }
     };
     audio.onstalled = () => {
         if (isActivePlayer(feedId, player)) {
-            audio.dataset.hazePlayerState = 'stalled';
-            setPlayerStatus(feedId, 'Audio stalled');
+            if (hasRecentWebRTCPackets(player)) return;
+            scheduleWebRTCMediaEventStatus(feedId, player, 'stalled', 'Audio stalled');
         }
     };
     audio.onerror = () => {
@@ -859,12 +889,19 @@ async function startFeedWebRTC(feedId) {
         currentAudio.dataset.hazeTrackState = event.track.readyState || '';
         event.track.onmute = () => {
             if (isActivePlayer(feedId, player)) {
-                currentAudio.dataset.hazeTrackMuted = '1';
+                currentAudio.dataset.hazeTrackRawMuted = '1';
                 clearPlayerTimer(player, 'trackMuteTimer');
+                player.trackMuteTimer = window.setTimeout(() => {
+                    player.trackMuteTimer = null;
+                    if (isActivePlayer(feedId, player) && !hasRecentWebRTCPackets(player)) {
+                        currentAudio.dataset.hazeTrackMuted = '1';
+                    }
+                }, WEBRTC_MEDIA_EVENT_GRACE_MS);
             }
         };
         event.track.onunmute = () => {
             if (isActivePlayer(feedId, player)) {
+                currentAudio.dataset.hazeTrackRawMuted = '0';
                 currentAudio.dataset.hazeTrackMuted = '0';
                 clearPlayerTimer(player, 'trackMuteTimer');
             }
@@ -1062,6 +1099,7 @@ function stopFeed(feedId, { silent = false } = {}) {
         clearPlayerTimer(player, 'trackMuteTimer');
         clearPlayerTimer(player, 'connectionStateTimer');
         clearPlayerTimer(player, 'disconnectReconnectTimer');
+        clearPlayerTimer(player, 'mediaEventTimer');
         clearPlayerTimer(player, 'reconnectTimer');
         player.reconnectPending = false;
         stopWebRTCStatsMonitor(player);
