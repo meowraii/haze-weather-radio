@@ -73,9 +73,6 @@ func (c webRTCAudioCodec) String() string {
 }
 
 func defaultWebRTCAudioCodec() webRTCAudioCodec {
-	if opusBackendAvailable() {
-		return webRTCAudioOpus
-	}
 	return webRTCAudioG722
 }
 
@@ -514,14 +511,14 @@ func preferredWebRTCAudioCodec(offerSDP string, options WebRTCAnswerOptions) (we
 	if options.RequireOpus {
 		return requiredWebRTCAudioCodec(upper, webRTCAudioOpus)
 	}
-	if opusBackendAvailable() && strings.Contains(upper, "OPUS/48000") {
-		return webRTCAudioOpus, nil
-	}
 	if !options.DisableG722 && (strings.Contains(upper, "G722/8000") || strings.Contains(upper, " G722")) {
 		return webRTCAudioG722, nil
 	}
 	if strings.Contains(upper, "PCMU/8000") {
 		return webRTCAudioPCMU, nil
+	}
+	if opusBackendAvailable() && strings.Contains(upper, "OPUS/48000") {
+		return webRTCAudioOpus, nil
 	}
 	return webRTCAudioPCMU, nil
 }
