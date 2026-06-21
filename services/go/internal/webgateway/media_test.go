@@ -1331,6 +1331,18 @@ func TestMediaHubKeepsRTPContinuousAfterPublishedPCMStops(t *testing.T) {
 }
 
 func TestMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T) {
+	assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t, "pcmu", webRTCAudioPCMU)
+}
+
+func TestMediaHubMaintainsOpusRTPCadenceThroughSourceJitter(t *testing.T) {
+	if !opusBackendAvailable() {
+		t.Skip("native Opus encoder is not available")
+	}
+	assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t, "opus", webRTCAudioOpus)
+}
+
+func assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T, preferredCodec string, codec webRTCAudioCodec) {
+	t.Helper()
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
 	if err != nil {
@@ -1355,9 +1367,12 @@ func TestMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-gatheringComplete
-	answer, err := hub.AnswerWithOptions(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP, WebRTCAnswerOptions{PreferredCodec: "pcmu"})
+	answer, err := hub.AnswerWithOptions(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP, WebRTCAnswerOptions{PreferredCodec: preferredCodec})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if answer.Codec != codec {
+		t.Fatalf("answer codec = %s, want %s", answer.Codec, codec)
 	}
 	if err := offerPeer.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer.SDP}); err != nil {
 		t.Fatal(err)
@@ -1379,14 +1394,15 @@ func TestMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T) {
 	}()
 
 	var previousTimestamp uint32
+	wantDelta := rtpTimestampStep(codec)
 	for i := 0; i < 24; i++ {
 		timestamp, payloadLength := waitForRTPPacketInfo(t, track)
 		if payloadLength == 0 {
 			t.Fatal("RTP payload must not be empty under source jitter")
 		}
 		if i > 0 {
-			if delta := timestamp - previousTimestamp; delta != uint32(webrtcRTPClockRate/50) {
-				t.Fatalf("RTP timestamp delta under source jitter = %d, want %d", delta, webrtcRTPClockRate/50)
+			if delta := timestamp - previousTimestamp; delta != wantDelta {
+				t.Fatalf("RTP timestamp delta under source jitter = %d, want %d", delta, wantDelta)
 			}
 		}
 		previousTimestamp = timestamp
