@@ -1119,6 +1119,30 @@
             }
         }
 
+        function bannerAudioElement() {
+            if (state.audioElement) {
+                return state.audioElement;
+            }
+            let audio = document.getElementById('bannerWebRTCAudio');
+            if (!audio) {
+                audio = document.createElement('audio');
+                audio.id = 'bannerWebRTCAudio';
+                audio.setAttribute('aria-hidden', 'true');
+                audio.style.position = 'fixed';
+                audio.style.width = '1px';
+                audio.style.height = '1px';
+                audio.style.opacity = '0';
+                audio.style.pointerEvents = 'none';
+                document.body.appendChild(audio);
+            }
+            audio.autoplay = true;
+            audio.playsInline = true;
+            audio.muted = false;
+            audio.volume = 1;
+            state.audioElement = audio;
+            return audio;
+        }
+
         function closeAudioStream() {
             if (state.audioReconnectTimer) {
                 window.clearTimeout(state.audioReconnectTimer);
@@ -1144,7 +1168,7 @@
             if (state.audioElement) {
                 state.audioElement.pause();
                 state.audioElement.srcObject = null;
-                state.audioElement = null;
+                state.audioElement.removeAttribute('src');
             }
         }
 
@@ -1313,10 +1337,14 @@
 
             const pc = new RTCPeerConnection();
             state.audioPeer = pc;
-            const audio = new Audio();
+            const audio = bannerAudioElement();
+            audio.pause();
+            audio.srcObject = null;
+            audio.removeAttribute('src');
             audio.autoplay = true;
             audio.playsInline = true;
-            state.audioElement = audio;
+            audio.muted = false;
+            audio.volume = 1;
 
             pc.addTransceiver('audio', { direction: 'recvonly' });
             pc.ontrack = (event) => {
