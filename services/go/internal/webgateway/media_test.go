@@ -1337,11 +1337,15 @@ func TestMediaHubStreamsIdleRTPContinuously(t *testing.T) {
 	var previousSequence uint16
 	var previousTimestamp uint32
 	for i := 0; i < 8; i++ {
-		sequence, timestamp, payloadLength := waitForRTPPacketHeaderInfo(t, track)
+		header := waitForRTPPacketHeaderInfo(t, track)
+		sequence, timestamp, payloadLength := header.SequenceNumber, header.Timestamp, header.PayloadLength
 		if payloadLength == 0 {
 			t.Fatal("idle RTP payload must not be empty")
 		}
 		if i > 0 {
+			if header.Marker {
+				t.Fatal("idle RTP marker bit should only be set on stream startup")
+			}
 			if delta := sequence - previousSequence; delta != 1 {
 				t.Fatalf("RTP sequence delta = %d, want 1", delta)
 			}
@@ -2092,13 +2096,25 @@ func waitForRTPPacketInfo(t *testing.T, track *webrtc.TrackRemote) (uint32, int)
 	return packet.Timestamp, len(packet.Payload)
 }
 
-func waitForRTPPacketHeaderInfo(t *testing.T, track *webrtc.TrackRemote) (uint16, uint32, int) {
+type rtpPacketHeaderInfo struct {
+	SequenceNumber uint16
+	Timestamp      uint32
+	Marker         bool
+	PayloadLength  int
+}
+
+func waitForRTPPacketHeaderInfo(t *testing.T, track *webrtc.TrackRemote) rtpPacketHeaderInfo {
 	t.Helper()
 	packet, _, err := track.ReadRTP()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return packet.SequenceNumber, packet.Timestamp, len(packet.Payload)
+	return rtpPacketHeaderInfo{
+		SequenceNumber: packet.SequenceNumber,
+		Timestamp:      packet.Timestamp,
+		Marker:         packet.Marker,
+		PayloadLength:  len(packet.Payload),
+	}
 }
 
 func waitForRTPPacketPayloadType(t *testing.T, track *webrtc.TrackRemote) (uint8, int) {

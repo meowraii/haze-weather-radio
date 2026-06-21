@@ -41,6 +41,7 @@ let activeAlertTab = 'accepted';
 const feedPlayers = new Map();
 const feedPreferences = new Map();
 const feedCodecFallbacks = new Map();
+const feedReconnectBackoffs = new Map();
 window.hazeFeedPlayers = feedPlayers;
 
 function recordWebRTCEvent(feedId, event, details = {}) {
@@ -650,6 +651,7 @@ function attachFeedControls() {
         select.addEventListener('change', () => {
             const feedId = select.dataset.feedMode;
             feedCodecFallbacks.delete(feedId);
+            feedReconnectBackoffs.delete(feedId);
             setFeedMode(feedId, select.value);
             stopFeed(feedId, { silent: true });
             setPlayerStatus(feedId, select.value === 'http' ? 'HTTP selected' : 'WebRTC selected');
@@ -664,6 +666,7 @@ function attachFeedControls() {
             prefs.codec = select.value;
             feedPreferences.set(feedId, prefs);
             feedCodecFallbacks.delete(feedId);
+            feedReconnectBackoffs.delete(feedId);
             stopFeed(feedId, { silent: true });
             setPlayerStatus(feedId, 'Codec changed');
         });
@@ -947,6 +950,8 @@ function shouldReconnectWebRTCForMissingPackets(player) {
 function markWebRTCPacketsRecent(feedId, player) {
     if (!player) return;
     player.lastPacketAt = Date.now();
+    player.reconnectAttempts = 0;
+    feedReconnectBackoffs.delete(String(feedId || ''));
     cancelWebRTCReconnect(player);
     clearPlayerTimer(player, 'connectionStateTimer');
     clearPlayerTimer(player, 'disconnectReconnectTimer');
@@ -1198,9 +1203,11 @@ function scheduleWebRTCReconnect(feedId, player, reason = 'Reconnecting audio...
         last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
         packet_source_age_ms: webRTCPacketSourceAgeMS(player),
     });
-    const attempts = Math.max(0, Number(player.reconnectAttempts || 0));
+    const backoffKey = String(feedId || '');
+    const attempts = Math.max(0, Number(feedReconnectBackoffs.get(backoffKey) ?? player.reconnectAttempts ?? 0));
     const delay = Math.min(WEBRTC_RECONNECT_BASE_DELAY_MS * (2 ** attempts), WEBRTC_RECONNECT_MAX_DELAY_MS);
     player.reconnectAttempts = attempts + 1;
+    feedReconnectBackoffs.set(backoffKey, player.reconnectAttempts);
     player.reconnectPending = true;
     player.reconnectTimer = window.setTimeout(() => {
         player.reconnectTimer = null;
@@ -1379,7 +1386,7 @@ async function startFeedWebRTC(feedId) {
         stagnantStatsPolls: 0,
         missingStatsPolls: 0,
         reconnectTimer: null,
-        reconnectAttempts: 0,
+        reconnectAttempts: Math.max(0, Number(feedReconnectBackoffs.get(feedId) || 0)),
         reconnectPending: false,
         codecFallbackApplied: feedCodecFallbacks.has(feedId),
         trackMutedReported: false,
@@ -1648,6 +1655,9 @@ async function resumeFeedAudio(feedId, player) {
 
 function stopFeed(feedId, { silent = false } = {}) {
     feedId = String(feedId || '');
+    if (!silent) {
+        feedReconnectBackoffs.delete(feedId);
+    }
     const player = feedPlayers.get(feedId);
     if (player) {
         player.stopping = true;
