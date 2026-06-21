@@ -74,6 +74,12 @@ func TestHealth(t *testing.T) {
 	if _, ok := payload["webrtc_peers"].([]any); !ok {
 		t.Fatalf("missing webrtc_peers: %#v", payload)
 	}
+	if _, ok := payload["webrtc_source_count"].(float64); !ok {
+		t.Fatalf("missing webrtc_source_count: %#v", payload)
+	}
+	if _, ok := payload["webrtc_sources"].([]any); !ok {
+		t.Fatalf("missing webrtc_sources: %#v", payload)
+	}
 }
 
 func TestAdminRedirectsWithoutSession(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"net/http/httptest"
 	"strings"
@@ -675,6 +676,48 @@ func TestWebRTCFrameSourcePrimesIdleFrame(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("timed out waiting for primed idle frame")
+	}
+}
+
+func TestWebRTCFrameSourceSnapshotsExposeFrameMix(t *testing.T) {
+	hub := newMemoryMediaHub()
+	frames, unsubscribe, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioPCMU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	_ = waitForWebRTCFrame(t, frames)
+	hub.publish(PCMChunk{
+		FeedID:     "sk-0001",
+		SampleRate: 48000,
+		Channels:   1,
+		Duration:   20 * time.Millisecond,
+		Data:       sinePCM(960, 1000, 48000, 8000),
+	})
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for frame source diagnostics")
+		default:
+		}
+		snapshots := hub.WebRTCFrameSourceSnapshots()
+		if len(snapshots) != 1 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		snapshot := snapshots[0]
+		if fmt.Sprint(snapshot["feed_id"]) != "sk-0001" || fmt.Sprint(snapshot["codec"]) != "pcmu" {
+			t.Fatalf("unexpected snapshot identity: %#v", snapshot)
+		}
+		if totalReal, _ := snapshot["total_real"].(uint64); totalReal > 0 {
+			if fmt.Sprint(snapshot["last_kind"]) == "" {
+				t.Fatalf("missing last_kind in snapshot: %#v", snapshot)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

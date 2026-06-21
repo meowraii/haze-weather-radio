@@ -125,6 +125,28 @@ type webRTCPeerSnapshot struct {
 	LastWriteAt          time.Time
 }
 
+type webRTCFrameSourceSnapshot struct {
+	FeedID         string
+	Codec          string
+	StartedAt      time.Time
+	UpdatedAt      time.Time
+	Subscribers    int
+	QueuedFrames   int
+	Produced       uint64
+	Real           uint64
+	Concealed      uint64
+	Idle           uint64
+	Dropped        uint64
+	TotalProduced  uint64
+	TotalReal      uint64
+	TotalConcealed uint64
+	TotalIdle      uint64
+	TotalDropped   uint64
+	LastKind       string
+	LastPayload    int
+	LastFrameAt    time.Time
+}
+
 type opusFrameEncoder interface {
 	Encode([]int16) ([]byte, error)
 }
@@ -212,6 +234,49 @@ func (h *MediaHub) WebRTCPeerSnapshots() []map[string]any {
 			"last_payload_bytes":         snapshot.LastPayloadBytes,
 			"last_write_at":              snapshot.LastWriteAt,
 			"last_write_age_ms":          lastWriteAgeMS,
+		})
+	}
+	return out
+}
+
+func (h *MediaHub) WebRTCFrameSourceSnapshots() []map[string]any {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	sources := make([]*webRTCFrameSource, 0, len(h.frameSources))
+	for _, source := range h.frameSources {
+		sources = append(sources, source)
+	}
+	h.mu.Unlock()
+	out := make([]map[string]any, 0, len(sources))
+	for _, source := range sources {
+		snapshot := source.snapshot()
+		lastFrameAgeMS := int64(-1)
+		if !snapshot.LastFrameAt.IsZero() {
+			lastFrameAgeMS = time.Since(snapshot.LastFrameAt).Milliseconds()
+		}
+		out = append(out, map[string]any{
+			"feed_id":            snapshot.FeedID,
+			"codec":              snapshot.Codec,
+			"started_at":         snapshot.StartedAt,
+			"updated_at":         snapshot.UpdatedAt,
+			"subscribers":        snapshot.Subscribers,
+			"queued_frames":      snapshot.QueuedFrames,
+			"interval_produced":  snapshot.Produced,
+			"interval_real":      snapshot.Real,
+			"interval_concealed": snapshot.Concealed,
+			"interval_idle":      snapshot.Idle,
+			"interval_dropped":   snapshot.Dropped,
+			"total_produced":     snapshot.TotalProduced,
+			"total_real":         snapshot.TotalReal,
+			"total_concealed":    snapshot.TotalConcealed,
+			"total_idle":         snapshot.TotalIdle,
+			"total_dropped":      snapshot.TotalDropped,
+			"last_kind":          snapshot.LastKind,
+			"last_payload_bytes": snapshot.LastPayload,
+			"last_frame_at":      snapshot.LastFrameAt,
+			"last_frame_age_ms":  lastFrameAgeMS,
 		})
 	}
 	return out
@@ -826,17 +891,18 @@ type webRTCFrameSourceKey struct {
 }
 
 type webRTCFrameSource struct {
-	hub       *MediaHub
-	key       webRTCFrameSourceKey
-	encoder   opusFrameEncoder
-	mu        sync.Mutex
-	subs      map[chan webRTCFrame]struct{}
-	lastFrame webRTCFrame
-	sequence  uint64
-	stopCh    chan struct{}
-	stopOnce  sync.Once
-	closed    bool
-	idleEpoch uint64
+	hub            *MediaHub
+	key            webRTCFrameSourceKey
+	encoder        opusFrameEncoder
+	mu             sync.Mutex
+	subs           map[chan webRTCFrame]struct{}
+	sourceSnapshot webRTCFrameSourceSnapshot
+	lastFrame      webRTCFrame
+	sequence       uint64
+	stopCh         chan struct{}
+	stopOnce       sync.Once
+	closed         bool
+	idleEpoch      uint64
 }
 
 type webRTCFrame struct {
@@ -853,12 +919,21 @@ const (
 )
 
 type webRTCFrameSourceStats struct {
-	produced   uint64
-	real       uint64
-	concealed  uint64
-	idle       uint64
-	dropped    uint64
-	lastReport time.Time
+	produced       uint64
+	real           uint64
+	concealed      uint64
+	idle           uint64
+	dropped        uint64
+	totalProduced  uint64
+	totalReal      uint64
+	totalConcealed uint64
+	totalIdle      uint64
+	totalDropped   uint64
+	lastKind       webRTCFrameKind
+	lastPayload    int
+	lastFrameAt    time.Time
+	startedAt      time.Time
+	lastReport     time.Time
 }
 
 func (h *MediaHub) SubscribeWebRTCFrames(feedID string, codec webRTCAudioCodec) (<-chan webRTCFrame, func(), error) {
@@ -900,7 +975,13 @@ func (h *MediaHub) webRTCFrameSource(feedID string, codec webRTCAudioCodec) (*we
 		key:     key,
 		encoder: encoder,
 		subs:    map[chan webRTCFrame]struct{}{},
-		stopCh:  make(chan struct{}),
+		sourceSnapshot: webRTCFrameSourceSnapshot{
+			FeedID:    key.feedID,
+			Codec:     key.codec.String(),
+			StartedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+		stopCh: make(chan struct{}),
 	}
 
 	h.mu.Lock()
@@ -1026,7 +1107,7 @@ func (s *webRTCFrameSource) run() {
 	opusIdle := opusIdleFrameSamples()
 	pcmuIdle := pcmuIdleFrame()
 	loggedFirstFrame := false
-	stats := webRTCFrameSourceStats{lastReport: time.Now()}
+	stats := webRTCFrameSourceStats{startedAt: time.Now(), lastReport: time.Now()}
 
 	appendChunk := func(chunk PCMChunk) {
 		compactQueuedFrames(&frameQueue, &frameHead)
@@ -1058,8 +1139,10 @@ func (s *webRTCFrameSource) run() {
 			return true
 		}
 		dropped, subscribers := s.broadcast(frame)
-		stats.record(kind, dropped)
-		s.maybeLogDiagnostics(&stats, subscribers, queuedFrameCount(frameQueue, frameHead))
+		stats.record(kind, dropped, len(frame))
+		queuedFrames := queuedFrameCount(frameQueue, frameHead)
+		s.recordDiagnosticsSnapshot(&stats, subscribers, queuedFrames)
+		s.maybeLogDiagnostics(&stats, subscribers, queuedFrames)
 		if !loggedFirstFrame {
 			log.Printf("media bridge WebRTC frame source started for feed %s codec=%s (%d bytes)", s.key.feedID, s.key.codec, len(frame))
 			loggedFirstFrame = true
@@ -1132,18 +1215,73 @@ func (s *webRTCFrameSource) maybeLogDiagnostics(stats *webRTCFrameSourceStats, s
 	stats.resetInterval()
 }
 
-func (s *webRTCFrameSourceStats) record(kind webRTCFrameKind, dropped int) {
+func (s *webRTCFrameSource) recordDiagnosticsSnapshot(stats *webRTCFrameSourceStats, subscribers int, queuedFrames int) {
+	now := time.Now()
+	s.mu.Lock()
+	if s.sourceSnapshot.StartedAt.IsZero() {
+		s.sourceSnapshot.StartedAt = stats.startedAt
+	}
+	s.sourceSnapshot.UpdatedAt = now
+	s.sourceSnapshot.Subscribers = subscribers
+	s.sourceSnapshot.QueuedFrames = queuedFrames
+	s.sourceSnapshot.Produced = stats.produced
+	s.sourceSnapshot.Real = stats.real
+	s.sourceSnapshot.Concealed = stats.concealed
+	s.sourceSnapshot.Idle = stats.idle
+	s.sourceSnapshot.Dropped = stats.dropped
+	s.sourceSnapshot.TotalProduced = stats.totalProduced
+	s.sourceSnapshot.TotalReal = stats.totalReal
+	s.sourceSnapshot.TotalConcealed = stats.totalConcealed
+	s.sourceSnapshot.TotalIdle = stats.totalIdle
+	s.sourceSnapshot.TotalDropped = stats.totalDropped
+	s.sourceSnapshot.LastKind = stats.lastKind.String()
+	s.sourceSnapshot.LastPayload = stats.lastPayload
+	s.sourceSnapshot.LastFrameAt = stats.lastFrameAt
+	s.mu.Unlock()
+}
+
+func (s *webRTCFrameSource) snapshot() webRTCFrameSourceSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot := s.sourceSnapshot
+	snapshot.Subscribers = len(s.subs)
+	return snapshot
+}
+
+func (s *webRTCFrameSourceStats) record(kind webRTCFrameKind, dropped int, payloadBytes int) {
 	s.produced++
+	s.totalProduced++
+	s.lastKind = kind
+	s.lastPayload = payloadBytes
+	s.lastFrameAt = time.Now()
 	switch kind {
 	case webRTCFrameConcealed:
 		s.concealed++
+		s.totalConcealed++
 	case webRTCFrameIdle:
 		s.idle++
+		s.totalIdle++
 	default:
 		s.real++
+		s.totalReal++
 	}
 	if dropped > 0 {
-		s.dropped += uint64(dropped)
+		value := uint64(dropped)
+		s.dropped += value
+		s.totalDropped += value
+	}
+}
+
+func (k webRTCFrameKind) String() string {
+	switch k {
+	case webRTCFrameReal:
+		return "real"
+	case webRTCFrameConcealed:
+		return "concealed"
+	case webRTCFrameIdle:
+		return "idle"
+	default:
+		return "unknown"
 	}
 }
 
