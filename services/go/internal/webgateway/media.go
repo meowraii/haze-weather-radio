@@ -971,46 +971,77 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			}
 		})
 	})
-	ticker := time.NewTicker(webrtcFrameDuration)
-	defer ticker.Stop()
+	keepalive := time.NewTimer(webrtcFrameDuration)
+	defer keepalive.Stop()
 	var lastFrame []byte
+	writeFrame := func(frame []byte, skipped int) bool {
+		if len(frame) == 0 {
+			return true
+		}
+		lastFrame = frame
+		stats.recordSkipped(skipped)
+		writeStartedAt.Store(time.Now().UnixNano())
+		writeInFlight.Store(true)
+		err := track.WriteSample(media.Sample{Data: append([]byte(nil), frame...), Duration: webrtcFrameDuration})
+		writeInFlight.Store(false)
+		if err != nil {
+			stats.writeErrors++
+			log.Printf("media bridge WebRTC stream write failed feed=%s codec=%s skipped_frames=%d write_errors=%d: %v", feedID, codec, stats.skippedFrames, stats.writeErrors, err)
+			stallOnce.Do(func() {
+				unsubscribePeer()
+				if onWriteStall != nil {
+					onWriteStall()
+				}
+			})
+			return false
+		}
+		stats.written++
+		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
+		if !loggedWrite {
+			log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame))
+			loggedWrite = true
+		}
+		resetWebRTCTimer(keepalive, webrtcFrameDuration)
+		return true
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			frame, skipped, ok := latestWebRTCFrame(lastFrame, frames)
+		case frame, ok := <-frames:
 			if !ok {
 				return
 			}
 			if len(frame) == 0 {
 				continue
 			}
-			lastFrame = frame
-			stats.recordSkipped(skipped)
-			writeStartedAt.Store(time.Now().UnixNano())
-			writeInFlight.Store(true)
-			err := track.WriteSample(media.Sample{Data: append([]byte(nil), frame...), Duration: webrtcFrameDuration})
-			writeInFlight.Store(false)
-			if err != nil {
-				stats.writeErrors++
-				log.Printf("media bridge WebRTC stream write failed feed=%s codec=%s skipped_frames=%d write_errors=%d: %v", feedID, codec, stats.skippedFrames, stats.writeErrors, err)
-				stallOnce.Do(func() {
-					unsubscribePeer()
-					if onWriteStall != nil {
-						onWriteStall()
-					}
-				})
+			frame, skipped, ok := latestWebRTCFrame(frame, frames)
+			if !ok {
 				return
 			}
-			stats.written++
-			maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
-			if !loggedWrite {
-				log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame))
-				loggedWrite = true
+			if !writeFrame(frame, skipped) {
+				return
+			}
+		case <-keepalive.C:
+			if len(lastFrame) > 0 {
+				if !writeFrame(lastFrame, 0) {
+					return
+				}
+			} else {
+				resetWebRTCTimer(keepalive, webrtcFrameDuration)
 			}
 		}
 	}
+}
+
+func resetWebRTCTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
 }
 
 func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAudioCodec, inFlight *atomic.Bool, startedAt *atomic.Int64, timeout time.Duration, onTimeout func()) {

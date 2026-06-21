@@ -611,6 +611,48 @@ func TestMediaHubStreamsRTPToPeer(t *testing.T) {
 	}
 }
 
+func TestMediaHubStreamsIdleRTPWithoutPublishedPCM(t *testing.T) {
+	hub := newMemoryMediaHub()
+	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer offerPeer.Close()
+	tracks := make(chan *webrtc.TrackRemote, 1)
+	offerPeer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		tracks <- track
+	})
+	if _, err := offerPeer.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := offerPeer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatheringComplete := webrtc.GatheringCompletePromise(offerPeer)
+	if err := offerPeer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-gatheringComplete
+	answer, err := hub.Answer(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := offerPeer.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}); err != nil {
+		t.Fatal(err)
+	}
+
+	track := waitForRemoteTrack(t, tracks)
+	for i := 0; i < 3; i++ {
+		payload := waitForRTPPacket(t, track)
+		if len(payload) == 0 {
+			t.Fatal("idle RTP payload must not be empty")
+		}
+	}
+}
+
 func TestMediaHubPeerOutlivesOfferContext(t *testing.T) {
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
@@ -711,6 +753,26 @@ func waitForWebRTCFrame(t *testing.T, frames <-chan []byte) []byte {
 		t.Fatal("timed out waiting for WebRTC frame")
 		return nil
 	}
+}
+
+func waitForRemoteTrack(t *testing.T, tracks <-chan *webrtc.TrackRemote) *webrtc.TrackRemote {
+	t.Helper()
+	select {
+	case track := <-tracks:
+		return track
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for WebRTC track")
+		return nil
+	}
+}
+
+func waitForRTPPacket(t *testing.T, track *webrtc.TrackRemote) []byte {
+	t.Helper()
+	packet, _, err := track.ReadRTP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return packet.Payload
 }
 
 func waitForWebRTCFrameSources(hub *MediaHub, want int, timeout time.Duration) bool {
