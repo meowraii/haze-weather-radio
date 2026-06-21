@@ -323,7 +323,7 @@ func TestMediaHubSharesWebRTCFrameSourcePerFeedCodec(t *testing.T) {
 		t.Fatalf("frame source should stay alive for the remaining subscriber, got %d", sourceCount)
 	}
 	unsubscribeRight()
-	if !waitForWebRTCFrameSources(hub, 0, time.Second) {
+	if !waitForWebRTCFrameSources(hub, 0, 2*time.Second) {
 		t.Fatal("frame source was not removed after the final subscriber left")
 	}
 }
@@ -364,6 +364,34 @@ func TestWebRTCFrameSourceSeedsLateSubscriber(t *testing.T) {
 		}
 	case <-time.After(50 * time.Millisecond):
 		t.Fatal("timed out waiting for seeded frame")
+	}
+}
+
+func TestWebRTCFrameSourceReusesIdleSourceDuringGrace(t *testing.T) {
+	hub := newMemoryMediaHub()
+	_, unsubscribe, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioPCMU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := webRTCFrameSourceKey{feedID: "sk-0001", codec: webRTCAudioPCMU}
+	hub.mu.Lock()
+	first := hub.frameSources[key]
+	hub.mu.Unlock()
+	if first == nil {
+		t.Fatal("frame source was not registered")
+	}
+	unsubscribe()
+
+	_, unsubscribeAgain, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioPCMU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribeAgain()
+	hub.mu.Lock()
+	second := hub.frameSources[key]
+	hub.mu.Unlock()
+	if second != first {
+		t.Fatal("frame source should be reused during idle grace")
 	}
 }
 

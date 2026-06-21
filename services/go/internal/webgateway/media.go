@@ -22,25 +22,26 @@ import (
 )
 
 const (
-	opusSampleRate            = 48000
-	opusFrameSamples          = opusSampleRate / 50
-	g722SampleRate            = 16000
-	webrtcRTPClockRate        = 8000
-	pcmuSampleRate            = 8000
-	pcmuFrameSamples          = pcmuSampleRate / 50
-	webrtcChannels            = 1
-	opusRTPChannels           = 2
-	opusEncoderChannels       = 1
-	webrtcFrameDuration       = 20 * time.Millisecond
-	webrtcMaxQueuedFrames     = 10
-	webrtcResumeQueuedFrames  = 2
-	webrtcConcealmentFrames   = 6
-	feedIngressCapacity       = 4
-	g722FrameSamples          = g722SampleRate / 50
-	bridgeReconnectDelay      = 750 * time.Millisecond
-	webrtcDisconnectGrace     = 15 * time.Second
-	webrtcDiagnosticsInterval = 30 * time.Second
-	webrtcWriteTimeout        = 3 * time.Second
+	opusSampleRate             = 48000
+	opusFrameSamples           = opusSampleRate / 50
+	g722SampleRate             = 16000
+	webrtcRTPClockRate         = 8000
+	pcmuSampleRate             = 8000
+	pcmuFrameSamples           = pcmuSampleRate / 50
+	webrtcChannels             = 1
+	opusRTPChannels            = 2
+	opusEncoderChannels        = 1
+	webrtcFrameDuration        = 20 * time.Millisecond
+	webrtcMaxQueuedFrames      = 10
+	webrtcResumeQueuedFrames   = 2
+	webrtcConcealmentFrames    = 6
+	feedIngressCapacity        = 4
+	g722FrameSamples           = g722SampleRate / 50
+	bridgeReconnectDelay       = 750 * time.Millisecond
+	webrtcDisconnectGrace      = 15 * time.Second
+	webrtcDiagnosticsInterval  = 30 * time.Second
+	webrtcWriteTimeout         = 3 * time.Second
+	webrtcFrameSourceIdleGrace = 750 * time.Millisecond
 )
 
 type webRTCAudioCodec int
@@ -801,10 +802,27 @@ func (s *webRTCFrameSource) subscribe() (<-chan []byte, func(), bool) {
 			empty := len(s.subs) == 0
 			s.mu.Unlock()
 			if empty {
-				s.hub.removeWebRTCFrameSource(s)
+				s.hub.removeWebRTCFrameSourceAfter(s, webrtcFrameSourceIdleGrace)
 			}
 		})
 	}, true
+}
+
+func (h *MediaHub) removeWebRTCFrameSourceAfter(source *webRTCFrameSource, delay time.Duration) {
+	if delay <= 0 {
+		h.removeWebRTCFrameSource(source)
+		return
+	}
+	timer := time.NewTimer(delay)
+	go func() {
+		defer timer.Stop()
+		select {
+		case <-source.stopCh:
+			return
+		case <-timer.C:
+			h.removeWebRTCFrameSource(source)
+		}
+	}()
 }
 
 func (h *MediaHub) removeWebRTCFrameSource(source *webRTCFrameSource) {
