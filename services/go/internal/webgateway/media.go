@@ -45,6 +45,7 @@ const (
 	webrtcWriteTimeout         = 3 * time.Second
 	webrtcFrameSourceIdleGrace = 15 * time.Second
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
+	webrtcSourceFallbackDelay  = 2 * webrtcFrameDuration
 )
 
 type webRTCAudioCodec int
@@ -1180,30 +1181,38 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		fillerFramesSinceSource++
 		return true
 	}
-	writeInitialFrame := func() bool {
+	writeInitialFrame := func() (bool, bool) {
 		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
 		if !ok {
 			failPeer("frame_source_closed")
-			return false
+			return false, false
 		}
 		if !hasFrame {
-			return writeFillerFrame()
+			return writeFillerFrame(), false
 		}
-		return writeSourceFrame(frame, drainSkipped)
+		return writeSourceFrame(frame, drainSkipped), true
 	}
-	if !writeInitialFrame() {
+	ok, initialSource := writeInitialFrame()
+	if !ok {
 		return
 	}
-	fillerTimer := time.NewTimer(webrtcFrameDuration)
+	initialFillerDelay := webrtcFrameDuration
+	if initialSource {
+		initialFillerDelay = webrtcSourceFallbackDelay
+	}
+	fillerTimer := time.NewTimer(initialFillerDelay)
 	defer fillerTimer.Stop()
-	resetFillerTimer := func() {
+	resetFillerTimer := func(delay time.Duration) {
+		if delay <= 0 {
+			delay = webrtcFrameDuration
+		}
 		if !fillerTimer.Stop() {
 			select {
 			case <-fillerTimer.C:
 			default:
 			}
 		}
-		fillerTimer.Reset(webrtcFrameDuration)
+		fillerTimer.Reset(delay)
 	}
 	for {
 		select {
@@ -1222,7 +1231,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			if !writeSourceFrame(latest, skipped) {
 				return
 			}
-			resetFillerTimer()
+			resetFillerTimer(webrtcSourceFallbackDelay)
 		case <-fillerTimer.C:
 			if !writeFillerFrame() {
 				return
