@@ -364,8 +364,18 @@ func TestMediaHubSharesWebRTCFrameSourcePerFeedCodec(t *testing.T) {
 		t.Fatalf("frame source should stay alive for the remaining subscriber, got %d", sourceCount)
 	}
 	unsubscribeRight()
+	hub.mu.Lock()
+	source := hub.frameSources[webRTCFrameSourceKey{feedID: "sk-0001", codec: webRTCAudioG722}]
+	hub.mu.Unlock()
+	if source == nil {
+		t.Fatal("frame source disappeared before idle cleanup")
+	}
+	source.mu.Lock()
+	idleEpoch := source.idleEpoch
+	source.mu.Unlock()
+	hub.removeWebRTCFrameSourceIfIdle(source, idleEpoch)
 	if !waitForWebRTCFrameSources(hub, 0, 2*time.Second) {
-		t.Fatal("frame source was not removed after the final subscriber left")
+		t.Fatal("frame source was not removed by matching idle cleanup")
 	}
 }
 
@@ -433,6 +443,46 @@ func TestWebRTCFrameSourceReusesIdleSourceDuringGrace(t *testing.T) {
 	hub.mu.Unlock()
 	if second != first {
 		t.Fatal("frame source should be reused during idle grace")
+	}
+}
+
+func TestWebRTCFrameSourceIgnoresStaleIdleCleanup(t *testing.T) {
+	hub := newMemoryMediaHub()
+	_, unsubscribe, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioPCMU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := webRTCFrameSourceKey{feedID: "sk-0001", codec: webRTCAudioPCMU}
+	hub.mu.Lock()
+	source := hub.frameSources[key]
+	hub.mu.Unlock()
+	if source == nil {
+		t.Fatal("frame source was not registered")
+	}
+	unsubscribe()
+	source.mu.Lock()
+	staleEpoch := source.idleEpoch
+	source.mu.Unlock()
+
+	_, unsubscribeAgain, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioPCMU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsubscribeAgain()
+	hub.removeWebRTCFrameSourceIfIdle(source, staleEpoch)
+	hub.mu.Lock()
+	stillRegistered := hub.frameSources[key] == source
+	hub.mu.Unlock()
+	if !stillRegistered {
+		t.Fatal("stale idle cleanup removed a reused frame source")
+	}
+
+	source.mu.Lock()
+	currentEpoch := source.idleEpoch
+	source.mu.Unlock()
+	hub.removeWebRTCFrameSourceIfIdle(source, currentEpoch)
+	if !waitForWebRTCFrameSources(hub, 0, 2*time.Second) {
+		t.Fatal("current idle cleanup did not remove the frame source")
 	}
 }
 

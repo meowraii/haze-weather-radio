@@ -42,7 +42,7 @@ const (
 	webrtcDisconnectGrace      = 15 * time.Second
 	webrtcDiagnosticsInterval  = 30 * time.Second
 	webrtcWriteTimeout         = 3 * time.Second
-	webrtcFrameSourceIdleGrace = 750 * time.Millisecond
+	webrtcFrameSourceIdleGrace = 15 * time.Second
 )
 
 type webRTCAudioCodec int
@@ -709,6 +709,7 @@ type webRTCFrameSource struct {
 	stopCh    chan struct{}
 	stopOnce  sync.Once
 	closed    bool
+	idleEpoch uint64
 }
 
 type webRTCFrameKind int
@@ -790,6 +791,7 @@ func (s *webRTCFrameSource) subscribe() (<-chan []byte, func(), bool) {
 		s.mu.Unlock()
 		return nil, nil, false
 	}
+	s.idleEpoch++
 	s.subs[ch] = struct{}{}
 	if len(s.lastFrame) > 0 {
 		ch <- append([]byte(nil), s.lastFrame...)
@@ -798,20 +800,25 @@ func (s *webRTCFrameSource) subscribe() (<-chan []byte, func(), bool) {
 	var once sync.Once
 	return ch, func() {
 		once.Do(func() {
+			var idleEpoch uint64
 			s.mu.Lock()
 			delete(s.subs, ch)
 			empty := len(s.subs) == 0
+			if empty {
+				s.idleEpoch++
+				idleEpoch = s.idleEpoch
+			}
 			s.mu.Unlock()
 			if empty {
-				s.hub.removeWebRTCFrameSourceAfter(s, webrtcFrameSourceIdleGrace)
+				s.hub.removeWebRTCFrameSourceAfter(s, webrtcFrameSourceIdleGrace, idleEpoch)
 			}
 		})
 	}, true
 }
 
-func (h *MediaHub) removeWebRTCFrameSourceAfter(source *webRTCFrameSource, delay time.Duration) {
+func (h *MediaHub) removeWebRTCFrameSourceAfter(source *webRTCFrameSource, delay time.Duration, idleEpoch uint64) {
 	if delay <= 0 {
-		h.removeWebRTCFrameSource(source)
+		h.removeWebRTCFrameSourceIfIdle(source, idleEpoch)
 		return
 	}
 	timer := time.NewTimer(delay)
@@ -821,16 +828,21 @@ func (h *MediaHub) removeWebRTCFrameSourceAfter(source *webRTCFrameSource, delay
 		case <-source.stopCh:
 			return
 		case <-timer.C:
-			h.removeWebRTCFrameSource(source)
+			h.removeWebRTCFrameSourceIfIdle(source, idleEpoch)
 		}
 	}()
 }
 
 func (h *MediaHub) removeWebRTCFrameSource(source *webRTCFrameSource) {
+	h.removeWebRTCFrameSourceIfIdle(source, 0)
+}
+
+func (h *MediaHub) removeWebRTCFrameSourceIfIdle(source *webRTCFrameSource, idleEpoch uint64) {
 	shouldStop := false
 	h.mu.Lock()
 	source.mu.Lock()
-	if h.frameSources[source.key] == source && len(source.subs) == 0 {
+	epochMatches := idleEpoch == 0 || source.idleEpoch == idleEpoch
+	if epochMatches && h.frameSources[source.key] == source && len(source.subs) == 0 {
 		delete(h.frameSources, source.key)
 		source.closed = true
 		shouldStop = true
