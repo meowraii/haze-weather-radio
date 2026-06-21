@@ -506,9 +506,13 @@ func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 9\r\na=rtpmap:9 G722/8000\r\n", WebRTCAnswerOptions{}); err != nil || got != webRTCAudioG722 {
 		t.Fatal("G.722-capable offers should use G.722")
 	}
-	got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\n", WebRTCAnswerOptions{})
+	got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9 0\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{})
+	if err != nil || got != webRTCAudioPCMU {
+		t.Fatal("auto codec should prefer PCMU for receiver stability")
+	}
+	got, err = preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\n", WebRTCAnswerOptions{})
 	if err != nil || got != webRTCAudioG722 {
-		t.Fatal("auto codec should prefer G.722 for low-latency radio streams")
+		t.Fatal("auto codec should use G.722 when PCMU is unavailable")
 	}
 	got, err = preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n", WebRTCAnswerOptions{})
 	if opusBackendAvailable() && (err != nil || got != webRTCAudioOpus) {
@@ -691,7 +695,7 @@ func TestMediaHubAnswersAudioOffer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCodec := "G722"
+	wantCodec := "PCMU"
 	if !strings.Contains(answer, wantCodec) {
 		t.Fatalf("answer did not include %s: %s", wantCodec, answer)
 	}
@@ -700,7 +704,7 @@ func TestMediaHubAnswersAudioOffer(t *testing.T) {
 	}
 }
 
-func TestMediaHubReceiverAnswerUsesG722WhenAvailable(t *testing.T) {
+func TestMediaHubReceiverAnswerUsesPCMUWhenAvailable(t *testing.T) {
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
 	if err != nil {
@@ -726,7 +730,7 @@ func TestMediaHubReceiverAnswerUsesG722WhenAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCodec := "G722"
+	wantCodec := "PCMU"
 	if !strings.Contains(answer, wantCodec) {
 		t.Fatalf("receiver answer should include %s: %s", wantCodec, answer)
 	}

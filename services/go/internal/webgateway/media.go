@@ -334,6 +334,9 @@ func preferredWebRTCAudioCodec(offerSDP string, options WebRTCAnswerOptions) (we
 	if options.RequireOpus {
 		return requiredWebRTCAudioCodec(upper, webRTCAudioOpus)
 	}
+	if strings.Contains(upper, "PCMU/8000") {
+		return webRTCAudioPCMU, nil
+	}
 	if !options.DisableG722 && (strings.Contains(upper, "G722/8000") || strings.Contains(upper, " G722")) {
 		return webRTCAudioG722, nil
 	}
