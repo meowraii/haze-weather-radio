@@ -147,6 +147,13 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 	var disconnectMu sync.Mutex
 	var disconnectTimer *time.Timer
 	var cleanup func()
+	mediaReady := make(chan struct{})
+	var mediaReadyOnce sync.Once
+	markMediaReady := func() {
+		mediaReadyOnce.Do(func() {
+			close(mediaReady)
+		})
+	}
 	stopDisconnectTimer := func() {
 		disconnectMu.Lock()
 		defer disconnectMu.Unlock()
@@ -219,6 +226,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		}
 		switch state {
 		case webrtc.PeerConnectionStateConnected:
+			markMediaReady()
 			stopDisconnectTimer()
 		case webrtc.PeerConnectionStateDisconnected:
 			scheduleDisconnectCleanup()
@@ -272,7 +280,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		cleanup()
 		return "", err
 	}
-	go h.streamWebRTCFrames(peerCtx, feedID, codec, track, frames, unsubscribeFrames, cleanup)
+	go h.streamWebRTCFrames(peerCtx, feedID, codec, track, frames, unsubscribeFrames, mediaReady, cleanup)
 	return localDescription.SDP, nil
 }
 
@@ -971,7 +979,7 @@ func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 	return dropped, len(s.subs)
 }
 
-func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, track *webrtc.TrackLocalStaticSample, frames <-chan []byte, unsubscribe func(), onWriteStall func()) {
+func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, track *webrtc.TrackLocalStaticSample, frames <-chan []byte, unsubscribe func(), ready <-chan struct{}, onWriteStall func()) {
 	var unsubscribeOnce sync.Once
 	unsubscribePeer := func() {
 		if unsubscribe != nil {
@@ -979,6 +987,13 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		}
 	}
 	defer unsubscribePeer()
+	if ready != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ready:
+		}
+	}
 	loggedWrite := false
 	stats := webRTCPeerStreamStats{lastReport: time.Now()}
 	var writeInFlight atomic.Bool
