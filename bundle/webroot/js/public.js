@@ -43,10 +43,10 @@ const feedPreferences = new Map();
 window.hazeFeedPlayers = feedPlayers;
 
 const WEBRTC_CODECS = [
-    ['auto', 'Auto'],
+    ['pcmu', 'PCMU'],
     ['opus', 'Opus'],
     ['g722', 'G.722'],
-    ['pcmu', 'PCMU'],
+    ['auto', 'Auto'],
 ];
 const HTTP_CODECS = [
     ['pcm16', 'PCM16 / WAV'],
@@ -331,7 +331,7 @@ function feedCanHTTP(feed) {
 }
 
 function normalizedFeedPreferences(feedId, feed = null) {
-    const current = feedPreferences.get(feedId) || { mode: 'webrtc', codec: 'auto' };
+    const current = feedPreferences.get(feedId) || { mode: 'webrtc', codec: 'pcmu' };
     const canWebRTC = feed ? feedCanWebRTC(feed) : true;
     const canHTTP = feed ? feedCanHTTP(feed) : true;
     let mode = current.mode === 'http' ? 'http' : 'webrtc';

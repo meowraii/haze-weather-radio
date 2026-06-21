@@ -306,6 +306,7 @@
         const AUDIO_DISCONNECT_GRACE_MS = 15000;
         const AUDIO_STATS_INTERVAL_MS = 2000;
         const AUDIO_STAGNANT_STATS_POLLS = 3;
+        const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu']);
 
         const frame = document.getElementById('frame');
         const tickerWindow = document.getElementById('tickerWindow');
@@ -498,6 +499,7 @@
                 scroll: Number.isFinite(scroll) && scroll >= 0 ? scroll : 1,
                 speed: Number.isFinite(speed) && speed > 0 ? speed : 30,
                 audio: ['1', 'true', 'yes', 'on'].includes(audio),
+                audioCodec: parseWebRTCAudioCodec(params.get('audioCodec') || params.get('codec')),
                 obs: {
                     url: obsUrl,
                     password: obsPassword,
@@ -505,6 +507,14 @@
                     restore: String(params.get('obsRestore') || 'previous').trim().toLowerCase() === 'unmute' ? 'unmute' : 'previous',
                 },
             };
+        }
+
+        function parseWebRTCAudioCodec(value) {
+            const codec = String(value || '').trim().toLowerCase().replace('.', '');
+            if (!codec || codec === 'stable') return 'pcmu';
+            if (codec === 'g711u' || codec === 'ulaw' || codec === 'mulaw' || codec === 'u-law') return 'pcmu';
+            if (codec === 'g722' || codec === 'g.722') return 'g722';
+            return WEBRTC_AUDIO_CODECS.has(codec) ? codec : 'pcmu';
         }
 
         const query = parseQuery();
@@ -1310,6 +1320,7 @@
                         feed_id: query.feed,
                         sdp: pc.localDescription?.sdp || '',
                         require_opus: false,
+                        codec: query.audioCodec === 'auto' ? '' : query.audioCodec,
                     }),
                 }))
                 .then((response) => {
