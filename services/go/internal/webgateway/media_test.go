@@ -1075,6 +1075,36 @@ func TestWebRTCDisconnectGraceCleanupIncludesICEState(t *testing.T) {
 	}
 }
 
+func TestWebRTCDisconnectCleanupDefersWhileRTPIsFresh(t *testing.T) {
+	hub := newMemoryMediaHub()
+	now := time.Unix(1700000000, 0)
+	hub.recordWebRTCPeerSnapshot("peer-1", webRTCPeerSnapshot{
+		PeerID:      "peer-1",
+		LastWriteAt: now.Add(-webrtcDisconnectGrace / 2),
+	})
+	if hub.shouldCleanupDisconnectedWebRTCPeer("peer-1", webrtc.PeerConnectionStateDisconnected, webrtc.ICEConnectionStateConnected, now) {
+		t.Fatal("disconnected peer with fresh RTP writes should not be cleaned up")
+	}
+}
+
+func TestWebRTCDisconnectCleanupRunsWhenRTPIsStale(t *testing.T) {
+	hub := newMemoryMediaHub()
+	now := time.Unix(1700000000, 0)
+	hub.recordWebRTCPeerSnapshot("peer-1", webRTCPeerSnapshot{
+		PeerID:      "peer-1",
+		LastWriteAt: now.Add(-webrtcDisconnectGrace - time.Millisecond),
+	})
+	if !hub.shouldCleanupDisconnectedWebRTCPeer("peer-1", webrtc.PeerConnectionStateDisconnected, webrtc.ICEConnectionStateConnected, now) {
+		t.Fatal("disconnected peer with stale RTP writes should be cleaned up")
+	}
+	if !hub.shouldCleanupDisconnectedWebRTCPeer("missing-peer", webrtc.PeerConnectionStateDisconnected, webrtc.ICEConnectionStateConnected, now) {
+		t.Fatal("disconnected peer without RTP write evidence should be cleaned up")
+	}
+	if hub.shouldCleanupDisconnectedWebRTCPeer("peer-1", webrtc.PeerConnectionStateConnected, webrtc.ICEConnectionStateConnected, now) {
+		t.Fatal("connected peer should not be cleaned up")
+	}
+}
+
 func TestWebRTCMediaStartPolicyUsesPeerOrICEReadiness(t *testing.T) {
 	if !shouldStartWebRTCMedia(webrtc.PeerConnectionStateConnected, webrtc.ICEConnectionStateNew) {
 		t.Fatal("connected peer state should start media")

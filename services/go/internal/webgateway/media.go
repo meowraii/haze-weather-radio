@@ -343,7 +343,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 			return
 		}
 		disconnectTimer = time.AfterFunc(webrtcDisconnectGrace, func() {
-			if shouldCleanupDisconnectedWebRTC(peerConnection.ConnectionState(), peerConnection.ICEConnectionState()) {
+			if h.shouldCleanupDisconnectedWebRTCPeer(peerID, peerConnection.ConnectionState(), peerConnection.ICEConnectionState(), time.Now()) {
 				cleanup()
 			}
 			disconnectMu.Lock()
@@ -482,6 +482,13 @@ func shouldCleanupWebRTCICE(state webrtc.ICEConnectionState) bool {
 
 func shouldCleanupDisconnectedWebRTC(peerState webrtc.PeerConnectionState, iceState webrtc.ICEConnectionState) bool {
 	return peerState == webrtc.PeerConnectionStateDisconnected || iceState == webrtc.ICEConnectionStateDisconnected
+}
+
+func (h *MediaHub) shouldCleanupDisconnectedWebRTCPeer(peerID string, peerState webrtc.PeerConnectionState, iceState webrtc.ICEConnectionState, now time.Time) bool {
+	if !shouldCleanupDisconnectedWebRTC(peerState, iceState) {
+		return false
+	}
+	return !h.webRTCPeerHasRecentWrite(peerID, now, webrtcDisconnectGrace)
 }
 
 func shouldStartWebRTCMedia(peerState webrtc.PeerConnectionState, iceState webrtc.ICEConnectionState) bool {
@@ -1691,6 +1698,16 @@ func (h *MediaHub) removeWebRTCPeerSnapshot(peerID string) {
 	h.peerStatsMu.Lock()
 	delete(h.peerStats, peerID)
 	h.peerStatsMu.Unlock()
+}
+
+func (h *MediaHub) webRTCPeerHasRecentWrite(peerID string, now time.Time, maxAge time.Duration) bool {
+	if h == nil || strings.TrimSpace(peerID) == "" || maxAge <= 0 {
+		return false
+	}
+	h.peerStatsMu.Lock()
+	snapshot, ok := h.peerStats[peerID]
+	h.peerStatsMu.Unlock()
+	return ok && !snapshot.LastWriteAt.IsZero() && now.Sub(snapshot.LastWriteAt) <= maxAge
 }
 
 func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
