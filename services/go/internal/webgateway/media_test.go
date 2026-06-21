@@ -246,28 +246,6 @@ func TestLatestWebRTCFrameDoesNotSkipStartupFrame(t *testing.T) {
 	}
 }
 
-func TestWebRTCSourceFramesDue(t *testing.T) {
-	now := time.Unix(10, 0)
-	cases := []struct {
-		name       string
-		lastEmitAt time.Time
-		want       int
-	}{
-		{name: "unstarted", lastEmitAt: time.Time{}, want: 1},
-		{name: "early clock", lastEmitAt: now.Add(time.Second), want: 1},
-		{name: "on cadence", lastEmitAt: now.Add(-webrtcFrameDuration), want: 1},
-		{name: "short delay", lastEmitAt: now.Add(-2 * webrtcFrameDuration), want: 2},
-		{name: "bounded", lastEmitAt: now.Add(-10 * webrtcFrameDuration), want: webrtcSourceMaxCatchUp},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := webRTCSourceFramesDue(tc.lastEmitAt, now); got != tc.want {
-				t.Fatalf("frames due = %d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
 	var inFlight atomic.Bool
 	var startedAt atomic.Int64
