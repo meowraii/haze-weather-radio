@@ -45,6 +45,7 @@ const (
 	webrtcWriteTimeout         = 3 * time.Second
 	webrtcFrameSourceIdleGrace = 15 * time.Second
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
+	webrtcPeerFrameWait        = 5 * time.Millisecond
 )
 
 type webRTCAudioCodec int
@@ -1332,7 +1333,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		return true
 	}
 	writeNextClockedFrame := func() bool {
-		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
+		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrameWithWait(frames, webrtcPeerFrameWait)
 		if !ok {
 			failPeer("frame_source_closed")
 			return false
@@ -1655,6 +1656,31 @@ func drainLatestWebRTCFrame(frames <-chan webRTCFrame) (webRTCFrame, int, bool, 
 		}
 		return latest, skipped, true, true
 	default:
+		return webRTCFrame{}, 0, true, false
+	}
+}
+
+func drainLatestWebRTCFrameWithWait(frames <-chan webRTCFrame, wait time.Duration) (webRTCFrame, int, bool, bool) {
+	frame, skipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
+	if !ok || hasFrame || wait <= 0 {
+		return frame, skipped, ok, hasFrame
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case frame, ok := <-frames:
+		if !ok {
+			return webRTCFrame{}, 0, false, false
+		}
+		latest, skipped, ok := latestWebRTCFrame(frame, frames)
+		if !ok {
+			return webRTCFrame{}, skipped, false, false
+		}
+		if len(latest.payload) == 0 {
+			return webRTCFrame{}, skipped, true, false
+		}
+		return latest, skipped, true, true
+	case <-timer.C:
 		return webRTCFrame{}, 0, true, false
 	}
 }

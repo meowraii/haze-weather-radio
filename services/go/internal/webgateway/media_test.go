@@ -343,6 +343,38 @@ func TestDrainLatestWebRTCFrameReturnsLatestWithoutBlocking(t *testing.T) {
 	}
 }
 
+func TestDrainLatestWebRTCFrameWithWaitBridgesPeerSourcePhaseDrift(t *testing.T) {
+	frames := make(chan webRTCFrame, 2)
+	go func() {
+		time.Sleep(2 * time.Millisecond)
+		frames <- webRTCFrame{sequence: 1, payload: []byte{1}}
+		frames <- webRTCFrame{sequence: 2, payload: []byte{2}}
+	}()
+
+	latest, skipped, ok, hasFrame := drainLatestWebRTCFrameWithWait(frames, 50*time.Millisecond)
+	if !ok || !hasFrame {
+		t.Fatalf("delayed source frame was not drained: ok=%v hasFrame=%v", ok, hasFrame)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 for stale delayed frame", skipped)
+	}
+	if string(latest.payload) != string([]byte{2}) {
+		t.Fatalf("latest frame = %v, want [2]", latest.payload)
+	}
+}
+
+func TestDrainLatestWebRTCFrameWithWaitTimesOutAsEmpty(t *testing.T) {
+	frames := make(chan webRTCFrame)
+	start := time.Now()
+	_, _, ok, hasFrame := drainLatestWebRTCFrameWithWait(frames, 5*time.Millisecond)
+	if !ok || hasFrame {
+		t.Fatalf("empty open channel = ok %v hasFrame %v, want ok true hasFrame false", ok, hasFrame)
+	}
+	if elapsed := time.Since(start); elapsed < 5*time.Millisecond {
+		t.Fatalf("wait returned too early after %s", elapsed)
+	}
+}
+
 func TestRTPTimestampForFrameStaysPacketContinuous(t *testing.T) {
 	base := uint32(4000)
 	if got := rtpTimestampForFrame(base); got != base {
