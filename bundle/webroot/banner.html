@@ -344,6 +344,7 @@
             audioStatsTimer: null,
             audioLastStats: null,
             audioLastPacketAt: 0,
+            audioTrackAttached: false,
             audioStagnantStatsPolls: 0,
             audioMissingStatsPolls: 0,
             obsController: null,
@@ -1133,6 +1134,7 @@
                 state.audioTrackMuteTimer = null;
             }
             stopAudioStatsMonitor();
+            state.audioTrackAttached = false;
             if (state.audioPeer) {
                 state.audioPeer.ontrack = null;
                 state.audioPeer.onconnectionstatechange = null;
@@ -1174,10 +1176,11 @@
                                 console.warn('Banner WebRTC inbound audio stats are missing.', {
                                     connection_state: peer.connectionState,
                                     ice_state: peer.iceConnectionState,
+                                    track_attached: state.audioTrackAttached,
                                     at: new Date().toISOString(),
                                 });
                             }
-                            if (state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                            if (!state.audioTrackAttached && state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
                                 scheduleAudioReconnect({ force: true });
                             }
                         }
@@ -1240,6 +1243,7 @@
         }
 
         function closeAudioPeerOnly() {
+            state.audioTrackAttached = false;
             if (state.audioPeer) {
                 state.audioPeer.ontrack = null;
                 state.audioPeer.onconnectionstatechange = null;
@@ -1320,6 +1324,7 @@
                 if (!stream) {
                     return;
                 }
+                state.audioTrackAttached = true;
                 markBannerAudioPacketsRecent();
                 event.track.onmute = () => {
                     if (state.audioTrackMuteTimer) {
