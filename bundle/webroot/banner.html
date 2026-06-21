@@ -1390,13 +1390,17 @@
             return state.audioTrackMuted && !hasRecentBannerAudioPackets();
         }
 
+        function markBannerAudioTrackActive() {
+            state.audioTrackMuted = false;
+        }
+
         function shouldReconnectBannerAudioForMissingPackets() {
             return !hasUsableBannerAudio() || !hasRecentBannerAudioPackets();
         }
 
         function markBannerAudioPacketsRecent() {
             state.audioLastPacketAt = Date.now();
-            state.audioTrackMuted = false;
+            markBannerAudioTrackActive();
             cancelAudioReconnect();
             if (state.audioDisconnectTimer) {
                 window.clearTimeout(state.audioDisconnectTimer);
@@ -1500,8 +1504,18 @@
                 state.audioStagnantStatsPolls = 0;
                 state.audioMissingStatsPolls = 0;
                 state.audioTrackAttached = true;
-                state.audioTrackMuted = event.track.muted === true;
+                markBannerAudioTrackActive();
                 event.track.onmute = () => {
+                    if (hasRecentBannerAudioPackets()) {
+                        markBannerAudioTrackActive();
+                        recordBannerAudioEvent('track_mute_ignored', {
+                            connection_state: pc.connectionState,
+                            ice_state: pc.iceConnectionState,
+                            last_packet_age_ms: Date.now() - state.audioLastPacketAt,
+                            track_state: event.track.readyState || '',
+                        });
+                        return;
+                    }
                     recordBannerAudioEvent('track_mute', {
                         connection_state: pc.connectionState,
                         ice_state: pc.iceConnectionState,
@@ -1525,17 +1539,19 @@
                     }, AUDIO_MEDIA_EVENT_GRACE_MS);
                 };
                 event.track.onunmute = () => {
+                    const wasMuted = state.audioTrackMuted;
                     recordBannerAudioEvent('track_unmute', {
                         connection_state: pc.connectionState,
                         ice_state: pc.iceConnectionState,
                         last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
                         track_state: event.track.readyState || '',
+                        app_was_muted: wasMuted,
                     });
                     if (state.audioTrackMuteTimer) {
                         window.clearTimeout(state.audioTrackMuteTimer);
                         state.audioTrackMuteTimer = null;
                     }
-                    state.audioTrackMuted = false;
+                    markBannerAudioTrackActive();
                     ensureBannerAudioPlaying();
                 };
                 event.track.onended = () => {
