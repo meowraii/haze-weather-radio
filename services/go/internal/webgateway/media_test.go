@@ -526,7 +526,7 @@ func TestMediaHubClosesPeerWhenWebRTCFrameSourceEnds(t *testing.T) {
 	cleanup := make(chan struct{})
 	var cleanupOnce sync.Once
 
-	go hub.streamWebRTCFrames(t.Context(), "sk-0001", webRTCAudioPCMU, nil, frames, func() {}, ready, func() {
+	go hub.streamWebRTCFrames(t.Context(), "sk-0001", webRTCAudioPCMU, 0, nil, frames, func() {}, ready, func() {
 		cleanupOnce.Do(func() {
 			close(cleanup)
 		})
@@ -977,6 +977,52 @@ func TestMediaHubStreamsIdleRTPContinuously(t *testing.T) {
 	}
 }
 
+func TestMediaHubWritesNegotiatedRTPPayloadType(t *testing.T) {
+	hub := newMemoryMediaHub()
+	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer offerPeer.Close()
+	tracks := make(chan *webrtc.TrackRemote, 1)
+	offerPeer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		tracks <- track
+	})
+	if _, err := offerPeer.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := offerPeer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatheringComplete := webrtc.GatheringCompletePromise(offerPeer)
+	if err := offerPeer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-gatheringComplete
+	answer, err := hub.AnswerWithOptions(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP, WebRTCAnswerOptions{PreferredCodec: "g722"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Codec != webRTCAudioG722 || answer.PayloadType != 9 {
+		t.Fatalf("negotiated codec=%s payload=%d, want g722/9", answer.Codec, answer.PayloadType)
+	}
+	if err := offerPeer.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer.SDP}); err != nil {
+		t.Fatal(err)
+	}
+
+	track := waitForRemoteTrack(t, tracks)
+	payloadType, payloadLength := waitForRTPPacketPayloadType(t, track)
+	if payloadLength == 0 {
+		t.Fatal("RTP payload must not be empty")
+	}
+	if payloadType != answer.PayloadType {
+		t.Fatalf("RTP payload type = %d, want negotiated payload %d", payloadType, answer.PayloadType)
+	}
+}
+
 func TestMediaHubKeepsRTPContinuousAfterPublishedPCMStops(t *testing.T) {
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
@@ -1186,6 +1232,15 @@ func waitForRTPPacketHeaderInfo(t *testing.T, track *webrtc.TrackRemote) (uint16
 		t.Fatal(err)
 	}
 	return packet.SequenceNumber, packet.Timestamp, len(packet.Payload)
+}
+
+func waitForRTPPacketPayloadType(t *testing.T, track *webrtc.TrackRemote) (uint8, int) {
+	t.Helper()
+	packet, _, err := track.ReadRTP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return packet.PayloadType, len(packet.Payload)
 }
 
 func waitForWebRTCFrameSources(hub *MediaHub, want int, timeout time.Duration) bool {

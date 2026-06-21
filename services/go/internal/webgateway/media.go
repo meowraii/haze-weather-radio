@@ -299,7 +299,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		cleanup()
 		return WebRTCAnswer{}, err
 	}
-	go h.streamWebRTCFrames(peerCtx, feedID, codec, track, frames, unsubscribeFrames, mediaReady, cleanup)
+	go h.streamWebRTCFrames(peerCtx, feedID, codec, payloadType, track, frames, unsubscribeFrames, mediaReady, cleanup)
 	return WebRTCAnswer{SDP: localDescription.SDP, Codec: codec, PayloadType: payloadType, MediaRecent: mediaRecent}, nil
 }
 
@@ -464,7 +464,7 @@ func codecPreferences(codec webRTCAudioCodec, payloadType uint8) []webrtc.RTPCod
 				ClockRate: pcmuSampleRate,
 				Channels:  webrtcChannels,
 			},
-			PayloadType: 0,
+			PayloadType: webrtc.PayloadType(payloadType),
 		}}
 	}
 }
@@ -1062,7 +1062,7 @@ func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 	return dropped, len(s.subs)
 }
 
-func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, track *webrtc.TrackLocalStaticRTP, frames <-chan []byte, unsubscribe func(), ready <-chan struct{}, onWriteStall func()) {
+func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, payloadType uint8, track *webrtc.TrackLocalStaticRTP, frames <-chan []byte, unsubscribe func(), ready <-chan struct{}, onWriteStall func()) {
 	var unsubscribeOnce sync.Once
 	unsubscribePeer := func() {
 		if unsubscribe != nil {
@@ -1107,6 +1107,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			Header: rtp.Header{
 				Version:        2,
 				Marker:         !loggedWrite,
+				PayloadType:    payloadType,
 				SequenceNumber: stats.sequenceNumber,
 				Timestamp:      stats.timestamp,
 			},
