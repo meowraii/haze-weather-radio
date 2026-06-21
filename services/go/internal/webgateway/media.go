@@ -470,7 +470,9 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		UpdatedAt:   time.Now(),
 	})
 	go h.streamWebRTCFrames(peerCtx, peerID, feedID, codec, payloadType, track, frames, unsubscribeFrames, mediaReady, cleanup)
-	go markWebRTCMediaReadyAfter(peerCtx, webrtcMediaStartFallback, markMediaReady)
+	go markWebRTCMediaReadyWhenConnectedAfter(peerCtx, webrtcMediaStartFallback, webrtcMediaStartFallback/3, func() bool {
+		return shouldStartWebRTCMedia(peerConnection.ConnectionState(), peerConnection.ICEConnectionState())
+	}, markMediaReady)
 	return WebRTCAnswer{SDP: localDescription.SDP, Codec: codec, PayloadType: payloadType, MediaRecent: mediaRecent}, nil
 }
 
@@ -500,19 +502,35 @@ func shouldStartWebRTCMedia(peerState webrtc.PeerConnectionState, iceState webrt
 }
 
 func markWebRTCMediaReadyAfter(ctx context.Context, delay time.Duration, mark func()) {
+	markWebRTCMediaReadyWhenConnectedAfter(ctx, delay, delay, func() bool { return true }, mark)
+}
+
+func markWebRTCMediaReadyWhenConnectedAfter(ctx context.Context, delay time.Duration, retryEvery time.Duration, ready func() bool, mark func()) {
 	if mark == nil {
 		return
 	}
 	if delay <= 0 {
-		mark()
+		if ready == nil || ready() {
+			mark()
+		}
 		return
 	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-		mark()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if ready == nil || ready() {
+				mark()
+				return
+			}
+			if retryEvery <= 0 {
+				retryEvery = delay
+			}
+			timer.Reset(retryEvery)
+		}
 	}
 }
 

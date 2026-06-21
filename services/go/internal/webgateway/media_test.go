@@ -1178,6 +1178,39 @@ func TestMarkWebRTCMediaReadyAfterFallback(t *testing.T) {
 	}
 }
 
+func TestMarkWebRTCMediaReadyWhenConnectedAfterWaitsForReadiness(t *testing.T) {
+	ready := make(chan struct{})
+	var polls atomic.Int32
+	go markWebRTCMediaReadyWhenConnectedAfter(t.Context(), time.Millisecond, time.Millisecond, func() bool {
+		return polls.Add(1) >= 3
+	}, func() {
+		close(ready)
+	})
+
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for connected fallback media ready mark")
+	}
+	if got := polls.Load(); got < 3 {
+		t.Fatalf("ready predicate polls = %d, want at least 3", got)
+	}
+}
+
+func TestMarkWebRTCMediaReadyWhenConnectedAfterCancelBeforeReady(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	markWebRTCMediaReadyWhenConnectedAfter(ctx, time.Millisecond, time.Millisecond, func() bool {
+		return true
+	}, func() {
+		called = true
+	})
+	if called {
+		t.Fatal("canceled connected fallback should not mark media ready")
+	}
+}
+
 func TestWriteWAVStreamHeader(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	if err := writeWAVStreamHeader(recorder, 48000, 1, 16); err != nil {
