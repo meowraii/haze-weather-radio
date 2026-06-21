@@ -796,8 +796,6 @@ function startWebRTCStatsMonitor(feedId, player) {
                     if (packetsDelta > 0 || snapshot.packetsReceived > 0) {
                         markWebRTCPacketsRecent(player);
                         ensureWebRTCAudioPlaying(feedId, player);
-                    } else {
-                        player.audio.dataset.hazeTrackMuted = '0';
                     }
                 }
                 if (player.stagnantStatsPolls > 0 && isActivePlayer(feedId, player)) {
