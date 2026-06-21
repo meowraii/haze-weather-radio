@@ -53,6 +53,54 @@ function recordWebRTCEvent(feedId, event, details = {}) {
     window.hazeWebRTCEvents = events.slice(-80);
 }
 
+window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
+    const requestedFeed = String(feedId || '').trim();
+    const players = {};
+    for (const [id, player] of feedPlayers.entries()) {
+        if (requestedFeed && id !== requestedFeed) continue;
+        const audio = player.audio || null;
+        players[id] = {
+            mode: player.mode || '',
+            connection_state: player.pc?.connectionState || '',
+            ice_state: player.pc?.iceConnectionState || '',
+            signaling_state: player.pc?.signalingState || '',
+            track_attached: Boolean(player.trackAttached),
+            has_live_track: hasLiveWebRTCAudioTrack(player),
+            last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
+            packets_recent: hasRecentWebRTCPackets(player),
+            stagnant_stats_polls: Number(player.stagnantStatsPolls || 0),
+            missing_stats_polls: Number(player.missingStatsPolls || 0),
+            reconnect_pending: Boolean(player.reconnectPending || player.reconnectTimer),
+            disconnect_reconnect_pending: Boolean(player.disconnectReconnectTimer),
+            media_recent: player.mediaRecent,
+            negotiated_codec: player.negotiatedCodec || '',
+            negotiated_payload_type: player.negotiatedPayloadType,
+            audio: audio ? {
+                paused: audio.paused,
+                ended: audio.ended,
+                ready_state: audio.readyState,
+                network_state: audio.networkState,
+                muted: audio.muted,
+                volume: audio.volume,
+                player_state: audio.dataset.hazePlayerState || '',
+                track_attached: audio.dataset.hazeTrackAttached || '',
+                stream_attached: audio.dataset.hazeStreamAttached || '',
+                stream_track_count: audio.srcObject?.getAudioTracks?.().length || 0,
+            } : null,
+        };
+    }
+    const stats = window.hazeLastWebRTCStats || {};
+    return {
+        at: new Date().toISOString(),
+        requested_feed: requestedFeed,
+        players,
+        stats: requestedFeed ? { [requestedFeed]: stats[requestedFeed] || null } : stats,
+        events: (window.hazeWebRTCEvents || [])
+            .filter((event) => !requestedFeed || event.feed_id === requestedFeed)
+            .slice(-30),
+    };
+};
+
 const WEBRTC_CODECS = [
     ['pcmu', 'PCMU'],
     ['opus', 'Opus'],

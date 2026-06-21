@@ -371,6 +371,38 @@
             window.hazeBannerWebRTCEvents = events.slice(-80);
         }
 
+        window.hazeDumpBannerWebRTC = function hazeDumpBannerWebRTC() {
+            const audio = state.audioElement || null;
+            return {
+                at: new Date().toISOString(),
+                query_feed: query.feed || '',
+                audio_enabled: Boolean(query.audio),
+                connection_state: state.audioPeer?.connectionState || '',
+                ice_state: state.audioPeer?.iceConnectionState || '',
+                signaling_state: state.audioPeer?.signalingState || '',
+                track_attached: Boolean(state.audioTrackAttached),
+                has_live_track: hasLiveBannerAudioTrack(),
+                last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                packets_recent: hasRecentBannerAudioPackets(),
+                stagnant_stats_polls: Number(state.audioStagnantStatsPolls || 0),
+                missing_stats_polls: Number(state.audioMissingStatsPolls || 0),
+                reconnect_pending: Boolean(state.audioReconnectPending || state.audioReconnectTimer),
+                disconnect_reconnect_pending: Boolean(state.audioDisconnectTimer),
+                retry_count: Number(state.audioRetryCount || 0),
+                audio: audio ? {
+                    paused: audio.paused,
+                    ended: audio.ended,
+                    ready_state: audio.readyState,
+                    network_state: audio.networkState,
+                    muted: audio.muted,
+                    volume: audio.volume,
+                    stream_track_count: audio.srcObject?.getAudioTracks?.().length || 0,
+                } : null,
+                stats: window.hazeBannerWebRTCStats || null,
+                events: (window.hazeBannerWebRTCEvents || []).slice(-30),
+            };
+        };
+
         const ASPECT_RESOLUTIONS = {
             '16:9': { width: 1920, height: 1080 },
             '4:3': { width: 1440, height: 1080 },
