@@ -463,9 +463,14 @@ function selectedFeedMode(feedId) {
 
 function selectedFeedCodec(feedId) {
     const select = findFeedElement('feed-codec', feedId);
-    const value = select?.value || normalizedFeedPreferences(feedId).codec;
     const prefs = normalizedFeedPreferences(feedId);
+    const allowedCodecs = codecOptionsForMode(prefs.mode).map(([value]) => value);
+    const selected = select?.value || prefs.codec;
+    const value = allowedCodecs.includes(selected) ? selected : allowedCodecs[0];
     prefs.codec = value;
+    if (select && select.value !== value) {
+        select.value = value;
+    }
     feedPreferences.set(feedId, prefs);
     return value;
 }
