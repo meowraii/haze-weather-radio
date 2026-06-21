@@ -1695,6 +1695,9 @@
             if (mixer.resumeFallbackTimer) {
                 window.clearTimeout(mixer.resumeFallbackTimer);
             }
+            if (mixer.outputTrackMuteTimer) {
+                window.clearTimeout(mixer.outputTrackMuteTimer);
+            }
             if (mixer.context) {
                 mixer.context.onstatechange = null;
             }
@@ -1762,21 +1765,41 @@
                 for (const track of outputStream.getAudioTracks?.() || []) {
                     track.onmute = () => {
                         if (state.audioOutputMixer?.outputStream !== outputStream) return;
-                        recordBannerAudioEvent('audio_output_track_mute', {
-                            track_id: track.id || '',
-                            ready_state: track.readyState || '',
-                            context_state: context.state,
-                            packets_recent: hasRecentBannerAudioPackets(),
-                        });
+                        if (state.audioOutputMixer.outputTrackMuteTimer) {
+                            window.clearTimeout(state.audioOutputMixer.outputTrackMuteTimer);
+                        }
+                        state.audioOutputMixer.outputTrackMuteTimer = window.setTimeout(() => {
+                            if (state.audioOutputMixer?.outputStream !== outputStream
+                                || hasRecentBannerAudioPackets()
+                                || !hasHardStaleBannerAudioPackets()) {
+                                return;
+                            }
+                            state.audioOutputMixer.outputTrackMutedReported = true;
+                            recordBannerAudioEvent('audio_output_track_mute', {
+                                track_id: track.id || '',
+                                ready_state: track.readyState || '',
+                                context_state: context.state,
+                                packets_recent: hasRecentBannerAudioPackets(),
+                                packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
+                            });
+                        }, AUDIO_TRACK_MUTE_GRACE_MS);
                         context.resume?.().catch(() => {});
                     };
                     track.onunmute = () => {
                         if (state.audioOutputMixer?.outputStream !== outputStream) return;
-                        recordBannerAudioEvent('audio_output_track_unmute', {
-                            track_id: track.id || '',
-                            ready_state: track.readyState || '',
-                            context_state: context.state,
-                        });
+                        if (state.audioOutputMixer.outputTrackMuteTimer) {
+                            window.clearTimeout(state.audioOutputMixer.outputTrackMuteTimer);
+                            state.audioOutputMixer.outputTrackMuteTimer = null;
+                        }
+                        if (state.audioOutputMixer.outputTrackMutedReported) {
+                            state.audioOutputMixer.outputTrackMutedReported = false;
+                            recordBannerAudioEvent('audio_output_track_unmute', {
+                                track_id: track.id || '',
+                                ready_state: track.readyState || '',
+                                context_state: context.state,
+                                packets_recent: hasRecentBannerAudioPackets(),
+                            });
+                        }
                     };
                     track.onended = () => {
                         if (state.audioOutputMixer?.outputStream !== outputStream) return;

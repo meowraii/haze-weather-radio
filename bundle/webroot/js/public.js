@@ -822,6 +822,9 @@ function closeWebRTCAudioOutput(player) {
     if (mixer.retryTimer) {
         window.clearTimeout(mixer.retryTimer);
     }
+    if (mixer.outputTrackMuteTimer) {
+        window.clearTimeout(mixer.outputTrackMuteTimer);
+    }
     if (mixer.context) {
         mixer.context.onstatechange = null;
     }
@@ -889,21 +892,41 @@ function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
         for (const track of outputStream.getAudioTracks?.() || []) {
             track.onmute = () => {
                 if (player.audioOutputMixer?.outputStream !== outputStream) return;
-                recordWebRTCEvent(feedId, 'audio_output_track_mute', {
-                    track_id: track.id || '',
-                    ready_state: track.readyState || '',
-                    context_state: context.state,
-                    packets_recent: hasRecentWebRTCPackets(player),
-                });
+                if (player.audioOutputMixer.outputTrackMuteTimer) {
+                    window.clearTimeout(player.audioOutputMixer.outputTrackMuteTimer);
+                }
+                player.audioOutputMixer.outputTrackMuteTimer = window.setTimeout(() => {
+                    if (player.audioOutputMixer?.outputStream !== outputStream
+                        || hasRecentWebRTCPackets(player)
+                        || !hasHardStaleWebRTCPackets(player)) {
+                        return;
+                    }
+                    player.audioOutputMixer.outputTrackMutedReported = true;
+                    recordWebRTCEvent(feedId, 'audio_output_track_mute', {
+                        track_id: track.id || '',
+                        ready_state: track.readyState || '',
+                        context_state: context.state,
+                        packets_recent: hasRecentWebRTCPackets(player),
+                        packet_source_age_ms: webRTCPacketSourceAgeMS(player),
+                    });
+                }, WEBRTC_TRACK_MUTE_GRACE_MS);
                 context.resume?.().catch(() => {});
             };
             track.onunmute = () => {
                 if (player.audioOutputMixer?.outputStream !== outputStream) return;
-                recordWebRTCEvent(feedId, 'audio_output_track_unmute', {
-                    track_id: track.id || '',
-                    ready_state: track.readyState || '',
-                    context_state: context.state,
-                });
+                if (player.audioOutputMixer.outputTrackMuteTimer) {
+                    window.clearTimeout(player.audioOutputMixer.outputTrackMuteTimer);
+                    player.audioOutputMixer.outputTrackMuteTimer = null;
+                }
+                if (player.audioOutputMixer.outputTrackMutedReported) {
+                    player.audioOutputMixer.outputTrackMutedReported = false;
+                    recordWebRTCEvent(feedId, 'audio_output_track_unmute', {
+                        track_id: track.id || '',
+                        ready_state: track.readyState || '',
+                        context_state: context.state,
+                        packets_recent: hasRecentWebRTCPackets(player),
+                    });
+                }
             };
             track.onended = () => {
                 if (player.audioOutputMixer?.outputStream !== outputStream) return;
