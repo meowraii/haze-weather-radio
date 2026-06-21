@@ -1152,7 +1152,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	}
 	idleTicker := time.NewTicker(webrtcFrameDuration)
 	defer idleTicker.Stop()
-	lastFrame := webRTCFrame{payload: initialWebRTCFrame(codec)}
+	fillerFrame := webRTCFrame{payload: webRTCFillerFrame(codec)}
 	var pendingSkipped int
 	var lastSourceSequence uint64
 	var fillerFramesSinceSource int
@@ -1163,10 +1163,10 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			return false
 		}
 		if !hasFrame {
-			if len(lastFrame.payload) == 0 {
+			if len(fillerFrame.payload) == 0 {
 				return true
 			}
-			if !writeFrame(lastFrame, 0, 0, true) {
+			if !writeFrame(fillerFrame, 0, 0, true) {
 				return false
 			}
 			fillerFramesSinceSource++
@@ -1177,7 +1177,6 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		pendingSkipped += webRTCDiagnosticSkippedFrames(lastSourceSequence, sourceSkipped, drainSkipped)
 		lastSourceSequence = frame.sequence
 		fillerFramesSinceSource = 0
-		lastFrame = cloneWebRTCFrame(frame)
 		skipped := pendingSkipped
 		pendingSkipped = 0
 		return writeFrame(frame, skipped, sourceGap, false)
@@ -1195,6 +1194,10 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			}
 		}
 	}
+}
+
+func webRTCFillerFrame(codec webRTCAudioCodec) []byte {
+	return initialWebRTCFrame(codec)
 }
 
 func initialWebRTCFrame(codec webRTCAudioCodec) []byte {

@@ -598,6 +598,19 @@ func TestInitialWebRTCFrameSeedsPacketWriter(t *testing.T) {
 	}
 }
 
+func TestWebRTCFillerFrameUsesCodecSilence(t *testing.T) {
+	pcmu := webRTCFillerFrame(webRTCAudioPCMU)
+	if len(pcmu) != pcmuFrameSamples {
+		t.Fatalf("PCMU filler length = %d, want %d", len(pcmu), pcmuFrameSamples)
+	}
+	if string(pcmu) != string(initialWebRTCFrame(webRTCAudioPCMU)) {
+		t.Fatal("PCMU filler should match the established idle frame")
+	}
+	if frame := webRTCFillerFrame(webRTCAudioG722); len(frame) == 0 {
+		t.Fatal("G.722 filler should not be empty")
+	}
+}
+
 func TestWebRTCFrameSourceSeedsLateSubscriber(t *testing.T) {
 	hub := newMemoryMediaHub()
 	source, err := hub.webRTCFrameSource("sk-0001", webRTCAudioPCMU)
