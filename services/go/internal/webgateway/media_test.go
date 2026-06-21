@@ -212,6 +212,33 @@ func TestWebRTCFrameSourceMailboxKeepsLatestFrame(t *testing.T) {
 	}
 }
 
+func TestWebRTCFrameSourceBroadcastCopiesFramePayload(t *testing.T) {
+	source := &webRTCFrameSource{subs: map[chan []byte]struct{}{}}
+	frames, unsubscribe, ok := source.subscribe()
+	if !ok {
+		t.Fatal("subscriber should attach")
+	}
+	defer unsubscribe()
+
+	frame := []byte{1, 2, 3}
+	if dropped, _ := source.broadcast(frame); dropped != 0 {
+		t.Fatalf("broadcast dropped = %d, want 0", dropped)
+	}
+	frame[0] = 9
+	source.mu.Lock()
+	source.lastFrame[1] = 8
+	source.mu.Unlock()
+
+	select {
+	case got := <-frames:
+		if string(got) != string([]byte{1, 2, 3}) {
+			t.Fatalf("subscriber frame = %v, want copied [1 2 3]", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for copied frame")
+	}
+}
+
 func TestPCMSubscriberMailboxKeepsLatestChunk(t *testing.T) {
 	subscriber := make(chan PCMChunk, 1)
 	deliverPCMToSubscriber(subscriber, PCMChunk{FeedID: "sk-0001", Data: []byte{1}})

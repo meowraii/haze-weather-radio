@@ -1028,11 +1028,12 @@ func (s *webRTCFrameSourceStats) resetInterval() {
 func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastFrame = append(s.lastFrame[:0], frame...)
+	frameCopy := append([]byte(nil), frame...)
+	s.lastFrame = append(s.lastFrame[:0], frameCopy...)
 	dropped := 0
 	for subscriber := range s.subs {
 		select {
-		case subscriber <- frame:
+		case subscriber <- append([]byte(nil), frameCopy...):
 		default:
 			select {
 			case <-subscriber:
@@ -1040,7 +1041,7 @@ func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 			default:
 			}
 			select {
-			case subscriber <- frame:
+			case subscriber <- append([]byte(nil), frameCopy...):
 			default:
 				dropped++
 			}
@@ -1097,7 +1098,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				SequenceNumber: stats.sequenceNumber,
 				Timestamp:      stats.timestamp,
 			},
-			Payload: frame,
+			Payload: append([]byte(nil), frame...),
 		})
 		writeInFlight.Store(false)
 		if err != nil {
