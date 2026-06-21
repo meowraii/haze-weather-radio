@@ -196,22 +196,27 @@ func TestWebRTCFrameSourceMailboxKeepsLatestFrame(t *testing.T) {
 	}
 	_ = unsubscribe
 
-	if dropped, _ := source.broadcast([]byte{1}); dropped != 0 {
-		t.Fatalf("first broadcast dropped = %d, want 0 for empty mailbox", dropped)
+	for i := 0; i < webrtcPeerFrameMailbox; i++ {
+		if dropped, _ := source.broadcast([]byte{byte(i + 1)}); dropped != 0 {
+			t.Fatalf("broadcast %d dropped = %d, want 0 before mailbox is full", i+1, dropped)
+		}
 	}
-	if dropped, _ := source.broadcast([]byte{2}); dropped != 1 {
-		t.Fatalf("second broadcast dropped = %d, want 1 for stale mailbox replacement", dropped)
+	if dropped, _ := source.broadcast([]byte{9}); dropped != 1 {
+		t.Fatalf("overflow broadcast dropped = %d, want 1 for stale mailbox replacement", dropped)
+	}
+	var frame webRTCFrame
+	for len(frames) > 0 {
+		frame = <-frames
 	}
 	select {
-	case frame := <-frames:
-		if string(frame.payload) != string([]byte{2}) {
-			t.Fatalf("mailbox frame = %v, want latest [2]", frame)
-		}
-		if frame.sequence != 2 {
-			t.Fatalf("mailbox frame sequence = %d, want 2", frame.sequence)
-		}
+	case frame = <-frames:
 	default:
-		t.Fatal("mailbox did not retain latest frame")
+	}
+	if string(frame.payload) != string([]byte{9}) {
+		t.Fatalf("mailbox frame = %v, want latest [9]", frame)
+	}
+	if frame.sequence != uint64(webrtcPeerFrameMailbox+1) {
+		t.Fatalf("mailbox frame sequence = %d, want %d", frame.sequence, webrtcPeerFrameMailbox+1)
 	}
 }
 
@@ -541,6 +546,24 @@ func TestMediaHubSharesWebRTCFrameSourcePerFeedCodec(t *testing.T) {
 	hub.removeWebRTCFrameSourceIfIdle(source, idleEpoch)
 	if !waitForWebRTCFrameSources(hub, 0, 2*time.Second) {
 		t.Fatal("frame source was not removed by matching idle cleanup")
+	}
+}
+
+func TestWebRTCFrameSourcePeerMailboxAbsorbsShortJitter(t *testing.T) {
+	source := &webRTCFrameSource{subs: map[chan webRTCFrame]struct{}{}}
+	subscriber := make(chan webRTCFrame, webrtcPeerFrameMailbox)
+	source.subs[subscriber] = struct{}{}
+
+	droppedTotal := 0
+	for i := 0; i < webrtcPeerFrameMailbox; i++ {
+		dropped, _ := source.broadcast([]byte{byte(i + 1)})
+		droppedTotal += dropped
+	}
+	if droppedTotal != 0 {
+		t.Fatalf("short peer jitter dropped %d frames, want 0", droppedTotal)
+	}
+	if got := len(subscriber); got != webrtcPeerFrameMailbox {
+		t.Fatalf("mailbox length = %d, want %d", got, webrtcPeerFrameMailbox)
 	}
 }
 

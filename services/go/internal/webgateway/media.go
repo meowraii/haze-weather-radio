@@ -34,7 +34,7 @@ const (
 	opusEncoderChannels        = 1
 	webrtcFrameDuration        = 20 * time.Millisecond
 	webrtcMaxQueuedFrames      = 10
-	webrtcPeerFrameMailbox     = 1
+	webrtcPeerFrameMailbox     = 3
 	webrtcResumeQueuedFrames   = 1
 	webrtcConcealmentFrames    = 6
 	feedIngressCapacity        = 4
