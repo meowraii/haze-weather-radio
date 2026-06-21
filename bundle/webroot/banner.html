@@ -1205,11 +1205,7 @@
                         }
                     } else {
                         if (packetsDelta > 0 || snapshot.packetsReceived > 0) {
-                            state.audioLastPacketAt = Date.now();
-                            if (state.audioTrackMuteTimer) {
-                                window.clearTimeout(state.audioTrackMuteTimer);
-                                state.audioTrackMuteTimer = null;
-                            }
+                            markBannerAudioPacketsRecent();
                         }
                         state.audioStagnantStatsPolls = 0;
                     }
@@ -1267,6 +1263,14 @@
             return state.audioLastPacketAt > 0 && now - state.audioLastPacketAt <= AUDIO_RECENT_PACKET_GRACE_MS;
         }
 
+        function markBannerAudioPacketsRecent() {
+            state.audioLastPacketAt = Date.now();
+            if (state.audioTrackMuteTimer) {
+                window.clearTimeout(state.audioTrackMuteTimer);
+                state.audioTrackMuteTimer = null;
+            }
+        }
+
         function handleStreamPayload(event) {
             try {
                 const payload = JSON.parse(event.data || '{}');
@@ -1316,6 +1320,7 @@
                 if (!stream) {
                     return;
                 }
+                markBannerAudioPacketsRecent();
                 event.track.onmute = () => {
                     if (state.audioTrackMuteTimer) {
                         window.clearTimeout(state.audioTrackMuteTimer);
@@ -1329,10 +1334,7 @@
                     }, AUDIO_MEDIA_EVENT_GRACE_MS);
                 };
                 event.track.onunmute = () => {
-                    if (state.audioTrackMuteTimer) {
-                        window.clearTimeout(state.audioTrackMuteTimer);
-                        state.audioTrackMuteTimer = null;
-                    }
+                    markBannerAudioPacketsRecent();
                 };
                 event.track.onended = () => {
                     scheduleAudioReconnect({ force: true });

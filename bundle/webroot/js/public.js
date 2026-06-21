@@ -535,6 +535,16 @@ function hasRecentWebRTCPackets(player, now = Date.now()) {
     return lastPacketAt > 0 && now - lastPacketAt <= WEBRTC_RECENT_PACKET_GRACE_MS;
 }
 
+function markWebRTCPacketsRecent(player, audio = player?.audio) {
+    if (!player) return;
+    player.lastPacketAt = Date.now();
+    if (audio) {
+        audio.dataset.hazeTrackMuted = '0';
+    }
+    clearPlayerTimer(player, 'trackMuteTimer');
+    clearPlayerTimer(player, 'mediaEventTimer');
+}
+
 function scheduleWebRTCMediaEventStatus(feedId, player, state, message) {
     clearPlayerTimer(player, 'mediaEventTimer');
     player.mediaEventTimer = window.setTimeout(() => {
@@ -610,11 +620,10 @@ function startWebRTCStatsMonitor(feedId, player) {
             } else {
                 if ((packetsDelta > 0 || !previous) && player.audio) {
                     if (packetsDelta > 0 || snapshot.packetsReceived > 0) {
-                        player.lastPacketAt = Date.now();
+                        markWebRTCPacketsRecent(player);
+                    } else {
+                        player.audio.dataset.hazeTrackMuted = '0';
                     }
-                    player.audio.dataset.hazeTrackMuted = '0';
-                    clearPlayerTimer(player, 'trackMuteTimer');
-                    clearPlayerTimer(player, 'mediaEventTimer');
                 }
                 if (player.stagnantStatsPolls > 0 && isActivePlayer(feedId, player)) {
                     setHealthyWebRTCStatus(feedId, player);
@@ -887,6 +896,7 @@ async function startFeedWebRTC(feedId) {
         player.trackAttached = true;
         currentAudio.dataset.hazeTrackAttached = '1';
         currentAudio.dataset.hazeTrackState = event.track.readyState || '';
+        markWebRTCPacketsRecent(player, currentAudio);
         event.track.onmute = () => {
             if (isActivePlayer(feedId, player)) {
                 currentAudio.dataset.hazeTrackRawMuted = '1';
@@ -902,8 +912,7 @@ async function startFeedWebRTC(feedId) {
         event.track.onunmute = () => {
             if (isActivePlayer(feedId, player)) {
                 currentAudio.dataset.hazeTrackRawMuted = '0';
-                currentAudio.dataset.hazeTrackMuted = '0';
-                clearPlayerTimer(player, 'trackMuteTimer');
+                markWebRTCPacketsRecent(player, currentAudio);
             }
         };
         event.track.onended = () => {
