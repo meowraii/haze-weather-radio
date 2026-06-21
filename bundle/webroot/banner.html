@@ -302,6 +302,8 @@
     <script>
         const API_BASE = '/api/v1';
         const PAGE_MS = 6000;
+        const AUDIO_TRANSIENT_STATUS_DELAY_MS = 2000;
+        const AUDIO_DISCONNECT_GRACE_MS = 15000;
 
         const frame = document.getElementById('frame');
         const tickerWindow = document.getElementById('tickerWindow');
@@ -330,6 +332,8 @@
             audioRetryCount: 0,
             audioElement: null,
             audioReconnectTimer: null,
+            audioDisconnectTimer: null,
+            audioTrackMuteTimer: null,
             obsController: null,
             unloading: false,
             tickerDormantSignature: '',
@@ -1098,6 +1102,14 @@
                 window.clearTimeout(state.audioReconnectTimer);
                 state.audioReconnectTimer = null;
             }
+            if (state.audioDisconnectTimer) {
+                window.clearTimeout(state.audioDisconnectTimer);
+                state.audioDisconnectTimer = null;
+            }
+            if (state.audioTrackMuteTimer) {
+                window.clearTimeout(state.audioTrackMuteTimer);
+                state.audioTrackMuteTimer = null;
+            }
             if (state.audioPeer) {
                 state.audioPeer.ontrack = null;
                 state.audioPeer.onconnectionstatechange = null;
@@ -1108,6 +1120,26 @@
                 state.audioElement.pause();
                 state.audioElement.srcObject = null;
                 state.audioElement = null;
+            }
+        }
+
+        function closeAudioPeerOnly() {
+            if (state.audioPeer) {
+                state.audioPeer.ontrack = null;
+                state.audioPeer.onconnectionstatechange = null;
+                state.audioPeer.close();
+                state.audioPeer = null;
+            }
+        }
+
+        function clearAudioTransientTimers() {
+            if (state.audioDisconnectTimer) {
+                window.clearTimeout(state.audioDisconnectTimer);
+                state.audioDisconnectTimer = null;
+            }
+            if (state.audioTrackMuteTimer) {
+                window.clearTimeout(state.audioTrackMuteTimer);
+                state.audioTrackMuteTimer = null;
             }
         }
 
@@ -1160,6 +1192,22 @@
                 if (!stream) {
                     return;
                 }
+                event.track.onmute = () => {
+                    if (state.audioTrackMuteTimer) {
+                        window.clearTimeout(state.audioTrackMuteTimer);
+                    }
+                    state.audioTrackMuteTimer = window.setTimeout(() => {
+                        if (event.track.muted) {
+                            console.warn('Banner WebRTC audio track is waiting for frames.');
+                        }
+                    }, AUDIO_TRANSIENT_STATUS_DELAY_MS);
+                };
+                event.track.onunmute = () => {
+                    if (state.audioTrackMuteTimer) {
+                        window.clearTimeout(state.audioTrackMuteTimer);
+                        state.audioTrackMuteTimer = null;
+                    }
+                };
                 audio.srcObject = stream;
                 const playPromise = audio.play();
                 if (playPromise && typeof playPromise.catch === 'function') {
@@ -1168,8 +1216,13 @@
             };
 
             pc.onconnectionstatechange = () => {
-                if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
-                    scheduleAudioReconnect();
+                if (pc.connectionState === 'connected') {
+                    clearAudioTransientTimers();
+                    state.audioRetryCount = 0;
+                } else if (pc.connectionState === 'disconnected') {
+                    scheduleAudioDisconnectReconnect(pc);
+                } else if (['failed', 'closed'].includes(pc.connectionState)) {
+                    scheduleAudioReconnect({ force: true });
                 }
             };
 
@@ -1197,20 +1250,36 @@
                 })
                 .catch((error) => {
                     console.error(error);
-                    scheduleAudioReconnect();
+                    scheduleAudioReconnect({ force: true });
                 });
         }
 
-        function scheduleAudioReconnect() {
-            if (!query.audio || state.unloading || state.audioReconnectTimer) {
+        function scheduleAudioDisconnectReconnect(peer) {
+            if (!query.audio || state.unloading || state.audioDisconnectTimer) {
                 return;
             }
-            if (state.audioPeer) {
-                state.audioPeer.ontrack = null;
-                state.audioPeer.onconnectionstatechange = null;
-                state.audioPeer.close();
-                state.audioPeer = null;
+            state.audioDisconnectTimer = window.setTimeout(() => {
+                state.audioDisconnectTimer = null;
+                if (state.audioPeer === peer && peer.connectionState === 'disconnected') {
+                    scheduleAudioReconnect({ force: true });
+                }
+            }, AUDIO_DISCONNECT_GRACE_MS);
+        }
+
+        function scheduleAudioReconnect({ force = false } = {}) {
+            if (!query.audio || state.unloading) {
+                return;
             }
+            if (state.audioReconnectTimer) {
+                if (!force) return;
+                window.clearTimeout(state.audioReconnectTimer);
+                state.audioReconnectTimer = null;
+            }
+            if (state.audioDisconnectTimer) {
+                window.clearTimeout(state.audioDisconnectTimer);
+                state.audioDisconnectTimer = null;
+            }
+            closeAudioPeerOnly();
             const delay = Math.min(1000 * (2 ** state.audioRetryCount), 10000);
             state.audioRetryCount += 1;
             state.audioReconnectTimer = window.setTimeout(() => {
