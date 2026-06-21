@@ -1123,8 +1123,9 @@ async function startFeedWebRTC(feedId) {
                     ice_state: pc.iceConnectionState,
                     track_state: event.track.readyState || '',
                 });
-                player.trackMuted = true;
-                currentAudio.dataset.hazeTrackMuted = '1';
+                clearPlayerTimer(player, 'trackMuteTimer');
+                player.trackMuted = false;
+                currentAudio.dataset.hazeTrackMuted = '0';
                 ensureWebRTCAudioPlaying(feedId, player, currentAudio);
             }
         };
