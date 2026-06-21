@@ -370,6 +370,21 @@ func TestWebRTCTimestampSkippedFramesSubtractsFillerPackets(t *testing.T) {
 	}
 }
 
+func TestWebRTCDiagnosticSkippedFramesDoesNotDoubleCount(t *testing.T) {
+	if got := webRTCDiagnosticSkippedFrames(0, 0, 3); got != 3 {
+		t.Fatalf("startup diagnostic skips = %d, want 3", got)
+	}
+	if got := webRTCDiagnosticSkippedFrames(1, 3, 3); got != 3 {
+		t.Fatalf("diagnostic skips double-counted = %d, want 3", got)
+	}
+	if got := webRTCDiagnosticSkippedFrames(1, 4, 2); got != 4 {
+		t.Fatalf("diagnostic skips should keep larger source gap = %d, want 4", got)
+	}
+	if got := webRTCDiagnosticSkippedFrames(1, 1, 2); got != 2 {
+		t.Fatalf("diagnostic skips should keep larger drain count = %d, want 2", got)
+	}
+}
+
 func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
 	var inFlight atomic.Bool
 	var startedAt atomic.Int64

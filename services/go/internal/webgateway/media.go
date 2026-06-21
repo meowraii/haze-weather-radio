@@ -1169,11 +1169,10 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		}
 		sourceSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
 		timestampSkipped := webRTCTimestampSkippedFramesAfterFiller(sourceSkipped, fillerFramesSinceSource)
-		pendingSkipped += sourceSkipped
+		pendingSkipped += webRTCDiagnosticSkippedFrames(lastSourceSequence, sourceSkipped, drainSkipped)
 		lastSourceSequence = frame.sequence
 		fillerFramesSinceSource = 0
 		lastFrame = cloneWebRTCFrame(frame)
-		pendingSkipped += drainSkipped
 		skipped := pendingSkipped
 		pendingSkipped = 0
 		return writeFrame(frame, skipped, timestampSkipped)
@@ -1275,6 +1274,16 @@ func webRTCTimestampSkippedFramesAfterFiller(sourceSkipped int, fillerFrames int
 		return 0
 	}
 	return remaining
+}
+
+func webRTCDiagnosticSkippedFrames(lastSequence uint64, sourceSkipped int, drainedSkipped int) int {
+	if lastSequence == 0 {
+		return drainedSkipped
+	}
+	if sourceSkipped > drainedSkipped {
+		return sourceSkipped
+	}
+	return drainedSkipped
 }
 
 func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAudioCodec, inFlight *atomic.Bool, startedAt *atomic.Int64, timeout time.Duration, onTimeout func()) {
