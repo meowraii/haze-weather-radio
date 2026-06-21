@@ -34,7 +34,6 @@ const (
 	webrtcFrameDuration        = 20 * time.Millisecond
 	webrtcMaxQueuedFrames      = 10
 	webrtcPeerFrameMailbox     = 1
-	webrtcMaxCatchUpFrames     = 3
 	webrtcResumeQueuedFrames   = 2
 	webrtcConcealmentFrames    = 6
 	feedIngressCapacity        = 4
@@ -1040,15 +1039,10 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			}
 		})
 	})
-	keepalive := stoppedWebRTCTimer()
-	defer keepalive.Stop()
-	var lastFrame []byte
-	var lastWriteAt time.Time
 	writeFrame := func(frame []byte, skipped int) bool {
 		if len(frame) == 0 {
 			return true
 		}
-		lastFrame = frame
 		stats.recordSkipped(skipped)
 		writeStartedAt.Store(time.Now().UnixNano())
 		writeInFlight.Store(true)
@@ -1066,13 +1060,11 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			return false
 		}
 		stats.written++
-		lastWriteAt = time.Now()
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
 		if !loggedWrite {
 			log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame))
 			loggedWrite = true
 		}
-		resetWebRTCTimer(keepalive, webrtcFrameDuration)
 		return true
 	}
 	for {
@@ -1093,63 +1085,8 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			if !writeFrame(frame, skipped) {
 				return
 			}
-		case <-keepalive.C:
-			frame := lastFrame
-			writesDue := webRTCKeepaliveWritesDue(lastWriteAt, time.Now())
-			stats.recordCatchUp(writesDue)
-			for writes := writesDue; writes > 0; writes-- {
-				var skipped int
-				var ok bool
-				frame, skipped, ok = latestWebRTCFrame(frame, frames)
-				if !ok {
-					return
-				}
-				if len(frame) == 0 {
-					resetWebRTCTimer(keepalive, webrtcFrameDuration)
-					continue
-				}
-				if !writeFrame(frame, skipped) {
-					return
-				}
-			}
 		}
 	}
-}
-
-func webRTCKeepaliveWritesDue(lastWriteAt time.Time, now time.Time) int {
-	if lastWriteAt.IsZero() || now.Before(lastWriteAt) {
-		return 1
-	}
-	elapsed := now.Sub(lastWriteAt)
-	due := int(elapsed / webrtcFrameDuration)
-	if due < 1 {
-		return 1
-	}
-	if due > webrtcMaxCatchUpFrames {
-		return webrtcMaxCatchUpFrames
-	}
-	return due
-}
-
-func resetWebRTCTimer(timer *time.Timer, delay time.Duration) {
-	if !timer.Stop() {
-		select {
-		case <-timer.C:
-		default:
-		}
-	}
-	timer.Reset(delay)
-}
-
-func stoppedWebRTCTimer() *time.Timer {
-	timer := time.NewTimer(time.Hour)
-	if !timer.Stop() {
-		select {
-		case <-timer.C:
-		default:
-		}
-	}
-	return timer
 }
 
 func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAudioCodec, inFlight *atomic.Bool, startedAt *atomic.Int64, timeout time.Duration, onTimeout func()) {
@@ -1184,12 +1121,10 @@ func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAud
 }
 
 type webRTCPeerStreamStats struct {
-	written        uint64
-	skippedFrames  uint64
-	catchUpBatches uint64
-	catchUpFrames  uint64
-	writeErrors    uint64
-	lastReport     time.Time
+	written       uint64
+	skippedFrames uint64
+	writeErrors   uint64
+	lastReport    time.Time
 }
 
 func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
@@ -1198,19 +1133,9 @@ func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
 	}
 }
 
-func (s *webRTCPeerStreamStats) recordCatchUp(writesDue int) {
-	if writesDue <= 1 {
-		return
-	}
-	s.catchUpBatches++
-	s.catchUpFrames += uint64(writesDue - 1)
-}
-
 func (s *webRTCPeerStreamStats) resetInterval() {
 	s.written = 0
 	s.skippedFrames = 0
-	s.catchUpBatches = 0
-	s.catchUpFrames = 0
 	s.writeErrors = 0
 }
 
@@ -1219,14 +1144,12 @@ func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats 
 	if now.Sub(stats.lastReport) < webrtcDiagnosticsInterval {
 		return
 	}
-	if stats.skippedFrames > 0 || stats.catchUpBatches > 0 || stats.writeErrors > 0 {
-		log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d catchup_batches=%d catchup_frames=%d write_errors=%d",
+	if stats.skippedFrames > 0 || stats.writeErrors > 0 {
+		log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d write_errors=%d",
 			feedID,
 			codec,
 			stats.written,
 			stats.skippedFrames,
-			stats.catchUpBatches,
-			stats.catchUpFrames,
 			stats.writeErrors,
 		)
 	}

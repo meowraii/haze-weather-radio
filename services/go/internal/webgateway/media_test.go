@@ -255,44 +255,6 @@ func TestLatestWebRTCFrameDoesNotSkipStartupFrame(t *testing.T) {
 	}
 }
 
-func TestWebRTCKeepaliveWritesDue(t *testing.T) {
-	now := time.Unix(10, 0)
-	cases := []struct {
-		name        string
-		lastWriteAt time.Time
-		want        int
-	}{
-		{name: "unwritten", lastWriteAt: time.Time{}, want: 1},
-		{name: "early clock", lastWriteAt: now.Add(time.Second), want: 1},
-		{name: "on cadence", lastWriteAt: now.Add(-webrtcFrameDuration), want: 1},
-		{name: "catch up", lastWriteAt: now.Add(-2 * webrtcFrameDuration), want: 2},
-		{name: "bounded", lastWriteAt: now.Add(-10 * webrtcFrameDuration), want: webrtcMaxCatchUpFrames},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := webRTCKeepaliveWritesDue(tc.lastWriteAt, now); got != tc.want {
-				t.Fatalf("writes due = %d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestWebRTCPeerStreamStatsRecordsCatchUp(t *testing.T) {
-	var stats webRTCPeerStreamStats
-	stats.recordCatchUp(1)
-	if stats.catchUpBatches != 0 || stats.catchUpFrames != 0 {
-		t.Fatalf("single write should not count as catch-up: %#v", stats)
-	}
-	stats.recordCatchUp(3)
-	if stats.catchUpBatches != 1 || stats.catchUpFrames != 2 {
-		t.Fatalf("catch-up stats = batches %d frames %d, want 1/2", stats.catchUpBatches, stats.catchUpFrames)
-	}
-	stats.resetInterval()
-	if stats.catchUpBatches != 0 || stats.catchUpFrames != 0 {
-		t.Fatalf("reset did not clear catch-up stats: %#v", stats)
-	}
-}
-
 func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
 	var inFlight atomic.Bool
 	var startedAt atomic.Int64
@@ -329,22 +291,6 @@ func TestWatchWebRTCSampleWritesIgnoresIdleWriter(t *testing.T) {
 	case <-done:
 		t.Fatal("idle WebRTC write watchdog should not fire")
 	case <-time.After(40 * time.Millisecond):
-	}
-}
-
-func TestStoppedWebRTCTimerStartsDisarmed(t *testing.T) {
-	timer := stoppedWebRTCTimer()
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		t.Fatal("stopped timer fired before reset")
-	case <-time.After(10 * time.Millisecond):
-	}
-	resetWebRTCTimer(timer, time.Millisecond)
-	select {
-	case <-timer.C:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("reset timer did not fire")
 	}
 }
 
