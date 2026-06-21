@@ -1109,6 +1109,8 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		stats.written++
 		stats.sequenceNumber++
 		stats.timestamp += rtpTimestampStep(codec)
+		stats.lastWriteAt = time.Now()
+		stats.lastPayloadBytes = len(frame)
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
 		if !loggedWrite {
 			log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame))
@@ -1208,12 +1210,14 @@ func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAud
 }
 
 type webRTCPeerStreamStats struct {
-	written        uint64
-	skippedFrames  uint64
-	writeErrors    uint64
-	lastReport     time.Time
-	sequenceNumber uint16
-	timestamp      uint32
+	written          uint64
+	skippedFrames    uint64
+	writeErrors      uint64
+	lastReport       time.Time
+	sequenceNumber   uint16
+	timestamp        uint32
+	lastWriteAt      time.Time
+	lastPayloadBytes int
 }
 
 func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
@@ -1233,12 +1237,20 @@ func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats 
 	if now.Sub(stats.lastReport) < webrtcDiagnosticsInterval {
 		return
 	}
-	log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d write_errors=%d",
+	lastWriteAgeMS := int64(-1)
+	if !stats.lastWriteAt.IsZero() {
+		lastWriteAgeMS = now.Sub(stats.lastWriteAt).Milliseconds()
+	}
+	log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d write_errors=%d next_seq=%d next_ts=%d last_payload_bytes=%d last_write_age_ms=%d",
 		feedID,
 		codec,
 		stats.written,
 		stats.skippedFrames,
 		stats.writeErrors,
+		stats.sequenceNumber,
+		stats.timestamp,
+		stats.lastPayloadBytes,
+		lastWriteAgeMS,
 	)
 	stats.lastReport = now
 	stats.resetInterval()
