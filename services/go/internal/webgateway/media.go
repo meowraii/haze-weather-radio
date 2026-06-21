@@ -44,6 +44,7 @@ const (
 	webrtcDisconnectGrace      = 15 * time.Second
 	webrtcDiagnosticsInterval  = 30 * time.Second
 	webrtcWriteTimeout         = 3 * time.Second
+	webrtcMediaStartFallback   = 750 * time.Millisecond
 	webrtcFrameSourceIdleGrace = 15 * time.Second
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
 	webrtcPeerSourceWait       = 15 * time.Millisecond
@@ -469,6 +470,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		UpdatedAt:   time.Now(),
 	})
 	go h.streamWebRTCFrames(peerCtx, peerID, feedID, codec, payloadType, track, frames, unsubscribeFrames, mediaReady, cleanup)
+	go markWebRTCMediaReadyAfter(peerCtx, webrtcMediaStartFallback, markMediaReady)
 	return WebRTCAnswer{SDP: localDescription.SDP, Codec: codec, PayloadType: payloadType, MediaRecent: mediaRecent}, nil
 }
 
@@ -495,6 +497,23 @@ func shouldStartWebRTCMedia(peerState webrtc.PeerConnectionState, iceState webrt
 	return peerState == webrtc.PeerConnectionStateConnected ||
 		iceState == webrtc.ICEConnectionStateConnected ||
 		iceState == webrtc.ICEConnectionStateCompleted
+}
+
+func markWebRTCMediaReadyAfter(ctx context.Context, delay time.Duration, mark func()) {
+	if mark == nil {
+		return
+	}
+	if delay <= 0 {
+		mark()
+		return
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+		mark()
+	}
 }
 
 func newWebRTCPeerConnection(configuration webrtc.Configuration) (*webrtc.PeerConnection, error) {

@@ -1159,6 +1159,25 @@ func TestWebRTCMediaStartPolicyUsesPeerOrICEReadiness(t *testing.T) {
 	}
 }
 
+func TestMarkWebRTCMediaReadyAfterFallback(t *testing.T) {
+	ready := make(chan struct{})
+	mark := func() { close(ready) }
+	go markWebRTCMediaReadyAfter(t.Context(), time.Millisecond, mark)
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for fallback media ready mark")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	markWebRTCMediaReadyAfter(ctx, time.Millisecond, func() { called = true })
+	if called {
+		t.Fatal("canceled fallback should not mark media ready")
+	}
+}
+
 func TestWriteWAVStreamHeader(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	if err := writeWAVStreamHeader(recorder, 48000, 1, 16); err != nil {
