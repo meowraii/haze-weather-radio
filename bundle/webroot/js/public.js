@@ -633,7 +633,28 @@ function setHealthyWebRTCStatus(feedId, player, audio = player?.audio) {
         setPlayerStatus(feedId, 'Press Play to start audio');
         return;
     }
+    ensureWebRTCAudioPlaying(feedId, player, audio);
     setPlayerStatus(feedId, audio?.paused ? 'Audio ready' : 'Playing');
+}
+
+function ensureWebRTCAudioPlaying(feedId, player, audio = player?.audio) {
+    if (!isActivePlayer(feedId, player) || player?.mode !== 'webrtc' || !audio) return;
+    if (!audio.paused || audio.dataset.hazePlayerState === 'play-blocked' || audio.dataset.hazePlayerState === 'needs-play') return;
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise
+            .then(() => {
+                if (isActivePlayer(feedId, player)) {
+                    audio.dataset.hazePlayerState = audio.paused ? 'audio-ready' : 'playing';
+                }
+            })
+            .catch(() => {
+                if (isActivePlayer(feedId, player)) {
+                    audio.dataset.hazePlayerState = 'needs-play';
+                    setPlayerStatus(feedId, 'Press Play to start audio');
+                }
+            });
+    }
 }
 
 function hasRecentWebRTCPackets(player, now = Date.now()) {
@@ -738,6 +759,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                 if ((packetsDelta > 0 || !previous) && player.audio) {
                     if (packetsDelta > 0 || snapshot.packetsReceived > 0) {
                         markWebRTCPacketsRecent(player);
+                        ensureWebRTCAudioPlaying(feedId, player);
                     } else {
                         player.audio.dataset.hazeTrackMuted = '0';
                     }
@@ -1053,6 +1075,7 @@ async function startFeedWebRTC(feedId) {
                     track_state: event.track.readyState || '',
                 });
                 markWebRTCPacketsRecent(player, currentAudio);
+                ensureWebRTCAudioPlaying(feedId, player, currentAudio);
             }
         };
         event.track.onended = () => {
@@ -1113,6 +1136,7 @@ async function startFeedWebRTC(feedId) {
         if (pc.connectionState === 'connected') {
             player.connected = true;
             cancelWebRTCReconnect(player);
+            ensureWebRTCAudioPlaying(feedId, player, currentAudio);
             clearPlayerTimer(player, 'connectionStateTimer');
             clearPlayerTimer(player, 'disconnectReconnectTimer');
             if (currentAudio?.dataset.hazePlayerState === 'play-blocked' || currentAudio?.dataset.hazePlayerState === 'needs-play') {
