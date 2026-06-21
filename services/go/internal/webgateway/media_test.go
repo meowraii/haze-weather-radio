@@ -186,12 +186,31 @@ func TestLatestWebRTCFrameSkipsStaleFrames(t *testing.T) {
 	frames <- []byte{3}
 	frames <- []byte{4}
 
-	latest, skipped := latestWebRTCFrame([]byte{1}, frames)
+	latest, skipped, ok := latestWebRTCFrame([]byte{1}, frames)
+	if !ok {
+		t.Fatal("open frame channel was reported closed")
+	}
 	if string(latest) != string([]byte{4}) {
 		t.Fatalf("latest frame = %v, want [4]", latest)
 	}
 	if skipped != 3 {
 		t.Fatalf("skipped = %d, want 3", skipped)
+	}
+}
+
+func TestLatestWebRTCFrameDoesNotSkipStartupFrame(t *testing.T) {
+	frames := make(chan []byte, 2)
+	frames <- []byte{1}
+
+	latest, skipped, ok := latestWebRTCFrame(nil, frames)
+	if !ok {
+		t.Fatal("open frame channel was reported closed")
+	}
+	if string(latest) != string([]byte{1}) {
+		t.Fatalf("latest frame = %v, want [1]", latest)
+	}
+	if skipped != 0 {
+		t.Fatalf("skipped = %d, want 0", skipped)
 	}
 }
 

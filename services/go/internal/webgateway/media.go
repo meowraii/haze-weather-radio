@@ -951,6 +951,9 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			}
 		})
 	})
+	ticker := time.NewTicker(webrtcFrameDuration)
+	defer ticker.Stop()
+	var lastFrame []byte
 	for {
 		select {
 		case <-ctx.Done():
@@ -962,7 +965,16 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			if len(frame) == 0 {
 				continue
 			}
-			frame, skipped := latestWebRTCFrame(frame, frames)
+			lastFrame = frame
+		case <-ticker.C:
+			frame, skipped, ok := latestWebRTCFrame(lastFrame, frames)
+			if !ok {
+				return
+			}
+			if len(frame) == 0 {
+				continue
+			}
+			lastFrame = frame
 			stats.recordSkipped(skipped)
 			writeStartedAt.Store(time.Now().UnixNano())
 			writeInFlight.Store(true)
@@ -1057,24 +1069,34 @@ func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats 
 	stats.resetInterval()
 }
 
-func latestWebRTCFrame(first []byte, frames <-chan []byte) ([]byte, int) {
-	latest := first
-	skipped := 0
+func latestWebRTCFrame(current []byte, frames <-chan []byte) ([]byte, int, bool) {
+	latest := current
+	collected := 0
 	for {
 		select {
 		case frame, ok := <-frames:
 			if !ok {
-				return latest, skipped
+				return latest, skippedCollectedFrames(current, collected), false
 			}
 			if len(frame) == 0 {
 				continue
 			}
 			latest = frame
-			skipped++
+			collected++
 		default:
-			return latest, skipped
+			return latest, skippedCollectedFrames(current, collected), true
 		}
 	}
+}
+
+func skippedCollectedFrames(current []byte, collected int) int {
+	if collected <= 0 {
+		return 0
+	}
+	if len(current) == 0 {
+		return collected - 1
+	}
+	return collected
 }
 
 type frameConcealer struct {
