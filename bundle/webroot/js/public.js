@@ -139,6 +139,7 @@ const WEBRTC_HARD_PACKET_STALE_MS = 120000;
 const WEBRTC_PLAYBACK_WATCHDOG_MS = 2500;
 const WEBRTC_OUTPUT_BED_GAIN = 0.0008;
 const WEBRTC_OUTPUT_BED_FREQUENCY = 37;
+const WEBRTC_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -795,6 +796,9 @@ function closeWebRTCAudioOutput(player) {
     const mixer = player?.audioOutputMixer;
     if (!mixer) return;
     player.audioOutputMixer = null;
+    if (mixer.resumeFallbackTimer) {
+        window.clearTimeout(mixer.resumeFallbackTimer);
+    }
     try {
         mixer.oscillator?.stop();
     } catch {
@@ -848,6 +852,14 @@ function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
         player.audioOutputMixer = { context, source, oscillator, gain, destination, sourceStream, outputStream };
         audio.srcObject = outputStream;
         context.resume?.().catch(() => {});
+        player.audioOutputMixer.resumeFallbackTimer = window.setTimeout(() => {
+            if (player.audioOutputMixer?.outputStream !== outputStream || context.state === 'running') return;
+            recordWebRTCEvent(feedId, 'audio_output_mixer_suspended_fallback', {
+                context_state: context.state,
+            });
+            closeWebRTCAudioOutput(player);
+            audio.srcObject = sourceStream;
+        }, WEBRTC_OUTPUT_MIXER_RESUME_GRACE_MS);
         recordWebRTCEvent(feedId, 'audio_output_mixer_bound', {
             source_track_count: sourceStream.getAudioTracks?.().length || 0,
             output_track_count: outputStream.getAudioTracks?.().length || 0,
