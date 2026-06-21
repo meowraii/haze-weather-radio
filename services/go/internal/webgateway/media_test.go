@@ -292,19 +292,10 @@ func TestLatestWebRTCFrameDoesNotSkipStartupFrame(t *testing.T) {
 	}
 }
 
-func TestRTPTimestampForFrameIncludesSkippedFramesBeforeWrite(t *testing.T) {
+func TestRTPTimestampForFrameStaysPacketContinuous(t *testing.T) {
 	base := uint32(4000)
-	if got := rtpTimestampForFrame(webRTCAudioPCMU, base, 0); got != base {
-		t.Fatalf("PCMU timestamp without skips = %d, want %d", got, base)
-	}
-	if got := rtpTimestampForFrame(webRTCAudioPCMU, base, 2); got != base+2*rtpTimestampStep(webRTCAudioPCMU) {
-		t.Fatalf("PCMU timestamp with skips = %d, want %d", got, base+2*rtpTimestampStep(webRTCAudioPCMU))
-	}
-	if got := rtpTimestampForFrame(webRTCAudioOpus, base, 1); got != base+rtpTimestampStep(webRTCAudioOpus) {
-		t.Fatalf("Opus timestamp with skips = %d, want %d", got, base+rtpTimestampStep(webRTCAudioOpus))
-	}
-	if got := rtpTimestampForFrame(webRTCAudioPCMU, base, -1); got != base {
-		t.Fatalf("negative skipped timestamp = %d, want %d", got, base)
+	if got := rtpTimestampForFrame(base); got != base {
+		t.Fatalf("RTP timestamp = %d, want %d", got, base)
 	}
 }
 
@@ -358,14 +349,14 @@ func TestWebRTCTimestampSkippedFramesUsesSourceSequenceGap(t *testing.T) {
 	}
 }
 
-func TestWebRTCTimestampSkippedFramesSubtractsFillerPackets(t *testing.T) {
-	if got := webRTCTimestampSkippedFramesAfterFiller(3, 0); got != 3 {
+func TestWebRTCSourceGapFramesSubtractsFillerPackets(t *testing.T) {
+	if got := webRTCSourceGapFramesAfterFiller(3, 0); got != 3 {
 		t.Fatalf("skipped count without filler = %d, want 3", got)
 	}
-	if got := webRTCTimestampSkippedFramesAfterFiller(3, 2); got != 1 {
+	if got := webRTCSourceGapFramesAfterFiller(3, 2); got != 1 {
 		t.Fatalf("skipped count after partial filler = %d, want 1", got)
 	}
-	if got := webRTCTimestampSkippedFramesAfterFiller(2, 4); got != 0 {
+	if got := webRTCSourceGapFramesAfterFiller(2, 4); got != 0 {
 		t.Fatalf("skipped count after covering filler = %d, want 0", got)
 	}
 }
@@ -385,23 +376,23 @@ func TestWebRTCDiagnosticSkippedFramesDoesNotDoubleCount(t *testing.T) {
 	}
 }
 
-func TestWebRTCPeerStreamStatsTracksFillerAndTimestampSkips(t *testing.T) {
+func TestWebRTCPeerStreamStatsTracksFillerAndSourceGaps(t *testing.T) {
 	stats := webRTCPeerStreamStats{}
 	stats.recordSkipped(2)
-	stats.recordTimestampSkipped(1)
+	stats.recordSourceGap(1)
 	stats.recordFiller(true)
 	stats.recordFiller(false)
 	if stats.skippedFrames != 2 {
 		t.Fatalf("skipped frames = %d, want 2", stats.skippedFrames)
 	}
-	if stats.timestampSkippedFrames != 1 {
-		t.Fatalf("timestamp skipped frames = %d, want 1", stats.timestampSkippedFrames)
+	if stats.sourceGapFrames != 1 {
+		t.Fatalf("source gap frames = %d, want 1", stats.sourceGapFrames)
 	}
 	if stats.fillerFrames != 1 {
 		t.Fatalf("filler frames = %d, want 1", stats.fillerFrames)
 	}
 	stats.resetInterval()
-	if stats.skippedFrames != 0 || stats.timestampSkippedFrames != 0 || stats.fillerFrames != 0 {
+	if stats.skippedFrames != 0 || stats.sourceGapFrames != 0 || stats.fillerFrames != 0 {
 		t.Fatalf("stats were not reset: %+v", stats)
 	}
 }
