@@ -1920,6 +1920,16 @@
             state.audioDisconnectTimer = window.setTimeout(() => {
                 state.audioDisconnectTimer = null;
                 if (state.audioPeer === peer && peer.connectionState === 'disconnected') {
+                    if (!hasHardStaleBannerAudioPackets()) {
+                        recordBannerAudioEvent('disconnect_reconnect_deferred', {
+                            connection_state: peer.connectionState,
+                            ice_state: peer.iceConnectionState,
+                            packets_recent: hasRecentBannerAudioPackets(),
+                            packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
+                        });
+                        scheduleAudioDisconnectReconnect(peer);
+                        return;
+                    }
                     scheduleAudioReconnect({ force: true });
                 }
             }, AUDIO_DISCONNECT_GRACE_MS);

@@ -1226,6 +1226,16 @@ function scheduleWebRTCDisconnectReconnect(feedId, player, pc) {
     player.disconnectReconnectTimer = window.setTimeout(() => {
         player.disconnectReconnectTimer = null;
         if (isActivePlayer(feedId, player) && player.pc === pc && pc.connectionState === 'disconnected') {
+            if (!hasHardStaleWebRTCPackets(player)) {
+                recordWebRTCEvent(feedId, 'disconnect_reconnect_deferred', {
+                    connection_state: pc.connectionState,
+                    ice_state: pc.iceConnectionState,
+                    packets_recent: hasRecentWebRTCPackets(player),
+                    packet_source_age_ms: webRTCPacketSourceAgeMS(player),
+                });
+                scheduleWebRTCDisconnectReconnect(feedId, player, pc);
+                return;
+            }
             scheduleWebRTCReconnect(feedId, player, 'Reconnecting disconnected audio...');
         }
     }, WEBRTC_DISCONNECT_GRACE_MS);
@@ -1584,7 +1594,7 @@ async function startFeedWebRTC(feedId) {
         } else if (pc.connectionState === 'disconnected') {
             clearPlayerTimer(player, 'connectionStateTimer');
             player.connectionStateTimer = window.setTimeout(() => {
-                if (isActivePlayer(feedId, player) && pc.connectionState === 'disconnected') {
+                if (isActivePlayer(feedId, player) && pc.connectionState === 'disconnected' && hasHardStaleWebRTCPackets(player)) {
                     setPlayerStatus(feedId, 'Reconnecting...');
                 }
             }, WEBRTC_TRANSIENT_STATUS_DELAY_MS);
