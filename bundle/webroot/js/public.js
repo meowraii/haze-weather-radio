@@ -604,6 +604,7 @@ function clearPlayerTimer(player, key) {
 }
 
 function setHealthyWebRTCStatus(feedId, player, audio = player?.audio) {
+    cancelWebRTCReconnect(player);
     clearPlayerTimer(player, 'trackMuteTimer');
     clearPlayerTimer(player, 'connectionStateTimer');
     clearPlayerTimer(player, 'disconnectReconnectTimer');
@@ -793,15 +794,21 @@ function scheduleWebRTCReconnect(feedId, player, reason = 'Reconnecting audio...
     const delay = Math.min(WEBRTC_RECONNECT_BASE_DELAY_MS * (2 ** attempts), WEBRTC_RECONNECT_MAX_DELAY_MS);
     player.reconnectAttempts = attempts + 1;
     player.reconnectPending = true;
-    detachWebRTCPlayerForReconnect(feedId, player);
     player.reconnectTimer = window.setTimeout(() => {
         player.reconnectTimer = null;
         player.reconnectPending = false;
         if (!isActivePlayer(feedId, player) || player.stopping) return;
+        detachWebRTCPlayerForReconnect(feedId, player);
         feedPlayers.delete(String(feedId || ''));
         startFeedWebRTC(feedId);
     }, delay);
     setPlayerStatus(feedId, reason);
+}
+
+function cancelWebRTCReconnect(player) {
+    if (!player) return;
+    clearPlayerTimer(player, 'reconnectTimer');
+    player.reconnectPending = false;
 }
 
 async function readInboundAudioStats(pc) {
@@ -1086,6 +1093,7 @@ async function startFeedWebRTC(feedId) {
         }
         if (pc.connectionState === 'connected') {
             player.connected = true;
+            cancelWebRTCReconnect(player);
             clearPlayerTimer(player, 'connectionStateTimer');
             clearPlayerTimer(player, 'disconnectReconnectTimer');
             if (currentAudio?.dataset.hazePlayerState === 'play-blocked' || currentAudio?.dataset.hazePlayerState === 'needs-play') {

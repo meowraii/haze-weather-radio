@@ -1312,6 +1312,7 @@
 
         function markBannerAudioPacketsRecent() {
             state.audioLastPacketAt = Date.now();
+            cancelAudioReconnect();
             if (state.audioTrackMuteTimer) {
                 window.clearTimeout(state.audioTrackMuteTimer);
                 state.audioTrackMuteTimer = null;
@@ -1419,6 +1420,7 @@
                     has_live_track: hasLiveBannerAudioTrack(),
                 });
                 if (pc.connectionState === 'connected') {
+                    cancelAudioReconnect();
                     clearAudioTransientTimers();
                     state.audioRetryCount = 0;
                 } else if (pc.connectionState === 'disconnected') {
@@ -1497,14 +1499,22 @@
                 window.clearTimeout(state.audioDisconnectTimer);
                 state.audioDisconnectTimer = null;
             }
-            closeAudioPeerOnly();
             const delay = Math.min(1000 * (2 ** state.audioRetryCount), 10000);
             state.audioRetryCount += 1;
             state.audioReconnectTimer = window.setTimeout(() => {
                 state.audioReconnectTimer = null;
                 state.audioReconnectPending = false;
+                closeAudioPeerOnly();
                 connectAudioStream();
             }, delay);
+        }
+
+        function cancelAudioReconnect() {
+            if (state.audioReconnectTimer) {
+                window.clearTimeout(state.audioReconnectTimer);
+                state.audioReconnectTimer = null;
+            }
+            state.audioReconnectPending = false;
         }
 
         applyFrameSettings();
