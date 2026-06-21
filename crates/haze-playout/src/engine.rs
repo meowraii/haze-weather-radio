@@ -572,7 +572,7 @@ impl FeedRunner {
         let mut publish_duration_ms = 0u32;
         let chunk_interval = Duration::from_millis(u64::from(PCM_CHUNK_MS));
         let mut ticker = interval(chunk_interval);
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        ticker.set_missed_tick_behavior(realtime_tick_missed_behavior());
         let mut last_media_tick = Instant::now() - chunk_interval;
         let mut media_remainder = Duration::from_millis(0);
         let mut last_lag_log = Instant::now() - Duration::from_secs(60);
@@ -1221,6 +1221,10 @@ fn stale_pcm_publish_log_due(dropped: u64) -> bool {
 
 fn realtime_lag_warn_backlog() -> Duration {
     Duration::from_millis(REALTIME_LAG_WARN_BACKLOG_MS)
+}
+
+fn realtime_tick_missed_behavior() -> MissedTickBehavior {
+    MissedTickBehavior::Skip
 }
 
 fn pcm_publish_queue_capacity() -> usize {
@@ -2333,5 +2337,10 @@ mod tests {
     #[test]
     fn realtime_lag_warning_ignores_single_frame_jitter() {
         assert!(realtime_lag_warn_backlog() > Duration::from_millis(u64::from(PCM_CHUNK_MS)));
+    }
+
+    #[test]
+    fn realtime_ticker_skips_missed_ticks() {
+        assert_eq!(realtime_tick_missed_behavior(), MissedTickBehavior::Skip);
     }
 }
