@@ -1152,6 +1152,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	lastFrame := webRTCFrame{payload: initialWebRTCFrame(codec)}
 	var pendingSkipped int
 	var lastSourceSequence uint64
+	var fillerFramesSinceSource int
 	for {
 		select {
 		case <-ctx.Done():
@@ -1169,9 +1170,11 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				failPeer("frame_source_closed")
 				return
 			}
-			timestampSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
-			pendingSkipped += timestampSkipped
+			sourceSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
+			timestampSkipped := webRTCTimestampSkippedFramesAfterFiller(sourceSkipped, fillerFramesSinceSource)
+			pendingSkipped += sourceSkipped
 			lastSourceSequence = frame.sequence
+			fillerFramesSinceSource = 0
 			lastFrame = cloneWebRTCFrame(frame)
 			pendingSkipped += drainSkipped
 			skipped := pendingSkipped
@@ -1186,6 +1189,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			if !writeFrame(lastFrame, 0, 0) {
 				return
 			}
+			fillerFramesSinceSource++
 		}
 	}
 }
@@ -1231,6 +1235,14 @@ func webRTCTimestampSkippedFrames(lastSequence uint64, currentSequence uint64) i
 		return 0
 	}
 	return int(currentSequence - lastSequence - 1)
+}
+
+func webRTCTimestampSkippedFramesAfterFiller(sourceSkipped int, fillerFrames int) int {
+	remaining := sourceSkipped - fillerFrames
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAudioCodec, inFlight *atomic.Bool, startedAt *atomic.Int64, timeout time.Duration, onTimeout func()) {

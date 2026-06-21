@@ -322,6 +322,18 @@ func TestWebRTCTimestampSkippedFramesUsesSourceSequenceGap(t *testing.T) {
 	}
 }
 
+func TestWebRTCTimestampSkippedFramesSubtractsFillerPackets(t *testing.T) {
+	if got := webRTCTimestampSkippedFramesAfterFiller(3, 0); got != 3 {
+		t.Fatalf("skipped count without filler = %d, want 3", got)
+	}
+	if got := webRTCTimestampSkippedFramesAfterFiller(3, 2); got != 1 {
+		t.Fatalf("skipped count after partial filler = %d, want 1", got)
+	}
+	if got := webRTCTimestampSkippedFramesAfterFiller(2, 4); got != 0 {
+		t.Fatalf("skipped count after covering filler = %d, want 0", got)
+	}
+}
+
 func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
 	var inFlight atomic.Bool
 	var startedAt atomic.Int64
