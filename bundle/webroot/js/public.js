@@ -655,11 +655,11 @@ function startWebRTCStatsMonitor(feedId, player) {
                             track_attached: Boolean(player.trackAttached),
                             at: new Date().toISOString(),
                         });
-                        if (isActivePlayer(feedId, player)) {
+                        if (isActivePlayer(feedId, player) && !player.trackAttached) {
                             setPlayerStatus(feedId, 'Waiting for audio frames...');
                         }
                     }
-                    if (player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                    if (!player.trackAttached && player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                         scheduleWebRTCReconnect(feedId, player, 'Reconnecting missing audio stream...');
                     }
                 }
@@ -1559,9 +1559,6 @@ publicClient.addEventListener('reconnecting', (event) => {
     const seconds = Math.max(1, Math.round((event.detail?.delay || 1000) / 1000));
     if (currentPage === 'feeds') {
         setNotice(`Live feed directory unavailable. Reconnecting in ${seconds}s...`);
-        for (const feedId of feedPlayers.keys()) {
-            setPlayerStatus(feedId, 'Connection interrupted. Reconnecting...');
-        }
     } else if (currentPage === 'alerts') {
         alertsNotice.textContent = `Alert archive unavailable. Reconnecting in ${seconds}s...`;
     }
