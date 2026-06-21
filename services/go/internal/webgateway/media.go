@@ -20,23 +20,24 @@ import (
 )
 
 const (
-	opusSampleRate           = 48000
-	opusFrameSamples         = opusSampleRate / 50
-	g722SampleRate           = 16000
-	webrtcRTPClockRate       = 8000
-	pcmuSampleRate           = 8000
-	pcmuFrameSamples         = pcmuSampleRate / 50
-	webrtcChannels           = 1
-	opusRTPChannels          = 2
-	opusEncoderChannels      = 1
-	webrtcFrameDuration      = 20 * time.Millisecond
-	webrtcMaxQueuedFrames    = 10
-	webrtcResumeQueuedFrames = 2
-	webrtcConcealmentFrames  = 6
-	feedIngressCapacity      = 4
-	g722FrameSamples         = g722SampleRate / 50
-	bridgeReconnectDelay     = 750 * time.Millisecond
-	webrtcDisconnectGrace    = 15 * time.Second
+	opusSampleRate            = 48000
+	opusFrameSamples          = opusSampleRate / 50
+	g722SampleRate            = 16000
+	webrtcRTPClockRate        = 8000
+	pcmuSampleRate            = 8000
+	pcmuFrameSamples          = pcmuSampleRate / 50
+	webrtcChannels            = 1
+	opusRTPChannels           = 2
+	opusEncoderChannels       = 1
+	webrtcFrameDuration       = 20 * time.Millisecond
+	webrtcMaxQueuedFrames     = 10
+	webrtcResumeQueuedFrames  = 2
+	webrtcConcealmentFrames   = 6
+	feedIngressCapacity       = 4
+	g722FrameSamples          = g722SampleRate / 50
+	bridgeReconnectDelay      = 750 * time.Millisecond
+	webrtcDisconnectGrace     = 15 * time.Second
+	webrtcDiagnosticsInterval = 30 * time.Second
 )
 
 type webRTCAudioCodec int
@@ -658,6 +659,23 @@ type webRTCFrameSource struct {
 	closed   bool
 }
 
+type webRTCFrameKind int
+
+const (
+	webRTCFrameReal webRTCFrameKind = iota
+	webRTCFrameConcealed
+	webRTCFrameIdle
+)
+
+type webRTCFrameSourceStats struct {
+	produced   uint64
+	real       uint64
+	concealed  uint64
+	idle       uint64
+	dropped    uint64
+	lastReport time.Time
+}
+
 func (h *MediaHub) SubscribeWebRTCFrames(feedID string, codec webRTCAudioCodec) (<-chan []byte, func(), error) {
 	for {
 		source, err := h.webRTCFrameSource(feedID, codec)
@@ -775,6 +793,7 @@ func (s *webRTCFrameSource) run() {
 	opusIdle := opusIdleFrameSamples()
 	pcmuIdle := pcmuSilence()
 	loggedFirstFrame := false
+	stats := webRTCFrameSourceStats{lastReport: time.Now()}
 
 	for {
 		select {
@@ -793,13 +812,15 @@ func (s *webRTCFrameSource) run() {
 					drained = cap(updates)
 				}
 			}
-			frame := concealer.next(&frameQueue, &frameHead, func() []byte {
+			frame, kind := concealer.nextWithKind(&frameQueue, &frameHead, func() []byte {
 				return s.idleFrame(g722Encoder, g722Silence, opusIdle, pcmuIdle)
 			})
 			if len(frame) == 0 {
 				continue
 			}
-			s.broadcast(frame)
+			dropped, subscribers := s.broadcast(frame)
+			stats.record(kind, dropped)
+			s.maybeLogDiagnostics(&stats, subscribers, queuedFrameCount(frameQueue, frameHead))
 			if !loggedFirstFrame {
 				log.Printf("media bridge WebRTC frame source started for feed %s codec=%s (%d bytes)", s.key.feedID, s.key.codec, len(frame))
 				loggedFirstFrame = true
@@ -834,23 +855,75 @@ func (s *webRTCFrameSource) idleFrame(g722Encoder *g722.Encoder, g722Silence []i
 	}
 }
 
-func (s *webRTCFrameSource) broadcast(frame []byte) {
+func (s *webRTCFrameSource) maybeLogDiagnostics(stats *webRTCFrameSourceStats, subscribers int, queuedFrames int) {
+	now := time.Now()
+	if now.Sub(stats.lastReport) < webrtcDiagnosticsInterval {
+		return
+	}
+	if stats.dropped == 0 && stats.concealed == 0 && stats.idle == 0 {
+		stats.lastReport = now
+		stats.resetInterval()
+		return
+	}
+	log.Printf("media bridge WebRTC diagnostics feed=%s codec=%s frames=%d real=%d concealed=%d idle=%d subscriber_drops=%d subscribers=%d queue_frames=%d",
+		s.key.feedID,
+		s.key.codec,
+		stats.produced,
+		stats.real,
+		stats.concealed,
+		stats.idle,
+		stats.dropped,
+		subscribers,
+		queuedFrames,
+	)
+	stats.lastReport = now
+	stats.resetInterval()
+}
+
+func (s *webRTCFrameSourceStats) record(kind webRTCFrameKind, dropped int) {
+	s.produced++
+	switch kind {
+	case webRTCFrameConcealed:
+		s.concealed++
+	case webRTCFrameIdle:
+		s.idle++
+	default:
+		s.real++
+	}
+	if dropped > 0 {
+		s.dropped += uint64(dropped)
+	}
+}
+
+func (s *webRTCFrameSourceStats) resetInterval() {
+	s.produced = 0
+	s.real = 0
+	s.concealed = 0
+	s.idle = 0
+	s.dropped = 0
+}
+
+func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	dropped := 0
 	for subscriber := range s.subs {
 		select {
 		case subscriber <- frame:
 		default:
 			select {
 			case <-subscriber:
+				dropped++
 			default:
 			}
 			select {
 			case subscriber <- frame:
 			default:
+				dropped++
 			}
 		}
 	}
+	return dropped, len(s.subs)
 }
 
 func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, track *webrtc.TrackLocalStaticSample, frames <-chan []byte, unsubscribe func()) {
@@ -885,6 +958,11 @@ type frameConcealer struct {
 }
 
 func (c *frameConcealer) next(queue *[][]byte, head *int, silence func() []byte) []byte {
+	frame, _ := c.nextWithKind(queue, head, silence)
+	return frame
+}
+
+func (c *frameConcealer) nextWithKind(queue *[][]byte, head *int, silence func() []byte) ([]byte, webRTCFrameKind) {
 	if c.needsPrime && queuedFrameCount(*queue, *head) < webrtcResumeQueuedFrames {
 		return c.fallback(silence)
 	}
@@ -892,18 +970,18 @@ func (c *frameConcealer) next(queue *[][]byte, head *int, silence func() []byte)
 		c.last = append([]byte(nil), frame...)
 		c.repeated = 0
 		c.needsPrime = false
-		return frame
+		return frame, webRTCFrameReal
 	}
 	c.needsPrime = true
 	return c.fallback(silence)
 }
 
-func (c *frameConcealer) fallback(silence func() []byte) []byte {
+func (c *frameConcealer) fallback(silence func() []byte) ([]byte, webRTCFrameKind) {
 	if len(c.last) > 0 && c.repeated < webrtcConcealmentFrames {
 		c.repeated++
-		return append([]byte(nil), c.last...)
+		return append([]byte(nil), c.last...), webRTCFrameConcealed
 	}
-	return silence()
+	return silence(), webRTCFrameIdle
 }
 
 func queuedFrameCount(queue [][]byte, head int) int {

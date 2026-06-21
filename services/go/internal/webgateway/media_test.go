@@ -146,6 +146,37 @@ func TestFrameConcealerPrimesAfterUnderrun(t *testing.T) {
 	}
 }
 
+func TestFrameConcealerReportsFrameKind(t *testing.T) {
+	queue := [][]byte{{1}}
+	head := 0
+	concealer := frameConcealer{}
+	silence := []byte{0}
+
+	if _, kind := concealer.nextWithKind(&queue, &head, func() []byte { return silence }); kind != webRTCFrameReal {
+		t.Fatalf("first frame kind = %v, want real", kind)
+	}
+	if _, kind := concealer.nextWithKind(&queue, &head, func() []byte { return silence }); kind != webRTCFrameConcealed {
+		t.Fatalf("short underrun frame kind = %v, want concealed", kind)
+	}
+	for i := 1; i < webrtcConcealmentFrames; i++ {
+		concealer.next(&queue, &head, func() []byte { return silence })
+	}
+	if _, kind := concealer.nextWithKind(&queue, &head, func() []byte { return silence }); kind != webRTCFrameIdle {
+		t.Fatalf("long underrun frame kind = %v, want idle", kind)
+	}
+}
+
+func TestWebRTCFrameSourceBroadcastCountsSlowSubscribers(t *testing.T) {
+	source := &webRTCFrameSource{subs: map[chan []byte]struct{}{make(chan []byte): {}}}
+	dropped, subscribers := source.broadcast([]byte{1})
+	if subscribers != 1 {
+		t.Fatalf("subscribers = %d, want 1", subscribers)
+	}
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+}
+
 func TestMediaHubUsesIndependentFeedIngressQueues(t *testing.T) {
 	hub := newMemoryMediaHub()
 	left := hub.feedIngress("sk-0001")
