@@ -3,6 +3,7 @@ dist/
 runtime/
 target/
 services/go/target/
+services/go/.gocache/
 /audio/
 /data/
 /logs/
