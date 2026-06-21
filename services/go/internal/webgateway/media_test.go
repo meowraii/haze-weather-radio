@@ -87,6 +87,36 @@ func TestMediaHubPreservesPublishedPCM(t *testing.T) {
 	}
 }
 
+func TestFrameConcealerBridgesShortUnderruns(t *testing.T) {
+	queue := [][]byte{{1, 2}, {3, 4}}
+	head := 0
+	concealer := frameConcealer{}
+	silence := []byte{0}
+
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{1, 2}) {
+		t.Fatalf("first frame = %v", got)
+	}
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{3, 4}) {
+		t.Fatalf("second frame = %v", got)
+	}
+	for i := 0; i < webrtcConcealmentFrames; i++ {
+		if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{3, 4}) {
+			t.Fatalf("concealed frame %d = %v", i, got)
+		}
+	}
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string(silence) {
+		t.Fatalf("long underrun frame = %v, want silence", got)
+	}
+
+	queue = append(queue, []byte{5, 6})
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{5, 6}) {
+		t.Fatalf("new frame after underrun = %v", got)
+	}
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{5, 6}) {
+		t.Fatalf("concealment did not reset after new frame: %v", got)
+	}
+}
+
 func TestMediaHubUsesIndependentFeedIngressQueues(t *testing.T) {
 	hub := newMemoryMediaHub()
 	left := hub.feedIngress("sk-0001")

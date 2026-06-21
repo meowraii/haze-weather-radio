@@ -20,20 +20,21 @@ import (
 )
 
 const (
-	opusSampleRate        = 48000
-	opusFrameSamples      = opusSampleRate / 50
-	g722SampleRate        = 16000
-	webrtcRTPClockRate    = 8000
-	pcmuSampleRate        = 8000
-	pcmuFrameSamples      = pcmuSampleRate / 50
-	webrtcChannels        = 1
-	opusRTPChannels       = 2
-	opusEncoderChannels   = 1
-	webrtcFrameDuration   = 20 * time.Millisecond
-	webrtcMaxQueuedFrames = 10
-	feedIngressCapacity   = 4
-	g722FrameSamples      = g722SampleRate / 50
-	bridgeReconnectDelay  = 750 * time.Millisecond
+	opusSampleRate          = 48000
+	opusFrameSamples        = opusSampleRate / 50
+	g722SampleRate          = 16000
+	webrtcRTPClockRate      = 8000
+	pcmuSampleRate          = 8000
+	pcmuFrameSamples        = pcmuSampleRate / 50
+	webrtcChannels          = 1
+	opusRTPChannels         = 2
+	opusEncoderChannels     = 1
+	webrtcFrameDuration     = 20 * time.Millisecond
+	webrtcMaxQueuedFrames   = 10
+	webrtcConcealmentFrames = 6
+	feedIngressCapacity     = 4
+	g722FrameSamples        = g722SampleRate / 50
+	bridgeReconnectDelay    = 750 * time.Millisecond
 )
 
 type webRTCAudioCodec int
@@ -600,6 +601,7 @@ func (h *MediaHub) streamG722(ctx context.Context, feedID string, track *webrtc.
 	defer ticker.Stop()
 	frameQueue := make([][]byte, 0, 32)
 	frameHead := 0
+	concealer := frameConcealer{}
 	encoder := g722.NewEncoder(g722.Rate64000, 0)
 	silenceFrame := make([]int16, g722FrameSamples)
 	for {
@@ -619,12 +621,9 @@ func (h *MediaHub) streamG722(ctx context.Context, feedID string, track *webrtc.
 					drained = cap(updates)
 				}
 			}
-			var frame []byte
-			if next, ok := popQueuedFrame(&frameQueue, &frameHead); ok {
-				frame = next
-			} else {
-				frame = encodeG722Frame(encoder, silenceFrame)
-			}
+			frame := concealer.next(&frameQueue, &frameHead, func() []byte {
+				return encodeG722Frame(encoder, silenceFrame)
+			})
 			if err := track.WriteSample(media.Sample{Data: frame, Duration: webrtcFrameDuration}); err != nil {
 				return
 			}
@@ -639,6 +638,7 @@ func (h *MediaHub) streamOpus(ctx context.Context, feedID string, track *webrtc.
 	defer ticker.Stop()
 	frameQueue := make([][]byte, 0, 32)
 	frameHead := 0
+	concealer := frameConcealer{}
 	idleSamples := opusIdleFrameSamples()
 	loggedWrite := false
 	log.Printf("media bridge Opus stream started for feed %s", feedID)
@@ -661,12 +661,13 @@ func (h *MediaHub) streamOpus(ctx context.Context, feedID string, track *webrtc.
 					drained = cap(updates)
 				}
 			}
-			var frame []byte
-			if next, ok := popQueuedFrame(&frameQueue, &frameHead); ok {
-				frame = next
-			} else if encoded, err := encoder.Encode(idleSamples); err == nil {
-				frame = encoded
-			}
+			frame := concealer.next(&frameQueue, &frameHead, func() []byte {
+				encoded, err := encoder.Encode(idleSamples)
+				if err != nil {
+					return nil
+				}
+				return encoded
+			})
 			if len(frame) == 0 {
 				continue
 			}
@@ -690,6 +691,7 @@ func (h *MediaHub) streamPCMU(ctx context.Context, feedID string, track *webrtc.
 	silence := pcmuSilence()
 	frameQueue := make([][]byte, 0, 32)
 	frameHead := 0
+	concealer := frameConcealer{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -707,15 +709,30 @@ func (h *MediaHub) streamPCMU(ctx context.Context, feedID string, track *webrtc.
 					drained = cap(updates)
 				}
 			}
-			frame := silence
-			if next, ok := popQueuedFrame(&frameQueue, &frameHead); ok {
-				frame = next
-			}
+			frame := concealer.next(&frameQueue, &frameHead, func() []byte { return silence })
 			if err := track.WriteSample(media.Sample{Data: frame, Duration: webrtcFrameDuration}); err != nil {
 				return
 			}
 		}
 	}
+}
+
+type frameConcealer struct {
+	last     []byte
+	repeated int
+}
+
+func (c *frameConcealer) next(queue *[][]byte, head *int, silence func() []byte) []byte {
+	if frame, ok := popQueuedFrame(queue, head); ok {
+		c.last = append([]byte(nil), frame...)
+		c.repeated = 0
+		return frame
+	}
+	if len(c.last) > 0 && c.repeated < webrtcConcealmentFrames {
+		c.repeated++
+		return c.last
+	}
+	return silence()
 }
 
 func popQueuedFrame(queue *[][]byte, head *int) ([]byte, bool) {
