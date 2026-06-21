@@ -971,6 +971,12 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			if err != nil {
 				stats.writeErrors++
 				log.Printf("media bridge WebRTC stream write failed feed=%s codec=%s skipped_frames=%d write_errors=%d: %v", feedID, codec, stats.skippedFrames, stats.writeErrors, err)
+				stallOnce.Do(func() {
+					unsubscribePeer()
+					if onWriteStall != nil {
+						onWriteStall()
+					}
+				})
 				return
 			}
 			stats.written++

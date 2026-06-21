@@ -66,6 +66,9 @@ const HTTP_CODEC_VALUES = new Set(HTTP_CODECS.map(([value]) => value));
 const WEBRTC_TRANSIENT_STATUS_DELAY_MS = 2000;
 const WEBRTC_STATS_INTERVAL_MS = 2000;
 const WEBRTC_STAGNANT_STATS_POLLS = 3;
+const WEBRTC_RECOVER_STATS_POLLS = 6;
+const WEBRTC_RECONNECT_BASE_DELAY_MS = 1000;
+const WEBRTC_RECONNECT_MAX_DELAY_MS = 10000;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -552,6 +555,10 @@ function startWebRTCStatsMonitor(feedId, player) {
                 if (player.stagnantStatsPolls === WEBRTC_STAGNANT_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stalled.', window.hazeLastWebRTCStats[feedId]);
                 }
+                if (player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                    console.warn('Haze WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeLastWebRTCStats[feedId]);
+                    scheduleWebRTCReconnect(feedId, player, 'Reconnecting stalled audio...');
+                }
             } else {
                 player.stagnantStatsPolls = 0;
             }
@@ -566,6 +573,21 @@ function stopWebRTCStatsMonitor(player) {
         window.clearInterval(player.statsPollTimer);
         player.statsPollTimer = null;
     }
+}
+
+function scheduleWebRTCReconnect(feedId, player, reason = 'Reconnecting audio...') {
+    if (!isActivePlayer(feedId, player) || player.mode === 'http' || player.stopping) return;
+    if (player.reconnectTimer) return;
+    const attempts = Math.max(0, Number(player.reconnectAttempts || 0));
+    const delay = Math.min(WEBRTC_RECONNECT_BASE_DELAY_MS * (2 ** attempts), WEBRTC_RECONNECT_MAX_DELAY_MS);
+    player.reconnectAttempts = attempts + 1;
+    player.reconnectTimer = window.setTimeout(() => {
+        player.reconnectTimer = null;
+        if (!isActivePlayer(feedId, player) || player.stopping) return;
+        stopFeed(feedId, { silent: true });
+        startFeedWebRTC(feedId);
+    }, delay);
+    setPlayerStatus(feedId, reason);
 }
 
 async function readInboundAudioStats(pc) {
@@ -685,6 +707,7 @@ async function startFeedWebRTC(feedId) {
     const pc = new RTCPeerConnection();
     const fallbackStream = new MediaStream();
     const player = {
+        mode: 'webrtc',
         pc,
         audio,
         fallbackStream,
@@ -697,6 +720,9 @@ async function startFeedWebRTC(feedId) {
         statsPollTimer: null,
         lastStats: null,
         stagnantStatsPolls: 0,
+        reconnectTimer: null,
+        reconnectAttempts: 0,
+        stopping: false,
     };
     feedPlayers.set(feedId, player);
 
@@ -775,7 +801,7 @@ async function startFeedWebRTC(feedId) {
         event.track.onended = () => {
             if (isActivePlayer(feedId, player)) {
                 currentAudio.dataset.hazeTrackState = 'ended';
-                setPlayerStatus(feedId, 'Audio track ended');
+                scheduleWebRTCReconnect(feedId, player, 'Reconnecting ended audio track...');
             }
         };
         const stream = event.streams?.[0] || fallbackStream;
@@ -837,7 +863,7 @@ async function startFeedWebRTC(feedId) {
             }, WEBRTC_TRANSIENT_STATUS_DELAY_MS);
             setPlayerButtons(feedId, true);
         } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-            stopFeed(feedId);
+            scheduleWebRTCReconnect(feedId, player, 'Reconnecting audio...');
         } else {
             setPlayerStatus(feedId, pc.connectionState);
         }
@@ -948,6 +974,7 @@ function stopFeed(feedId, { silent = false } = {}) {
     feedId = String(feedId || '');
     const player = feedPlayers.get(feedId);
     if (player) {
+        player.stopping = true;
         window.hazeLastStop = {
             feed_id: feedId,
             silent,
@@ -961,6 +988,7 @@ function stopFeed(feedId, { silent = false } = {}) {
         player.pc?.close();
         clearPlayerTimer(player, 'trackMuteTimer');
         clearPlayerTimer(player, 'connectionStateTimer');
+        clearPlayerTimer(player, 'reconnectTimer');
         stopWebRTCStatsMonitor(player);
         const audio = findFeedElement('feed-audio', feedId) || player.audio;
         if (audio) {
