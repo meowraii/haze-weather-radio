@@ -387,9 +387,11 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 	}
 	return s.reply(ctx, message, "webrtc_answer", map[string]any{
 		"feed_id":      feedID,
-		"sdp":          answer,
+		"sdp":          answer.SDP,
 		"sdp_type":     "answer",
-		"media_recent": s.media.HasRecentPCM(feedID, 5*time.Second),
+		"media_recent": answer.MediaRecent,
+		"codec":        answer.Codec.String(),
+		"payload_type": answer.PayloadType,
 	})
 }
 

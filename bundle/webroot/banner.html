@@ -1531,7 +1531,14 @@
                     }
                     return response.json();
                 })
-                .then((answer) => pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp }))
+                .then((answer) => {
+                    recordBannerAudioEvent('answer_received', {
+                        codec: answer.codec || '',
+                        payload_type: answer.payload_type ?? null,
+                        media_recent: answer.media_recent !== false,
+                    });
+                    return pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
+                })
                 .then(() => {
                     state.audioRetryCount = 0;
                     startAudioStatsMonitor(pc);

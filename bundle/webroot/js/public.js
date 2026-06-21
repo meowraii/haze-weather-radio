@@ -1228,6 +1228,13 @@ async function startFeedWebRTC(feedId) {
             ...payload,
         }, 15000);
         player.mediaRecent = answer.media_recent !== false;
+        player.negotiatedCodec = answer.codec || '';
+        player.negotiatedPayloadType = answer.payload_type ?? null;
+        recordWebRTCEvent(feedId, 'answer_received', {
+            codec: player.negotiatedCodec,
+            payload_type: player.negotiatedPayloadType,
+            media_recent: player.mediaRecent,
+        });
         await pc.setRemoteDescription({
             type: answer.sdp_type || 'answer',
             sdp: answer.sdp,

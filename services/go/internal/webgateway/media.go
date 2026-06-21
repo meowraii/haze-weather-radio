@@ -72,6 +72,13 @@ type WebRTCAnswerOptions struct {
 	PreferredCodec string
 }
 
+type WebRTCAnswer struct {
+	SDP         string
+	Codec       webRTCAudioCodec
+	PayloadType uint8
+	MediaRecent bool
+}
+
 type opusFrameEncoder interface {
 	Encode([]int16) ([]byte, error)
 }
@@ -118,26 +125,31 @@ func (h *MediaHub) Available() bool {
 }
 
 func (h *MediaHub) Answer(ctx context.Context, feedID string, offerSDP string) (string, error) {
-	return h.AnswerWithOptions(ctx, feedID, offerSDP, WebRTCAnswerOptions{})
+	answer, err := h.AnswerWithOptions(ctx, feedID, offerSDP, WebRTCAnswerOptions{})
+	if err != nil {
+		return "", err
+	}
+	return answer.SDP, nil
 }
 
-func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSDP string, options WebRTCAnswerOptions) (string, error) {
+func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSDP string, options WebRTCAnswerOptions) (WebRTCAnswer, error) {
 	feedID = strings.TrimSpace(feedID)
 	if !h.Available() {
-		return "", errors.New("media bridge is not available")
+		return WebRTCAnswer{}, errors.New("media bridge is not available")
 	}
 	if feedID == "" {
-		return "", errors.New("feed_id is required")
+		return WebRTCAnswer{}, errors.New("feed_id is required")
 	}
 	if strings.TrimSpace(offerSDP) == "" {
-		return "", errors.New("sdp is required")
+		return WebRTCAnswer{}, errors.New("sdp is required")
 	}
 
 	peerConnection, err := newWebRTCPeerConnection(webrtc.Configuration{})
 	if err != nil {
-		return "", err
+		return WebRTCAnswer{}, err
 	}
-	if !h.HasRecentPCM(feedID, 5*time.Second) {
+	mediaRecent := h.HasRecentPCM(feedID, 5*time.Second)
+	if !mediaRecent {
 		log.Printf("media bridge has no recent PCM for feed %s; WebRTC peer will receive silence until playout publishes audio", feedID)
 	}
 	peerCtx, cancelPeer := context.WithCancel(context.Background())
@@ -193,7 +205,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 	codec, err := preferredWebRTCAudioCodec(offerSDP, options)
 	if err != nil {
 		cleanup()
-		return "", err
+		return WebRTCAnswer{}, err
 	}
 	payloadType := offeredAudioPayloadType(offerSDP, codec)
 	capability := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: opusSampleRate, Channels: opusRTPChannels}
@@ -205,18 +217,18 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 	track, err := webrtc.NewTrackLocalStaticRTP(capability, "haze-"+mediaSafeID(feedID), "haze-"+mediaSafeID(feedID))
 	if err != nil {
 		cleanup()
-		return "", err
+		return WebRTCAnswer{}, err
 	}
 	transceiver, err := peerConnection.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
 		Direction: webrtc.RTPTransceiverDirectionSendonly,
 	})
 	if err != nil {
 		cleanup()
-		return "", err
+		return WebRTCAnswer{}, err
 	}
 	if err := transceiver.SetCodecPreferences(codecPreferences(codec, payloadType)); err != nil {
 		cleanup()
-		return "", err
+		return WebRTCAnswer{}, err
 	}
 	sender := transceiver.Sender()
 	go drainRTCP(sender)
@@ -257,38 +269,38 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		SDP:  offerSDP,
 	}); err != nil {
 		cleanup()
-		return "", err
+		return WebRTCAnswer{}, err
 	}
 	answer, err := peerConnection.CreateAnswer(nil)
 	if err != nil {
 		cleanup()
-		return "", err
+		return WebRTCAnswer{}, err
 	}
 	gatheringComplete := webrtc.GatheringCompletePromise(peerConnection)
 	if err := peerConnection.SetLocalDescription(answer); err != nil {
 		cleanup()
-		return "", err
+		return WebRTCAnswer{}, err
 	}
 	select {
 	case <-gatheringComplete:
 	case <-ctx.Done():
 		cleanup()
-		return "", ctx.Err()
+		return WebRTCAnswer{}, ctx.Err()
 	case <-time.After(5 * time.Second):
 	}
 	localDescription := peerConnection.LocalDescription()
 	if localDescription == nil {
 		cleanup()
-		return "", errors.New("could not create local WebRTC description")
+		return WebRTCAnswer{}, errors.New("could not create local WebRTC description")
 	}
 
 	frames, unsubscribeFrames, err := h.SubscribeWebRTCFrames(feedID, codec)
 	if err != nil {
 		cleanup()
-		return "", err
+		return WebRTCAnswer{}, err
 	}
 	go h.streamWebRTCFrames(peerCtx, feedID, codec, track, frames, unsubscribeFrames, mediaReady, cleanup)
-	return localDescription.SDP, nil
+	return WebRTCAnswer{SDP: localDescription.SDP, Codec: codec, PayloadType: payloadType, MediaRecent: mediaRecent}, nil
 }
 
 func shouldCleanupWebRTCPeer(state webrtc.PeerConnectionState) bool {
