@@ -17,8 +17,8 @@ import (
 
 	"github.com/gotranspile/g722"
 	"github.com/pion/interceptor"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 )
 
 const (
@@ -202,7 +202,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 	} else if codec == webRTCAudioPCMU {
 		capability = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU, ClockRate: pcmuSampleRate, Channels: webrtcChannels}
 	}
-	track, err := webrtc.NewTrackLocalStaticSample(capability, "haze-"+mediaSafeID(feedID), "haze-"+mediaSafeID(feedID))
+	track, err := webrtc.NewTrackLocalStaticRTP(capability, "haze-"+mediaSafeID(feedID), "haze-"+mediaSafeID(feedID))
 	if err != nil {
 		cleanup()
 		return "", err
@@ -1032,7 +1032,7 @@ func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 	return dropped, len(s.subs)
 }
 
-func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, track *webrtc.TrackLocalStaticSample, frames <-chan []byte, unsubscribe func(), ready <-chan struct{}, onWriteStall func()) {
+func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, track *webrtc.TrackLocalStaticRTP, frames <-chan []byte, unsubscribe func(), ready <-chan struct{}, onWriteStall func()) {
 	var unsubscribeOnce sync.Once
 	unsubscribePeer := func() {
 		if unsubscribe != nil {
@@ -1069,7 +1069,15 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		stats.recordSkipped(skipped)
 		writeStartedAt.Store(time.Now().UnixNano())
 		writeInFlight.Store(true)
-		err := track.WriteSample(media.Sample{Data: append([]byte(nil), frame...), Duration: webrtcFrameDuration})
+		err := track.WriteRTP(&rtp.Packet{
+			Header: rtp.Header{
+				Version:        2,
+				Marker:         !loggedWrite,
+				SequenceNumber: stats.sequenceNumber,
+				Timestamp:      stats.timestamp,
+			},
+			Payload: frame,
+		})
 		writeInFlight.Store(false)
 		if err != nil {
 			stats.writeErrors++
@@ -1083,6 +1091,8 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			return false
 		}
 		stats.written++
+		stats.sequenceNumber++
+		stats.timestamp += rtpTimestampStep(codec)
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
 		if !loggedWrite {
 			log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame))
@@ -1132,6 +1142,13 @@ func initialWebRTCFrame(codec webRTCAudioCodec) []byte {
 	}
 }
 
+func rtpTimestampStep(codec webRTCAudioCodec) uint32 {
+	if codec == webRTCAudioOpus {
+		return uint32(opusSampleRate / 50)
+	}
+	return uint32(webrtcRTPClockRate / 50)
+}
+
 func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAudioCodec, inFlight *atomic.Bool, startedAt *atomic.Int64, timeout time.Duration, onTimeout func()) {
 	if timeout <= 0 {
 		timeout = webrtcWriteTimeout
@@ -1164,10 +1181,12 @@ func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAud
 }
 
 type webRTCPeerStreamStats struct {
-	written       uint64
-	skippedFrames uint64
-	writeErrors   uint64
-	lastReport    time.Time
+	written        uint64
+	skippedFrames  uint64
+	writeErrors    uint64
+	lastReport     time.Time
+	sequenceNumber uint16
+	timestamp      uint32
 }
 
 func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {

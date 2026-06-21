@@ -882,17 +882,22 @@ func TestMediaHubStreamsIdleRTPContinuously(t *testing.T) {
 	}
 
 	track := waitForRemoteTrack(t, tracks)
+	var previousSequence uint16
 	var previousTimestamp uint32
 	for i := 0; i < 8; i++ {
-		timestamp, payloadLength := waitForRTPPacketInfo(t, track)
+		sequence, timestamp, payloadLength := waitForRTPPacketHeaderInfo(t, track)
 		if payloadLength == 0 {
 			t.Fatal("idle RTP payload must not be empty")
 		}
 		if i > 0 {
+			if delta := sequence - previousSequence; delta != 1 {
+				t.Fatalf("RTP sequence delta = %d, want 1", delta)
+			}
 			if delta := timestamp - previousTimestamp; delta != uint32(webrtcRTPClockRate/50) {
 				t.Fatalf("RTP timestamp delta = %d, want %d", delta, webrtcRTPClockRate/50)
 			}
 		}
+		previousSequence = sequence
 		previousTimestamp = timestamp
 	}
 }
@@ -1097,6 +1102,15 @@ func waitForRTPPacketInfo(t *testing.T, track *webrtc.TrackRemote) (uint32, int)
 		t.Fatal(err)
 	}
 	return packet.Timestamp, len(packet.Payload)
+}
+
+func waitForRTPPacketHeaderInfo(t *testing.T, track *webrtc.TrackRemote) (uint16, uint32, int) {
+	t.Helper()
+	packet, _, err := track.ReadRTP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return packet.SequenceNumber, packet.Timestamp, len(packet.Payload)
 }
 
 func waitForWebRTCFrameSources(hub *MediaHub, want int, timeout time.Duration) bool {
