@@ -691,6 +691,11 @@ function hasRecentWebRTCPackets(player, now = Date.now()) {
     return lastPacketAt > 0 && now - lastPacketAt <= WEBRTC_RECENT_PACKET_GRACE_MS;
 }
 
+function webRTCStatsDelta(previous, snapshot, field, reset = false) {
+    if (!previous || reset) return 0;
+    return Number(snapshot?.[field] || 0) - Number(previous?.[field] || 0);
+}
+
 function hasLiveWebRTCAudioTrack(player) {
     const tracks = [
         ...(player?.audio?.srcObject?.getAudioTracks?.() || []),
@@ -772,12 +777,20 @@ function startWebRTCStatsMonitor(feedId, player) {
             const previous = player.lastStats || null;
             const packetsReset = Boolean(previous && snapshot.packetsReceived < previous.packetsReceived);
             const packetsDelta = previous && !packetsReset ? snapshot.packetsReceived - previous.packetsReceived : 0;
+            const bytesDelta = webRTCStatsDelta(previous, snapshot, 'bytesReceived', packetsReset);
+            const concealedDelta = webRTCStatsDelta(previous, snapshot, 'concealedSamples', packetsReset);
+            const silentConcealedDelta = webRTCStatsDelta(previous, snapshot, 'silentConcealedSamples', packetsReset);
+            const jitterBufferEmittedDelta = webRTCStatsDelta(previous, snapshot, 'jitterBufferEmittedCount', packetsReset);
             player.lastStats = snapshot;
             window.hazeLastWebRTCStats = {
                 ...(window.hazeLastWebRTCStats || {}),
                 [feedId]: {
                     ...snapshot,
                     packets_delta: packetsDelta,
+                    bytes_delta: bytesDelta,
+                    concealed_samples_delta: concealedDelta,
+                    silent_concealed_samples_delta: silentConcealedDelta,
+                    jitter_buffer_emitted_delta: jitterBufferEmittedDelta,
                     packets_reset: packetsReset,
                     stats_source: statsResult.source,
                     connection_state: player.pc.connectionState,
