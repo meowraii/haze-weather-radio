@@ -812,6 +812,29 @@ function keepWebRTCAudioLive(feedId, player, audio = player?.audio) {
     if (player.audioOutputMixer?.context?.state === 'suspended') {
         player.audioOutputMixer.context.resume().catch(() => {});
     }
+    recoverMutedWebRTCOutputMixer(feedId, player, audio, 'watchdog');
+}
+
+function recoverMutedWebRTCOutputMixer(feedId, player, audio = player?.audio, reason = 'muted_output_track') {
+    const mixer = player?.audioOutputMixer;
+    if (!mixer || !audio || mixer.outputStream !== audio.srcObject) return false;
+    const outputTracks = mixer.outputStream?.getAudioTracks?.() || [];
+    if (!outputTracks.some((track) => track?.muted || track?.readyState !== 'live')) return false;
+    if (!hasRecentWebRTCPackets(player) && hasHardStaleWebRTCPackets(player)) return false;
+    const now = Date.now();
+    if (now - Number(player.lastOutputMixerRecoveryAt || 0) < WEBRTC_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS) return false;
+    player.lastOutputMixerRecoveryAt = now;
+    recordWebRTCEvent(feedId, 'audio_output_mixer_rebind', {
+        reason,
+        track_count: outputTracks.length,
+        context_state: mixer.context?.state || '',
+        packets_recent: hasRecentWebRTCPackets(player),
+    });
+    const sourceStream = mixer.sourceStream;
+    closeWebRTCAudioOutput(player);
+    bindWebRTCAudioOutput(feedId, player, sourceStream, audio);
+    ensureWebRTCAudioPlaying(feedId, player, audio);
+    return true;
 }
 
 function closeWebRTCAudioOutput(player) {
@@ -902,19 +925,7 @@ function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
                         return;
                     }
                     if (hasRecentWebRTCPackets(player) || !hasHardStaleWebRTCPackets(player)) {
-                        const now = Date.now();
-                        if (now - Number(player.lastOutputMixerRecoveryAt || 0) >= WEBRTC_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS) {
-                            player.lastOutputMixerRecoveryAt = now;
-                            recordWebRTCEvent(feedId, 'audio_output_mixer_rebind', {
-                                track_id: track.id || '',
-                                ready_state: track.readyState || '',
-                                context_state: context.state,
-                                packets_recent: hasRecentWebRTCPackets(player),
-                            });
-                            closeWebRTCAudioOutput(player);
-                            bindWebRTCAudioOutput(feedId, player, sourceStream, audio);
-                            ensureWebRTCAudioPlaying(feedId, player, audio);
-                        }
+                        recoverMutedWebRTCOutputMixer(feedId, player, audio, 'output_track_mute_event');
                         return;
                     }
                     player.audioOutputMixer.outputTrackMutedReported = true;

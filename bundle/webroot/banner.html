@@ -1692,6 +1692,29 @@
             if (state.audioOutputMixer?.context?.state === 'suspended') {
                 state.audioOutputMixer.context.resume().catch(() => {});
             }
+            recoverMutedBannerAudioOutput(audio, 'watchdog');
+        }
+
+        function recoverMutedBannerAudioOutput(audio = state.audioElement, reason = 'muted_output_track') {
+            const mixer = state.audioOutputMixer;
+            if (!mixer || !audio || mixer.outputStream !== audio.srcObject) return false;
+            const outputTracks = mixer.outputStream?.getAudioTracks?.() || [];
+            if (!outputTracks.some((track) => track?.muted || track?.readyState !== 'live')) return false;
+            if (!hasRecentBannerAudioPackets() && hasHardStaleBannerAudioPackets()) return false;
+            const now = Date.now();
+            if (now - Number(state.audioLastOutputMixerRecoveryAt || 0) < AUDIO_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS) return false;
+            state.audioLastOutputMixerRecoveryAt = now;
+            recordBannerAudioEvent('audio_output_mixer_rebind', {
+                reason,
+                track_count: outputTracks.length,
+                context_state: mixer.context?.state || '',
+                packets_recent: hasRecentBannerAudioPackets(),
+            });
+            const sourceStream = mixer.sourceStream;
+            closeBannerAudioOutput();
+            bindBannerAudioOutput(sourceStream, audio);
+            ensureBannerAudioPlaying();
+            return true;
         }
 
         function closeBannerAudioOutput() {
@@ -1779,19 +1802,7 @@
                                 return;
                             }
                             if (hasRecentBannerAudioPackets() || !hasHardStaleBannerAudioPackets()) {
-                                const now = Date.now();
-                                if (now - Number(state.audioLastOutputMixerRecoveryAt || 0) >= AUDIO_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS) {
-                                    state.audioLastOutputMixerRecoveryAt = now;
-                                    recordBannerAudioEvent('audio_output_mixer_rebind', {
-                                        track_id: track.id || '',
-                                        ready_state: track.readyState || '',
-                                        context_state: context.state,
-                                        packets_recent: hasRecentBannerAudioPackets(),
-                                    });
-                                    closeBannerAudioOutput();
-                                    bindBannerAudioOutput(sourceStream, audio);
-                                    ensureBannerAudioPlaying();
-                                }
+                                recoverMutedBannerAudioOutput(audio, 'output_track_mute_event');
                                 return;
                             }
                             state.audioOutputMixer.outputTrackMutedReported = true;
