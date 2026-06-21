@@ -456,6 +456,21 @@ func TestWebRTCDisconnectGraceCleanupIncludesICEState(t *testing.T) {
 	}
 }
 
+func TestWebRTCMediaStartPolicyUsesPeerOrICEReadiness(t *testing.T) {
+	if !shouldStartWebRTCMedia(webrtc.PeerConnectionStateConnected, webrtc.ICEConnectionStateNew) {
+		t.Fatal("connected peer state should start media")
+	}
+	if !shouldStartWebRTCMedia(webrtc.PeerConnectionStateConnecting, webrtc.ICEConnectionStateConnected) {
+		t.Fatal("connected ICE state should start media")
+	}
+	if !shouldStartWebRTCMedia(webrtc.PeerConnectionStateConnecting, webrtc.ICEConnectionStateCompleted) {
+		t.Fatal("completed ICE state should start media")
+	}
+	if shouldStartWebRTCMedia(webrtc.PeerConnectionStateConnecting, webrtc.ICEConnectionStateChecking) {
+		t.Fatal("checking ICE should not start media")
+	}
+}
+
 func TestWriteWAVStreamHeader(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	if err := writeWAVStreamHeader(recorder, 48000, 1, 16); err != nil {

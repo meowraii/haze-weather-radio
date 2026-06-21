@@ -224,9 +224,11 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 			cleanup()
 			return
 		}
+		if shouldStartWebRTCMedia(state, peerConnection.ICEConnectionState()) {
+			markMediaReady()
+		}
 		switch state {
 		case webrtc.PeerConnectionStateConnected:
-			markMediaReady()
 			stopDisconnectTimer()
 		case webrtc.PeerConnectionStateDisconnected:
 			scheduleDisconnectCleanup()
@@ -236,6 +238,9 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 		if shouldCleanupWebRTCICE(state) {
 			cleanup()
 			return
+		}
+		if shouldStartWebRTCMedia(peerConnection.ConnectionState(), state) {
+			markMediaReady()
 		}
 		switch state {
 		case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
@@ -294,6 +299,12 @@ func shouldCleanupWebRTCICE(state webrtc.ICEConnectionState) bool {
 
 func shouldCleanupDisconnectedWebRTC(peerState webrtc.PeerConnectionState, iceState webrtc.ICEConnectionState) bool {
 	return peerState == webrtc.PeerConnectionStateDisconnected || iceState == webrtc.ICEConnectionStateDisconnected
+}
+
+func shouldStartWebRTCMedia(peerState webrtc.PeerConnectionState, iceState webrtc.ICEConnectionState) bool {
+	return peerState == webrtc.PeerConnectionStateConnected ||
+		iceState == webrtc.ICEConnectionStateConnected ||
+		iceState == webrtc.ICEConnectionStateCompleted
 }
 
 func newWebRTCPeerConnection(configuration webrtc.Configuration) (*webrtc.PeerConnection, error) {
