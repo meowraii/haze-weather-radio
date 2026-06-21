@@ -1095,7 +1095,9 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			}
 		case <-keepalive.C:
 			frame := lastFrame
-			for writes := webRTCKeepaliveWritesDue(lastWriteAt, time.Now()); writes > 0; writes-- {
+			writesDue := webRTCKeepaliveWritesDue(lastWriteAt, time.Now())
+			stats.recordCatchUp(writesDue)
+			for writes := writesDue; writes > 0; writes-- {
 				var skipped int
 				var ok bool
 				frame, skipped, ok = latestWebRTCFrame(frame, frames)
@@ -1182,10 +1184,12 @@ func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAud
 }
 
 type webRTCPeerStreamStats struct {
-	written       uint64
-	skippedFrames uint64
-	writeErrors   uint64
-	lastReport    time.Time
+	written        uint64
+	skippedFrames  uint64
+	catchUpBatches uint64
+	catchUpFrames  uint64
+	writeErrors    uint64
+	lastReport     time.Time
 }
 
 func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
@@ -1194,9 +1198,19 @@ func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {
 	}
 }
 
+func (s *webRTCPeerStreamStats) recordCatchUp(writesDue int) {
+	if writesDue <= 1 {
+		return
+	}
+	s.catchUpBatches++
+	s.catchUpFrames += uint64(writesDue - 1)
+}
+
 func (s *webRTCPeerStreamStats) resetInterval() {
 	s.written = 0
 	s.skippedFrames = 0
+	s.catchUpBatches = 0
+	s.catchUpFrames = 0
 	s.writeErrors = 0
 }
 
@@ -1205,12 +1219,14 @@ func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats 
 	if now.Sub(stats.lastReport) < webrtcDiagnosticsInterval {
 		return
 	}
-	if stats.skippedFrames > 0 || stats.writeErrors > 0 {
-		log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d write_errors=%d",
+	if stats.skippedFrames > 0 || stats.catchUpBatches > 0 || stats.writeErrors > 0 {
+		log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d catchup_batches=%d catchup_frames=%d write_errors=%d",
 			feedID,
 			codec,
 			stats.written,
 			stats.skippedFrames,
+			stats.catchUpBatches,
+			stats.catchUpFrames,
 			stats.writeErrors,
 		)
 	}

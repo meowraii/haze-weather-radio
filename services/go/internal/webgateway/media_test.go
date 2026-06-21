@@ -277,6 +277,22 @@ func TestWebRTCKeepaliveWritesDue(t *testing.T) {
 	}
 }
 
+func TestWebRTCPeerStreamStatsRecordsCatchUp(t *testing.T) {
+	var stats webRTCPeerStreamStats
+	stats.recordCatchUp(1)
+	if stats.catchUpBatches != 0 || stats.catchUpFrames != 0 {
+		t.Fatalf("single write should not count as catch-up: %#v", stats)
+	}
+	stats.recordCatchUp(3)
+	if stats.catchUpBatches != 1 || stats.catchUpFrames != 2 {
+		t.Fatalf("catch-up stats = batches %d frames %d, want 1/2", stats.catchUpBatches, stats.catchUpFrames)
+	}
+	stats.resetInterval()
+	if stats.catchUpBatches != 0 || stats.catchUpFrames != 0 {
+		t.Fatalf("reset did not clear catch-up stats: %#v", stats)
+	}
+}
+
 func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
 	var inFlight atomic.Bool
 	var startedAt atomic.Int64
