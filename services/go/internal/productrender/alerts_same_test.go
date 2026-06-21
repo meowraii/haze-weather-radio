@@ -32,6 +32,84 @@ func TestCAPSAMEPayloadSuppressesCancellations(t *testing.T) {
 	}
 }
 
+func TestCAPSAMEPayloadDerivesWeatherOriginatorBeforeFeedDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, ok := cfg.feedByID("sk-0001")
+	if !ok {
+		t.Fatal("fixture feed not found")
+	}
+	feed.Playout.SAMEOriginator = "EAS"
+	alert := parseTestAlert(t, testCAP("urn:test:eccc-originator", "Alert", "active", "2099-06-15T21:30:00-06:00", false))
+
+	payload := capSAMEPayload(alert, feed, cfg.BaseDir, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC))
+
+	if payload["same_originator"] != "WXR" {
+		t.Fatalf("same_originator = %#v, want WXR", payload["same_originator"])
+	}
+	if payload["same_weather_service"] != "Environment Canada" {
+		t.Fatalf("same_weather_service = %#v, want Environment Canada", payload["same_weather_service"])
+	}
+	if payload["same_originator_name"] != "Environment Canada" {
+		t.Fatalf("same_originator_name = %#v, want Environment Canada", payload["same_originator_name"])
+	}
+	if payload["same_event_name"] != "Yellow Warning - Severe Thunderstorm" {
+		t.Fatalf("same_event_name = %#v, want Yellow Warning - Severe Thunderstorm", payload["same_event_name"])
+	}
+}
+
+func TestSameOriginatorForCAPDerivesNWSAndCivilAuthorities(t *testing.T) {
+	tests := []struct {
+		name           string
+		alert          capingest.Alert
+		wantOriginator string
+		wantService    string
+	}{
+		{
+			name: "nws",
+			alert: capingest.Alert{
+				Sender: "alerts.weather.gov",
+				Infos: []capingest.AlertInfo{{
+					SenderName: "National Weather Service",
+					Event:      "Severe Thunderstorm Warning",
+				}},
+			},
+			wantOriginator: "WXR",
+			wantService:    "The National Weather Service",
+		},
+		{
+			name: "civil authority",
+			alert: capingest.Alert{
+				Sender: "county-emergency-management@example.gov",
+				Infos: []capingest.AlertInfo{{
+					SenderName: "County Emergency Management",
+					Event:      "Civil Emergency Message",
+				}},
+			},
+			wantOriginator: "CIV",
+			wantService:    "",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if len(test.alert.Infos) == 0 {
+				t.Fatal("test alert missing info")
+			}
+			if got := sameOriginatorForCAP(test.alert, test.alert.Infos[0]); got != test.wantOriginator {
+				t.Fatalf("same originator = %q, want %q", got, test.wantOriginator)
+			}
+			if got := sameWeatherServiceForCAP(test.alert); got != test.wantService {
+				t.Fatalf("same weather service = %q, want %q", got, test.wantService)
+			}
+		})
+	}
+}
+
 func TestCAPPriorityBroadcastUsesFreshnessWindow(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)

@@ -53,12 +53,21 @@ func alertIntroRequestFromPayload(configPath string, payload map[string]any) ale
 		expiresAt = sentAt.Add(durationFromPayload(payload))
 	}
 	return alerttext.SAMERequest{
-		Originator:  fallbackText(originator, "EAS"),
-		Event:       fallbackText(event, "ADR"),
-		EventName:   alerttext.EventName(configPath, event),
-		Locations:   stringSlicePayload(payload, "locations"),
-		AreaNames:   areaNamesForPayload(configPath, payload),
-		Callsign:    fallbackText(callsign, "HAZE"),
+		Originator: fallbackText(originator, "EAS"),
+		OriginatorName: strings.TrimSpace(firstNonBlank(
+			stringPayload(payload, "same_originator_name", ""),
+			stringPayload(payload, "originator_name", ""),
+			stringPayload(payload, "sender_name", ""),
+		)),
+		Event:     fallbackText(event, "ADR"),
+		EventName: firstNonBlank(stringPayload(payload, "same_event_name", ""), stringPayload(payload, "event_name", ""), alerttext.EventName(configPath, event)),
+		Locations: stringSlicePayload(payload, "locations"),
+		AreaNames: areaNamesForPayload(configPath, payload),
+		Callsign:  fallbackText(callsign, "HAZE"),
+		WeatherService: strings.TrimSpace(firstNonBlank(
+			stringPayload(payload, "same_weather_service", ""),
+			stringPayload(payload, "weather_service", ""),
+		)),
 		SentAt:      sentAt,
 		ExpiresAt:   expiresAt,
 		BeginsAt:    beginsAt,

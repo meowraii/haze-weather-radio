@@ -170,7 +170,13 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 		return payload
 	}
 	payload["same_event"] = event
-	payload["same_originator"] = sameOriginatorForCAP(*info, feed)
+	originator := sameOriginatorForCAP(alert, *info)
+	payload["same_originator"] = originator
+	payload["same_originator_name"] = sameOriginatorNameForCAP(alert, *info)
+	payload["same_event_name"] = alertSubject(*info)
+	if originator == "WXR" {
+		payload["same_weather_service"] = sameWeatherServiceForCAP(alert)
+	}
 	payload["same_locations"] = locations
 	payload["same_duration"] = sameDurationForCAP(alert, *info)
 	payload["same_tone"] = sameToneForCAP(*info, feed)
@@ -320,14 +326,34 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-func sameOriginatorForCAP(info capingest.AlertInfo, feed feedXML) string {
+func sameOriginatorForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
 	if originator := strings.ToUpper(strings.TrimSpace(alertParam(info, "eas-org"))); len(originator) == 3 {
 		return originator
 	}
-	if originator := strings.ToUpper(strings.TrimSpace(feed.Playout.SAMEOriginator)); len(originator) == 3 {
-		return originator
+	switch detectCAPSource(alert) {
+	case "eccc", "nws":
+		return "WXR"
+	default:
+		return "CIV"
 	}
-	return "EAS"
+}
+
+func sameWeatherServiceForCAP(alert capingest.Alert) string {
+	switch detectCAPSource(alert) {
+	case "eccc":
+		return "Environment Canada"
+	case "nws":
+		return "The National Weather Service"
+	default:
+		return ""
+	}
+}
+
+func sameOriginatorNameForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
+	if name := strings.TrimSpace(info.SenderName); name != "" {
+		return name
+	}
+	return sameWeatherServiceForCAP(alert)
 }
 
 func sameDurationForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
@@ -512,7 +538,7 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 			instruction = info.Instruction
 			backgroundColor = alerttext.PickBannerColor([]alerttext.AlertVisualInput{{
 				Severity: info.Severity,
-				Event:    firstNonBlank(sameEventForCAP(alert, *info), info.Event, info.Headline),
+				Event:    strings.Join([]string{sameEventForCAP(alert, *info), alertSubject(*info), info.Event, info.Headline}, " "),
 			}})
 		}
 		audio := alertBroadcastAudio(alert, feedLanguage(feed))

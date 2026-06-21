@@ -1172,15 +1172,17 @@ func (p *feedPlanner) sameIntroFromData(data map[string]any) string {
 	duration := normalizeSAMEDuration(fallbackText(firstText(nil, data, "same_duration", "duration"), "0015"))
 	now := time.Now()
 	return alerttext.BuildSAMETranslation(alerttext.SAMERequest{
-		Originator: fallbackText(firstText(nil, data, "same_originator", "originator"), "WXR"),
-		Event:      event,
-		EventName:  alerttext.EventName(configPath, event),
-		Locations:  locations,
-		AreaNames:  alerttext.ResolveAreaNames(configPath, stringListAny(firstValue(nil, data, "area_names")), locations),
-		Callsign:   fallbackText(firstText(nil, data, "same_callsign", "callsign"), feedCallsign(p.feed)),
-		SentAt:     now,
-		ExpiresAt:  now.Add(sameDurationToDuration(duration)),
-		MimicENDEC: fallbackText(firstText(nil, data, "mimic_endec"), "SAGE"),
+		Originator:     fallbackText(firstText(nil, data, "same_originator", "originator"), "WXR"),
+		OriginatorName: strings.TrimSpace(firstText(nil, data, "same_originator_name", "originator_name", "sender_name")),
+		Event:          event,
+		EventName:      fallbackText(firstText(nil, data, "same_event_name", "event_name"), alerttext.EventName(configPath, event)),
+		Locations:      locations,
+		AreaNames:      alerttext.ResolveAreaNames(configPath, stringListAny(firstValue(nil, data, "area_names")), locations),
+		Callsign:       fallbackText(firstText(nil, data, "same_callsign", "callsign"), feedCallsign(p.feed)),
+		WeatherService: strings.TrimSpace(firstText(nil, data, "same_weather_service", "weather_service")),
+		SentAt:         now,
+		ExpiresAt:      now.Add(sameDurationToDuration(duration)),
+		MimicENDEC:     fallbackText(firstText(nil, data, "mimic_endec"), "SAGE"),
 	})
 }
 

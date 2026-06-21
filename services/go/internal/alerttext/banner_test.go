@@ -30,6 +30,42 @@ func TestBuildSAMETranslationMatchesBannerStyleLead(t *testing.T) {
 	}
 }
 
+func TestBuildSAMETranslationUsesWeatherServiceForWXR(t *testing.T) {
+	text := BuildSAMETranslation(SAMERequest{
+		Originator:     "WXR",
+		Event:          "SVR",
+		EventName:      "Severe Thunderstorm Warning",
+		AreaNames:      []string{"Talladega, AL"},
+		Callsign:       "NWS",
+		WeatherService: "The National Weather Service",
+		SentAt:         time.Date(2026, 6, 17, 1, 0, 0, 0, time.UTC),
+		ExpiresAt:      time.Date(2026, 6, 17, 1, 30, 0, 0, time.UTC),
+		MimicENDEC:     "SAGE",
+	})
+
+	if !strings.Contains(text, "The National Weather Service has issued a Severe Thunderstorm Warning") {
+		t.Fatalf("text = %q", text)
+	}
+}
+
+func TestBuildSAMETranslationUsesCAPOriginatorAndEventNames(t *testing.T) {
+	text := BuildSAMETranslation(SAMERequest{
+		Originator:     "WXR",
+		OriginatorName: "Environment Canada",
+		Event:          "SVR",
+		EventName:      "Yellow Warning - Severe Thunderstorm",
+		AreaNames:      []string{"City of Saskatoon"},
+		Callsign:       "XLF322",
+		SentAt:         time.Date(2026, 6, 17, 1, 0, 0, 0, time.UTC),
+		ExpiresAt:      time.Date(2026, 6, 17, 1, 30, 0, 0, time.UTC),
+		MimicENDEC:     "SAGE",
+	})
+
+	if !strings.Contains(text, "Environment Canada has issued a Yellow Warning - Severe Thunderstorm") {
+		t.Fatalf("text = %q", text)
+	}
+}
+
 func TestLoadEventAndAreaLabels(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"eas":{"SVR":"Severe Thunderstorm Warning"}}`)
@@ -86,6 +122,8 @@ func TestPickBannerGradientUsesWarningWatchAdvisoryWords(t *testing.T) {
 		want  string
 	}{
 		{name: "warning", event: "DMO - Practice/demo Warning", want: "#931102"},
+		{name: "same warning code", event: "SVR", want: "#931102"},
+		{name: "canadian yellow warning", event: "Yellow Warning - Severe Thunderstorm", want: "#931102"},
 		{name: "watch", event: "Severe Thunderstorm Watch", want: "#929301"},
 		{name: "advisory", event: "Yellow Advisory - Fog", want: "#019310"},
 	}

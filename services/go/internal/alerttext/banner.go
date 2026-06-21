@@ -127,18 +127,20 @@ var weatherServicesByRegion = map[string]string{
 
 // SAMERequest describes the SAME fields needed to build a spoken translation.
 type SAMERequest struct {
-	Originator  string
-	Event       string
-	EventName   string
-	Locations   []string
-	AreaNames   []string
-	Callsign    string
-	SentAt      time.Time
-	ExpiresAt   time.Time
-	BeginsAt    time.Time
-	MimicENDEC  string
-	Description string
-	Instruction string
+	Originator     string
+	OriginatorName string
+	Event          string
+	EventName      string
+	Locations      []string
+	AreaNames      []string
+	Callsign       string
+	WeatherService string
+	SentAt         time.Time
+	ExpiresAt      time.Time
+	BeginsAt       time.Time
+	MimicENDEC     string
+	Description    string
+	Instruction    string
 }
 
 // CAPMessageRequest describes a CAP alert speech request.
@@ -571,11 +573,7 @@ func NormalizeHeadline(value string) string {
 	parts := strings.Split(headline, " - ")
 	for i, part := range parts {
 		clean := CleanFragment(part)
-		if strings.EqualFold(clean, "yellow warning") {
-			parts[i] = "Yellow Advisory"
-		} else {
-			parts[i] = TitleWords(clean)
-		}
+		parts[i] = TitleWords(clean)
 	}
 	return strings.Join(parts, " - ")
 }
@@ -878,9 +876,15 @@ func MessageID(alert capingest.Alert) string {
 }
 
 func sameSubject(request SAMERequest) string {
+	if name := CleanFragment(request.OriginatorName); name != "" {
+		return name
+	}
 	originator := sameOriginatorCode(request)
-	weatherLabel := "Environment Canada"
 	if originator == "WXR" {
+		weatherLabel := CleanFragment(request.WeatherService)
+		if weatherLabel == "" {
+			weatherLabel = "Environment Canada"
+		}
 		return weatherLabel
 	}
 	labels := endecOriginators[ResolveENDECMode(request.MimicENDEC)]
@@ -1008,6 +1012,10 @@ func stripAlertHeadlineState(headline string) string {
 }
 
 func deriveSameCategory(event string) string {
+	code := strings.ToUpper(strings.TrimSpace(event))
+	if category := sameEventCategory(code); category != "" {
+		return category
+	}
 	lower := strings.ToLower(strings.TrimSpace(event))
 	switch {
 	case strings.Contains(lower, "warning"):
@@ -1035,6 +1043,19 @@ func deriveSameCategory(event string) string {
 		}
 	}
 	return "advisory"
+}
+
+func sameEventCategory(code string) string {
+	switch code {
+	case "AVW", "BHW", "BZW", "CDW", "CEM", "CFW", "DSW", "EQW", "EVI", "EWW", "FCW", "FFW", "FLW", "FRW", "FSW", "HMW", "HUW", "HWW", "LEW", "NUW", "RHW", "SPW", "SQW", "SSW", "SVR", "TOR", "TRW", "TSW", "VOW", "WSW":
+		return "warning"
+	case "FFA", "FLA", "HUA", "HWA", "SVA", "TOA", "TRA", "TSA", "WSA":
+		return "watch"
+	case "ADR", "BWW", "CAE", "DMO", "EAT", "EAN", "LAE", "NMN", "NPT", "RMT", "RWT", "TXB", "TXF", "TXO", "TXP":
+		return "advisory"
+	default:
+		return ""
+	}
 }
 
 func loadCSVNames(path string, labels map[string]string, codeColumns []string, nameColumns []string) {
