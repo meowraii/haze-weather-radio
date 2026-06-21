@@ -75,8 +75,12 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
             reconnect_pending: Boolean(player.reconnectPending || player.reconnectTimer),
             disconnect_reconnect_pending: Boolean(player.disconnectReconnectTimer),
             media_recent: player.mediaRecent,
+            requested_codec: player.requestedCodec || 'auto',
             negotiated_codec: player.negotiatedCodec || '',
             negotiated_payload_type: player.negotiatedPayloadType,
+            codec_fallback_applied: Boolean(player.codecFallbackApplied),
+            track_mute_pending: Boolean(player.trackMuteTimer),
+            track_muted_reported: Boolean(player.trackMutedReported),
             output_mixer_active: Boolean(player.audioOutputMixer),
             output_mixer_state: player.audioOutputMixer?.context?.state || '',
             audio: audio ? {

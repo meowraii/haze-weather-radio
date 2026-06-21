@@ -405,6 +405,12 @@
                 reconnect_pending: Boolean(state.audioReconnectPending || state.audioReconnectTimer),
                 disconnect_reconnect_pending: Boolean(state.audioDisconnectTimer),
                 retry_count: Number(state.audioRetryCount || 0),
+                requested_codec: state.audioRequestedCodec || 'auto',
+                forced_codec: state.audioForcedCodec || '',
+                negotiated_codec: state.audioNegotiatedCodec || '',
+                codec_fallback_applied: Boolean(state.audioCodecFallbackApplied),
+                track_mute_pending: Boolean(state.audioTrackMuteTimer),
+                track_muted_reported: Boolean(state.audioTrackMutedReported),
                 output_mixer_active: Boolean(state.audioOutputMixer),
                 output_mixer_state: state.audioOutputMixer?.context?.state || '',
                 audio: audio ? {
