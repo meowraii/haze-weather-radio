@@ -345,6 +345,7 @@
             audioLastStats: null,
             audioLastPacketAt: 0,
             audioTrackAttached: false,
+            audioTrackMuted: false,
             audioStagnantStatsPolls: 0,
             audioMissingStatsPolls: 0,
             obsController: null,
@@ -1230,7 +1231,7 @@
                                     at: new Date().toISOString(),
                                 });
                             }
-                            if (!hasUsableBannerAudio() && state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                            if ((!hasUsableBannerAudio() || hasStaleMutedBannerAudio()) && state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
                                 scheduleAudioReconnect({ force: true });
                             }
                         }
@@ -1245,6 +1246,7 @@
                         packets_delta: packetsDelta,
                         connection_state: peer.connectionState,
                         ice_state: peer.iceConnectionState,
+                        track_muted: state.audioTrackMuted,
                         at: new Date().toISOString(),
                     };
                     if (previous && packetsDelta <= 0 && peer.connectionState === 'connected') {
@@ -1252,7 +1254,7 @@
                         if (state.audioStagnantStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stalled.', window.hazeBannerWebRTCStats);
                         }
-                        if (!hasUsableBannerAudio() && state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                        if ((!hasUsableBannerAudio() || hasStaleMutedBannerAudio()) && state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeBannerWebRTCStats);
                             scheduleAudioReconnect({ force: true });
                         }
@@ -1295,6 +1297,7 @@
 
         function closeAudioPeerOnly() {
             state.audioTrackAttached = false;
+            state.audioTrackMuted = true;
             if (state.audioPeer) {
                 state.audioPeer.ontrack = null;
                 state.audioPeer.onconnectionstatechange = null;
@@ -1327,8 +1330,13 @@
             return Boolean(state.audioTrackAttached || hasLiveBannerAudioTrack());
         }
 
+        function hasStaleMutedBannerAudio() {
+            return state.audioTrackMuted && !hasRecentBannerAudioPackets();
+        }
+
         function markBannerAudioPacketsRecent() {
             state.audioLastPacketAt = Date.now();
+            state.audioTrackMuted = false;
             cancelAudioReconnect();
             if (state.audioTrackMuteTimer) {
                 window.clearTimeout(state.audioTrackMuteTimer);
@@ -1416,18 +1424,20 @@
                     return;
                 }
                 state.audioTrackAttached = true;
+                state.audioTrackMuted = false;
                 markBannerAudioPacketsRecent();
                 event.track.onmute = () => {
+                    state.audioTrackMuted = true;
                     recordBannerAudioEvent('track_mute', {
                         connection_state: pc.connectionState,
                         ice_state: pc.iceConnectionState,
                         packets_recent: hasRecentBannerAudioPackets(),
                         track_state: event.track.readyState || '',
                     });
-                    if (state.audioTrackAttached || hasRecentBannerAudioPackets()) return;
+                    if (hasRecentBannerAudioPackets()) return;
                     state.audioTrackMuteTimer = window.setTimeout(() => {
                         state.audioTrackMuteTimer = null;
-                        if (!state.audioTrackAttached && !hasRecentBannerAudioPackets()) {
+                        if (!hasRecentBannerAudioPackets()) {
                             scheduleAudioReconnect({ force: true });
                         }
                     }, AUDIO_MEDIA_EVENT_GRACE_MS);

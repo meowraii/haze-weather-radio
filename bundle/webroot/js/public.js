@@ -702,9 +702,15 @@ function hasUsableWebRTCAudio(player) {
     return Boolean(player?.trackAttached || hasLiveWebRTCAudioTrack(player));
 }
 
+function hasStaleMutedWebRTCAudio(player) {
+    return Boolean(player?.trackMuted || player?.audio?.dataset?.hazeTrackMuted === '1')
+        && !hasRecentWebRTCPackets(player);
+}
+
 function markWebRTCPacketsRecent(player, audio = player?.audio) {
     if (!player) return;
     player.lastPacketAt = Date.now();
+    player.trackMuted = false;
     if (audio) {
         audio.dataset.hazeTrackMuted = '0';
     }
@@ -751,7 +757,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                             setPlayerStatus(feedId, 'Waiting for audio frames...');
                         }
                     }
-                    if (!hasUsableWebRTCAudio(player) && player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                    if ((!hasUsableWebRTCAudio(player) || hasStaleMutedWebRTCAudio(player)) && player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                         scheduleWebRTCReconnect(feedId, player, 'Reconnecting missing audio stream...');
                     }
                 }
@@ -769,6 +775,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                     connection_state: player.pc.connectionState,
                     ice_state: player.pc.iceConnectionState,
                     track_muted: player.audio?.dataset?.hazeTrackMuted === '1',
+                    track_mute_pending: Boolean(player.trackMuted),
                     at: new Date().toISOString(),
                 },
             };
@@ -780,7 +787,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                         setPlayerStatus(feedId, 'Waiting for audio frames...');
                     }
                 }
-                if (!hasUsableWebRTCAudio(player) && player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                if ((!hasUsableWebRTCAudio(player) || hasStaleMutedWebRTCAudio(player)) && player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeLastWebRTCStats[feedId]);
                     scheduleWebRTCReconnect(feedId, player, 'Reconnecting stalled audio...');
                 }
@@ -824,6 +831,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     player.lastStats = null;
     player.stagnantStatsPolls = 0;
     player.missingStatsPolls = 0;
+    player.trackMuted = true;
     try {
         player.pc?.close();
     } catch {
@@ -1019,6 +1027,7 @@ async function startFeedWebRTC(feedId) {
         reconnectAttempts: 0,
         reconnectPending: false,
         stopping: false,
+        trackMuted: false,
     };
     feedPlayers.set(feedId, player);
 
@@ -1081,6 +1090,7 @@ async function startFeedWebRTC(feedId) {
         markWebRTCPacketsRecent(player, currentAudio);
         event.track.onmute = () => {
             if (isActivePlayer(feedId, player)) {
+                player.trackMuted = true;
                 recordWebRTCEvent(feedId, 'track_mute', {
                     connection_state: pc.connectionState,
                     ice_state: pc.iceConnectionState,
@@ -1090,8 +1100,9 @@ async function startFeedWebRTC(feedId) {
                 clearPlayerTimer(player, 'trackMuteTimer');
                 player.trackMuteTimer = window.setTimeout(() => {
                     player.trackMuteTimer = null;
-                    if (isActivePlayer(feedId, player) && !player.trackAttached && !hasRecentWebRTCPackets(player)) {
+                    if (isActivePlayer(feedId, player) && !hasRecentWebRTCPackets(player)) {
                         currentAudio.dataset.hazeTrackMuted = '1';
+                        player.trackMuted = true;
                     }
                 }, WEBRTC_MEDIA_EVENT_GRACE_MS);
             }
