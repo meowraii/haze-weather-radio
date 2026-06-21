@@ -821,6 +821,14 @@ function closeWebRTCAudioOutput(player) {
     if (mixer.retryTimer) {
         window.clearTimeout(mixer.retryTimer);
     }
+    if (mixer.context) {
+        mixer.context.onstatechange = null;
+    }
+    for (const track of mixer.outputStream?.getAudioTracks?.() || []) {
+        track.onmute = null;
+        track.onunmute = null;
+        track.onended = null;
+    }
     try {
         mixer.oscillator?.stop();
     } catch {
@@ -867,6 +875,43 @@ function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
         oscillator.start();
         const outputStream = destination.stream;
         player.audioOutputMixer = { context, source, oscillator, gain, destination, sourceStream, outputStream };
+        context.onstatechange = () => {
+            if (player.audioOutputMixer?.context !== context) return;
+            recordWebRTCEvent(feedId, 'audio_output_mixer_state', {
+                context_state: context.state,
+                packets_recent: hasRecentWebRTCPackets(player),
+            });
+            if (context.state === 'suspended') {
+                context.resume?.().catch(() => {});
+            }
+        };
+        for (const track of outputStream.getAudioTracks?.() || []) {
+            track.onmute = () => {
+                if (player.audioOutputMixer?.outputStream !== outputStream) return;
+                recordWebRTCEvent(feedId, 'audio_output_track_mute', {
+                    track_id: track.id || '',
+                    ready_state: track.readyState || '',
+                    context_state: context.state,
+                    packets_recent: hasRecentWebRTCPackets(player),
+                });
+                context.resume?.().catch(() => {});
+            };
+            track.onunmute = () => {
+                if (player.audioOutputMixer?.outputStream !== outputStream) return;
+                recordWebRTCEvent(feedId, 'audio_output_track_unmute', {
+                    track_id: track.id || '',
+                    ready_state: track.readyState || '',
+                    context_state: context.state,
+                });
+            };
+            track.onended = () => {
+                if (player.audioOutputMixer?.outputStream !== outputStream) return;
+                recordWebRTCEvent(feedId, 'audio_output_track_ended', {
+                    track_id: track.id || '',
+                    context_state: context.state,
+                });
+            };
+        }
         audio.srcObject = outputStream;
         context.resume?.().catch(() => {});
         player.audioOutputMixer.resumeFallbackTimer = window.setTimeout(() => {

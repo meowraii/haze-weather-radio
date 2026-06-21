@@ -1687,6 +1687,14 @@
             if (mixer.resumeFallbackTimer) {
                 window.clearTimeout(mixer.resumeFallbackTimer);
             }
+            if (mixer.context) {
+                mixer.context.onstatechange = null;
+            }
+            for (const track of mixer.outputStream?.getAudioTracks?.() || []) {
+                track.onmute = null;
+                track.onunmute = null;
+                track.onended = null;
+            }
             try {
                 mixer.oscillator?.stop();
             } catch {
@@ -1733,6 +1741,43 @@
                 oscillator.start();
                 const outputStream = destination.stream;
                 state.audioOutputMixer = { context, source, oscillator, gain, destination, sourceStream, outputStream };
+                context.onstatechange = () => {
+                    if (state.audioOutputMixer?.context !== context) return;
+                    recordBannerAudioEvent('audio_output_mixer_state', {
+                        context_state: context.state,
+                        packets_recent: hasRecentBannerAudioPackets(),
+                    });
+                    if (context.state === 'suspended') {
+                        context.resume?.().catch(() => {});
+                    }
+                };
+                for (const track of outputStream.getAudioTracks?.() || []) {
+                    track.onmute = () => {
+                        if (state.audioOutputMixer?.outputStream !== outputStream) return;
+                        recordBannerAudioEvent('audio_output_track_mute', {
+                            track_id: track.id || '',
+                            ready_state: track.readyState || '',
+                            context_state: context.state,
+                            packets_recent: hasRecentBannerAudioPackets(),
+                        });
+                        context.resume?.().catch(() => {});
+                    };
+                    track.onunmute = () => {
+                        if (state.audioOutputMixer?.outputStream !== outputStream) return;
+                        recordBannerAudioEvent('audio_output_track_unmute', {
+                            track_id: track.id || '',
+                            ready_state: track.readyState || '',
+                            context_state: context.state,
+                        });
+                    };
+                    track.onended = () => {
+                        if (state.audioOutputMixer?.outputStream !== outputStream) return;
+                        recordBannerAudioEvent('audio_output_track_ended', {
+                            track_id: track.id || '',
+                            context_state: context.state,
+                        });
+                    };
+                }
                 audio.srcObject = outputStream;
                 context.resume?.().catch(() => {});
                 state.audioOutputMixer.resumeFallbackTimer = window.setTimeout(() => {
