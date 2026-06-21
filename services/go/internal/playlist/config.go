@@ -83,6 +83,7 @@ type feedXML struct {
 	Timezone   string `xml:"timezone,attr"`
 	Playout    struct {
 		Routine string `xml:"routine,attr"`
+		SAME    string `xml:"same,attr"`
 	} `xml:"playout"`
 	Languages struct {
 		Langs []struct {
@@ -196,12 +197,23 @@ func loadFeeds(path string) ([]feedXML, error) {
 func (cfg loadedConfig) enabledFeeds() []feedXML {
 	feeds := make([]feedXML, 0, len(cfg.Feeds))
 	for _, feed := range cfg.Feeds {
-		if strings.TrimSpace(feed.ID) == "" || !xmlBool(feed.EnabledRaw, true) || !xmlBool(feed.Playout.Routine, true) {
+		if strings.TrimSpace(feed.ID) == "" || !xmlBool(feed.EnabledRaw, true) {
+			continue
+		}
+		if !feedRoutineEnabled(feed) && !feedSAMEEnabled(feed) {
 			continue
 		}
 		feeds = append(feeds, feed)
 	}
 	return feeds
+}
+
+func feedRoutineEnabled(feed feedXML) bool {
+	return xmlBool(feed.Playout.Routine, true)
+}
+
+func feedSAMEEnabled(feed feedXML) bool {
+	return xmlBool(feed.Playout.SAME, true)
 }
 
 func (m *minuteList) UnmarshalYAML(value *yaml.Node) error {

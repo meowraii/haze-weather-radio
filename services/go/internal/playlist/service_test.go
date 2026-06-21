@@ -49,6 +49,64 @@ func TestItemScheduleDurationIncludesConfiguredGap(t *testing.T) {
 	}
 }
 
+func TestEnabledFeedsIncludesAlertOnlyStandbyFeeds(t *testing.T) {
+	routine := feedXML{ID: "sk-0001"}
+	routine.Playout.Routine = "true"
+	alertOnly := feedXML{ID: "CAP-IT-ALL"}
+	alertOnly.Playout.Routine = "false"
+	alertOnly.Playout.SAME = "true"
+	disabled := feedXML{ID: "silent"}
+	disabled.Playout.Routine = "false"
+	disabled.Playout.SAME = "false"
+
+	got := loadedConfig{Feeds: []feedXML{routine, alertOnly, disabled}}.enabledFeeds()
+
+	ids := []string{}
+	for _, feed := range got {
+		ids = append(ids, feed.ID)
+	}
+	if strings.Join(ids, ",") != "sk-0001,CAP-IT-ALL" {
+		t.Fatalf("enabled feeds = %q", strings.Join(ids, ","))
+	}
+}
+
+func TestAlertOnlyStandbyFeedDoesNotRunRoutineTick(t *testing.T) {
+	dir := t.TempDir()
+	feed := feedXML{ID: "CAP-IT-ALL"}
+	feed.Playout.Routine = "false"
+	feed.Playout.SAME = "true"
+	planner := newFeedPlanner(loadedConfig{BaseDir: dir}, nil, feed)
+
+	planner.tick(context.Background(), time.Now().Add(startupPrimerDelay), time.Minute)
+
+	if len(planner.queue) != 0 {
+		t.Fatalf("standby feed queued routine items: %#v", planner.queue)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "runtime", "playlists", "CAP-IT-ALL.json")); !os.IsNotExist(err) {
+		t.Fatalf("standby tick wrote routine state, err=%v", err)
+	}
+}
+
+func TestMatchFeedsFromEventReturnsAllTargetFeeds(t *testing.T) {
+	service := &Service{feeds: map[string]*feedPlanner{
+		"sk-0001":    {feed: feedXML{ID: "sk-0001"}},
+		"CAP-IT-ALL": {feed: feedXML{ID: "CAP-IT-ALL"}},
+	}}
+
+	matched := service.matchFeedsFromEvent(map[string]any{
+		"type": "cap.alert.broadcast.requested",
+		"data": map[string]any{"feed_ids": []any{"sk-0001", "CAP-IT-ALL", "sk-0001"}},
+	})
+
+	ids := []string{}
+	for _, planner := range matched {
+		ids = append(ids, planner.feed.ID)
+	}
+	if strings.Join(ids, ",") != "sk-0001,CAP-IT-ALL" {
+		t.Fatalf("matched feeds = %q", strings.Join(ids, ","))
+	}
+}
+
 func TestBuildProductAudioItemUsesRoutineQueueAudioPath(t *testing.T) {
 	dir := t.TempDir()
 	audioRel := filepath.Join("managed", "audio", "bulletins", "test.wav")

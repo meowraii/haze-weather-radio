@@ -140,6 +140,56 @@ func TestBannerHubActivatesFromPlayoutEvent(t *testing.T) {
 	}
 }
 
+func TestBannerHubUsesArchiveAcrossCatchallFeed(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	rawCAP := `<alert>
+  <identifier>urn:test:banner:catchall</identifier>
+  <sender>cap-pac@canada.ca</sender>
+  <sent>2099-06-17T01:00:00Z</sent>
+  <status>Actual</status>
+  <msgType>Alert</msgType>
+  <scope>Public</scope>
+  <info>
+    <language>en-CA</language>
+    <event>Tornado Warning</event>
+    <severity>Extreme</severity>
+    <effective>2099-06-17T01:00:00Z</effective>
+    <expires>2099-06-17T03:00:00Z</expires>
+    <headline>Tornado Warning - in effect</headline>
+    <area><areaDesc>City of Saskatoon</areaDesc></area>
+  </info>
+</alert>`
+	storeBannerCAP(t, configPath, rawCAP, "sk-0001", "accepted")
+	hub := NewBannerHub(configPath, "")
+	hub.handleEvent([]byte(`{"type":"alert.playout.started","feed_ids":["CAP-IT-ALL"],"queue_id":"001_CAP-IT-ALL_urn_test_banner_catchall_cap","data":{"alert_id":"urn:test:banner:catchall","event":"TOR","header":"Tornado Warning"}}`), time.Now().UTC())
+
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
+
+	if !payload.Active || len(payload.Alerts) != 1 {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.Alerts[0].FeedID != "CAP-IT-ALL" || payload.Alerts[0].Identifier != "urn:test:banner:catchall" {
+		t.Fatalf("alert = %#v", payload.Alerts[0])
+	}
+}
+
+func TestBannerHubFallsBackToOnAirMetadataWithoutArchive(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	hub := NewBannerHub(configPath, "")
+	hub.handleEvent([]byte(`{"type":"alert.playout.started","feed_ids":["CAP-IT-ALL"],"queue_id":"manual-1","event":"RWT","header":"Required Weekly Test"}`), time.Now().UTC())
+
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
+
+	if !payload.Active || len(payload.Alerts) != 1 {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.Alerts[0].Headline != "Required Weekly Test" || payload.Alerts[0].FeedID != "CAP-IT-ALL" {
+		t.Fatalf("alert = %#v", payload.Alerts[0])
+	}
+}
+
 func testBannerConfig(t *testing.T, dir string) string {
 	t.Helper()
 	configPath := dir + "/config.yaml"

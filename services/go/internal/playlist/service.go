@@ -202,15 +202,24 @@ func (s *Service) matchFeeds(feedID string) []*feedPlanner {
 
 func (s *Service) matchFeedsFromEvent(event map[string]any) []*feedPlanner {
 	data := mapAt(event, "data")
-	if feedID := firstText(event, data, "feed_id"); feedID != "" {
-		return s.matchFeeds(feedID)
-	}
-	for _, feedID := range stringListAny(firstValue(event, data, "feed_ids")) {
-		if matched := s.matchFeeds(feedID); len(matched) > 0 {
-			return matched
+	out := []*feedPlanner{}
+	seen := map[string]struct{}{}
+	add := func(feedID string) {
+		for _, planner := range s.matchFeeds(feedID) {
+			if _, ok := seen[planner.feed.ID]; ok {
+				continue
+			}
+			seen[planner.feed.ID] = struct{}{}
+			out = append(out, planner)
 		}
 	}
-	return nil
+	if feedID := firstText(event, data, "feed_id"); feedID != "" {
+		add(feedID)
+	}
+	for _, feedID := range stringListAny(firstValue(event, data, "feed_ids")) {
+		add(feedID)
+	}
+	return out
 }
 
 type feedPlanner struct {
@@ -290,6 +299,9 @@ func newFeedPlanner(cfg loadedConfig, bridge *bridgeClient, feed feedXML) *feedP
 }
 
 func (p *feedPlanner) tick(ctx context.Context, now time.Time, lookahead time.Duration) {
+	if !feedRoutineEnabled(p.feed) {
+		return
+	}
 	if p.mode != "running" {
 		p.writeState()
 		return

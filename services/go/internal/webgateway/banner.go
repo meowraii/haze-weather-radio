@@ -233,10 +233,16 @@ func onAirBannerRecords(configPath string, feedID string, hub *BannerHub, now ti
 	for _, item := range active {
 		record, ok := findArchiveAlert(configPath, item.AlertID, item.FeedID)
 		if !ok {
+			record, ok = findArchiveAlert(configPath, item.AlertID, "")
+			if ok {
+				record.FeedID = item.FeedID
+			}
+		}
+		if !ok {
 			record, ok = findArchiveAlertByQueueHint(configPath, item)
 		}
 		if !ok {
-			continue
+			record = bannerRecordFromOnAirAlert(item, now)
 		}
 		if archiveAlertExpired(record.Alert, now) {
 			continue
@@ -272,6 +278,49 @@ func findArchiveAlertByQueueHint(configPath string, item bannerOnAirAlert) (arch
 		}
 	}
 	return archiveCAPRecord{}, false
+}
+
+func bannerRecordFromOnAirAlert(item bannerOnAirAlert, now time.Time) archiveCAPRecord {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	updated := item.UpdatedAt
+	if updated.IsZero() {
+		updated = now
+	}
+	expires := item.ExpiresAt
+	if expires.IsZero() {
+		expires = now.Add(30 * time.Minute)
+	}
+	alertID := fallbackString(item.AlertID, item.QueueID, fmt.Sprintf("on-air-%d", updated.UnixNano()))
+	event := fallbackString(item.Event, "Alert")
+	headline := fallbackString(item.Header, event, "Weather Alert")
+	sent := updated.UTC().Format(time.RFC3339Nano)
+	return archiveCAPRecord{
+		ID:        alertID,
+		FeedID:    item.FeedID,
+		Status:    "on_air",
+		UpdatedAt: updated,
+		Alert: capingest.Alert{
+			Identifier:  alertID,
+			Sent:        sent,
+			Status:      "Actual",
+			MessageType: "Alert",
+			Scope:       "Public",
+			Infos: []capingest.AlertInfo{{
+				Language:    "en-CA",
+				Event:       event,
+				Severity:    "Unknown",
+				Urgency:     "Unknown",
+				Certainty:   "Unknown",
+				Effective:   sent,
+				Expires:     expires.UTC().Format(time.RFC3339Nano),
+				SenderName:  "Haze Weather Radio",
+				Headline:    headline,
+				Description: headline,
+			}},
+		},
+	}
 }
 
 type bannerSort struct {
