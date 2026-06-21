@@ -265,6 +265,7 @@ type priorityAlertManifest struct {
 	FeedIDs          []string `json:"feed_ids"`
 	Header           string   `json:"header"`
 	Event            string   `json:"event"`
+	AlertText        string   `json:"alert_text,omitempty"`
 	AlertSentAt      string   `json:"alert_sent_at,omitempty"`
 	AlertExpiresAt   string   `json:"alert_expires_at,omitempty"`
 	MessageType      string   `json:"message_type,omitempty"`
@@ -978,6 +979,7 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		FeedIDs:          []string{p.feed.ID},
 		Header:           title,
 		Event:            eventName,
+		AlertText:        strings.TrimSpace(alertText),
 		AlertSentAt:      firstText(nil, data, "alert_sent_at", "sent"),
 		AlertExpiresAt:   firstText(nil, data, "alert_expires_at", "expires"),
 		MessageType:      firstText(nil, data, "message_type", "msg_type"),

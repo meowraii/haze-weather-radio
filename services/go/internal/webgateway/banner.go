@@ -172,7 +172,7 @@ func buildBannerPayload(configPath string, feedID string, hub *BannerHub) banner
 	for _, record := range records {
 		info := chooseArchiveInfo(record.Alert)
 		areas := archiveAreaNames(info)
-		alerts = append(alerts, alerttext.SerializeCAPAlert(
+		serialized := alerttext.SerializeCAPAlert(
 			record.Alert,
 			info,
 			record.FeedID,
@@ -180,7 +180,11 @@ func buildBannerPayload(configPath string, feedID string, hub *BannerHub) banner
 			bannerFeedTimezone(configPath, record.FeedID),
 			"cap",
 			now,
-		))
+		)
+		if text := strings.TrimSpace(record.AlertText); text != "" {
+			serialized.Message = text
+		}
+		alerts = append(alerts, serialized)
 		visuals = append(visuals, alerttext.AlertVisualInput{
 			Severity: info.Severity,
 			Event:    fallbackString(info.Event, info.Headline),
@@ -244,6 +248,9 @@ func onAirBannerRecords(configPath string, feedID string, hub *BannerHub, now ti
 		if !ok {
 			record = bannerRecordFromOnAirAlert(item, now)
 		}
+		if text := strings.TrimSpace(item.AlertText); text != "" {
+			record.AlertText = text
+		}
 		if archiveAlertExpired(record.Alert, now) {
 			continue
 		}
@@ -289,6 +296,7 @@ func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []
 				QueueID:   item.ID,
 				Event:     item.Event,
 				Header:    item.Header,
+				AlertText: item.AlertText,
 				ExpiresAt: expires,
 				UpdatedAt: now,
 			})
@@ -384,6 +392,7 @@ func bannerRecordFromOnAirAlert(item bannerOnAirAlert, now time.Time) archiveCAP
 		FeedID:    item.FeedID,
 		Status:    "on_air",
 		UpdatedAt: updated,
+		AlertText: strings.TrimSpace(item.AlertText),
 		Alert: capingest.Alert{
 			Identifier:  alertID,
 			Sent:        sent,

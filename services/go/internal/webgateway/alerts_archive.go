@@ -26,6 +26,7 @@ type archiveCAPRecord struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 	Alert     capingest.Alert `json:"alert"`
 	RawXML    string          `json:"raw_xml,omitempty"`
+	AlertText string          `json:"alert_text,omitempty"`
 }
 
 func alertsArchivePayload(configPath string) (map[string]any, error) {

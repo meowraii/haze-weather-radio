@@ -26,6 +26,7 @@ type bannerOnAirAlert struct {
 	QueueID   string
 	Event     string
 	Header    string
+	AlertText string
 	ExpiresAt time.Time
 	UpdatedAt time.Time
 }
@@ -78,13 +79,17 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 		Header  string   `json:"header"`
 		Event   string   `json:"event"`
 		Data    struct {
-			FeedID  string   `json:"feed_id"`
-			FeedIDs []string `json:"feed_ids"`
-			QueueID string   `json:"queue_id"`
-			Header  string   `json:"header"`
-			Event   string   `json:"event"`
-			AlertID string   `json:"alert_id"`
-			Title   string   `json:"title"`
+			FeedID    string   `json:"feed_id"`
+			FeedIDs   []string `json:"feed_ids"`
+			QueueID   string   `json:"queue_id"`
+			Header    string   `json:"header"`
+			Event     string   `json:"event"`
+			AlertID   string   `json:"alert_id"`
+			Title     string   `json:"title"`
+			AlertText string   `json:"alert_text"`
+			TTSText   string   `json:"tts_text"`
+			Text      string   `json:"text"`
+			Message   string   `json:"message"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
@@ -119,6 +124,7 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 				QueueID:   queueID,
 				Event:     fallbackString(event.Data.Event, event.Event, item.Event),
 				Header:    fallbackString(event.Data.Header, event.Header, item.Header, event.Data.Title),
+				AlertText: fallbackString(event.Data.AlertText, event.Data.TTSText, event.Data.Text, event.Data.Message, item.AlertText),
 				ExpiresAt: now.Add(30 * time.Minute),
 				UpdatedAt: now,
 			}

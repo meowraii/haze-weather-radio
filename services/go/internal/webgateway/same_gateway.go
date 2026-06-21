@@ -160,6 +160,7 @@ type sameQueueItem struct {
 	Header       string             `json:"header"`
 	Originator   string             `json:"originator"`
 	Event        string             `json:"event"`
+	AlertText    string             `json:"alert_text,omitempty"`
 	Locations    []string           `json:"locations"`
 	Duration     string             `json:"duration"`
 	Callsign     string             `json:"callsign"`

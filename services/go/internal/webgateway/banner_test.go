@@ -174,6 +174,41 @@ func TestBannerHubUsesArchiveAcrossCatchallFeed(t *testing.T) {
 	}
 }
 
+func TestBannerPayloadPrefersAudioReadyAlertText(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	rawCAP := `<alert>
+  <identifier>urn:test:banner:spoken</identifier>
+  <sender>cap-pac@canada.ca</sender>
+  <sent>2099-06-17T01:00:00Z</sent>
+  <status>Actual</status>
+  <msgType>Alert</msgType>
+  <scope>Public</scope>
+  <info>
+    <language>en-CA</language>
+    <event>Tornado Warning</event>
+    <severity>Extreme</severity>
+    <effective>2099-06-17T01:00:00Z</effective>
+    <expires>2099-06-17T03:00:00Z</expires>
+    <headline>Tornado Warning - in effect</headline>
+    <area><areaDesc>City of Saskatoon</areaDesc></area>
+  </info>
+</alert>`
+	storeBannerCAP(t, configPath, rawCAP, "CAP-IT-ALL", "accepted")
+	spoken := "This is the exact text that was fed into alert audio."
+	hub := NewBannerHub(configPath, "")
+	hub.handleEvent([]byte(`{"type":"cap.alert.audio.ready","feed_ids":["CAP-IT-ALL"],"queue_id":"spoken-queue-1","data":{"alert_id":"urn:test:banner:spoken","event":"TOR","title":"Tornado Warning","alert_text":"`+spoken+`"}}`), time.Now().UTC())
+
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
+
+	if !payload.Active || len(payload.Alerts) != 1 {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.Alerts[0].Message != spoken {
+		t.Fatalf("message = %q, want %q", payload.Alerts[0].Message, spoken)
+	}
+}
+
 func TestBannerHubFallsBackToOnAirMetadataWithoutArchive(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
@@ -193,6 +228,7 @@ func TestBannerHubFallsBackToOnAirMetadataWithoutArchive(t *testing.T) {
 func TestBannerPayloadUsesQueuedQueueItemWhenHubMissedEvent(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
+	spoken := "Persisted queue text should be the crawl text."
 	queue := sameQueueItem{
 		ID:        "manual-queue-1",
 		AlertID:   "manual-alert-1",
@@ -201,6 +237,7 @@ func TestBannerPayloadUsesQueuedQueueItemWhenHubMissedEvent(t *testing.T) {
 		FeedIDs:   []string{"CAP-IT-ALL"},
 		Header:    "Required Weekly Test",
 		Event:     "RWT",
+		AlertText: spoken,
 		CreatedAt: time.Now().UTC().Add(-time.Second),
 	}
 	rawQueue, err := json.Marshal(queue)
@@ -216,6 +253,9 @@ func TestBannerPayloadUsesQueuedQueueItemWhenHubMissedEvent(t *testing.T) {
 	}
 	if payload.Alerts[0].Headline != "Required Weekly Test" || payload.Alerts[0].FeedID != "CAP-IT-ALL" {
 		t.Fatalf("alert = %#v", payload.Alerts[0])
+	}
+	if payload.Alerts[0].Message != spoken {
+		t.Fatalf("message = %q, want %q", payload.Alerts[0].Message, spoken)
 	}
 }
 
