@@ -79,6 +79,26 @@ func TestWebRTCIdleFramesAdvanceDitherPhase(t *testing.T) {
 	assertIdleDither(t, "phase-shifted G.722", samples)
 }
 
+func TestWebRTCPeerFillerFramesAdvanceDitherPhase(t *testing.T) {
+	firstPCMU := webRTCFillerFrameWithPhase(webRTCAudioPCMU, 0)
+	secondPCMU := webRTCFillerFrameWithPhase(webRTCAudioPCMU, 1)
+	if len(firstPCMU) != pcmuFrameSamples || len(secondPCMU) != pcmuFrameSamples {
+		t.Fatalf("PCMU filler lengths = %d/%d, want %d", len(firstPCMU), len(secondPCMU), pcmuFrameSamples)
+	}
+	if string(firstPCMU) == string(secondPCMU) {
+		t.Fatal("consecutive PCMU peer filler frames should not repeat the exact same payload")
+	}
+
+	firstG722 := webRTCFillerFrameWithPhase(webRTCAudioG722, 0)
+	secondG722 := webRTCFillerFrameWithPhase(webRTCAudioG722, 1)
+	if len(firstG722) == 0 || len(secondG722) == 0 {
+		t.Fatalf("G.722 filler should not be empty: %d/%d", len(firstG722), len(secondG722))
+	}
+	if string(firstG722) == string(secondG722) {
+		t.Fatal("consecutive G.722 peer filler frames should not repeat the exact same payload")
+	}
+}
+
 func TestDefaultWebRTCAudioCodecPrefersStablePlayout(t *testing.T) {
 	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "")
 	if got := defaultWebRTCAudioCodec(); got != webRTCAudioPCMU {

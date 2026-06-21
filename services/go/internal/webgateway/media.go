@@ -1445,12 +1445,12 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		}
 		return true
 	}
-	fillerFrame := webRTCFrame{payload: webRTCFillerFrame(codec)}
 	var pendingSkipped int
 	var lastSourceSequence uint64
 	var fillerFramesSinceSource int
 	var lastPeerSourceFrame webRTCFrame
 	var peerConcealedFrames int
+	var fillerPhase int
 	writeSourceFrame := func(frame webRTCFrame, drainSkipped int) bool {
 		if len(frame.payload) == 0 {
 			return true
@@ -1467,7 +1467,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		return writeFrame(frame, skipped, sourceGap, false, false)
 	}
 	writeFillerFrame := func() bool {
-		frame := fillerFrame
+		var frame webRTCFrame
 		concealed := false
 		filler := true
 		if len(lastPeerSourceFrame.payload) > 0 && peerConcealedFrames < webrtcConcealmentFrames {
@@ -1475,6 +1475,9 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 			peerConcealedFrames++
 			concealed = true
 			filler = false
+		} else {
+			frame = webRTCFrame{payload: webRTCFillerFrameWithPhase(codec, fillerPhase)}
+			fillerPhase++
 		}
 		if len(frame.payload) == 0 {
 			return true
@@ -1525,21 +1528,29 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 }
 
 func webRTCFillerFrame(codec webRTCAudioCodec) []byte {
-	return initialWebRTCFrame(codec)
+	return webRTCFillerFrameWithPhase(codec, 0)
+}
+
+func webRTCFillerFrameWithPhase(codec webRTCAudioCodec, phase int) []byte {
+	return initialWebRTCFrameWithPhase(codec, phase)
 }
 
 func initialWebRTCFrame(codec webRTCAudioCodec) []byte {
+	return initialWebRTCFrameWithPhase(codec, 0)
+}
+
+func initialWebRTCFrameWithPhase(codec webRTCAudioCodec, phase int) []byte {
 	switch codec {
 	case webRTCAudioPCMU:
-		return pcmuIdleFrame()
+		return pcmuIdleFrameWithPhase(phase)
 	case webRTCAudioG722:
-		return encodeG722Frame(g722.NewEncoder(g722.Rate64000, 0), g722IdleFrameSamples())
+		return encodeG722Frame(g722.NewEncoder(g722.Rate64000, 0), idleFrameSamplesWithPhase(g722IdleFrameSamples(), phase))
 	case webRTCAudioOpus:
 		encoder, err := newOpusFrameEncoder(opusSampleRate, opusEncoderChannels)
 		if err != nil {
 			return nil
 		}
-		encoded, err := encoder.Encode(opusIdleFrameSamples())
+		encoded, err := encoder.Encode(idleFrameSamplesWithPhase(opusIdleFrameSamples(), phase))
 		if err != nil {
 			return nil
 		}
