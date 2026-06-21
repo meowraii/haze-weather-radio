@@ -1067,9 +1067,7 @@ async function startFeedWebRTC(feedId) {
     audio.dataset.hazeTrackAttached = '0';
     audio.onplaying = () => {
         if (isActivePlayer(feedId, player)) {
-            clearPlayerTimer(player, 'mediaEventTimer');
-            audio.dataset.hazePlayerState = 'playing';
-            setPlayerStatus(feedId, 'Playing');
+            setHealthyWebRTCStatus(feedId, player, audio);
         }
     };
     audio.onwaiting = () => {
