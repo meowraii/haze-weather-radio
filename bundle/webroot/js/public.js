@@ -990,17 +990,21 @@ function webRTCTrackEventDetails(player) {
 
 function webRTCAudioTrackStates(player, audio = player?.audio || null) {
     const seen = new Set();
-    const tracks = [
-        ...(audio?.srcObject?.getAudioTracks?.() || []),
-        ...(player?.remoteStream?.getAudioTracks?.() || []),
-    ];
+    const tracks = [];
+    const addTracks = (source, stream) => {
+        for (const track of stream?.getAudioTracks?.() || []) {
+            if (!track || seen.has(`${source}:${track.id}`)) continue;
+            seen.add(`${source}:${track.id}`);
+            tracks.push({ source, track });
+        }
+    };
+    addTracks('audio_element', audio?.srcObject);
+    addTracks('mixer_output', player?.audioOutputMixer?.outputStream);
+    addTracks('mixer_source', player?.audioOutputMixer?.sourceStream);
+    addTracks('remote_stream', player?.remoteStream);
     return tracks
-        .filter((track) => {
-            if (!track || seen.has(track.id)) return false;
-            seen.add(track.id);
-            return true;
-        })
-        .map((track) => ({
+        .map(({ source, track }) => ({
+            source,
             id: track.id || '',
             ready_state: track.readyState || '',
             enabled: Boolean(track.enabled),

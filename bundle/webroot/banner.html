@@ -1574,17 +1574,21 @@
 
         function bannerAudioTrackStates(audio = state.audioElement) {
             const seen = new Set();
-            const tracks = [
-                ...(audio?.srcObject?.getAudioTracks?.() || []),
-                ...(state.audioRemoteStream?.getAudioTracks?.() || []),
-            ];
+            const tracks = [];
+            const addTracks = (source, stream) => {
+                for (const track of stream?.getAudioTracks?.() || []) {
+                    if (!track || seen.has(`${source}:${track.id}`)) continue;
+                    seen.add(`${source}:${track.id}`);
+                    tracks.push({ source, track });
+                }
+            };
+            addTracks('audio_element', audio?.srcObject);
+            addTracks('mixer_output', state.audioOutputMixer?.outputStream);
+            addTracks('mixer_source', state.audioOutputMixer?.sourceStream);
+            addTracks('remote_stream', state.audioRemoteStream);
             return tracks
-                .filter((track) => {
-                    if (!track || seen.has(track.id)) return false;
-                    seen.add(track.id);
-                    return true;
-                })
-                .map((track) => ({
+                .map(({ source, track }) => ({
+                    source,
                     id: track.id || '',
                     ready_state: track.readyState || '',
                     enabled: Boolean(track.enabled),
