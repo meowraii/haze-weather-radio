@@ -3,6 +3,7 @@ package webgateway
 import (
 	"bufio"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -1078,7 +1079,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		}
 	}
 	loggedWrite := false
-	stats := webRTCPeerStreamStats{lastReport: time.Now()}
+	stats := newWebRTCPeerStreamStats(time.Now())
 	var writeInFlight atomic.Bool
 	var writeStartedAt atomic.Int64
 	var stallOnce sync.Once
@@ -1239,6 +1240,20 @@ type webRTCPeerStreamStats struct {
 	timestamp        uint32
 	lastWriteAt      time.Time
 	lastPayloadBytes int
+}
+
+func newWebRTCPeerStreamStats(now time.Time) webRTCPeerStreamStats {
+	var seed [6]byte
+	if _, err := cryptorand.Read(seed[:]); err != nil {
+		nanos := uint64(now.UnixNano())
+		binary.BigEndian.PutUint16(seed[0:2], uint16(nanos))
+		binary.BigEndian.PutUint32(seed[2:6], uint32(nanos>>16))
+	}
+	return webRTCPeerStreamStats{
+		lastReport:     now,
+		sequenceNumber: binary.BigEndian.Uint16(seed[0:2]),
+		timestamp:      binary.BigEndian.Uint32(seed[2:6]),
+	}
 }
 
 func (s *webRTCPeerStreamStats) recordSkipped(skipped int) {

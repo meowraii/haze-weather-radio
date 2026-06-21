@@ -1023,6 +1023,16 @@ func TestMediaHubWritesNegotiatedRTPPayloadType(t *testing.T) {
 	}
 }
 
+func TestNewWebRTCPeerStreamStatsSeedsRTPStart(t *testing.T) {
+	stats := newWebRTCPeerStreamStats(time.Unix(1700000000, 123456789))
+	if stats.lastReport.IsZero() {
+		t.Fatal("last report time should be initialized")
+	}
+	if stats.sequenceNumber == 0 && stats.timestamp == 0 {
+		t.Fatal("RTP sequence and timestamp should not both start at zero")
+	}
+}
+
 func TestMediaHubKeepsRTPContinuousAfterPublishedPCMStops(t *testing.T) {
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
