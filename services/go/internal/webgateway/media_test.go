@@ -307,6 +307,22 @@ func TestRTPTimestampAdvanceIncludesSkippedFrames(t *testing.T) {
 	}
 }
 
+func TestShouldSendWebRTCFillerAtFrameCadence(t *testing.T) {
+	now := time.Now()
+	if !shouldSendWebRTCFiller(time.Time{}, now) {
+		t.Fatal("filler should be allowed before the first write")
+	}
+	if shouldSendWebRTCFiller(now.Add(-webrtcFrameDuration+time.Millisecond), now) {
+		t.Fatal("filler should wait until one frame duration has elapsed")
+	}
+	if !shouldSendWebRTCFiller(now.Add(-webrtcFrameDuration), now) {
+		t.Fatal("filler should be sent at the normal WebRTC frame cadence")
+	}
+	if !shouldSendWebRTCFiller(now.Add(-2*webrtcFrameDuration+time.Millisecond), now) {
+		t.Fatal("filler should not wait for the old two-frame threshold")
+	}
+}
+
 func TestWebRTCTimestampSkippedFramesUsesSourceSequenceGap(t *testing.T) {
 	if got := webRTCTimestampSkippedFrames(0, 4); got != 0 {
 		t.Fatalf("first sent frame skipped count = %d, want 0", got)

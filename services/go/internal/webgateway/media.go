@@ -1183,7 +1183,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				return
 			}
 		case <-idleTicker.C:
-			if len(lastFrame.payload) == 0 || (!stats.lastWriteAt.IsZero() && time.Since(stats.lastWriteAt) < 2*webrtcFrameDuration) {
+			if len(lastFrame.payload) == 0 || !shouldSendWebRTCFiller(stats.lastWriteAt, time.Now()) {
 				continue
 			}
 			if !writeFrame(lastFrame, 0, 0) {
@@ -1220,6 +1220,13 @@ func rtpTimestampStep(codec webRTCAudioCodec) uint32 {
 		return uint32(opusSampleRate / 50)
 	}
 	return uint32(webrtcRTPClockRate / 50)
+}
+
+func shouldSendWebRTCFiller(lastWriteAt time.Time, now time.Time) bool {
+	if lastWriteAt.IsZero() {
+		return true
+	}
+	return now.Sub(lastWriteAt).Truncate(time.Millisecond) >= webrtcFrameDuration
 }
 
 func rtpTimestampAdvance(codec webRTCAudioCodec, skippedFrames int) uint32 {
