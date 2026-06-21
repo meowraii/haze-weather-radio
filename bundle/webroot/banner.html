@@ -311,6 +311,7 @@
         const AUDIO_RECENT_PACKET_GRACE_MS = 30000;
         const AUDIO_HARD_PACKET_STALE_MS = 120000;
         const AUDIO_PLAYBACK_WATCHDOG_MS = 2500;
+        const AUDIO_TRACK_MUTE_GRACE_MS = 2500;
         const AUDIO_OUTPUT_BED_GAIN = 0.0008;
         const AUDIO_OUTPUT_BED_FREQUENCY = 37;
         const AUDIO_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
@@ -351,11 +352,13 @@
             audioReconnectPending: false,
             audioDisconnectTimer: null,
             audioStatsTimer: null,
+            audioTrackMuteTimer: null,
             audioPlaybackWatchdogTimer: null,
             audioLastStats: null,
             audioLastPacketAt: 0,
             audioStartedAt: 0,
             audioTrackAttached: false,
+            audioTrackMutedReported: false,
             audioStagnantStatsPolls: 0,
             audioMissingStatsPolls: 0,
             obsController: null,
@@ -1411,6 +1414,7 @@
             stopAudioStatsMonitor();
             stopAudioPlaybackWatchdog();
             state.audioTrackAttached = false;
+            state.audioTrackMutedReported = false;
             state.audioReceiver = null;
             state.audioTrackId = '';
             state.audioRemoteStream = null;
@@ -1432,6 +1436,10 @@
             if (state.audioDisconnectTimer) {
                 window.clearTimeout(state.audioDisconnectTimer);
                 state.audioDisconnectTimer = null;
+            }
+            if (state.audioTrackMuteTimer) {
+                window.clearTimeout(state.audioTrackMuteTimer);
+                state.audioTrackMuteTimer = null;
             }
         }
 
@@ -1475,6 +1483,46 @@
             if (state.audioDisconnectTimer) {
                 window.clearTimeout(state.audioDisconnectTimer);
                 state.audioDisconnectTimer = null;
+            }
+            clearBannerAudioTrackMuteReport();
+        }
+
+        function bannerAudioTrackEventDetails() {
+            return {
+                connection_state: state.audioPeer?.connectionState || '',
+                ice_state: state.audioPeer?.iceConnectionState || '',
+                last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
+                packets_recent: hasRecentBannerAudioPackets(),
+                hard_stale_packets: hasHardStaleBannerAudioPackets(),
+            };
+        }
+
+        function scheduleBannerAudioTrackMuteReport() {
+            if (state.audioTrackMuteTimer) {
+                window.clearTimeout(state.audioTrackMuteTimer);
+            }
+            state.audioTrackMuteTimer = window.setTimeout(() => {
+                state.audioTrackMuteTimer = null;
+                if (hasRecentBannerAudioPackets()) {
+                    return;
+                }
+                state.audioTrackMutedReported = true;
+                recordBannerAudioEvent('track_muted', bannerAudioTrackEventDetails());
+            }, AUDIO_TRACK_MUTE_GRACE_MS);
+        }
+
+        function clearBannerAudioTrackMuteReport() {
+            const hadPendingMute = Boolean(state.audioTrackMuteTimer);
+            if (state.audioTrackMuteTimer) {
+                window.clearTimeout(state.audioTrackMuteTimer);
+                state.audioTrackMuteTimer = null;
+            }
+            if (state.audioTrackMutedReported) {
+                state.audioTrackMutedReported = false;
+                recordBannerAudioEvent('track_unmuted', bannerAudioTrackEventDetails());
+            } else if (hadPendingMute) {
+                recordBannerAudioEvent('track_mute_transient', bannerAudioTrackEventDetails());
             }
         }
 
@@ -1688,26 +1736,14 @@
                 state.audioMissingStatsPolls = 0;
                 state.audioTrackAttached = true;
                 event.track.onmute = () => {
-                    recordBannerAudioEvent('track_muted', {
-                        connection_state: pc.connectionState,
-                        ice_state: pc.iceConnectionState,
-                        last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
-                        packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
-                        packets_recent: hasRecentBannerAudioPackets(),
-                        hard_stale_packets: hasHardStaleBannerAudioPackets(),
-                    });
+                    scheduleBannerAudioTrackMuteReport();
                 };
                 event.track.onunmute = () => {
-                    recordBannerAudioEvent('track_unmuted', {
-                        connection_state: pc.connectionState,
-                        ice_state: pc.iceConnectionState,
-                        last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
-                        packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
-                        packets_recent: hasRecentBannerAudioPackets(),
-                        hard_stale_packets: hasHardStaleBannerAudioPackets(),
-                    });
+                    clearBannerAudioTrackMuteReport();
                 };
                 event.track.onended = () => {
+                    clearAudioTransientTimers();
+                    state.audioTrackMutedReported = false;
                     recordBannerAudioEvent('track_ended', {
                         connection_state: pc.connectionState,
                         ice_state: pc.iceConnectionState,
