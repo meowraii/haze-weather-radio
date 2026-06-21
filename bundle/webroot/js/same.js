@@ -145,7 +145,7 @@ function buildLayout() {
                     <div class="ba-option-group">
                         <label class="ba-switch">
                             <input id="baIncludeSame" type="checkbox" checked>
-                            <span>Include SAME header, attention tone, and EOM</span>
+                            <span>Enable SAME</span>
                         </label>
                         <label class="ba-switch">
                             <input id="baPrependIntro" type="checkbox" checked>
@@ -215,7 +215,7 @@ function buildLayout() {
             <section class="ba-rail-section">
                 <p id="baStatus" class="status-banner ba-status"></p>
                 <div class="ba-action-grid">
-                    <button id="baPreviewSame" class="btn-action" type="button">Preview SAME</button>
+                    <button id="baPreviewSame" class="btn-action" type="button">Preview alert audio</button>
                     <button id="baQueue" class="btn-danger" type="button">Broadcast</button>
                 </div>
                 <audio id="baPreviewPlayer" class="ba-preview-player" controls hidden></audio>
@@ -619,7 +619,6 @@ function updateAll() {
     planSame.textContent = includeSame.checked ? `${selectedTone}` : 'Disabled';
     planTiming.textContent = scheduleEnabled.checked && scheduleAt.value ? new Date(scheduleAt.value).toLocaleString() : 'Now';
     headerPreview.textContent = includeSame.checked ? headerText() : 'SAME disabled for this broadcast.';
-    previewSame.disabled = !includeSame.checked;
     queueButton.textContent = scheduleEnabled.checked ? 'Schedule Alert' : 'Broadcast';
     refreshIntroSoon();
 }
@@ -688,10 +687,6 @@ async function queueBroadcast() {
 }
 
 async function previewSameAudio() {
-    if (!includeSame.checked) {
-        setStatus('SAME is disabled for this broadcast.', 'err');
-        return;
-    }
     const validation = validatePayload();
     if (validation) {
         setStatus(validation, 'err');
@@ -700,21 +695,38 @@ async function previewSameAudio() {
     previewSame.disabled = true;
     previewSame.textContent = 'Generating...';
     try {
-        const result = await apiPost('/same/generate', payload());
-        if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
-        const bytes = Uint8Array.from(atob(result.audio_base64 || ''), (char) => char.charCodeAt(0));
-        const wav = pcmToWav(bytes, result.sample_rate || 48000, result.channels || 1);
-        previewObjectUrl = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
-        previewPlayer.src = previewObjectUrl;
-        previewPlayer.hidden = false;
-        headerPreview.textContent = result.header || headerText();
-        setStatus('SAME preview ready.', 'ok');
-        previewPlayer.play().catch(() => {});
+        if (includeSame.checked) {
+            const result = await apiPost('/same/generate', payload());
+            if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+            const bytes = Uint8Array.from(atob(result.audio_base64 || ''), (char) => char.charCodeAt(0));
+            const wav = pcmToWav(bytes, result.sample_rate || 48000, result.channels || 1);
+            previewObjectUrl = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
+            previewPlayer.src = previewObjectUrl;
+            previewPlayer.hidden = false;
+            headerPreview.textContent = result.header || headerText();
+            setStatus('Alert audio preview ready.', 'ok');
+            previewPlayer.play().catch(() => {});
+            return;
+        }
+        const text = [prependIntro.checked ? introText : '', messageBox.value.trim()].filter(Boolean).join(' ').trim();
+        if (!text) {
+            setStatus('Add message text or enable the generated intro.', 'err');
+            return;
+        }
+        previewPlayer.pause();
+        previewPlayer.hidden = true;
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+            setStatus('Playing browser speech preview.', 'ok');
+        } else {
+            setStatus('Text-only alert preview is not supported in this browser.', 'err');
+        }
     } catch (err) {
         setStatus(`Preview failed: ${err.message}`, 'err');
     } finally {
-        previewSame.disabled = !includeSame.checked;
-        previewSame.textContent = 'Preview SAME';
+        previewSame.disabled = false;
+        previewSame.textContent = 'Preview alert audio';
     }
 }
 

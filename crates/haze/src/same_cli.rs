@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
@@ -6,9 +8,12 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::same_core::{
-    eom_sequence, generate_same_header_attention_sequence, generate_same_header_sequence,
-    SameHeader, ToneType,
+    eom_sequence, generate_same_header_attention_sequence,
+    generate_same_header_attention_sequence_with_attention, generate_same_header_sequence,
+    generate_same_header_sequence_with_attention, SameHeader, ToneType, SAMPLE_RATE,
 };
+
+const NPAS_ATTENTION_SIGNAL_PATH: &str = "bundle/audio/Canadian_Alerting_Attention_Signal.wav";
 
 #[derive(Debug, Subcommand)]
 pub enum SameCommand {
@@ -56,22 +61,35 @@ pub struct SameGenerateArgs {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ToneArg(Option<ToneType>);
+enum ToneArg {
+    None,
+    Builtin(ToneType),
+    Npas,
+}
+
+impl ToneArg {
+    fn builtin(self) -> Option<ToneType> {
+        match self {
+            Self::Builtin(tone) => Some(tone),
+            Self::None | Self::Npas => None,
+        }
+    }
+}
 
 impl FromStr for ToneArg {
     type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self> {
         let tone = match value.trim().to_ascii_uppercase().as_str() {
-            "" | "NONE" | "NO" | "OFF" => None,
-            "WXR" | "WEATHER" => Some(ToneType::Wxr),
-            "EAS" => Some(ToneType::Eas),
-            "NPAS" | "ALERT_READY" | "ALERT-READY" => Some(ToneType::Npas),
-            "EGG_TIMER" | "EGG-TIMER" | "EGG" => Some(ToneType::EggTimer),
-            "QUEBEC" | "QC" => Some(ToneType::Quebec),
+            "" | "NONE" | "NO" | "OFF" => Self::None,
+            "WXR" | "WEATHER" => Self::Builtin(ToneType::Wxr),
+            "EAS" => Self::Builtin(ToneType::Eas),
+            "NPAS" | "ALERT_READY" | "ALERT-READY" => Self::Npas,
+            "EGG_TIMER" | "EGG-TIMER" | "EGG" => Self::Builtin(ToneType::EggTimer),
+            "QUEBEC" | "QC" => Self::Builtin(ToneType::Quebec),
             other => bail!("unsupported attention tone {other:?}"),
         };
-        Ok(Self(tone))
+        Ok(tone)
     }
 }
 
@@ -128,10 +146,24 @@ fn run_generate(args: SameGenerateArgs) -> Result<()> {
             .to_string(),
     )
     .context("failed to build SAME header")?;
-    let audio = match args.sequence {
-        SameSequenceArg::Full => generate_same_header_sequence(&header, args.tone.0),
-        SameSequenceArg::Header => generate_same_header_attention_sequence(&header, args.tone.0),
-        SameSequenceArg::Eom => eom_sequence(),
+    let npas_attention = match args.tone {
+        ToneArg::Npas => Some(load_npas_attention_signal()?),
+        ToneArg::None | ToneArg::Builtin(_) => None,
+    };
+    let audio = match (args.sequence, npas_attention.as_deref()) {
+        (SameSequenceArg::Full, Some(attention)) => {
+            generate_same_header_sequence_with_attention(&header, Some(attention))
+        }
+        (SameSequenceArg::Header, Some(attention)) => {
+            generate_same_header_attention_sequence_with_attention(&header, Some(attention))
+        }
+        (SameSequenceArg::Full, None) => {
+            generate_same_header_sequence(&header, args.tone.builtin())
+        }
+        (SameSequenceArg::Header, None) => {
+            generate_same_header_attention_sequence(&header, args.tone.builtin())
+        }
+        (SameSequenceArg::Eom, _) => eom_sequence(),
     };
     let pcm = audio.to_pcm16le();
     let output = SameGenerateOutput {
@@ -149,6 +181,147 @@ fn run_generate(args: SameGenerateArgs) -> Result<()> {
         println!("{}", output.header);
     }
     Ok(())
+}
+
+fn load_npas_attention_signal() -> Result<Vec<f32>> {
+    let path = find_npas_attention_signal_path()
+        .with_context(|| format!("failed to locate {NPAS_ATTENTION_SIGNAL_PATH}"))?;
+    let raw = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    read_wav_mono_f32(&raw).with_context(|| format!("failed to decode {}", path.display()))
+}
+
+fn find_npas_attention_signal_path() -> Option<PathBuf> {
+    let direct = PathBuf::from(NPAS_ATTENTION_SIGNAL_PATH);
+    if direct.exists() {
+        return Some(direct);
+    }
+    if let Ok(current_dir) = std::env::current_dir() {
+        for dir in current_dir.ancestors() {
+            let candidate = dir.join(NPAS_ATTENTION_SIGNAL_PATH);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            let candidate = dir
+                .join("audio")
+                .join("Canadian_Alerting_Attention_Signal.wav");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        for dir in exe.ancestors() {
+            let candidate = dir.join(NPAS_ATTENTION_SIGNAL_PATH);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            let candidate = dir
+                .join("audio")
+                .join("Canadian_Alerting_Attention_Signal.wav");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn read_wav_mono_f32(raw: &[u8]) -> Result<Vec<f32>> {
+    if raw.len() < 12 || &raw[0..4] != b"RIFF" || &raw[8..12] != b"WAVE" {
+        bail!("not a RIFF/WAVE file");
+    }
+    let mut cursor = 12usize;
+    let mut format_tag = 0u16;
+    let mut channels = 0u16;
+    let mut sample_rate = 0u32;
+    let mut bits_per_sample = 0u16;
+    let mut data = &[][..];
+    while cursor + 8 <= raw.len() {
+        let chunk_id = &raw[cursor..cursor + 4];
+        let chunk_size = u32::from_le_bytes(raw[cursor + 4..cursor + 8].try_into()?) as usize;
+        let start = cursor + 8;
+        let end = start.saturating_add(chunk_size).min(raw.len());
+        if chunk_id == b"fmt " {
+            if chunk_size < 16 || end > raw.len() {
+                bail!("invalid wav fmt chunk");
+            }
+            format_tag = u16::from_le_bytes(raw[start..start + 2].try_into()?);
+            channels = u16::from_le_bytes(raw[start + 2..start + 4].try_into()?);
+            sample_rate = u32::from_le_bytes(raw[start + 4..start + 8].try_into()?);
+            bits_per_sample = u16::from_le_bytes(raw[start + 14..start + 16].try_into()?);
+        } else if chunk_id == b"data" {
+            data = &raw[start..end];
+        }
+        cursor = end + (chunk_size % 2);
+    }
+    if channels == 0 || sample_rate == 0 || data.is_empty() {
+        bail!("wav is missing audio metadata or data");
+    }
+    let mut samples = decode_wav_samples(data, format_tag, channels, bits_per_sample)?;
+    if channels > 1 {
+        samples = downmix_to_mono(&samples, channels as usize);
+    }
+    if sample_rate != SAMPLE_RATE {
+        samples = resample_linear(&samples, sample_rate, SAMPLE_RATE);
+    }
+    Ok(samples)
+}
+
+fn decode_wav_samples(
+    data: &[u8],
+    format_tag: u16,
+    channels: u16,
+    bits_per_sample: u16,
+) -> Result<Vec<f32>> {
+    let bytes_per_sample = usize::from(bits_per_sample / 8);
+    if bytes_per_sample == 0 || channels == 0 {
+        bail!("invalid wav sample format");
+    }
+    let mut samples = Vec::with_capacity(data.len() / bytes_per_sample);
+    for chunk in data.chunks_exact(bytes_per_sample) {
+        let sample = match (format_tag, bits_per_sample) {
+            (1, 16) => i16::from_le_bytes(chunk.try_into()?) as f32 / i16::MAX as f32,
+            (1, 24) => {
+                let value = i32::from_le_bytes([
+                    chunk[0],
+                    chunk[1],
+                    chunk[2],
+                    if chunk[2] & 0x80 != 0 { 0xff } else { 0x00 },
+                ]);
+                value as f32 / 8_388_607.0
+            }
+            (1, 32) => i32::from_le_bytes(chunk.try_into()?) as f32 / i32::MAX as f32,
+            (3, 32) => f32::from_le_bytes(chunk.try_into()?),
+            other => bail!("unsupported wav format {:?}", other),
+        };
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+    Ok(samples)
+}
+
+fn downmix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
+    samples
+        .chunks_exact(channels)
+        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .collect()
+}
+
+fn resample_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
+    if samples.is_empty() || source_rate == target_rate {
+        return samples.to_vec();
+    }
+    let out_len =
+        (samples.len() as u64 * u64::from(target_rate) / u64::from(source_rate)).max(1) as usize;
+    let ratio = source_rate as f64 / target_rate as f64;
+    let mut out = Vec::with_capacity(out_len);
+    for index in 0..out_len {
+        let source = index as f64 * ratio;
+        let left = source.floor() as usize;
+        let right = (left + 1).min(samples.len() - 1);
+        let frac = (source - left as f64) as f32;
+        out.push(samples[left] + ((samples[right] - samples[left]) * frac));
+    }
+    out
 }
 
 fn current_same_issue_time() -> String {
@@ -186,17 +359,20 @@ mod tests {
 
     #[test]
     fn parses_panel_tone_names() {
-        assert_eq!("WXR".parse::<ToneArg>().unwrap().0, Some(ToneType::Wxr));
-        assert_eq!("NPAS".parse::<ToneArg>().unwrap().0, Some(ToneType::Npas));
+        assert!(matches!(
+            "WXR".parse::<ToneArg>().unwrap(),
+            ToneArg::Builtin(ToneType::Wxr)
+        ));
+        assert!(matches!("NPAS".parse::<ToneArg>().unwrap(), ToneArg::Npas));
         assert_eq!(
-            "EGG_TIMER".parse::<ToneArg>().unwrap().0,
+            "EGG_TIMER".parse::<ToneArg>().unwrap().builtin(),
             Some(ToneType::EggTimer)
         );
         assert_eq!(
-            "QUEBEC".parse::<ToneArg>().unwrap().0,
+            "QUEBEC".parse::<ToneArg>().unwrap().builtin(),
             Some(ToneType::Quebec)
         );
-        assert_eq!("NONE".parse::<ToneArg>().unwrap().0, None);
+        assert!(matches!("NONE".parse::<ToneArg>().unwrap(), ToneArg::None));
     }
 
     #[test]
@@ -229,5 +405,13 @@ mod tests {
         assert_eq!(encode_base64(b"f"), "Zg==");
         assert_eq!(encode_base64(b"fo"), "Zm8=");
         assert_eq!(encode_base64(b"foo"), "Zm9v");
+    }
+
+    #[test]
+    fn decodes_npas_attention_signal_wav() {
+        let samples = load_npas_attention_signal().expect("bundled NPAS WAV");
+
+        assert_eq!(samples.len(), SAMPLE_RATE as usize * 8);
+        assert!(samples.iter().any(|sample| sample.abs() > 0.01));
     }
 }

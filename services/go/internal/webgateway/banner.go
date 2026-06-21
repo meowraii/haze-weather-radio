@@ -38,7 +38,7 @@ func (s *Server) bannerStream(writer http.ResponseWriter, request *http.Request)
 	writer.Header().Set("X-Accel-Buffering", "no")
 
 	feedID := strings.TrimSpace(request.URL.Query().Get("feed"))
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(750 * time.Millisecond)
 	defer ticker.Stop()
 
 	lastSignature := ""
@@ -256,6 +256,9 @@ func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []
 		if !bannerQueueItemOnAir(item) {
 			continue
 		}
+		if !bannerQueueItemFresh(item, now) {
+			continue
+		}
 		for _, targetFeedID := range item.FeedIDs {
 			targetFeedID = strings.TrimSpace(targetFeedID)
 			if targetFeedID == "" {
@@ -287,11 +290,43 @@ func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []
 
 func bannerQueueItemOnAir(item sameQueueItem) bool {
 	switch strings.ToLower(strings.TrimSpace(item.Status)) {
-	case "playing", "claimed":
+	case "playing", "claimed", "queued":
 		return true
 	default:
 		return false
 	}
+}
+
+func bannerQueueItemFresh(item sameQueueItem, now time.Time) bool {
+	status := strings.ToLower(strings.TrimSpace(item.Status))
+	anchor := parseQueueTimestamp(item.ClaimedAt)
+	if anchor.IsZero() {
+		anchor = item.CreatedAt
+	}
+	if anchor.IsZero() {
+		return status == "playing"
+	}
+	switch status {
+	case "playing":
+		return now.Sub(anchor) <= 2*time.Hour
+	case "claimed", "queued":
+		return now.Sub(anchor) <= 30*time.Minute
+	default:
+		return false
+	}
+}
+
+func parseQueueTimestamp(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func findArchiveAlertByQueueHint(configPath string, item bannerOnAirAlert) (archiveCAPRecord, bool) {

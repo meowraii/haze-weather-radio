@@ -190,14 +190,14 @@ func TestBannerHubFallsBackToOnAirMetadataWithoutArchive(t *testing.T) {
 	}
 }
 
-func TestBannerPayloadUsesPlayingQueueItemWhenHubMissedEvent(t *testing.T) {
+func TestBannerPayloadUsesQueuedQueueItemWhenHubMissedEvent(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
 	queue := sameQueueItem{
 		ID:        "manual-queue-1",
 		AlertID:   "manual-alert-1",
 		Type:      "cap_alert",
-		Status:    "playing",
+		Status:    "queued",
 		FeedIDs:   []string{"CAP-IT-ALL"},
 		Header:    "Required Weekly Test",
 		Event:     "RWT",
@@ -216,6 +216,32 @@ func TestBannerPayloadUsesPlayingQueueItemWhenHubMissedEvent(t *testing.T) {
 	}
 	if payload.Alerts[0].Headline != "Required Weekly Test" || payload.Alerts[0].FeedID != "CAP-IT-ALL" {
 		t.Fatalf("alert = %#v", payload.Alerts[0])
+	}
+}
+
+func TestBannerPayloadIgnoresStaleQueuedQueueItem(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	queue := sameQueueItem{
+		ID:        "old-queue-1",
+		AlertID:   "old-alert-1",
+		Type:      "cap_alert",
+		Status:    "queued",
+		FeedIDs:   []string{"CAP-IT-ALL"},
+		Header:    "Old Required Weekly Test",
+		Event:     "RWT",
+		CreatedAt: time.Now().UTC().Add(-2 * time.Hour),
+	}
+	rawQueue, err := json.Marshal(queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, dir+"/runtime/queues/alerts/old-queue-1.json", string(rawQueue))
+
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", NewBannerHub(configPath, ""))
+
+	if payload.Active || len(payload.Alerts) != 0 {
+		t.Fatalf("payload = %#v", payload)
 	}
 }
 

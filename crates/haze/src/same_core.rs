@@ -110,7 +110,6 @@ impl SameHeader {
 pub enum ToneType {
     Wxr,
     Eas,
-    Npas,
     EggTimer,
     Quebec,
 }
@@ -139,7 +138,19 @@ pub fn generate_same_header_sequence(
     header: &SameHeader,
     tone_type: Option<ToneType>,
 ) -> SameAudio {
-    let mut audio = generate_same_header_attention_sequence(header, tone_type);
+    let attention = tone_type.map(|tone| attention_tone(tone, ATTN_DEFAULT_S));
+    let mut audio =
+        generate_same_header_attention_sequence_with_attention(header, attention.as_deref());
+    audio.samples.extend(eom_sequence().samples);
+    audio
+}
+
+#[must_use]
+pub fn generate_same_header_sequence_with_attention(
+    header: &SameHeader,
+    attention: Option<&[f32]>,
+) -> SameAudio {
+    let mut audio = generate_same_header_attention_sequence_with_attention(header, attention);
     audio.samples.extend(eom_sequence().samples);
     audio
 }
@@ -149,13 +160,22 @@ pub fn generate_same_header_attention_sequence(
     header: &SameHeader,
     tone_type: Option<ToneType>,
 ) -> SameAudio {
+    let attention = tone_type.map(|tone| attention_tone(tone, ATTN_DEFAULT_S));
+    generate_same_header_attention_sequence_with_attention(header, attention.as_deref())
+}
+
+#[must_use]
+pub fn generate_same_header_attention_sequence_with_attention(
+    header: &SameHeader,
+    attention: Option<&[f32]>,
+) -> SameAudio {
     let mut samples = Vec::new();
     samples.extend(silence(BURST_LEAD_S));
     samples.extend(triple_burst(&header_burst(header)));
 
-    if let Some(tone_type) = tone_type {
+    if let Some(attention) = attention {
         samples.extend(silence(PRE_ATTN_S));
-        samples.extend(attention_tone(tone_type, ATTN_DEFAULT_S));
+        samples.extend_from_slice(attention);
     }
 
     for sample in &mut samples {
@@ -228,33 +248,8 @@ pub fn attention_tone(tone_type: ToneType, duration_s: f32) -> Vec<f32> {
             apply_fade_out_place(&mut tone, 0.006);
             tone
         }
-        ToneType::Npas => npas_tone(duration_s),
         ToneType::EggTimer => egg_timer_tone(duration_s),
     }
-}
-
-fn npas_tone(duration_s: f32) -> Vec<f32> {
-    let segment_len = (SAMPLE_RATE as f32 * 0.5).round() as usize;
-    let total = (duration_s.max(0.0) * SAMPLE_RATE as f32).round() as usize;
-    let mut samples = Vec::with_capacity(total);
-    let mut segment = 0usize;
-    while samples.len() < total {
-        let freqs = if segment.is_multiple_of(2) {
-            [932.33, 1046.50, 3135.96]
-        } else {
-            [440.00, 659.26, 3135.96]
-        };
-        let take = segment_len.min(total - samples.len());
-        let mut chunk = mix_tones_for_samples(&freqs, take);
-        apply_fade_in_place(&mut chunk, 0.003);
-        apply_fade_out_place(&mut chunk, 0.003);
-        samples.extend(chunk);
-        segment += 1;
-    }
-    let clean = samples.clone();
-    soft_saturate_in_place(&mut samples, 1.85, 0.32);
-    match_reference_level(&mut samples, &clean);
-    samples
 }
 
 fn egg_timer_tone(duration_s: f32) -> Vec<f32> {
@@ -345,61 +340,6 @@ fn apply_fade_out_place(samples: &mut [f32], duration_s: f32) {
     for index in 0..fade_samples {
         samples[start + index] *= 1.0 - (index as f32 / denom);
     }
-}
-
-fn soft_saturate_in_place(samples: &mut [f32], drive: f32, blend: f32) {
-    if samples.is_empty() || drive <= 1.0 || blend <= 0.0 {
-        return;
-    }
-    let peak = samples
-        .iter()
-        .map(|sample| sample.abs())
-        .fold(0.0, f32::max);
-    if peak <= 0.0 {
-        return;
-    }
-    for sample in samples {
-        let clean = *sample / peak;
-        let saturated = (clean * drive).tanh();
-        *sample = (((1.0 - blend) * clean) + (blend * saturated)) * peak;
-    }
-}
-
-fn match_reference_level(samples: &mut [f32], reference: &[f32]) {
-    if samples.is_empty() || reference.is_empty() {
-        return;
-    }
-    let reference_rms = rms(reference);
-    let sample_rms = rms(samples);
-    if reference_rms > 0.0 && sample_rms > 0.0 {
-        let scale = reference_rms / sample_rms;
-        for sample in samples.iter_mut() {
-            *sample *= scale;
-        }
-    }
-    let reference_peak = reference
-        .iter()
-        .map(|sample| sample.abs())
-        .fold(0.0, f32::max);
-    let sample_peak = samples
-        .iter()
-        .map(|sample| sample.abs())
-        .fold(0.0, f32::max);
-    if reference_peak > 0.0 && sample_peak > reference_peak {
-        let scale = reference_peak / sample_peak;
-        for sample in samples {
-            *sample *= scale;
-        }
-    }
-}
-
-fn rms(samples: &[f32]) -> f32 {
-    let mean_square = samples
-        .iter()
-        .map(|sample| f64::from(*sample) * f64::from(*sample))
-        .sum::<f64>()
-        / samples.len().max(1) as f64;
-    mean_square.sqrt() as f32
 }
 
 fn silence(duration_s: f32) -> Vec<f32> {

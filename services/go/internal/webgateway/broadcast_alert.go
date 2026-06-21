@@ -74,7 +74,7 @@ func (s *wsSession) broadcastAlertData(payload map[string]any, targets []string,
 	if boolPayload(payload, "prepend_same_translation", false) {
 		alertText = strings.TrimSpace(strings.Join([]string{intro, customText}, " "))
 	}
-	if alertText == "" {
+	if alertText == "" && (includeSame || boolPayload(payload, "prepend_same_translation", false)) {
 		alertText = intro
 	}
 	event := strings.ToUpper(firstNonBlank(stringPayload(payload, "same_event", ""), stringPayload(payload, "event", "ADR")))

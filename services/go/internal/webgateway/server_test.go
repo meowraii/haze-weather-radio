@@ -980,6 +980,27 @@ func TestBroadcastAlertDataCanDisableSame(t *testing.T) {
 	}
 }
 
+func TestBroadcastAlertDataDoesNotPrependSameTranslationWhenDisabled(t *testing.T) {
+	dir := t.TempDir()
+	writePanelFixture(t, dir)
+	session := wsSession{configPath: filepath.Join(dir, "config.yaml")}
+	data := session.broadcastAlertData(map[string]any{
+		"originator":               "WXR",
+		"event":                    "RWT",
+		"locations":                []any{"065522"},
+		"include_same":             false,
+		"prepend_same_translation": false,
+		"voice_message":            "This is only a drill.",
+		"duration_hours":           float64(0),
+		"duration_minutes":         float64(15),
+	}, []string{"sk-0001"}, "manual-test", false)
+
+	text, _ := data["alert_text"].(string)
+	if text != "This is only a drill." {
+		t.Fatalf("alert_text = %q", text)
+	}
+}
+
 func TestPersistSameQueueItemCreatesManifestAndStateDepth(t *testing.T) {
 	dir := t.TempDir()
 	writePanelFixture(t, dir)
