@@ -152,7 +152,6 @@ const WEBRTC_RECENT_PACKET_GRACE_MS = 30000;
 const WEBRTC_HARD_PACKET_STALE_MS = 120000;
 const WEBRTC_PLAYBACK_WATCHDOG_MS = 2500;
 const WEBRTC_TRACK_MUTE_GRACE_MS = 2500;
-const WEBRTC_TRACK_MUTE_PACKET_STALE_MS = 7500;
 const WEBRTC_OUTPUT_BED_GAIN = 0.0025;
 const WEBRTC_OUTPUT_BED_FREQUENCY = 180;
 const WEBRTC_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
@@ -913,10 +912,6 @@ function hasHardStaleWebRTCPackets(player, now = Date.now()) {
     return webRTCPacketSourceAgeMS(player, now) >= WEBRTC_HARD_PACKET_STALE_MS;
 }
 
-function hasTrackMuteStaleWebRTCPackets(player, now = Date.now()) {
-    return webRTCPacketSourceAgeMS(player, now) >= WEBRTC_TRACK_MUTE_PACKET_STALE_MS;
-}
-
 function startWebRTCPlaybackWatchdog(feedId, player) {
     clearPlayerInterval(player, 'playbackWatchdogTimer');
     if (!player) return;
@@ -1022,7 +1017,7 @@ function scheduleWebRTCTrackMuteReport(feedId, player) {
     clearPlayerTimer(player, 'trackMuteTimer');
     player.trackMuteTimer = window.setTimeout(() => {
         player.trackMuteTimer = null;
-        if (!isActivePlayer(feedId, player) || hasRecentWebRTCPackets(player) || !hasTrackMuteStaleWebRTCPackets(player)) {
+        if (!isActivePlayer(feedId, player) || hasRecentWebRTCPackets(player) || !hasHardStaleWebRTCPackets(player)) {
             return;
         }
         player.trackMutedReported = true;

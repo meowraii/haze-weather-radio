@@ -312,7 +312,6 @@
         const AUDIO_HARD_PACKET_STALE_MS = 120000;
         const AUDIO_PLAYBACK_WATCHDOG_MS = 2500;
         const AUDIO_TRACK_MUTE_GRACE_MS = 2500;
-        const AUDIO_TRACK_MUTE_PACKET_STALE_MS = 7500;
         const AUDIO_OUTPUT_BED_GAIN = 0.0025;
         const AUDIO_OUTPUT_BED_FREQUENCY = 180;
         const AUDIO_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
@@ -1494,10 +1493,6 @@
             return bannerAudioPacketSourceAgeMS(now) >= AUDIO_HARD_PACKET_STALE_MS;
         }
 
-        function hasTrackMuteStaleBannerAudioPackets(now = Date.now()) {
-            return bannerAudioPacketSourceAgeMS(now) >= AUDIO_TRACK_MUTE_PACKET_STALE_MS;
-        }
-
         function bannerWebRTCStatsDelta(previous, snapshot, field, reset = false) {
             if (!previous || reset) return 0;
             return Number(snapshot?.[field] || 0) - Number(previous?.[field] || 0);
@@ -1603,7 +1598,7 @@
             }
             state.audioTrackMuteTimer = window.setTimeout(() => {
                 state.audioTrackMuteTimer = null;
-                if (hasRecentBannerAudioPackets() || !hasTrackMuteStaleBannerAudioPackets()) {
+                if (hasRecentBannerAudioPackets() || !hasHardStaleBannerAudioPackets()) {
                     return;
                 }
                 state.audioTrackMutedReported = true;
