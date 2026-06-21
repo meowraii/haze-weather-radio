@@ -44,6 +44,7 @@ const (
 	webrtcDiagnosticsInterval  = 30 * time.Second
 	webrtcWriteTimeout         = 3 * time.Second
 	webrtcFrameSourceIdleGrace = 15 * time.Second
+	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
 )
 
 type webRTCAudioCodec int
@@ -1139,9 +1140,11 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			return false
 		}
 		stats.written++
+		writeCompletedAt := time.Now()
+		stats.recordWriteCadence(writeCompletedAt)
 		stats.sequenceNumber++
 		stats.timestamp = rtpTimestampAfterFrame(codec, packetTimestamp)
-		stats.lastWriteAt = time.Now()
+		stats.lastWriteAt = writeCompletedAt
 		stats.lastPayloadBytes = len(frame.payload)
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
 		if !loggedWrite {
@@ -1308,11 +1311,13 @@ type webRTCPeerStreamStats struct {
 	fillerFrames     uint64
 	skippedFrames    uint64
 	sourceGapFrames  uint64
+	lateWrites       uint64
 	writeErrors      uint64
 	lastReport       time.Time
 	sequenceNumber   uint16
 	timestamp        uint32
 	lastWriteAt      time.Time
+	maxWriteGapMS    int64
 	lastPayloadBytes int
 }
 
@@ -1348,12 +1353,28 @@ func (s *webRTCPeerStreamStats) recordFiller(filler bool) {
 	}
 }
 
+func (s *webRTCPeerStreamStats) recordWriteCadence(now time.Time) {
+	if s.lastWriteAt.IsZero() {
+		return
+	}
+	gap := now.Sub(s.lastWriteAt)
+	gapMS := gap.Milliseconds()
+	if gapMS > s.maxWriteGapMS {
+		s.maxWriteGapMS = gapMS
+	}
+	if gap >= webrtcLateWriteThreshold {
+		s.lateWrites++
+	}
+}
+
 func (s *webRTCPeerStreamStats) resetInterval() {
 	s.written = 0
 	s.fillerFrames = 0
 	s.skippedFrames = 0
 	s.sourceGapFrames = 0
+	s.lateWrites = 0
 	s.writeErrors = 0
+	s.maxWriteGapMS = 0
 }
 
 func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats *webRTCPeerStreamStats) {
@@ -1365,13 +1386,15 @@ func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats 
 	if !stats.lastWriteAt.IsZero() {
 		lastWriteAgeMS = now.Sub(stats.lastWriteAt).Milliseconds()
 	}
-	log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d filler_frames=%d skipped_stale_frames=%d source_gap_frames=%d write_errors=%d next_seq=%d next_ts=%d last_payload_bytes=%d last_write_age_ms=%d",
+	log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d filler_frames=%d skipped_stale_frames=%d source_gap_frames=%d late_writes=%d max_write_gap_ms=%d write_errors=%d next_seq=%d next_ts=%d last_payload_bytes=%d last_write_age_ms=%d",
 		feedID,
 		codec,
 		stats.written,
 		stats.fillerFrames,
 		stats.skippedFrames,
 		stats.sourceGapFrames,
+		stats.lateWrites,
+		stats.maxWriteGapMS,
 		stats.writeErrors,
 		stats.sequenceNumber,
 		stats.timestamp,

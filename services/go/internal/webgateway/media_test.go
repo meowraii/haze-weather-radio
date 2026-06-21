@@ -425,6 +425,28 @@ func TestWebRTCPeerStreamStatsTracksFillerAndSourceGaps(t *testing.T) {
 	}
 }
 
+func TestWebRTCPeerStreamStatsTracksWriteCadence(t *testing.T) {
+	stats := webRTCPeerStreamStats{lastWriteAt: time.Unix(1700000000, 0)}
+	stats.recordWriteCadence(stats.lastWriteAt.Add(webrtcFrameDuration))
+	if stats.lateWrites != 0 {
+		t.Fatalf("late writes = %d, want 0 for normal cadence", stats.lateWrites)
+	}
+	if stats.maxWriteGapMS != webrtcFrameDuration.Milliseconds() {
+		t.Fatalf("max write gap = %d, want %d", stats.maxWriteGapMS, webrtcFrameDuration.Milliseconds())
+	}
+	stats.recordWriteCadence(stats.lastWriteAt.Add(webrtcLateWriteThreshold))
+	if stats.lateWrites != 1 {
+		t.Fatalf("late writes = %d, want 1", stats.lateWrites)
+	}
+	if stats.maxWriteGapMS != webrtcLateWriteThreshold.Milliseconds() {
+		t.Fatalf("max write gap = %d, want %d", stats.maxWriteGapMS, webrtcLateWriteThreshold.Milliseconds())
+	}
+	stats.resetInterval()
+	if stats.lateWrites != 0 || stats.maxWriteGapMS != 0 {
+		t.Fatalf("cadence stats were not reset: %+v", stats)
+	}
+}
+
 func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
 	var inFlight atomic.Bool
 	var startedAt atomic.Int64
