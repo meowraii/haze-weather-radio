@@ -68,6 +68,7 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
             has_live_track: hasLiveWebRTCAudioTrack(player),
             last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
             packets_recent: hasRecentWebRTCPackets(player),
+            playback_watchdog_active: Boolean(player.playbackWatchdogTimer),
             stagnant_stats_polls: Number(player.stagnantStatsPolls || 0),
             missing_stats_polls: Number(player.missingStatsPolls || 0),
             reconnect_pending: Boolean(player.reconnectPending || player.reconnectTimer),
@@ -131,6 +132,7 @@ const WEBRTC_RECONNECT_MAX_DELAY_MS = 10000;
 const WEBRTC_DISCONNECT_GRACE_MS = 15000;
 const WEBRTC_MEDIA_EVENT_GRACE_MS = 12000;
 const WEBRTC_RECENT_PACKET_GRACE_MS = 30000;
+const WEBRTC_PLAYBACK_WATCHDOG_MS = 2500;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -697,6 +699,14 @@ function clearPlayerTimer(player, key) {
     }
 }
 
+function clearPlayerInterval(player, key) {
+    const timer = player?.[key];
+    if (timer) {
+        window.clearInterval(timer);
+        player[key] = null;
+    }
+}
+
 function setHealthyWebRTCStatus(feedId, player, audio = player?.audio) {
     cancelWebRTCReconnect(player);
     clearPlayerTimer(player, 'trackMuteTimer');
@@ -748,6 +758,20 @@ function ensureWebRTCAudioPlaying(feedId, player, audio = player?.audio) {
 function hasRecentWebRTCPackets(player, now = Date.now()) {
     const lastPacketAt = Number(player?.lastPacketAt || 0);
     return lastPacketAt > 0 && now - lastPacketAt <= WEBRTC_RECENT_PACKET_GRACE_MS;
+}
+
+function startWebRTCPlaybackWatchdog(feedId, player) {
+    clearPlayerInterval(player, 'playbackWatchdogTimer');
+    if (!player) return;
+    player.playbackWatchdogTimer = window.setInterval(() => {
+        if (!isActivePlayer(feedId, player) || player.mode !== 'webrtc' || player.stopping) {
+            clearPlayerInterval(player, 'playbackWatchdogTimer');
+            return;
+        }
+        if (hasRecentWebRTCPackets(player)) {
+            ensureWebRTCAudioPlaying(feedId, player, player.audio);
+        }
+    }, WEBRTC_PLAYBACK_WATCHDOG_MS);
 }
 
 function webRTCStatsDelta(previous, snapshot, field, reset = false) {
@@ -897,6 +921,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     clearPlayerTimer(player, 'disconnectReconnectTimer');
     clearPlayerTimer(player, 'mediaEventTimer');
     stopWebRTCStatsMonitor(player);
+    clearPlayerInterval(player, 'playbackWatchdogTimer');
     player.trackAttached = false;
     player.connected = false;
     player.remoteStream = player.fallbackStream || new MediaStream();
@@ -1117,6 +1142,7 @@ async function startFeedWebRTC(feedId) {
         disconnectReconnectTimer: null,
         mediaEventTimer: null,
         statsPollTimer: null,
+        playbackWatchdogTimer: null,
         lastStats: null,
         lastPacketAt: 0,
         stagnantStatsPolls: 0,
@@ -1127,6 +1153,7 @@ async function startFeedWebRTC(feedId) {
         stopping: false,
     };
     feedPlayers.set(feedId, player);
+    startWebRTCPlaybackWatchdog(feedId, player);
 
     audio.volume = Number(volume?.value ?? 1);
     audio.autoplay = true;
@@ -1438,6 +1465,7 @@ function stopFeed(feedId, { silent = false } = {}) {
         clearPlayerTimer(player, 'disconnectReconnectTimer');
         clearPlayerTimer(player, 'mediaEventTimer');
         clearPlayerTimer(player, 'reconnectTimer');
+        clearPlayerInterval(player, 'playbackWatchdogTimer');
         player.reconnectPending = false;
         stopWebRTCStatsMonitor(player);
         const audio = player.mode === 'webrtc'
