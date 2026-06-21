@@ -277,7 +277,7 @@ function cardMarkup(feed) {
         waiting: 'Waiting',
     }[feedState];
     const status = canPlay
-        ? (summaryState?.media_available ? 'Ready' : 'Waiting for playout audio')
+        ? (canWebRTC ? 'Ready' : (summaryState?.media_available ? 'Ready' : 'Waiting for playout audio'))
         : (feed.enabled ? 'Streaming unavailable' : 'Feed disabled');
     const modeOptions = [
         ['webrtc', 'WebRTC', canWebRTC],
@@ -386,13 +386,13 @@ function updateExistingFeedCard(card, feed) {
     if (share) share.disabled = !canHTTP;
     if (!feedPlayers.has(feedId)) {
         setPlayerStatus(feedId, canPlay
-            ? (summaryState?.media_available ? 'Ready' : 'Waiting for playout audio')
+            ? (canWebRTC ? 'Ready' : (summaryState?.media_available ? 'Ready' : 'Waiting for playout audio'))
             : (feed.enabled ? 'Streaming unavailable' : 'Feed disabled'));
     }
 }
 
 function feedCanWebRTC(feed) {
-    return Boolean(feed.enabled && feed.webrtc_enabled && summaryState?.webrtc_enabled && summaryState?.media_available);
+    return Boolean(feed.enabled && feed.webrtc_enabled && summaryState?.webrtc_enabled);
 }
 
 function feedCanHTTP(feed) {
