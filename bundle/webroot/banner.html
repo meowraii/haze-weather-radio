@@ -364,6 +364,7 @@
             audioPlaybackWatchdogTimer: null,
             audioLastStats: null,
             audioLastPacketAt: 0,
+            audioLastProgressAt: 0,
             audioStartedAt: 0,
             audioTrackAttached: false,
             audioTrackMutedReported: false,
@@ -401,6 +402,7 @@
                 track_attached: Boolean(state.audioTrackAttached),
                 has_live_track: hasLiveBannerAudioTrack(),
                 last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                last_audio_progress_age_ms: state.audioLastProgressAt ? Date.now() - state.audioLastProgressAt : null,
                 packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
                 packets_recent: hasRecentBannerAudioPackets(),
                 playback_watchdog_active: Boolean(state.audioPlaybackWatchdogTimer),
@@ -1262,6 +1264,7 @@
             state.audioNegotiatedCodec = '';
             state.audioLastStats = null;
             state.audioLastPacketAt = 0;
+            state.audioLastProgressAt = 0;
             state.audioStagnantStatsPolls = 0;
             state.audioMissingStatsPolls = 0;
             state.audioFallbackStream = null;
@@ -1457,6 +1460,7 @@
             state.audioNegotiatedCodec = '';
             state.audioLastStats = null;
             state.audioLastPacketAt = 0;
+            state.audioLastProgressAt = 0;
             state.audioStagnantStatsPolls = 0;
             state.audioMissingStatsPolls = 0;
             state.audioFallbackStream = null;
@@ -1481,11 +1485,12 @@
         }
 
         function hasRecentBannerAudioPackets(now = Date.now()) {
-            return state.audioLastPacketAt > 0 && now - state.audioLastPacketAt <= AUDIO_RECENT_PACKET_GRACE_MS;
+            const lastProgressAt = Number(state.audioLastProgressAt || state.audioLastPacketAt || 0);
+            return lastProgressAt > 0 && now - lastProgressAt <= AUDIO_RECENT_PACKET_GRACE_MS;
         }
 
         function bannerAudioPacketSourceAgeMS(now = Date.now()) {
-            const sourceAt = Number(state.audioLastPacketAt || state.audioStartedAt || 0);
+            const sourceAt = Number(state.audioLastProgressAt || state.audioLastPacketAt || state.audioStartedAt || 0);
             return sourceAt > 0 ? now - sourceAt : Number.POSITIVE_INFINITY;
         }
 
@@ -1547,7 +1552,9 @@
         }
 
         function markBannerAudioPacketsRecent() {
-            state.audioLastPacketAt = Date.now();
+            const now = Date.now();
+            state.audioLastPacketAt = now;
+            state.audioLastProgressAt = now;
             state.audioRetryCount = 0;
             cancelAudioReconnect();
             if (state.audioDisconnectTimer) {
@@ -1562,6 +1569,7 @@
                 connection_state: state.audioPeer?.connectionState || '',
                 ice_state: state.audioPeer?.iceConnectionState || '',
                 last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                last_audio_progress_age_ms: state.audioLastProgressAt ? Date.now() - state.audioLastProgressAt : null,
                 packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
                 packets_recent: hasRecentBannerAudioPackets(),
                 hard_stale_packets: hasHardStaleBannerAudioPackets(),
@@ -1969,6 +1977,7 @@
                             connection_state: peer.connectionState,
                             ice_state: peer.iceConnectionState,
                             packets_recent: hasRecentBannerAudioPackets(),
+                            last_audio_progress_age_ms: state.audioLastProgressAt ? Date.now() - state.audioLastProgressAt : null,
                             packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
                         });
                         scheduleAudioDisconnectReconnect(peer);
@@ -1993,6 +2002,7 @@
                 track_attached: state.audioTrackAttached,
                 has_live_track: hasLiveBannerAudioTrack(),
                 last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                last_audio_progress_age_ms: state.audioLastProgressAt ? Date.now() - state.audioLastProgressAt : null,
                 packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
             });
             if (state.audioReconnectTimer) {

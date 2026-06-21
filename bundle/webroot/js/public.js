@@ -71,6 +71,7 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
             track_attached: Boolean(player.trackAttached),
             has_live_track: hasLiveWebRTCAudioTrack(player),
             last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
+            last_audio_progress_age_ms: player.lastAudioProgressAt ? Date.now() - player.lastAudioProgressAt : null,
             packet_source_age_ms: webRTCPacketSourceAgeMS(player),
             packets_recent: hasRecentWebRTCPackets(player),
             playback_watchdog_active: Boolean(player.playbackWatchdogTimer),
@@ -937,14 +938,14 @@ function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
 }
 
 function hasRecentWebRTCPackets(player, now = Date.now()) {
-    const lastPacketAt = Number(player?.lastPacketAt || 0);
-    return lastPacketAt > 0 && now - lastPacketAt <= WEBRTC_RECENT_PACKET_GRACE_MS;
+    const lastProgressAt = Number(player?.lastAudioProgressAt || player?.lastPacketAt || 0);
+    return lastProgressAt > 0 && now - lastProgressAt <= WEBRTC_RECENT_PACKET_GRACE_MS;
 }
 
 function webRTCPacketSourceAgeMS(player, now = Date.now()) {
-    const lastPacketAt = Number(player?.lastPacketAt || 0);
+    const lastProgressAt = Number(player?.lastAudioProgressAt || player?.lastPacketAt || 0);
     const startedAt = Number(player?.startedAt || 0);
-    const sourceAt = lastPacketAt || startedAt;
+    const sourceAt = lastProgressAt || startedAt;
     return sourceAt > 0 ? now - sourceAt : Number.POSITIVE_INFINITY;
 }
 
@@ -990,7 +991,9 @@ function shouldReconnectWebRTCForMissingPackets(player) {
 
 function markWebRTCPacketsRecent(feedId, player) {
     if (!player) return;
-    player.lastPacketAt = Date.now();
+    const now = Date.now();
+    player.lastPacketAt = now;
+    player.lastAudioProgressAt = now;
     player.reconnectAttempts = 0;
     feedReconnectBackoffs.delete(String(feedId || ''));
     cancelWebRTCReconnect(player);
@@ -1023,6 +1026,7 @@ function webRTCTrackEventDetails(player) {
         connection_state: player?.pc?.connectionState || '',
         ice_state: player?.pc?.iceConnectionState || '',
         last_packet_age_ms: player?.lastPacketAt ? Date.now() - player.lastPacketAt : null,
+        last_audio_progress_age_ms: player?.lastAudioProgressAt ? Date.now() - player.lastAudioProgressAt : null,
         packet_source_age_ms: webRTCPacketSourceAgeMS(player),
         packets_recent: hasRecentWebRTCPackets(player),
         hard_stale_packets: hasHardStaleWebRTCPackets(player),
@@ -1245,6 +1249,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     player.audioTrackId = '';
     player.lastStats = null;
     player.lastPacketAt = 0;
+    player.lastAudioProgressAt = 0;
     player.stagnantStatsPolls = 0;
     player.missingStatsPolls = 0;
     player.mediaRecent = null;
@@ -1275,6 +1280,7 @@ function scheduleWebRTCDisconnectReconnect(feedId, player, pc) {
                     connection_state: pc.connectionState,
                     ice_state: pc.iceConnectionState,
                     packets_recent: hasRecentWebRTCPackets(player),
+                    last_audio_progress_age_ms: player.lastAudioProgressAt ? Date.now() - player.lastAudioProgressAt : null,
                     packet_source_age_ms: webRTCPacketSourceAgeMS(player),
                 });
                 scheduleWebRTCDisconnectReconnect(feedId, player, pc);
@@ -1300,6 +1306,7 @@ function scheduleWebRTCReconnect(feedId, player, reason = 'Reconnecting audio...
         track_attached: Boolean(player.trackAttached),
         has_live_track: hasLiveWebRTCAudioTrack(player),
         last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
+        last_audio_progress_age_ms: player.lastAudioProgressAt ? Date.now() - player.lastAudioProgressAt : null,
         packet_source_age_ms: webRTCPacketSourceAgeMS(player),
     });
     const backoffKey = String(feedId || '');
@@ -1486,6 +1493,7 @@ async function startFeedWebRTC(feedId) {
         lastStats: null,
         startedAt: Date.now(),
         lastPacketAt: 0,
+        lastAudioProgressAt: 0,
         stagnantStatsPolls: 0,
         missingStatsPolls: 0,
         reconnectTimer: null,
