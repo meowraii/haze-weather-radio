@@ -1149,6 +1149,22 @@
             audio.playsInline = true;
             audio.muted = false;
             audio.volume = 1;
+            if (audio.dataset.hazeSinkBound !== '1') {
+                audio.dataset.hazeSinkBound = '1';
+                audio.addEventListener('pause', () => {
+                    recordBannerAudioEvent('audio_pause', {
+                        ready_state: audio.readyState,
+                        network_state: audio.networkState,
+                        ended: audio.ended,
+                    });
+                });
+                audio.addEventListener('playing', () => {
+                    recordBannerAudioEvent('audio_playing', {
+                        ready_state: audio.readyState,
+                        network_state: audio.networkState,
+                    });
+                });
+            }
             state.audioElement = audio;
             return audio;
         }
@@ -1243,6 +1259,7 @@
                     } else {
                         if (packetsDelta > 0 || snapshot.packetsReceived > 0) {
                             markBannerAudioPacketsRecent();
+                            ensureBannerAudioPlaying();
                         }
                         state.audioStagnantStatsPolls = 0;
                     }
@@ -1316,6 +1333,32 @@
             if (state.audioTrackMuteTimer) {
                 window.clearTimeout(state.audioTrackMuteTimer);
                 state.audioTrackMuteTimer = null;
+            }
+        }
+
+        function ensureBannerAudioPlaying() {
+            const audio = state.audioElement;
+            if (!query.audio || !audio || !audio.paused) return;
+            recordBannerAudioEvent('audio_resume_attempt', {
+                ready_state: audio.readyState,
+                network_state: audio.networkState,
+                has_live_track: hasLiveBannerAudioTrack(),
+                packets_recent: hasRecentBannerAudioPackets(),
+            });
+            const playPromise = audio.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise
+                    .then(() => {
+                        recordBannerAudioEvent('audio_resume_ok', {
+                            paused: audio.paused,
+                            ready_state: audio.readyState,
+                        });
+                    })
+                    .catch((error) => {
+                        recordBannerAudioEvent('audio_resume_blocked', {
+                            error: error?.name || 'play_failed',
+                        });
+                    });
             }
         }
 
@@ -1396,6 +1439,7 @@
                         track_state: event.track.readyState || '',
                     });
                     markBannerAudioPacketsRecent();
+                    ensureBannerAudioPlaying();
                 };
                 event.track.onended = () => {
                     recordBannerAudioEvent('track_ended', {
@@ -1421,6 +1465,7 @@
                 });
                 if (pc.connectionState === 'connected') {
                     cancelAudioReconnect();
+                    ensureBannerAudioPlaying();
                     clearAudioTransientTimers();
                     state.audioRetryCount = 0;
                 } else if (pc.connectionState === 'disconnected') {
