@@ -1903,11 +1903,18 @@
                 state.audioMissingStatsPolls = 0;
                 state.audioTrackAttached = true;
                 event.track.onmute = () => {
+                    if (hasRecentBannerAudioPackets() || !hasHardStaleBannerAudioPackets()) {
+                        ensureBannerAudioPlaying();
+                        return;
+                    }
                     state.audioTrackMuteSignalCount = Number(state.audioTrackMuteSignalCount || 0) + 1;
                     state.audioLastTrackMuteSignalAt = Date.now();
                     scheduleBannerAudioTrackMuteReport();
                 };
                 event.track.onunmute = () => {
+                    if (!state.audioTrackMuteTimer && !state.audioTrackMutedReported) {
+                        return;
+                    }
                     state.audioTrackUnmuteSignalCount = Number(state.audioTrackUnmuteSignalCount || 0) + 1;
                     state.audioLastTrackUnmuteSignalAt = Date.now();
                     clearBannerAudioTrackMuteReport();

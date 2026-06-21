@@ -1582,6 +1582,10 @@ async function startFeedWebRTC(feedId) {
         currentAudio.dataset.hazeTrackState = event.track.readyState || '';
         event.track.onmute = () => {
             if (isActivePlayer(feedId, player)) {
+                if (hasRecentWebRTCPackets(player) || !hasHardStaleWebRTCPackets(player)) {
+                    ensureWebRTCAudioPlaying(feedId, player, currentAudio);
+                    return;
+                }
                 player.trackMuteSignalCount = Number(player.trackMuteSignalCount || 0) + 1;
                 player.lastTrackMuteSignalAt = Date.now();
                 scheduleWebRTCTrackMuteReport(feedId, player);
@@ -1589,6 +1593,9 @@ async function startFeedWebRTC(feedId) {
         };
         event.track.onunmute = () => {
             if (isActivePlayer(feedId, player)) {
+                if (!player.trackMuteTimer && !player.trackMutedReported) {
+                    return;
+                }
                 player.trackUnmuteSignalCount = Number(player.trackUnmuteSignalCount || 0) + 1;
                 player.lastTrackUnmuteSignalAt = Date.now();
                 clearWebRTCTrackMuteReport(feedId, player);
