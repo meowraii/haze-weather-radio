@@ -82,8 +82,8 @@ func assertIdleDither(t *testing.T, codec string, samples []int16) {
 	if len(seen) < 8 {
 		t.Fatalf("%s idle dither collapsed to %d unique samples", codec, len(seen))
 	}
-	if peak <= 1 || peak > webrtcIdleDitherAmplitude {
-		t.Fatalf("%s idle dither peak = %d, want 2..%d", codec, peak, webrtcIdleDitherAmplitude)
+	if peak < 128 || peak > webrtcIdleDitherAmplitude {
+		t.Fatalf("%s idle dither peak = %d, want 128..%d", codec, peak, webrtcIdleDitherAmplitude)
 	}
 	if average := math.Abs(float64(sum) / float64(len(samples))); average > float64(webrtcIdleDitherAmplitude)/2 {
 		t.Fatalf("%s idle dither average = %.2f, want near zero", codec, average)

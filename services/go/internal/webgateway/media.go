@@ -47,7 +47,7 @@ const (
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
 	webrtcPeerFrameWait        = 5 * time.Millisecond
 	webrtcPeerSourceTimeout    = webrtcFrameDuration + webrtcPeerFrameWait
-	webrtcIdleDitherAmplitude  = 24
+	webrtcIdleDitherAmplitude  = 256
 )
 
 type webRTCAudioCodec int
