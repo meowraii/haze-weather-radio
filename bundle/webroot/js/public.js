@@ -1642,6 +1642,7 @@ async function startFeedWebRTC(feedId) {
         player.stagnantStatsPolls = 0;
         player.missingStatsPolls = 0;
         player.trackAttached = true;
+        player.lastAudioProgressAt = Date.now();
         currentAudio.dataset.hazeTrackAttached = '1';
         currentAudio.dataset.hazeTrackState = event.track.readyState || '';
         event.track.onmute = () => {

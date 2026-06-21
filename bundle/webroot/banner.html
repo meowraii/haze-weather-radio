@@ -1968,6 +1968,7 @@
                 state.audioStagnantStatsPolls = 0;
                 state.audioMissingStatsPolls = 0;
                 state.audioTrackAttached = true;
+                state.audioLastProgressAt = Date.now();
                 event.track.onmute = () => {
                     if (hasRecentBannerAudioPackets() || !hasHardStaleBannerAudioPackets()) {
                         ensureBannerAudioPlaying();
