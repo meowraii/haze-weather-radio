@@ -184,7 +184,6 @@ function feedsSignature(feeds) {
             site_names: tx.site_names || [tx.site_name || feed.name || ''],
             webrtc_enabled: Boolean(feed.webrtc_enabled),
             http_stream_enabled: Boolean(feed.http_stream_enabled),
-            media_available: Boolean(summaryState?.media_available),
         };
     }));
 }
@@ -504,7 +503,7 @@ function renderFeeds(feeds) {
         setNotice('Feed details require an authenticated admin session.');
     } else {
         setNotice(summaryState?.webrtc_enabled
-            ? (summaryState?.media_available ? 'Live feed streaming is available.' : 'Feeds are configured; waiting for playout audio.')
+            ? 'Live feed streaming is available.'
             : 'No WebRTC output sink is enabled for public feeds.');
     }
     const signature = feedsSignature(feeds);
