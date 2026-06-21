@@ -306,6 +306,7 @@
         const AUDIO_DISCONNECT_GRACE_MS = 15000;
         const AUDIO_STATS_INTERVAL_MS = 2000;
         const AUDIO_STAGNANT_STATS_POLLS = 3;
+        const AUDIO_RECOVER_STATS_POLLS = 6;
         const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu']);
 
         const frame = document.getElementById('frame');
@@ -1174,6 +1175,10 @@
                         if (state.audioStagnantStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stalled.', window.hazeBannerWebRTCStats);
                         }
+                        if (state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                            console.warn('Banner WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeBannerWebRTCStats);
+                            scheduleAudioReconnect({ force: true });
+                        }
                     } else {
                         state.audioStagnantStatsPolls = 0;
                     }
@@ -1291,6 +1296,9 @@
                         window.clearTimeout(state.audioTrackMuteTimer);
                         state.audioTrackMuteTimer = null;
                     }
+                };
+                event.track.onended = () => {
+                    scheduleAudioReconnect({ force: true });
                 };
                 audio.srcObject = stream;
                 const playPromise = audio.play();
