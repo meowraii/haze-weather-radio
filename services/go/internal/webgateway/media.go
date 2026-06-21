@@ -34,6 +34,7 @@ const (
 	webrtcFrameDuration        = 20 * time.Millisecond
 	webrtcMaxQueuedFrames      = 10
 	webrtcPeerFrameMailbox     = 1
+	webrtcMaxCatchUpFrames     = 3
 	webrtcResumeQueuedFrames   = 2
 	webrtcConcealmentFrames    = 6
 	feedIngressCapacity        = 4
@@ -1042,6 +1043,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	keepalive := stoppedWebRTCTimer()
 	defer keepalive.Stop()
 	var lastFrame []byte
+	var lastWriteAt time.Time
 	writeFrame := func(frame []byte, skipped int) bool {
 		if len(frame) == 0 {
 			return true
@@ -1064,6 +1066,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			return false
 		}
 		stats.written++
+		lastWriteAt = time.Now()
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
 		if !loggedWrite {
 			log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame))
@@ -1091,19 +1094,39 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				return
 			}
 		case <-keepalive.C:
-			frame, skipped, ok := latestWebRTCFrame(lastFrame, frames)
-			if !ok {
-				return
-			}
-			if len(frame) == 0 {
-				resetWebRTCTimer(keepalive, webrtcFrameDuration)
-				continue
-			}
-			if !writeFrame(frame, skipped) {
-				return
+			frame := lastFrame
+			for writes := webRTCKeepaliveWritesDue(lastWriteAt, time.Now()); writes > 0; writes-- {
+				var skipped int
+				var ok bool
+				frame, skipped, ok = latestWebRTCFrame(frame, frames)
+				if !ok {
+					return
+				}
+				if len(frame) == 0 {
+					resetWebRTCTimer(keepalive, webrtcFrameDuration)
+					continue
+				}
+				if !writeFrame(frame, skipped) {
+					return
+				}
 			}
 		}
 	}
+}
+
+func webRTCKeepaliveWritesDue(lastWriteAt time.Time, now time.Time) int {
+	if lastWriteAt.IsZero() || now.Before(lastWriteAt) {
+		return 1
+	}
+	elapsed := now.Sub(lastWriteAt)
+	due := int(elapsed / webrtcFrameDuration)
+	if due < 1 {
+		return 1
+	}
+	if due > webrtcMaxCatchUpFrames {
+		return webrtcMaxCatchUpFrames
+	}
+	return due
 }
 
 func resetWebRTCTimer(timer *time.Timer, delay time.Duration) {

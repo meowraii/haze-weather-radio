@@ -255,6 +255,28 @@ func TestLatestWebRTCFrameDoesNotSkipStartupFrame(t *testing.T) {
 	}
 }
 
+func TestWebRTCKeepaliveWritesDue(t *testing.T) {
+	now := time.Unix(10, 0)
+	cases := []struct {
+		name        string
+		lastWriteAt time.Time
+		want        int
+	}{
+		{name: "unwritten", lastWriteAt: time.Time{}, want: 1},
+		{name: "early clock", lastWriteAt: now.Add(time.Second), want: 1},
+		{name: "on cadence", lastWriteAt: now.Add(-webrtcFrameDuration), want: 1},
+		{name: "catch up", lastWriteAt: now.Add(-2 * webrtcFrameDuration), want: 2},
+		{name: "bounded", lastWriteAt: now.Add(-10 * webrtcFrameDuration), want: webrtcMaxCatchUpFrames},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := webRTCKeepaliveWritesDue(tc.lastWriteAt, now); got != tc.want {
+				t.Fatalf("writes due = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
 	var inFlight atomic.Bool
 	var startedAt atomic.Int64
