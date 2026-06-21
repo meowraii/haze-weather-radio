@@ -161,7 +161,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 			return
 		}
 		disconnectTimer = time.AfterFunc(webrtcDisconnectGrace, func() {
-			if peerConnection.ConnectionState() == webrtc.PeerConnectionStateDisconnected {
+			if shouldCleanupDisconnectedWebRTC(peerConnection.ConnectionState(), peerConnection.ICEConnectionState()) {
 				cleanup()
 			}
 			disconnectMu.Lock()
@@ -281,6 +281,10 @@ func shouldCleanupWebRTCPeer(state webrtc.PeerConnectionState) bool {
 
 func shouldCleanupWebRTCICE(state webrtc.ICEConnectionState) bool {
 	return state == webrtc.ICEConnectionStateClosed || state == webrtc.ICEConnectionStateFailed
+}
+
+func shouldCleanupDisconnectedWebRTC(peerState webrtc.PeerConnectionState, iceState webrtc.ICEConnectionState) bool {
+	return peerState == webrtc.PeerConnectionStateDisconnected || iceState == webrtc.ICEConnectionStateDisconnected
 }
 
 func newWebRTCPeerConnection(configuration webrtc.Configuration) (*webrtc.PeerConnection, error) {

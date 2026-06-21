@@ -405,6 +405,18 @@ func TestWebRTCICECleanupPolicyKeepsTransientDisconnects(t *testing.T) {
 	}
 }
 
+func TestWebRTCDisconnectGraceCleanupIncludesICEState(t *testing.T) {
+	if !shouldCleanupDisconnectedWebRTC(webrtc.PeerConnectionStateConnected, webrtc.ICEConnectionStateDisconnected) {
+		t.Fatal("ICE disconnect should be enough to clean up after the grace window")
+	}
+	if !shouldCleanupDisconnectedWebRTC(webrtc.PeerConnectionStateDisconnected, webrtc.ICEConnectionStateConnected) {
+		t.Fatal("peer disconnect should be enough to clean up after the grace window")
+	}
+	if shouldCleanupDisconnectedWebRTC(webrtc.PeerConnectionStateConnected, webrtc.ICEConnectionStateConnected) {
+		t.Fatal("connected peer and ICE states should not be cleaned up by the grace timer")
+	}
+}
+
 func TestWriteWAVStreamHeader(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	if err := writeWAVStreamHeader(recorder, 48000, 1, 16); err != nil {
