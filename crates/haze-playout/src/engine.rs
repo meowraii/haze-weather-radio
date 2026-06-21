@@ -21,10 +21,10 @@ use haze_media::{decode_wav, normalize_pcm, silence_chunk, Pcm};
 const SOURCE_ID: &str = "haze-playout";
 const ALERT_QUEUE_DIR: &str = "runtime/queues/alerts";
 const PCM_CHUNK_MS: u32 = 20;
-const MEDIA_PUBLISH_CHUNK_MS: u32 = 200;
+const MEDIA_PUBLISH_CHUNK_MS: u32 = 40;
 const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 750;
 const MAX_CATCH_UP_CHUNKS: usize = 1;
-const PCM_PUBLISH_QUEUE_CAPACITY: usize = 4;
+const PCM_PUBLISH_QUEUE_CAPACITY: usize = 8;
 const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
 
 #[derive(Debug, Clone)]
@@ -1129,6 +1129,16 @@ fn pcm_publish_queue_capacity() -> usize {
     PCM_PUBLISH_QUEUE_CAPACITY
 }
 
+#[cfg(test)]
+fn media_publish_chunk_duration() -> Duration {
+    Duration::from_millis(u64::from(MEDIA_PUBLISH_CHUNK_MS))
+}
+
+#[cfg(test)]
+fn media_publish_queue_duration() -> Duration {
+    media_publish_chunk_duration() * u32::try_from(PCM_PUBLISH_QUEUE_CAPACITY).unwrap_or(u32::MAX)
+}
+
 fn live_breakin_frame_bytes(channels: u16) -> usize {
     usize::from(channels.max(1)) * 2
 }
@@ -2166,8 +2176,10 @@ mod tests {
     }
 
     #[test]
-    fn realtime_pcm_publish_queue_stays_short_for_low_latency() {
-        assert!(pcm_publish_queue_capacity() <= 4);
+    fn realtime_pcm_publish_queue_stays_short_but_smooth() {
+        assert!(media_publish_chunk_duration() <= Duration::from_millis(40));
+        assert!(media_publish_queue_duration() <= Duration::from_millis(320));
+        assert!(pcm_publish_queue_capacity() >= 4);
         assert_eq!(MAX_CATCH_UP_CHUNKS, 1);
     }
 
