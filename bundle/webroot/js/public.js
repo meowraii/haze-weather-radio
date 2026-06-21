@@ -741,8 +741,8 @@ function startWebRTCStatsMonitor(feedId, player) {
             return;
         }
         try {
-            const statsSource = player.audioReceiver?.getStats ? player.audioReceiver : player.pc;
-            const snapshot = await readInboundAudioStats(statsSource);
+            const statsResult = await readActiveInboundAudioStats(player.audioReceiver, player.pc);
+            const snapshot = statsResult?.snapshot || null;
             if (!snapshot) {
                 if (player.pc.connectionState === 'connected') {
                     player.missingStatsPolls = (player.missingStatsPolls || 0) + 1;
@@ -776,7 +776,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                     ...snapshot,
                     packets_delta: packetsDelta,
                     packets_reset: packetsReset,
-                    stats_source: statsSource === player.audioReceiver ? 'receiver' : 'peer',
+                    stats_source: statsResult.source,
                     connection_state: player.pc.connectionState,
                     ice_state: player.pc.iceConnectionState,
                     track_muted: player.audio?.dataset?.hazeTrackMuted === '1',
@@ -919,6 +919,18 @@ async function readInboundAudioStats(source) {
         jitterBufferEmittedCount: Number(selected.jitterBufferEmittedCount || 0),
         timestamp: selected.timestamp || performance.now(),
     };
+}
+
+async function readActiveInboundAudioStats(receiver, peer) {
+    if (receiver?.getStats) {
+        const snapshot = await readInboundAudioStats(receiver);
+        if (snapshot) return { snapshot, source: 'receiver' };
+    }
+    if (peer?.getStats) {
+        const snapshot = await readInboundAudioStats(peer);
+        if (snapshot) return { snapshot, source: 'peer' };
+    }
+    return null;
 }
 
 async function startFeed(feedId) {

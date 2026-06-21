@@ -1227,8 +1227,8 @@
                     return;
                 }
                 try {
-                    const statsSource = state.audioReceiver?.getStats ? state.audioReceiver : peer;
-                    const snapshot = await readInboundAudioStats(statsSource);
+                    const statsResult = await readActiveInboundAudioStats(state.audioReceiver, peer);
+                    const snapshot = statsResult?.snapshot || null;
                     if (!snapshot) {
                         if (peer.connectionState === 'connected') {
                             state.audioMissingStatsPolls += 1;
@@ -1256,7 +1256,7 @@
                         ...snapshot,
                         packets_delta: packetsDelta,
                         packets_reset: packetsReset,
-                        stats_source: statsSource === state.audioReceiver ? 'receiver' : 'peer',
+                        stats_source: statsResult.source,
                         connection_state: peer.connectionState,
                         ice_state: peer.iceConnectionState,
                         track_muted: state.audioTrackMuted,
@@ -1306,6 +1306,18 @@
                 jitterBufferEmittedCount: Number(selected.jitterBufferEmittedCount || 0),
                 timestamp: selected.timestamp || performance.now(),
             };
+        }
+
+        async function readActiveInboundAudioStats(receiver, peer) {
+            if (receiver?.getStats) {
+                const snapshot = await readInboundAudioStats(receiver);
+                if (snapshot) return { snapshot, source: 'receiver' };
+            }
+            if (peer?.getStats) {
+                const snapshot = await readInboundAudioStats(peer);
+                if (snapshot) return { snapshot, source: 'peer' };
+            }
+            return null;
         }
 
         function closeAudioPeerOnly() {
