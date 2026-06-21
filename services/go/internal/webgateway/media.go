@@ -1187,15 +1187,13 @@ func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats 
 	if now.Sub(stats.lastReport) < webrtcDiagnosticsInterval {
 		return
 	}
-	if stats.skippedFrames > 0 || stats.writeErrors > 0 {
-		log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d write_errors=%d",
-			feedID,
-			codec,
-			stats.written,
-			stats.skippedFrames,
-			stats.writeErrors,
-		)
-	}
+	log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d skipped_stale_frames=%d write_errors=%d",
+		feedID,
+		codec,
+		stats.written,
+		stats.skippedFrames,
+		stats.writeErrors,
+	)
 	stats.lastReport = now
 	stats.resetInterval()
 }
