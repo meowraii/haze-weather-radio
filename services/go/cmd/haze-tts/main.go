@@ -40,12 +40,12 @@ func run() error {
 	readerID := flag.String("reader-id", "", "reader id from readers.xml")
 	lang := flag.String("lang", "en-CA", "requested language")
 	timezone := flag.String("timezone", envOrDefault("HAZE_TTS_TIMEZONE", "Local"), "timezone for spoken timestamps")
-	piperExe := flag.String("piper-exe", envOrDefault("HAZE_PIPER_EXE", "piper"), "Piper executable path")
+	_ = flag.String("piper-exe", "", "deprecated; Piper uses the native sherpa-onnx runtime")
 	piperVoicesDir := flag.String("piper-voices-dir", envOrDefault("HAZE_PIPER_VOICES_DIR", filepath.Join("managed", "voices", "piper")), "Piper voice model directory")
-	piperMode := flag.String("piper-mode", envOrDefault("HAZE_PIPER_MODE", "auto"), "Piper runtime mode: auto, worker, or cli")
-	piperWorkers := flag.Int("piper-workers", envIntOrDefault("HAZE_PIPER_WORKERS", 1), "Piper worker processes per voice")
-	piperPrewarm := flag.Bool("piper-prewarm", envBoolOrDefault("HAZE_PIPER_PREWARM", true), "prewarm Piper worker voices on service startup")
-	piperCUDA := flag.Bool("piper-cuda", envBoolOrDefault("HAZE_PIPER_CUDA", false), "use CUDA for Piper workers when available")
+	_ = flag.String("piper-mode", "", "deprecated; Piper is native-only")
+	_ = flag.Int("piper-workers", 0, "deprecated; Piper is native-only")
+	piperPrewarm := flag.Bool("piper-prewarm", envBoolOrDefault("HAZE_PIPER_PREWARM", true), "prewarm native Piper voices on service startup")
+	_ = flag.Bool("piper-cuda", false, "deprecated; use HAZE_PIPER_PROVIDER or HAZE_KOKORO_PROVIDER")
 	kokoroModelDir := flag.String("kokoro-model-dir", envOrDefault("HAZE_KOKORO_MODEL_DIR", filepath.Join("managed", "voices", "kokoro-multi-lang-v1_0")), "Kokoro model directory")
 	kokoroRuntimeProvider := flag.String("kokoro-runtime-provider", envOrDefault("HAZE_KOKORO_PROVIDER", "cpu"), "Kokoro sherpa-onnx provider: cpu, cuda, or coreml")
 	kokoroThreads := flag.Int("kokoro-threads", envIntOrDefault("HAZE_KOKORO_THREADS", 0), "Kokoro neural network worker threads")
@@ -60,7 +60,6 @@ func run() error {
 	timeout := flag.Duration("timeout", 60*time.Second, "synthesis timeout")
 	flag.Parse()
 	setTTSRuntimeEnv(ttsRuntimeEnv{
-		PiperExe:              *piperExe,
 		PiperVoicesDir:        *piperVoicesDir,
 		KokoroModelDir:        *kokoroModelDir,
 		KokoroLang:            kokoroRuntimeLang(*lang),
@@ -83,10 +82,7 @@ func run() error {
 			Timezone:     *timezone,
 			OutDir:       *outDir,
 			Timeout:      *timeout,
-			PiperMode:    *piperMode,
-			PiperWorkers: maxInt(1, *piperWorkers),
 			PiperPrewarm: *piperPrewarm,
-			PiperCUDA:    *piperCUDA,
 			Workers:      1,
 		})
 	}
@@ -156,10 +152,7 @@ type serviceConfig struct {
 	Timezone     string
 	OutDir       string
 	Timeout      time.Duration
-	PiperMode    string
-	PiperWorkers int
 	PiperPrewarm bool
-	PiperCUDA    bool
 	Workers      int
 }
 
@@ -372,10 +365,7 @@ func newServiceState(ctx context.Context, cfg serviceConfig) (*serviceState, err
 	providers := tts.DefaultProviders()
 	if piper, ok := providers["piper"].(*tts.PiperProvider); ok {
 		piper.ConfigureRuntime(tts.PiperRuntimeOptions{
-			Mode:    cfg.PiperMode,
-			Workers: maxInt(1, cfg.PiperWorkers),
 			Prewarm: cfg.PiperPrewarm,
-			UseCUDA: cfg.PiperCUDA,
 		})
 	}
 	readers, err := tts.LoadReaders(cfg.Readers)
@@ -758,7 +748,6 @@ func maxInt(left int, right int) int {
 }
 
 type ttsRuntimeEnv struct {
-	PiperExe              string
 	PiperVoicesDir        string
 	KokoroModelDir        string
 	KokoroLang            string
@@ -769,9 +758,6 @@ type ttsRuntimeEnv struct {
 }
 
 func setTTSRuntimeEnv(options ttsRuntimeEnv) {
-	if strings.TrimSpace(options.PiperExe) != "" {
-		_ = os.Setenv("HAZE_PIPER_EXE", strings.TrimSpace(options.PiperExe))
-	}
 	if strings.TrimSpace(options.PiperVoicesDir) != "" {
 		_ = os.Setenv("HAZE_PIPER_VOICES_DIR", strings.TrimSpace(options.PiperVoicesDir))
 	}

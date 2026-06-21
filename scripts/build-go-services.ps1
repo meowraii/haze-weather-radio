@@ -238,7 +238,7 @@ foreach ($BundledDir in @("webroot", "managed", "audio")) {
 
 $ManagedScripts = Join-Path (Join-Path $OutFull "managed") "scripts"
 New-Item -ItemType Directory -Force -Path $ManagedScripts | Out-Null
-foreach ($Script in @("scripts/tts/piper_worker.py", "scripts/tts/chatterbox_infer.py", "scripts/tts/f5_infer.py")) {
+foreach ($Script in @("scripts/tts/chatterbox_infer.py", "scripts/tts/f5_infer.py")) {
     $Source = Join-Path $Root $Script
     if (Test-Path -LiteralPath $Source) {
         Copy-Item -LiteralPath $Source -Destination $ManagedScripts -Force

@@ -44,7 +44,6 @@ const SECTIONS = [
             ['services.go.tts.language', 'Default TTS language', 'en-CA'],
             ['services.go.tts.out_dir', 'TTS output directory', 'runtime/audio/tts'],
             ['services.go.tts.timeout', 'TTS timeout', '60s'],
-            ['services.go.tts.piper_executable', 'Piper executable', 'piper'],
             ['services.go.tts.piper_voices_dir', 'Piper voices directory', 'managed/voices/piper'],
             ['services.go.product_render.refresh', 'Product config refresh', '5m'],
             ['services.go.playlist.tick', 'Playlist tick', '500ms'],

@@ -490,10 +490,10 @@ try {
     }
     $ManagedOut = Join-Path $OutFull "managed"
     New-Item -ItemType Directory -Force -Path $ManagedOut | Out-Null
-    if ((Test-Path -LiteralPath "scripts/tts/piper_worker.py") -or (Test-Path -LiteralPath "scripts/tts/chatterbox_infer.py") -or (Test-Path -LiteralPath "scripts/tts/f5_infer.py")) {
+    if ((Test-Path -LiteralPath "scripts/tts/chatterbox_infer.py") -or (Test-Path -LiteralPath "scripts/tts/f5_infer.py")) {
         $ManagedScripts = Join-Path $ManagedOut "scripts"
         New-Item -ItemType Directory -Force -Path $ManagedScripts | Out-Null
-        foreach ($Script in @("scripts/tts/piper_worker.py", "scripts/tts/chatterbox_infer.py", "scripts/tts/f5_infer.py")) {
+        foreach ($Script in @("scripts/tts/chatterbox_infer.py", "scripts/tts/f5_infer.py")) {
             if (Test-Path -LiteralPath $Script) {
                 Copy-Item -LiteralPath $Script -Destination $ManagedScripts -Force
             }

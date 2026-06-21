@@ -1,8 +1,8 @@
 package tts
 
 import (
-	"bufio"
-	"bytes"
+	"archive/tar"
+	"compress/bzip2"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -10,10 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,12 +21,12 @@ import (
 
 const defaultPiperMetadataURL = "https://raw.githubusercontent.com/rhasspy/piper-samples/master/voices.json"
 const defaultPiperVoiceBaseURL = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+const defaultPiperEspeakDataURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2"
 const hfcMalePiperVoiceID = "en_US-hfc_male-medium"
 const hfcMaleLengthScale = 1.012
 
-// PiperProvider uses a Piper executable with ONNX voice files.
+// PiperProvider uses sherpa-onnx's native VITS runtime with Piper ONNX voice files.
 type PiperProvider struct {
-	Executable   string
 	VoicesDir    string
 	MetadataURL  string
 	VoiceBaseURL string
@@ -36,21 +34,14 @@ type PiperProvider struct {
 
 	downloadMu       sync.Mutex
 	runtimeMu        sync.Mutex
-	mode             string
-	workerCount      int
 	prewarm          bool
-	useCUDA          bool
-	workerScript     string
-	commandPath      string
-	commandPrefix    []string
-	commandErr       error
 	voiceIndexCached piperVoiceIndex
 	voiceIndexErr    error
 	resolvedVoices   map[string]resolvedPiperVoice
-	workerPools      map[string]*piperWorkerPool
+	nativeEngines    map[string]piperNativeEngine
 }
 
-// PiperRuntimeOptions controls low-latency Piper execution.
+// PiperRuntimeOptions keeps legacy daemon settings compatible. Piper synthesis is native-only.
 type PiperRuntimeOptions struct {
 	Mode         string
 	Workers      int
@@ -63,6 +54,32 @@ type resolvedPiperVoice struct {
 	ID         string
 	ModelPath  string
 	ConfigPath string
+}
+
+type piperNativeEngine interface {
+	Synthesize(context.Context, Request) (Audio, error)
+	Close()
+}
+
+type piperVoiceConfig struct {
+	Audio struct {
+		SampleRate int    `json:"sample_rate"`
+		Quality    string `json:"quality"`
+	} `json:"audio"`
+	Espeak struct {
+		Voice string `json:"voice"`
+	} `json:"espeak"`
+	Language struct {
+		Code        string `json:"code"`
+		NameEnglish string `json:"name_english"`
+	} `json:"language"`
+	Inference struct {
+		NoiseScale  float32 `json:"noise_scale"`
+		LengthScale float32 `json:"length_scale"`
+		NoiseW      float32 `json:"noise_w"`
+	} `json:"inference"`
+	NumSpeakers  int              `json:"num_speakers"`
+	PhonemeIDMap map[string][]int `json:"phoneme_id_map"`
 }
 
 type piperVoiceIndex map[string]piperVoiceInfo
@@ -88,12 +105,6 @@ type piperVoiceFile struct {
 
 // NewPiperProvider creates a Piper provider. Empty values use Haze defaults.
 func NewPiperProvider(executable string, voicesDir string) *PiperProvider {
-	if strings.TrimSpace(executable) == "" {
-		executable = strings.TrimSpace(os.Getenv("HAZE_PIPER_EXE"))
-	}
-	if strings.TrimSpace(executable) == "" {
-		executable = "piper"
-	}
 	if strings.TrimSpace(voicesDir) == "" {
 		voicesDir = strings.TrimSpace(os.Getenv("HAZE_PIPER_VOICES_DIR"))
 	}
@@ -101,16 +112,13 @@ func NewPiperProvider(executable string, voicesDir string) *PiperProvider {
 		voicesDir = filepath.Join("managed", "voices", "piper")
 	}
 	return &PiperProvider{
-		Executable:     executable,
 		VoicesDir:      voicesDir,
 		MetadataURL:    defaultPiperMetadataURL,
 		VoiceBaseURL:   defaultPiperVoiceBaseURL,
 		HTTPClient:     defaultPiperHTTPClient(),
-		mode:           "auto",
-		workerCount:    1,
 		prewarm:        true,
 		resolvedVoices: map[string]resolvedPiperVoice{},
-		workerPools:    map[string]*piperWorkerPool{},
+		nativeEngines:  map[string]piperNativeEngine{},
 	}
 }
 
@@ -130,44 +138,26 @@ func defaultPiperHTTPClient() *http.Client {
 
 func (p *PiperProvider) ID() string { return "piper" }
 
-// ConfigureRuntime updates Piper's low-latency execution mode.
+// ConfigureRuntime updates native Piper runtime options that still affect startup.
 func (p *PiperProvider) ConfigureRuntime(options PiperRuntimeOptions) {
 	p.runtimeMu.Lock()
 	defer p.runtimeMu.Unlock()
-	p.mode = normalizePiperMode(options.Mode)
-	if options.Workers > 0 {
-		p.workerCount = options.Workers
-	}
 	p.prewarm = options.Prewarm
-	p.useCUDA = options.UseCUDA
-	p.workerScript = strings.TrimSpace(options.WorkerScript)
 }
 
-// Prewarm starts a persistent worker and verifies the PCM framing path for the requested voice.
+// Prewarm initializes the native Piper runtime and verifies synthesis for the requested voice.
 func (p *PiperProvider) Prewarm(ctx context.Context, req Request) error {
-	if p.workerMode() == "cli" {
-		return nil
-	}
 	modelPath, configPath, err := p.ensureVoice(ctx, req.VoiceID)
 	if err != nil {
 		return err
 	}
 	voice := resolvedPiperVoice{ID: cleanPiperVoiceID(req.VoiceID), ModelPath: modelPath, ConfigPath: configPath}
-	pool, err := p.workerPool(ctx, voice)
-	if err != nil {
-		return err
-	}
-	worker, err := pool.acquire(ctx)
-	if err != nil {
-		return err
-	}
 	warmReq := req
 	if strings.TrimSpace(warmReq.Text) == "" {
 		warmReq.Text = "Ready."
 	}
 	warmReq.OutputFormat = FormatPCM16LE
-	_, err = worker.synthesize(ctx, warmReq)
-	pool.release(worker, err == nil)
+	_, err = p.synthesizeWithNative(ctx, voice, warmReq)
 	return err
 }
 
@@ -203,130 +193,392 @@ func (p *PiperProvider) Synthesize(ctx context.Context, req Request) (Audio, err
 	if err != nil {
 		return Audio{}, err
 	}
-	if req.OutputFormat == FormatPCM16LE && p.workerMode() != "cli" {
-		voice := resolvedPiperVoice{ID: cleanPiperVoiceID(req.VoiceID), ModelPath: modelPath, ConfigPath: configPath}
-		audio, err := p.synthesizeWithWorker(ctx, voice, req)
-		if err == nil {
-			return audio, nil
+	voice := resolvedPiperVoice{ID: cleanPiperVoiceID(req.VoiceID), ModelPath: modelPath, ConfigPath: configPath}
+	return p.synthesizeWithNative(ctx, voice, req)
+}
+
+func loadPiperVoiceConfig(configPath string) (piperVoiceConfig, error) {
+	raw, err := os.ReadFile(filepath.Clean(configPath))
+	if err != nil {
+		return piperVoiceConfig{}, err
+	}
+	var config piperVoiceConfig
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return piperVoiceConfig{}, fmt.Errorf("parse piper voice config: %w", err)
+	}
+	if config.Inference.NoiseScale == 0 {
+		config.Inference.NoiseScale = 0.667
+	}
+	if config.Inference.NoiseW == 0 {
+		config.Inference.NoiseW = 0.8
+	}
+	if config.Inference.LengthScale == 0 {
+		config.Inference.LengthScale = 1
+	}
+	return config, nil
+}
+
+func ensurePiperModelMetadata(modelPath string, config piperVoiceConfig) error {
+	if config.Audio.SampleRate <= 0 {
+		return fmt.Errorf("%w: piper voice config has no audio.sample_rate", ErrProviderUnavailable)
+	}
+	nSpeakers := config.NumSpeakers
+	if nSpeakers <= 0 {
+		nSpeakers = 1
+	}
+	language := strings.TrimSpace(config.Language.NameEnglish)
+	if language == "" {
+		language = strings.TrimSpace(config.Language.Code)
+	}
+	voice := strings.TrimSpace(config.Espeak.Voice)
+	metadata := map[string]string{
+		"model_type":  "vits",
+		"comment":     "piper",
+		"language":    language,
+		"voice":       voice,
+		"has_espeak":  "1",
+		"n_speakers":  fmt.Sprint(nSpeakers),
+		"sample_rate": fmt.Sprint(config.Audio.SampleRate),
+	}
+	raw, err := os.ReadFile(filepath.Clean(modelPath))
+	if err != nil {
+		return err
+	}
+	existing := onnxMetadata(raw)
+	missing := map[string]string{}
+	for key, value := range metadata {
+		if strings.TrimSpace(existing[key]) == "" {
+			missing[key] = value
 		}
-		log.Printf("piper worker failed; falling back to CLI: %v", err)
 	}
-	return p.synthesizeWithCLI(ctx, modelPath, configPath, req)
+	if len(missing) == 0 {
+		return nil
+	}
+	updated := append([]byte(nil), raw...)
+	keys := make([]string, 0, len(missing))
+	for key := range missing {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		updated = appendONNXMetadataEntry(updated, key, missing[key])
+	}
+	return writeFileAtomic(filepath.Clean(modelPath), updated, 0o644)
 }
 
-func (p *PiperProvider) synthesizeWithCLI(ctx context.Context, modelPath string, configPath string, req Request) (Audio, error) {
-	tmp, err := os.CreateTemp("", "haze-piper-*.wav")
-	if err != nil {
-		return Audio{}, err
-	}
-	outputPath := tmp.Name()
-	_ = tmp.Close()
-	defer os.Remove(outputPath)
+func appendONNXMetadataEntry(raw []byte, key string, value string) []byte {
+	entry := []byte{}
+	entry = appendProtoString(entry, 1, key)
+	entry = appendProtoString(entry, 2, value)
+	raw = appendProtoVarint(raw, uint64(14<<3|2))
+	raw = appendProtoVarint(raw, uint64(len(entry)))
+	raw = append(raw, entry...)
+	return raw
+}
 
-	executable, prefix, err := p.command()
-	if err != nil {
-		return Audio{}, err
+func appendProtoString(raw []byte, field int, value string) []byte {
+	raw = appendProtoVarint(raw, uint64(field<<3|2))
+	raw = appendProtoVarint(raw, uint64(len(value)))
+	raw = append(raw, value...)
+	return raw
+}
+
+func appendProtoVarint(raw []byte, value uint64) []byte {
+	for value >= 0x80 {
+		raw = append(raw, byte(value)|0x80)
+		value >>= 7
 	}
-	args := append(prefix, piperSynthesisArgs(modelPath, configPath, outputPath)...)
-	cmd := exec.CommandContext(ctx, executable, args...)
-	cmd.Stdin = strings.NewReader(req.Text)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail != "" {
-			return Audio{}, errors.New(detail)
+	return append(raw, byte(value))
+}
+
+func onnxMetadata(raw []byte) map[string]string {
+	values := map[string]string{}
+	for offset := 0; offset < len(raw); {
+		tag, next, ok := readProtoVarint(raw, offset)
+		if !ok {
+			return values
 		}
-		return Audio{}, err
+		offset = next
+		field := int(tag >> 3)
+		wire := int(tag & 0x7)
+		if field == 14 && wire == 2 {
+			payload, after, ok := readProtoBytes(raw, offset)
+			if !ok {
+				return values
+			}
+			key, value := parseONNXMetadataEntry(payload)
+			if key != "" {
+				values[key] = value
+			}
+			offset = after
+			continue
+		}
+		nextOffset, ok := skipProtoValue(raw, offset, wire)
+		if !ok {
+			return values
+		}
+		offset = nextOffset
 	}
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		return Audio{}, err
-	}
-	return Audio{Format: FormatWAV, Data: data}, nil
+	return values
 }
 
-func (p *PiperProvider) synthesizeWithWorker(ctx context.Context, voice resolvedPiperVoice, req Request) (Audio, error) {
-	pool, err := p.workerPool(ctx, voice)
-	if err != nil {
-		return Audio{}, err
+func parseONNXMetadataEntry(raw []byte) (string, string) {
+	var key string
+	var value string
+	for offset := 0; offset < len(raw); {
+		tag, next, ok := readProtoVarint(raw, offset)
+		if !ok {
+			return key, value
+		}
+		offset = next
+		field := int(tag >> 3)
+		wire := int(tag & 0x7)
+		if (field == 1 || field == 2) && wire == 2 {
+			payload, after, ok := readProtoBytes(raw, offset)
+			if !ok {
+				return key, value
+			}
+			if field == 1 {
+				key = string(payload)
+			} else {
+				value = string(payload)
+			}
+			offset = after
+			continue
+		}
+		nextOffset, ok := skipProtoValue(raw, offset, wire)
+		if !ok {
+			return key, value
+		}
+		offset = nextOffset
 	}
-	worker, err := pool.acquire(ctx)
-	if err != nil {
-		return Audio{}, err
-	}
-	audio, err := worker.synthesize(ctx, req)
-	pool.release(worker, err == nil)
-	if err != nil {
-		return Audio{}, err
-	}
-	return audio, nil
+	return key, value
 }
 
-func piperSynthesisArgs(modelPath string, configPath string, outputPath string) []string {
-	return []string{
-		"--model", modelPath,
-		"--config", configPath,
-		"--output_file", outputPath,
+func readProtoBytes(raw []byte, offset int) ([]byte, int, bool) {
+	length, next, ok := readProtoVarint(raw, offset)
+	if !ok || length > uint64(len(raw)-next) {
+		return nil, offset, false
 	}
+	end := next + int(length)
+	return raw[next:end], end, true
 }
 
-func normalizePiperMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "worker":
-		return "worker"
-	case "cli":
-		return "cli"
+func readProtoVarint(raw []byte, offset int) (uint64, int, bool) {
+	var value uint64
+	for shift := 0; shift < 64 && offset < len(raw); shift += 7 {
+		b := raw[offset]
+		offset++
+		value |= uint64(b&0x7f) << shift
+		if b < 0x80 {
+			return value, offset, true
+		}
+	}
+	return 0, offset, false
+}
+
+func skipProtoValue(raw []byte, offset int, wire int) (int, bool) {
+	switch wire {
+	case 0:
+		_, next, ok := readProtoVarint(raw, offset)
+		return next, ok
+	case 1:
+		if len(raw)-offset < 8 {
+			return offset, false
+		}
+		return offset + 8, true
+	case 2:
+		_, next, ok := readProtoBytes(raw, offset)
+		return next, ok
+	case 5:
+		if len(raw)-offset < 4 {
+			return offset, false
+		}
+		return offset + 4, true
 	default:
-		return "auto"
+		return offset, false
 	}
 }
 
-func (p *PiperProvider) workerMode() string {
-	p.runtimeMu.Lock()
-	defer p.runtimeMu.Unlock()
-	return normalizePiperMode(p.mode)
+func ensurePiperTokensFile(configPath string, config piperVoiceConfig) (string, error) {
+	tokensPath := strings.TrimSuffix(configPath, ".json") + ".tokens.txt"
+	if _, err := os.Stat(tokensPath); err == nil {
+		return tokensPath, nil
+	}
+	if len(config.PhonemeIDMap) == 0 {
+		return "", fmt.Errorf("%w: piper voice config has no phoneme_id_map", ErrProviderUnavailable)
+	}
+	type tokenID struct {
+		Token string
+		ID    int
+	}
+	tokens := []tokenID{}
+	for token, values := range config.PhonemeIDMap {
+		if len(values) == 0 || values[0] < 0 {
+			continue
+		}
+		tokens = append(tokens, tokenID{Token: token, ID: values[0]})
+	}
+	if len(tokens) == 0 {
+		return "", fmt.Errorf("%w: piper voice config has no usable token IDs", ErrProviderUnavailable)
+	}
+	sort.Slice(tokens, func(i, j int) bool {
+		if tokens[i].ID == tokens[j].ID {
+			return tokens[i].Token < tokens[j].Token
+		}
+		return tokens[i].ID < tokens[j].ID
+	})
+	var builder strings.Builder
+	for _, item := range tokens {
+		builder.WriteString(item.Token)
+		builder.WriteByte(' ')
+		builder.WriteString(fmt.Sprint(item.ID))
+		builder.WriteByte('\n')
+	}
+	tmp := tokensPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(builder.String()), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, tokensPath); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return tokensPath, nil
 }
 
-func (p *PiperProvider) command() (string, []string, error) {
-	p.runtimeMu.Lock()
-	if p.commandPath != "" || p.commandErr != nil {
-		path := p.commandPath
-		prefix := append([]string(nil), p.commandPrefix...)
-		err := p.commandErr
-		p.runtimeMu.Unlock()
-		return path, prefix, err
+func (p *PiperProvider) ensurePiperDataDir(ctx context.Context, modelPath string) (string, error) {
+	if dataDir := piperDataDir(p.VoicesDir, modelPath); dataDir != "" {
+		return dataDir, nil
 	}
-	p.runtimeMu.Unlock()
+	url := envOrDefault("HAZE_PIPER_ESPEAK_DATA_URL", defaultPiperEspeakDataURL)
+	if strings.TrimSpace(url) == "" {
+		return "", fmt.Errorf("%w: piper espeak-ng-data directory not found", ErrProviderUnavailable)
+	}
+	if err := os.MkdirAll(p.VoicesDir, 0o755); err != nil {
+		return "", err
+	}
+	archivePath := filepath.Join(p.VoicesDir, "espeak-ng-data.tar.bz2")
+	if _, err := os.Stat(archivePath); err != nil {
+		if err := p.downloadPiperDataArchive(ctx, url, archivePath); err != nil {
+			return "", err
+		}
+	}
+	if err := extractPiperDataArchive(archivePath, p.VoicesDir); err != nil {
+		return "", err
+	}
+	if dataDir := piperDataDir(p.VoicesDir, modelPath); dataDir != "" {
+		return dataDir, nil
+	}
+	return "", fmt.Errorf("%w: piper espeak-ng-data archive did not contain espeak-ng-data", ErrProviderUnavailable)
+}
 
-	executable := strings.TrimSpace(p.Executable)
-	if executable == "" {
-		executable = "piper"
+func (p *PiperProvider) downloadPiperDataArchive(ctx context.Context, url string, archivePath string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
 	}
-	var path string
-	var prefix []string
-	var err error
-	if path, err = exec.LookPath(executable); err == nil {
-		prefix = nil
-	} else if filepath.IsAbs(executable) {
-		err = fmt.Errorf("%w: piper executable %q", ErrProviderUnavailable, executable)
-	} else {
-		for _, candidate := range []string{"py", "python", "python3"} {
-			if path, err = exec.LookPath(candidate); err == nil {
-				prefix = []string{"-m", "piper"}
-				break
+	response, err := p.HTTPClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("download piper espeak-ng-data: %s", response.Status)
+	}
+	tmp := archivePath + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, response.Body)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	if err := os.Rename(tmp, archivePath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func extractPiperDataArchive(archivePath string, targetRoot string) error {
+	file, err := os.Open(filepath.Clean(archivePath))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	reader := tar.NewReader(bzip2.NewReader(file))
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name := filepath.Clean(filepath.FromSlash(header.Name))
+		if strings.HasPrefix(name, "..") || filepath.IsAbs(name) {
+			return fmt.Errorf("piper espeak-ng-data archive entry escapes target: %s", header.Name)
+		}
+		target := filepath.Join(targetRoot, name)
+		if !kokoroPathWithin(targetRoot, target) {
+			return fmt.Errorf("piper espeak-ng-data archive entry escapes target: %s", header.Name)
+		}
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := kokoroWriteArchiveFile(target, reader, header.FileInfo().Mode()); err != nil {
+				return err
 			}
 		}
-		if path == "" && err == nil {
-			err = fmt.Errorf("%w: piper executable %q or python -m piper", ErrProviderUnavailable, executable)
+	}
+}
+
+func piperDataDir(voicesDir string, modelPath string) string {
+	for _, candidate := range []string{
+		strings.TrimSpace(os.Getenv("HAZE_PIPER_DATA_DIR")),
+		strings.TrimSpace(os.Getenv("HAZE_KOKORO_DATA_DIR")),
+		filepath.Join(voicesDir, "espeak-ng-data"),
+		filepath.Join("managed", "voices", "kokoro-multi-lang-v1_0", "espeak-ng-data"),
+		filepath.Join(filepath.Dir(modelPath), "espeak-ng-data"),
+	} {
+		if candidate == "" {
+			continue
+		}
+		info, err := os.Stat(candidate)
+		if err == nil && info.IsDir() {
+			return candidate
 		}
 	}
-	p.runtimeMu.Lock()
-	p.commandPath = path
-	p.commandPrefix = append([]string(nil), prefix...)
-	p.commandErr = err
-	p.runtimeMu.Unlock()
-	return path, prefix, err
+	return ""
+}
+
+func piperRuntimeProvider() string {
+	return envOrDefault("HAZE_PIPER_PROVIDER", envOrDefault("HAZE_KOKORO_PROVIDER", "cpu"))
+}
+
+func piperThreads() int {
+	return kokoroEnvInt("HAZE_PIPER_THREADS", kokoroEnvInt("HAZE_KOKORO_THREADS", defaultKokoroThreads()))
+}
+
+func piperDebug() bool {
+	return kokoroEnvBool("HAZE_PIPER_DEBUG", kokoroEnvBool("HAZE_KOKORO_DEBUG", false))
+}
+
+func piperSpeedForRequest(rate int) float32 {
+	if rate <= 0 {
+		rate = 100
+	}
+	return kokoroClampFloat32(float32(rate)/100, 0.5, 2.0)
 }
 
 func (p *PiperProvider) ensureVoice(ctx context.Context, voiceID string) (string, string, error) {
@@ -462,367 +714,11 @@ func piperModelFiles(info piperVoiceInfo) (string, string) {
 	return modelPath, configPath
 }
 
-type piperWorkerPool struct {
-	provider *PiperProvider
-	voice    resolvedPiperVoice
-	python   string
-	script   string
-	useCUDA  bool
-	size     int
-	idle     chan *piperWorker
-	mu       sync.Mutex
-	total    int
-}
-
-type piperWorker struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
-	stderr *bytes.Buffer
-}
-
-type piperWorkerRequest struct {
-	ID              string   `json:"id"`
-	Text            string   `json:"text"`
-	Volume          float64  `json:"volume"`
-	SpeakerID       *int     `json:"speaker_id,omitempty"`
-	LengthScale     *float64 `json:"length_scale,omitempty"`
-	NoiseScale      *float64 `json:"noise_scale,omitempty"`
-	NoiseWScale     *float64 `json:"noise_w_scale,omitempty"`
-	NormalizeAudio  bool     `json:"normalize_audio"`
-	SentenceSilence float64  `json:"sentence_silence"`
-}
-
-type piperWorkerHeader struct {
-	ID          string `json:"id,omitempty"`
-	Ready       bool   `json:"ready,omitempty"`
-	OK          bool   `json:"ok"`
-	Error       string `json:"error,omitempty"`
-	Format      string `json:"format,omitempty"`
-	SampleRate  int    `json:"sample_rate,omitempty"`
-	Channels    int    `json:"channels,omitempty"`
-	SampleWidth int    `json:"sample_width,omitempty"`
-	Bytes       int    `json:"bytes,omitempty"`
-}
-
-func (p *PiperProvider) workerPool(ctx context.Context, voice resolvedPiperVoice) (*piperWorkerPool, error) {
-	p.runtimeMu.Lock()
-	key := strings.Join([]string{voice.ModelPath, voice.ConfigPath, fmt.Sprint(p.useCUDA)}, "\x00")
-	if pool := p.workerPools[key]; pool != nil {
-		p.runtimeMu.Unlock()
-		return pool, nil
-	}
-	size := maxInt(1, p.workerCount)
-	useCUDA := p.useCUDA
-	p.runtimeMu.Unlock()
-
-	python, err := p.workerPython()
-	if err != nil {
-		return nil, err
-	}
-	script, err := p.workerScriptPath()
-	if err != nil {
-		return nil, err
-	}
-	pool := &piperWorkerPool{
-		provider: p,
-		voice:    voice,
-		python:   python,
-		script:   script,
-		useCUDA:  useCUDA,
-		size:     size,
-		idle:     make(chan *piperWorker, size),
-	}
-	p.runtimeMu.Lock()
-	if existing := p.workerPools[key]; existing != nil {
-		p.runtimeMu.Unlock()
-		return existing, nil
-	}
-	p.workerPools[key] = pool
-	p.runtimeMu.Unlock()
-	worker, err := pool.start(ctx)
-	if err != nil {
-		p.runtimeMu.Lock()
-		delete(p.workerPools, key)
-		p.runtimeMu.Unlock()
-		return nil, err
-	}
-	pool.release(worker, true)
-	return pool, nil
-}
-
-func (p *PiperProvider) workerPython() (string, error) {
-	if configured := strings.TrimSpace(os.Getenv("HAZE_PIPER_PYTHON")); configured != "" {
-		if path, err := exec.LookPath(configured); err == nil {
-			return path, nil
-		}
-		if filepath.IsAbs(configured) {
-			if _, err := os.Stat(configured); err == nil {
-				return configured, nil
-			}
-		}
-	}
-	for _, candidate := range []string{"python", "python3", "py"} {
-		if path, err := exec.LookPath(candidate); err == nil {
-			return path, nil
-		}
-	}
-	return "", fmt.Errorf("%w: python for piper worker", ErrProviderUnavailable)
-}
-
-func (p *PiperProvider) workerScriptPath() (string, error) {
-	candidates := []string{}
-	if p.workerScript != "" {
-		candidates = append(candidates, p.workerScript)
-	}
-	if env := strings.TrimSpace(os.Getenv("HAZE_PIPER_WORKER_SCRIPT")); env != "" {
-		candidates = append(candidates, env)
-	}
-	candidates = append(candidates,
-		filepath.Join("managed", "scripts", "piper_worker.py"),
-		filepath.Join("scripts", "tts", "piper_worker.py"),
-	)
-	for _, candidate := range candidates {
-		path := filepath.Clean(candidate)
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
-		}
-	}
-	return "", fmt.Errorf("%w: piper worker script", ErrProviderUnavailable)
-}
-
-func (p *PiperProvider) synthID() string {
-	return fmt.Sprintf("piper-%d", time.Now().UnixNano())
-}
-
-func (pool *piperWorkerPool) acquire(ctx context.Context) (*piperWorker, error) {
-	select {
-	case worker := <-pool.idle:
-		return worker, nil
-	default:
-	}
-	pool.mu.Lock()
-	if pool.total < pool.size {
-		pool.total++
-		pool.mu.Unlock()
-		worker, err := pool.newWorker(ctx)
-		if err != nil {
-			pool.mu.Lock()
-			pool.total--
-			pool.mu.Unlock()
-			return nil, err
-		}
-		return worker, nil
-	}
-	pool.mu.Unlock()
-	select {
-	case worker := <-pool.idle:
-		return worker, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (pool *piperWorkerPool) release(worker *piperWorker, healthy bool) {
-	if worker == nil {
-		return
-	}
-	if !healthy {
-		worker.close()
-		pool.mu.Lock()
-		if pool.total > 0 {
-			pool.total--
-		}
-		pool.mu.Unlock()
-		return
-	}
-	select {
-	case pool.idle <- worker:
-	default:
-		worker.close()
-		pool.mu.Lock()
-		if pool.total > 0 {
-			pool.total--
-		}
-		pool.mu.Unlock()
-	}
-}
-
-func (pool *piperWorkerPool) start(ctx context.Context) (*piperWorker, error) {
-	pool.mu.Lock()
-	pool.total++
-	pool.mu.Unlock()
-	worker, err := pool.newWorker(ctx)
-	if err != nil {
-		pool.mu.Lock()
-		pool.total--
-		pool.mu.Unlock()
-		return nil, err
-	}
-	return worker, nil
-}
-
-func (pool *piperWorkerPool) newWorker(ctx context.Context) (*piperWorker, error) {
-	args := []string{
-		pool.script,
-		"--model", pool.voice.ModelPath,
-		"--config", pool.voice.ConfigPath,
-	}
-	if pool.useCUDA {
-		args = append(args, "--cuda")
-	}
-	cmd := exec.Command(pool.python, args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	stderr := &bytes.Buffer{}
-	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	worker := &piperWorker{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdoutPipe),
-		stderr: stderr,
-	}
-	type readyResult struct {
-		Header piperWorkerHeader
-		Err    error
-	}
-	readyCh := make(chan readyResult, 1)
-	go func() {
-		line, err := worker.stdout.ReadBytes('\n')
-		if err != nil {
-			readyCh <- readyResult{Err: fmt.Errorf("piper worker did not become ready: %w: %s", err, strings.TrimSpace(stderr.String()))}
-			return
-		}
-		var header piperWorkerHeader
-		if err := json.Unmarshal(bytes.TrimSpace(line), &header); err != nil {
-			readyCh <- readyResult{Err: fmt.Errorf("piper worker ready frame: %w", err)}
-			return
-		}
-		if !header.Ready || !header.OK {
-			readyCh <- readyResult{Err: fmt.Errorf("piper worker failed: %s", strings.TrimSpace(firstNonBlank(header.Error, stderr.String())))}
-			return
-		}
-		readyCh <- readyResult{Header: header}
-	}()
-	select {
-	case ready := <-readyCh:
-		if ready.Err != nil {
-			worker.close()
-			return nil, ready.Err
-		}
-	case <-ctx.Done():
-		worker.close()
-		return nil, ctx.Err()
-	}
-	return worker, nil
-}
-
-func (worker *piperWorker) synthesize(ctx context.Context, req Request) (Audio, error) {
-	type result struct {
-		Audio Audio
-		Err   error
-	}
-	done := make(chan result, 1)
-	go func() {
-		audio, err := worker.synthesizeSync(req)
-		done <- result{Audio: audio, Err: err}
-	}()
-	select {
-	case result := <-done:
-		return result.Audio, result.Err
-	case <-ctx.Done():
-		worker.close()
-		return Audio{}, ctx.Err()
-	}
-}
-
-func (worker *piperWorker) synthesizeSync(req Request) (Audio, error) {
-	requestID := fmt.Sprintf("piper-%d", time.Now().UnixNano())
-	payload := piperWorkerRequest{
-		ID:              requestID,
-		Text:            req.Text,
-		Volume:          piperVolume(req.Volume),
-		NormalizeAudio:  true,
-		SentenceSilence: req.SentenceSilence,
-	}
-	if err := json.NewEncoder(worker.stdin).Encode(payload); err != nil {
-		return Audio{}, err
-	}
-	line, err := worker.stdout.ReadBytes('\n')
-	if err != nil {
-		return Audio{}, fmt.Errorf("piper worker response: %w: %s", err, strings.TrimSpace(worker.stderr.String()))
-	}
-	var header piperWorkerHeader
-	if err := json.Unmarshal(bytes.TrimSpace(line), &header); err != nil {
-		return Audio{}, fmt.Errorf("piper worker response frame: %w", err)
-	}
-	if !header.OK {
-		return Audio{}, errors.New(firstNonBlank(header.Error, "piper worker synthesis failed"))
-	}
-	if header.ID != requestID {
-		return Audio{}, fmt.Errorf("piper worker response id %q did not match %q", header.ID, requestID)
-	}
-	if header.Format != string(FormatPCM16LE) || header.Bytes < 0 || header.SampleRate <= 0 || header.Channels <= 0 || header.SampleWidth != 2 {
-		return Audio{}, fmt.Errorf("piper worker returned invalid audio metadata: %+v", header)
-	}
-	if frameBytes := header.SampleWidth * header.Channels; frameBytes <= 0 || header.Bytes%frameBytes != 0 {
-		return Audio{}, fmt.Errorf("piper worker returned unaligned PCM bytes: bytes=%d sample_width=%d channels=%d", header.Bytes, header.SampleWidth, header.Channels)
-	}
-	data := make([]byte, header.Bytes)
-	if _, err := io.ReadFull(worker.stdout, data); err != nil {
-		return Audio{}, err
-	}
-	return Audio{
-		Format:     FormatPCM16LE,
-		SampleRate: header.SampleRate,
-		Channels:   header.Channels,
-		Data:       data,
-	}, nil
-}
-
-func (worker *piperWorker) close() {
-	if worker == nil || worker.cmd == nil || worker.cmd.Process == nil {
-		return
-	}
-	_ = worker.stdin.Close()
-	_ = worker.cmd.Process.Kill()
-	_, _ = worker.cmd.Process.Wait()
-}
-
-func piperVolume(volume int) float64 {
-	if volume <= 0 {
-		return 1
-	}
-	return float64(volume) / 100
-}
-
-func maxInt(left int, right int) int {
-	if left > right {
-		return left
-	}
-	return right
-}
-
-func firstNonBlank(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
 func (p *PiperProvider) ensureVoiceFile(ctx context.Context, relativePath string, meta piperVoiceFile) (string, error) {
 	localPath := filepath.Join(p.VoicesDir, filepath.FromSlash(relativePath))
+	if piperONNXHasSherpaMetadata(localPath) {
+		return localPath, nil
+	}
 	if shouldPreserveLocalPiperConfig(relativePath) {
 		if _, err := os.Stat(localPath); err == nil {
 			return localPath, nil
@@ -854,6 +750,20 @@ func (p *PiperProvider) ensureVoiceFile(ctx context.Context, relativePath string
 func shouldPreserveLocalPiperConfig(relativePath string) bool {
 	normalized := filepath.ToSlash(strings.ToLower(strings.TrimSpace(relativePath)))
 	return strings.HasSuffix(normalized, strings.ToLower(hfcMalePiperVoiceID)+".onnx.json")
+}
+
+func piperONNXHasSherpaMetadata(path string) bool {
+	if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(path)), ".onnx") {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	metadata := onnxMetadata(raw)
+	return strings.EqualFold(metadata["model_type"], "vits") &&
+		strings.EqualFold(metadata["comment"], "piper") &&
+		strings.TrimSpace(metadata["sample_rate"]) != ""
 }
 
 func applyPiperVoiceOverrides(voiceID string, configPath string) error {

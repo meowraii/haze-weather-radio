@@ -45,12 +45,8 @@ services:
       timezone: "Local"
       out_dir: "runtime/audio/tts"
       timeout: "60s"
-      piper_executable: "piper"
       piper_voices_dir: "managed/voices/piper"
-      piper_mode: "auto" # auto, worker, or cli
-      piper_workers: 1
       piper_prewarm: true
-      piper_cuda: false
       kokoro_model_dir: "managed/voices/kokoro-multi-lang-v1_0"
       kokoro_runtime_provider: "cpu" # cpu, cuda, or coreml
       kokoro_threads: 1

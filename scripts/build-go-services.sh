@@ -212,7 +212,7 @@ done
 
 managed_scripts="$out_full/managed/scripts"
 mkdir -p "$managed_scripts"
-for script in scripts/tts/piper_worker.py scripts/tts/chatterbox_infer.py scripts/tts/f5_infer.py; do
+for script in scripts/tts/chatterbox_infer.py scripts/tts/f5_infer.py; do
   if [[ -f "$root/$script" ]]; then
     cp "$root/$script" "$managed_scripts/"
   fi

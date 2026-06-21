@@ -37,6 +37,7 @@ twc.yaml
 
 # Downloaded/generated model binaries. Keep small metadata and curated prompts tracked.
 bundle/managed/voices/**/*.onnx
+bundle/managed/voices/**/*.onnx.tokens.txt
 bundle/managed/voices/**/*.onnx.data
 bundle/managed/voices/**/*.bin
 bundle/managed/voices/**/*.pt
