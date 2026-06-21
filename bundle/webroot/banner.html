@@ -336,6 +336,7 @@
             audioRetryCount: 0,
             audioElement: null,
             audioReconnectTimer: null,
+            audioReconnectPending: false,
             audioDisconnectTimer: null,
             audioTrackMuteTimer: null,
             audioStatsTimer: null,
@@ -1118,6 +1119,7 @@
                 window.clearTimeout(state.audioReconnectTimer);
                 state.audioReconnectTimer = null;
             }
+            state.audioReconnectPending = false;
             if (state.audioDisconnectTimer) {
                 window.clearTimeout(state.audioDisconnectTimer);
                 state.audioDisconnectTimer = null;
@@ -1364,6 +1366,10 @@
             if (!query.audio || state.unloading) {
                 return;
             }
+            if (state.audioReconnectPending) {
+                return;
+            }
+            state.audioReconnectPending = true;
             if (state.audioReconnectTimer) {
                 if (!force) return;
                 window.clearTimeout(state.audioReconnectTimer);
@@ -1378,6 +1384,7 @@
             state.audioRetryCount += 1;
             state.audioReconnectTimer = window.setTimeout(() => {
                 state.audioReconnectTimer = null;
+                state.audioReconnectPending = false;
                 connectAudioStream();
             }, delay);
         }
