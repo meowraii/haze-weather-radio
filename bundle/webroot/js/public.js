@@ -62,6 +62,7 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
         if (requestedFeed && id !== requestedFeed) continue;
         const audio = player.audio || null;
         const codecFallback = feedCodecFallbacks.get(id) || null;
+        const now = Date.now();
         players[id] = {
             mode: player.mode || '',
             connection_state: player.pc?.connectionState || '',
@@ -85,6 +86,11 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
             codec_fallback: codecFallback,
             track_mute_pending: Boolean(player.trackMuteTimer),
             track_muted_reported: Boolean(player.trackMutedReported),
+            track_mute_signals: Number(player.trackMuteSignalCount || 0),
+            track_unmute_signals: Number(player.trackUnmuteSignalCount || 0),
+            last_track_mute_signal_age_ms: player.lastTrackMuteSignalAt ? now - player.lastTrackMuteSignalAt : null,
+            last_track_unmute_signal_age_ms: player.lastTrackUnmuteSignalAt ? now - player.lastTrackUnmuteSignalAt : null,
+            track_states: webRTCAudioTrackStates(player, audio),
             output_mixer_active: Boolean(player.audioOutputMixer),
             output_mixer_state: player.audioOutputMixer?.context?.state || '',
             audio: audio ? {
@@ -977,6 +983,7 @@ function scheduleWebRTCMediaEventStatus(feedId, player, state, message) {
 }
 
 function webRTCTrackEventDetails(player) {
+    const audio = player?.audio || null;
     return {
         connection_state: player?.pc?.connectionState || '',
         ice_state: player?.pc?.iceConnectionState || '',
@@ -984,7 +991,31 @@ function webRTCTrackEventDetails(player) {
         packet_source_age_ms: webRTCPacketSourceAgeMS(player),
         packets_recent: hasRecentWebRTCPackets(player),
         hard_stale_packets: hasHardStaleWebRTCPackets(player),
+        audio_paused: audio ? audio.paused : null,
+        audio_ready_state: audio ? audio.readyState : null,
+        output_mixer_state: player?.audioOutputMixer?.context?.state || '',
+        track_states: webRTCAudioTrackStates(player, audio),
     };
+}
+
+function webRTCAudioTrackStates(player, audio = player?.audio || null) {
+    const seen = new Set();
+    const tracks = [
+        ...(audio?.srcObject?.getAudioTracks?.() || []),
+        ...(player?.remoteStream?.getAudioTracks?.() || []),
+    ];
+    return tracks
+        .filter((track) => {
+            if (!track || seen.has(track.id)) return false;
+            seen.add(track.id);
+            return true;
+        })
+        .map((track) => ({
+            id: track.id || '',
+            ready_state: track.readyState || '',
+            enabled: Boolean(track.enabled),
+            muted: Boolean(track.muted),
+        }));
 }
 
 function scheduleWebRTCTrackMuteReport(feedId, player) {
@@ -1378,6 +1409,10 @@ async function startFeedWebRTC(feedId) {
         disconnectReconnectTimer: null,
         mediaEventTimer: null,
         trackMuteTimer: null,
+        trackMuteSignalCount: 0,
+        trackUnmuteSignalCount: 0,
+        lastTrackMuteSignalAt: 0,
+        lastTrackUnmuteSignalAt: 0,
         statsPollTimer: null,
         playbackWatchdogTimer: null,
         lastStats: null,
@@ -1448,11 +1483,15 @@ async function startFeedWebRTC(feedId) {
         currentAudio.dataset.hazeTrackState = event.track.readyState || '';
         event.track.onmute = () => {
             if (isActivePlayer(feedId, player)) {
+                player.trackMuteSignalCount = Number(player.trackMuteSignalCount || 0) + 1;
+                player.lastTrackMuteSignalAt = Date.now();
                 scheduleWebRTCTrackMuteReport(feedId, player);
             }
         };
         event.track.onunmute = () => {
             if (isActivePlayer(feedId, player)) {
+                player.trackUnmuteSignalCount = Number(player.trackUnmuteSignalCount || 0) + 1;
+                player.lastTrackUnmuteSignalAt = Date.now();
                 clearWebRTCTrackMuteReport(feedId, player);
             }
         };

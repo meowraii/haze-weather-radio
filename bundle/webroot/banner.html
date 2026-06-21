@@ -358,6 +358,10 @@
             audioDisconnectTimer: null,
             audioStatsTimer: null,
             audioTrackMuteTimer: null,
+            audioTrackMuteSignalCount: 0,
+            audioTrackUnmuteSignalCount: 0,
+            audioLastTrackMuteSignalAt: 0,
+            audioLastTrackUnmuteSignalAt: 0,
             audioPlaybackWatchdogTimer: null,
             audioLastStats: null,
             audioLastPacketAt: 0,
@@ -412,6 +416,11 @@
                 codec_fallback_applied: Boolean(state.audioCodecFallbackApplied),
                 track_mute_pending: Boolean(state.audioTrackMuteTimer),
                 track_muted_reported: Boolean(state.audioTrackMutedReported),
+                track_mute_signals: Number(state.audioTrackMuteSignalCount || 0),
+                track_unmute_signals: Number(state.audioTrackUnmuteSignalCount || 0),
+                last_track_mute_signal_age_ms: state.audioLastTrackMuteSignalAt ? Date.now() - state.audioLastTrackMuteSignalAt : null,
+                last_track_unmute_signal_age_ms: state.audioLastTrackUnmuteSignalAt ? Date.now() - state.audioLastTrackUnmuteSignalAt : null,
+                track_states: bannerAudioTrackStates(audio),
                 output_mixer_active: Boolean(state.audioOutputMixer),
                 output_mixer_state: state.audioOutputMixer?.context?.state || '',
                 audio: audio ? {
@@ -1540,7 +1549,31 @@
                 packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
                 packets_recent: hasRecentBannerAudioPackets(),
                 hard_stale_packets: hasHardStaleBannerAudioPackets(),
+                audio_paused: state.audioElement ? state.audioElement.paused : null,
+                audio_ready_state: state.audioElement ? state.audioElement.readyState : null,
+                output_mixer_state: state.audioOutputMixer?.context?.state || '',
+                track_states: bannerAudioTrackStates(),
             };
+        }
+
+        function bannerAudioTrackStates(audio = state.audioElement) {
+            const seen = new Set();
+            const tracks = [
+                ...(audio?.srcObject?.getAudioTracks?.() || []),
+                ...(state.audioRemoteStream?.getAudioTracks?.() || []),
+            ];
+            return tracks
+                .filter((track) => {
+                    if (!track || seen.has(track.id)) return false;
+                    seen.add(track.id);
+                    return true;
+                })
+                .map((track) => ({
+                    id: track.id || '',
+                    ready_state: track.readyState || '',
+                    enabled: Boolean(track.enabled),
+                    muted: Boolean(track.muted),
+                }));
         }
 
         function scheduleBannerAudioTrackMuteReport() {
@@ -1779,9 +1812,13 @@
                 state.audioMissingStatsPolls = 0;
                 state.audioTrackAttached = true;
                 event.track.onmute = () => {
+                    state.audioTrackMuteSignalCount = Number(state.audioTrackMuteSignalCount || 0) + 1;
+                    state.audioLastTrackMuteSignalAt = Date.now();
                     scheduleBannerAudioTrackMuteReport();
                 };
                 event.track.onunmute = () => {
+                    state.audioTrackUnmuteSignalCount = Number(state.audioTrackUnmuteSignalCount || 0) + 1;
+                    state.audioLastTrackUnmuteSignalAt = Date.now();
                     clearBannerAudioTrackMuteReport();
                 };
                 event.track.onended = () => {
