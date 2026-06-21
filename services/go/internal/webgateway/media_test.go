@@ -1512,6 +1512,10 @@ func TestMediaHubDeliversRTPAtSteadyWallClockCadence(t *testing.T) {
 	assertMediaHubDeliversRTPAtSteadyWallClockCadence(t, "pcmu")
 }
 
+func TestMediaHubDeliversG722RTPAtSteadyWallClockCadence(t *testing.T) {
+	assertMediaHubDeliversRTPAtSteadyWallClockCadence(t, "g722")
+}
+
 func TestMediaHubDeliversOpusRTPAtSteadyWallClockCadence(t *testing.T) {
 	if !opusBackendAvailable() {
 		t.Skip("native Opus encoder is not available")
@@ -1587,6 +1591,10 @@ func TestMediaHubMaintainsOpusRTPCadenceThroughSourceJitter(t *testing.T) {
 		t.Skip("native Opus encoder is not available")
 	}
 	assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t, "opus", webRTCAudioOpus)
+}
+
+func TestMediaHubMaintainsG722RTPCadenceThroughSourceJitter(t *testing.T) {
+	assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t, "g722", webRTCAudioG722)
 }
 
 func assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T, preferredCodec string, codec webRTCAudioCodec) {
