@@ -974,11 +974,10 @@ async function startFeedWebRTC(feedId) {
         markWebRTCPacketsRecent(player, currentAudio);
         event.track.onmute = () => {
             if (isActivePlayer(feedId, player)) {
-                currentAudio.dataset.hazeTrackRawMuted = '1';
                 clearPlayerTimer(player, 'trackMuteTimer');
                 player.trackMuteTimer = window.setTimeout(() => {
                     player.trackMuteTimer = null;
-                    if (isActivePlayer(feedId, player) && !hasRecentWebRTCPackets(player)) {
+                    if (isActivePlayer(feedId, player) && !player.trackAttached && !hasRecentWebRTCPackets(player)) {
                         currentAudio.dataset.hazeTrackMuted = '1';
                     }
                 }, WEBRTC_MEDIA_EVENT_GRACE_MS);
@@ -986,7 +985,6 @@ async function startFeedWebRTC(feedId) {
         };
         event.track.onunmute = () => {
             if (isActivePlayer(feedId, player)) {
-                currentAudio.dataset.hazeTrackRawMuted = '0';
                 markWebRTCPacketsRecent(player, currentAudio);
             }
         };

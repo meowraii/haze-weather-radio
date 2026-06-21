@@ -1327,10 +1327,7 @@
                 state.audioTrackAttached = true;
                 markBannerAudioPacketsRecent();
                 event.track.onmute = () => {
-                    if (state.audioTrackMuteTimer) {
-                        window.clearTimeout(state.audioTrackMuteTimer);
-                        state.audioTrackMuteTimer = null;
-                    }
+                    if (state.audioTrackAttached || hasRecentBannerAudioPackets()) return;
                     state.audioTrackMuteTimer = window.setTimeout(() => {
                         state.audioTrackMuteTimer = null;
                         if (!state.audioTrackAttached && !hasRecentBannerAudioPackets()) {
