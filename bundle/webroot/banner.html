@@ -1166,6 +1166,7 @@
                     if (!snapshot) {
                         if (peer.connectionState === 'connected') {
                             state.audioMissingStatsPolls += 1;
+                            state.audioStagnantStatsPolls = 0;
                             if (state.audioMissingStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
                                 console.warn('Banner WebRTC inbound audio stats are missing.', {
                                     connection_state: peer.connectionState,
@@ -1383,12 +1384,14 @@
             if (state.audioReconnectPending) {
                 return;
             }
-            state.audioReconnectPending = true;
             if (state.audioReconnectTimer) {
-                if (!force) return;
+                if (!force) {
+                    return;
+                }
                 window.clearTimeout(state.audioReconnectTimer);
                 state.audioReconnectTimer = null;
             }
+            state.audioReconnectPending = true;
             if (state.audioDisconnectTimer) {
                 window.clearTimeout(state.audioDisconnectTimer);
                 state.audioDisconnectTimer = null;

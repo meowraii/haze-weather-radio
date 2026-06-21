@@ -538,6 +538,7 @@ function startWebRTCStatsMonitor(feedId, player) {
             if (!snapshot) {
                 if (player.pc.connectionState === 'connected') {
                     player.missingStatsPolls = (player.missingStatsPolls || 0) + 1;
+                    player.stagnantStatsPolls = 0;
                     if (player.missingStatsPolls === WEBRTC_STAGNANT_STATS_POLLS) {
                         console.warn('Haze WebRTC inbound audio stats are missing.', {
                             feed_id: feedId,
