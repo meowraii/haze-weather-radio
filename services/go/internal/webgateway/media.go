@@ -1154,36 +1154,53 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	var pendingSkipped int
 	var lastSourceSequence uint64
 	var fillerFramesSinceSource int
+	handleIncomingFrame := func(frame webRTCFrame, ok bool) bool {
+		if !ok {
+			failPeer("frame_source_closed")
+			return false
+		}
+		if len(frame.payload) == 0 {
+			return true
+		}
+		frame, drainSkipped, ok := latestWebRTCFrame(frame, frames)
+		if !ok {
+			failPeer("frame_source_closed")
+			return false
+		}
+		sourceSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
+		timestampSkipped := webRTCTimestampSkippedFramesAfterFiller(sourceSkipped, fillerFramesSinceSource)
+		pendingSkipped += sourceSkipped
+		lastSourceSequence = frame.sequence
+		fillerFramesSinceSource = 0
+		lastFrame = cloneWebRTCFrame(frame)
+		pendingSkipped += drainSkipped
+		skipped := pendingSkipped
+		pendingSkipped = 0
+		return writeFrame(frame, skipped, timestampSkipped)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case frame, ok := <-frames:
-			if !ok {
-				failPeer("frame_source_closed")
-				return
-			}
-			if len(frame.payload) == 0 {
-				continue
-			}
-			frame, drainSkipped, ok := latestWebRTCFrame(frame, frames)
-			if !ok {
-				failPeer("frame_source_closed")
-				return
-			}
-			sourceSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
-			timestampSkipped := webRTCTimestampSkippedFramesAfterFiller(sourceSkipped, fillerFramesSinceSource)
-			pendingSkipped += sourceSkipped
-			lastSourceSequence = frame.sequence
-			fillerFramesSinceSource = 0
-			lastFrame = cloneWebRTCFrame(frame)
-			pendingSkipped += drainSkipped
-			skipped := pendingSkipped
-			pendingSkipped = 0
-			if !writeFrame(frame, skipped, timestampSkipped) {
+			if !handleIncomingFrame(frame, ok) {
 				return
 			}
 		case <-idleTicker.C:
+			select {
+			case frame, ok := <-frames:
+				if shouldPreferWebRTCFrameOverFiller(frame, ok) {
+					if !handleIncomingFrame(frame, ok) {
+						return
+					}
+					continue
+				}
+				if !ok {
+					failPeer("frame_source_closed")
+					return
+				}
+			default:
+			}
 			if len(lastFrame.payload) == 0 || !shouldSendWebRTCFiller(stats.lastWriteAt, time.Now()) {
 				continue
 			}
@@ -1228,6 +1245,10 @@ func shouldSendWebRTCFiller(lastWriteAt time.Time, now time.Time) bool {
 		return true
 	}
 	return now.Sub(lastWriteAt).Truncate(time.Millisecond) >= webrtcFrameDuration
+}
+
+func shouldPreferWebRTCFrameOverFiller(frame webRTCFrame, ok bool) bool {
+	return ok && len(frame.payload) > 0
 }
 
 func rtpTimestampForFrame(codec webRTCAudioCodec, nextTimestamp uint32, skippedFrames int) uint32 {

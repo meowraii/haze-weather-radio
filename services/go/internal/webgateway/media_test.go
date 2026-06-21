@@ -331,6 +331,18 @@ func TestShouldSendWebRTCFillerAtFrameCadence(t *testing.T) {
 	}
 }
 
+func TestShouldPreferWebRTCFrameOverFiller(t *testing.T) {
+	if !shouldPreferWebRTCFrameOverFiller(webRTCFrame{payload: []byte{1}}, true) {
+		t.Fatal("real frame should be preferred over filler")
+	}
+	if shouldPreferWebRTCFrameOverFiller(webRTCFrame{}, true) {
+		t.Fatal("empty frame should not be preferred over filler")
+	}
+	if shouldPreferWebRTCFrameOverFiller(webRTCFrame{payload: []byte{1}}, false) {
+		t.Fatal("closed frame channel should not be treated as a usable frame")
+	}
+}
+
 func TestWebRTCTimestampSkippedFramesUsesSourceSequenceGap(t *testing.T) {
 	if got := webRTCTimestampSkippedFrames(0, 4); got != 0 {
 		t.Fatalf("first sent frame skipped count = %d, want 0", got)
