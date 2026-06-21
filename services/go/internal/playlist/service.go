@@ -20,6 +20,7 @@ import (
 
 const serviceID = "haze-playlist"
 const routineRetryDelay = 30 * time.Second
+const startupPrimerDelay = 2 * time.Second
 
 var errSystemShutdown = errors.New("system shutdown requested")
 
@@ -213,19 +214,21 @@ func (s *Service) matchFeedsFromEvent(event map[string]any) []*feedPlanner {
 }
 
 type feedPlanner struct {
-	cfg                 loadedConfig
-	bridge              *bridgeClient
-	feed                feedXML
-	mode                string
-	modeBeforePriority  string
-	priorityActive      int
-	pendingAfterCurrent string
-	cursor              int
-	nextRoutineRetryAt  time.Time
-	queue               []playlistItem
-	current             *playlistItem
-	lastFixed           map[string]time.Time
-	lastError           string
+	cfg                  loadedConfig
+	bridge               *bridgeClient
+	feed                 feedXML
+	mode                 string
+	modeBeforePriority   string
+	priorityActive       int
+	startupPrimerAt      time.Time
+	startupPrimerPending bool
+	pendingAfterCurrent  string
+	cursor               int
+	nextRoutineRetryAt   time.Time
+	queue                []playlistItem
+	current              *playlistItem
+	lastFixed            map[string]time.Time
+	lastError            string
 }
 
 type playlistItem struct {
@@ -276,11 +279,13 @@ type fixedEvent struct {
 
 func newFeedPlanner(cfg loadedConfig, bridge *bridgeClient, feed feedXML) *feedPlanner {
 	return &feedPlanner{
-		cfg:       cfg,
-		bridge:    bridge,
-		feed:      feed,
-		mode:      "running",
-		lastFixed: map[string]time.Time{},
+		cfg:                  cfg,
+		bridge:               bridge,
+		feed:                 feed,
+		mode:                 "running",
+		startupPrimerAt:      time.Now().Add(startupPrimerDelay),
+		startupPrimerPending: true,
+		lastFixed:            map[string]time.Time{},
 	}
 }
 
@@ -290,6 +295,16 @@ func (p *feedPlanner) tick(ctx context.Context, now time.Time, lookahead time.Du
 		return
 	}
 	if p.priorityActive > 0 {
+		p.writeState()
+		return
+	}
+	if p.startupPrimerPending {
+		if now.Before(p.startupPrimerAt) {
+			p.writeState()
+			return
+		}
+		p.queueStartupPrimer(ctx, now)
+		p.startupPrimerPending = false
 		p.writeState()
 		return
 	}
@@ -462,15 +477,9 @@ func (p *feedPlanner) buildFixed(ctx context.Context, event fixedEvent, timeline
 
 func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source string, targetRaw string, timelineEnd time.Time, now time.Time) (playlistItem, error) {
 	queueID := queueID(pkgID)
-	renderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	product, err := p.bridge.RenderProduct(renderCtx, queueID, p.feed.ID, pkgID)
+	product, err := p.renderProductForBuild(ctx, queueID, pkgID, source, now)
 	if err != nil {
-		fallback, fallbackErr := p.staticProduct(pkgID, now)
-		if fallbackErr != nil {
-			return playlistItem{}, err
-		}
-		product = fallback
+		return playlistItem{}, err
 	}
 	if item, ok, err := p.buildProductAudioItem(ctx, product, pkgID, source, targetRaw, timelineEnd, now, queueID); ok || err != nil {
 		return item, err
@@ -514,6 +523,52 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 		Status:            "queued",
 		Source:            source,
 	}, nil
+}
+
+func (p *feedPlanner) renderProductForBuild(ctx context.Context, queueID string, pkgID string, source string, now time.Time) (renderedProduct, error) {
+	if source == "startup" && (pkgID == "station_id" || pkgID == "date_time") {
+		return p.staticProduct(pkgID, now)
+	}
+	renderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	product, err := p.bridge.RenderProduct(renderCtx, queueID, p.feed.ID, pkgID)
+	if err != nil {
+		fallback, fallbackErr := p.staticProduct(pkgID, now)
+		if fallbackErr != nil {
+			return renderedProduct{}, err
+		}
+		product = fallback
+	}
+	return product, nil
+}
+
+func (p *feedPlanner) queueStartupPrimer(ctx context.Context, now time.Time) {
+	timelineEnd := p.timelineEnd(now)
+	for index, pkgID := range []string{"station_id", "date_time", "current_conditions"} {
+		if ctx.Err() != nil || p.mode != "running" || p.priorityActive > 0 {
+			return
+		}
+		targetRaw := ""
+		if index == 0 && !p.startupPrimerAt.IsZero() {
+			targetRaw = p.startupPrimerAt.UTC().Format(time.RFC3339Nano)
+		}
+		item, err := p.buildProduct(ctx, pkgID, "startup", targetRaw, timelineEnd, now)
+		if err != nil {
+			if pkgID != "current_conditions" {
+				p.lastError = err.Error()
+			}
+			continue
+		}
+		p.queue = append(p.queue, item)
+		if err := p.publishReady(item); err != nil {
+			p.lastError = err.Error()
+			return
+		}
+		if finish := parseTime(item.PredictedFinishAt); !finish.IsZero() {
+			timelineEnd = finish
+		}
+		now = time.Now()
+	}
 }
 
 func (p *feedPlanner) buildProductAudioItem(ctx context.Context, product renderedProduct, pkgID string, source string, targetRaw string, timelineEnd time.Time, now time.Time, queueID string) (playlistItem, bool, error) {

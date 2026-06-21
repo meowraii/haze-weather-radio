@@ -324,6 +324,139 @@ func TestStaticProductFallbacks(t *testing.T) {
 	}
 }
 
+func TestStartupPrimerQueuesStaticItemsAndSkipsUnavailableCurrentConditions(t *testing.T) {
+	dir := t.TempDir()
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	client := &bridgeClient{
+		conn:            clientConn,
+		events:          make(chan map[string]any, 16),
+		pendingProducts: map[string]chan productResult{},
+		pendingSynth:    map[string]chan synthResult{},
+	}
+	go client.readLoop()
+
+	ready := make(chan map[string]any, 4)
+	go serveStartupPrimerBridge(t, serverConn, ready)
+
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	planner := &feedPlanner{
+		cfg: loadedConfig{
+			BaseDir:   dir,
+			OutputDir: filepath.Join(dir, "playlist"),
+			Root: rootConfig{
+				Playout: playoutConfig{SampleRate: 48000, Channels: 1},
+			},
+		},
+		bridge:               client,
+		feed:                 feedXML{ID: "sk-0001", Timezone: "UTC"},
+		mode:                 "running",
+		startupPrimerAt:      now.Add(startupPrimerDelay),
+		startupPrimerPending: true,
+		lastFixed:            map[string]time.Time{},
+	}
+
+	planner.tick(context.Background(), now, time.Minute)
+	if len(planner.queue) != 0 || !planner.startupPrimerPending {
+		t.Fatalf("primer queued early: queue=%#v pending=%v", planner.queue, planner.startupPrimerPending)
+	}
+
+	planner.tick(context.Background(), now.Add(startupPrimerDelay), time.Minute)
+	if planner.startupPrimerPending {
+		t.Fatal("startup primer remained pending")
+	}
+	if len(planner.queue) != 2 {
+		t.Fatalf("startup queue = %#v", planner.queue)
+	}
+	if planner.queue[0].PackageID != "station_id" || planner.queue[1].PackageID != "date_time" {
+		t.Fatalf("startup package order = %s, %s", planner.queue[0].PackageID, planner.queue[1].PackageID)
+	}
+	if planner.queue[0].Source != "startup" || planner.queue[1].Source != "startup" {
+		t.Fatalf("startup sources = %s, %s", planner.queue[0].Source, planner.queue[1].Source)
+	}
+
+	first := readPublishedTestMessage(t, ready)
+	second := readPublishedTestMessage(t, ready)
+	if packageIDFromReady(first) != "station_id" || packageIDFromReady(second) != "date_time" {
+		t.Fatalf("ready package order = %#v then %#v", first, second)
+	}
+	select {
+	case extra := <-ready:
+		t.Fatalf("unexpected current conditions ready item = %#v", extra)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func serveStartupPrimerBridge(t *testing.T, conn net.Conn, ready chan<- map[string]any) {
+	decoder := json.NewDecoder(conn)
+	encoder := json.NewEncoder(conn)
+	for {
+		var message map[string]any
+		if err := decoder.Decode(&message); err != nil {
+			close(ready)
+			return
+		}
+		data, _ := message["data"].(map[string]any)
+		switch message["type"] {
+		case "tts.synthesize":
+			jobID := firstText(message, data, "job_id", "subject")
+			outputPath := firstText(message, data, "output_path")
+			if err := writeTestWAVFile(outputPath, 48000, 1, 4800); err != nil {
+				t.Errorf("write synthesized test WAV: %v", err)
+				close(ready)
+				return
+			}
+			if err := encoder.Encode(map[string]any{
+				"type": "tts.synthesized",
+				"data": map[string]any{"job_id": jobID, "output_path": outputPath},
+			}); err != nil {
+				close(ready)
+				return
+			}
+		case "product.render.request":
+			requestID := firstText(message, data, "request_id", "subject")
+			if err := encoder.Encode(map[string]any{
+				"type": "product.render.failed",
+				"data": map[string]any{"request_id": requestID, "error": "current conditions unavailable"},
+			}); err != nil {
+				close(ready)
+				return
+			}
+		case "playlist.item.ready":
+			ready <- message
+		}
+	}
+}
+
+func packageIDFromReady(message map[string]any) string {
+	data, _ := message["data"].(map[string]any)
+	return firstText(message, data, "package_id")
+}
+
+func writeTestWAVFile(path string, sampleRate int, channels int, frames int) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	dataBytes := frames * channels * 2
+	raw := make([]byte, 44+dataBytes)
+	copy(raw[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(raw[4:8], uint32(36+dataBytes))
+	copy(raw[8:12], "WAVE")
+	copy(raw[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(raw[16:20], 16)
+	binary.LittleEndian.PutUint16(raw[20:22], 1)
+	binary.LittleEndian.PutUint16(raw[22:24], uint16(channels))
+	binary.LittleEndian.PutUint32(raw[24:28], uint32(sampleRate))
+	binary.LittleEndian.PutUint32(raw[28:32], uint32(sampleRate*channels*2))
+	binary.LittleEndian.PutUint16(raw[32:34], uint16(channels*2))
+	binary.LittleEndian.PutUint16(raw[34:36], 16)
+	copy(raw[36:40], "data")
+	binary.LittleEndian.PutUint32(raw[40:44], uint32(dataBytes))
+	return os.WriteFile(path, raw, 0o600)
+}
+
 func TestInterruptedItemRemainsCurrentUntilRestartAndCompletion(t *testing.T) {
 	planner := &feedPlanner{
 		queue: []playlistItem{{
@@ -590,25 +723,7 @@ func playlistCAP() string {
 
 func writeTestWAV(t *testing.T, path string, sampleRate int, channels int, frames int) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	dataBytes := frames * channels * 2
-	raw := make([]byte, 44+dataBytes)
-	copy(raw[0:4], "RIFF")
-	binary.LittleEndian.PutUint32(raw[4:8], uint32(36+dataBytes))
-	copy(raw[8:12], "WAVE")
-	copy(raw[12:16], "fmt ")
-	binary.LittleEndian.PutUint32(raw[16:20], 16)
-	binary.LittleEndian.PutUint16(raw[20:22], 1)
-	binary.LittleEndian.PutUint16(raw[22:24], uint16(channels))
-	binary.LittleEndian.PutUint32(raw[24:28], uint32(sampleRate))
-	binary.LittleEndian.PutUint32(raw[28:32], uint32(sampleRate*channels*2))
-	binary.LittleEndian.PutUint16(raw[32:34], uint16(channels*2))
-	binary.LittleEndian.PutUint16(raw[34:36], 16)
-	copy(raw[36:40], "data")
-	binary.LittleEndian.PutUint32(raw[40:44], uint32(dataBytes))
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := writeTestWAVFile(path, sampleRate, channels, frames); err != nil {
 		t.Fatal(err)
 	}
 }
