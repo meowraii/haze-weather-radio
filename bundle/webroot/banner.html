@@ -1246,17 +1246,19 @@
                     }
                     state.audioMissingStatsPolls = 0;
                     const previous = state.audioLastStats;
-                    const packetsDelta = previous ? snapshot.packetsReceived - previous.packetsReceived : 0;
+                    const packetsReset = Boolean(previous && snapshot.packetsReceived < previous.packetsReceived);
+                    const packetsDelta = previous && !packetsReset ? snapshot.packetsReceived - previous.packetsReceived : 0;
                     state.audioLastStats = snapshot;
                     window.hazeBannerWebRTCStats = {
                         ...snapshot,
                         packets_delta: packetsDelta,
+                        packets_reset: packetsReset,
                         connection_state: peer.connectionState,
                         ice_state: peer.iceConnectionState,
                         track_muted: state.audioTrackMuted,
                         at: new Date().toISOString(),
                     };
-                    if (previous && packetsDelta <= 0 && peer.connectionState === 'connected') {
+                    if (previous && !packetsReset && packetsDelta <= 0 && peer.connectionState === 'connected') {
                         state.audioStagnantStatsPolls += 1;
                         if (state.audioStagnantStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stalled.', window.hazeBannerWebRTCStats);

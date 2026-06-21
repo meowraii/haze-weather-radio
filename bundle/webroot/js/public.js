@@ -766,13 +766,15 @@ function startWebRTCStatsMonitor(feedId, player) {
             }
             player.missingStatsPolls = 0;
             const previous = player.lastStats || null;
-            const packetsDelta = previous ? snapshot.packetsReceived - previous.packetsReceived : 0;
+            const packetsReset = Boolean(previous && snapshot.packetsReceived < previous.packetsReceived);
+            const packetsDelta = previous && !packetsReset ? snapshot.packetsReceived - previous.packetsReceived : 0;
             player.lastStats = snapshot;
             window.hazeLastWebRTCStats = {
                 ...(window.hazeLastWebRTCStats || {}),
                 [feedId]: {
                     ...snapshot,
                     packets_delta: packetsDelta,
+                    packets_reset: packetsReset,
                     connection_state: player.pc.connectionState,
                     ice_state: player.pc.iceConnectionState,
                     track_muted: player.audio?.dataset?.hazeTrackMuted === '1',
@@ -780,7 +782,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                     at: new Date().toISOString(),
                 },
             };
-            if (previous && packetsDelta <= 0 && player.pc.connectionState === 'connected') {
+            if (previous && !packetsReset && packetsDelta <= 0 && player.pc.connectionState === 'connected') {
                 player.stagnantStatsPolls = (player.stagnantStatsPolls || 0) + 1;
                 if (player.stagnantStatsPolls === WEBRTC_STAGNANT_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stalled.', window.hazeLastWebRTCStats[feedId]);
@@ -793,7 +795,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                     scheduleWebRTCReconnect(feedId, player, 'Reconnecting stalled audio...');
                 }
             } else {
-                if ((packetsDelta > 0 || !previous) && player.audio) {
+                if ((packetsDelta > 0 || packetsReset || !previous) && player.audio) {
                     if (packetsDelta > 0 || snapshot.packetsReceived > 0) {
                         markWebRTCPacketsRecent(player);
                         ensureWebRTCAudioPlaying(feedId, player);
