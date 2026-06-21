@@ -160,12 +160,15 @@ func TestFrameConcealerBridgesShortUnderruns(t *testing.T) {
 	}
 
 	queue = append(queue, []byte{5, 6})
-	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{5, 6}) {
-		t.Fatalf("new frame after underrun = %v", got)
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string(silence) {
+		t.Fatalf("single recovery frame after underrun = %v, want silence while buffer primes", got)
 	}
 	queue = append(queue, []byte{7, 8})
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{5, 6}) {
+		t.Fatalf("primed recovery frame = %v", got)
+	}
 	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{7, 8}) {
-		t.Fatalf("second recovery frame = %v", got)
+		t.Fatalf("second primed recovery frame = %v", got)
 	}
 }
 
@@ -179,10 +182,13 @@ func TestFrameConcealerPrimesAfterUnderrun(t *testing.T) {
 		t.Fatalf("empty startup frame = %v, want silence", got)
 	}
 	queue = append(queue, []byte{1})
-	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{1}) {
-		t.Fatalf("single recovery frame = %v, want queued frame", got)
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string(silence) {
+		t.Fatalf("single recovery frame = %v, want silence while buffer primes", got)
 	}
 	queue = append(queue, []byte{2})
+	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{1}) {
+		t.Fatalf("primed recovery frame = %v, want first queued frame", got)
+	}
 	if got := concealer.next(&queue, &head, func() []byte { return silence }); string(got) != string([]byte{2}) {
 		t.Fatalf("second recovery frame = %v, want second queued frame", got)
 	}
@@ -641,8 +647,8 @@ func TestMediaHubSharesWebRTCFrameSourcePerFeedCodec(t *testing.T) {
 		FeedID:     "sk-0001",
 		SampleRate: 48000,
 		Channels:   1,
-		Duration:   20 * time.Millisecond,
-		Data:       sinePCM(960, 1000, 48000, 8000),
+		Duration:   40 * time.Millisecond,
+		Data:       sinePCM(1920, 1000, 48000, 8000),
 	})
 	if frame := waitForWebRTCFrame(t, left); len(frame) == 0 {
 		t.Fatal("left subscriber received an empty frame")
@@ -721,9 +727,12 @@ func TestWebRTCFrameSourceSnapshotsExposeFrameMix(t *testing.T) {
 		FeedID:     "sk-0001",
 		SampleRate: 48000,
 		Channels:   1,
-		Duration:   20 * time.Millisecond,
-		Data:       sinePCM(960, 1000, 48000, 8000),
+		Duration:   80 * time.Millisecond,
+		Data:       sinePCM(3840, 1000, 48000, 8000),
 	})
+	for i := 0; i < 4; i++ {
+		_ = waitForWebRTCFrame(t, frames)
+	}
 
 	deadline := time.After(time.Second)
 	for {
@@ -1772,6 +1781,47 @@ func TestMediaHubAvoidsFillerDuringSlightSourceJitter(t *testing.T) {
 	<-done
 }
 
+func TestFrameConcealerRequiresSmallResumeBuffer(t *testing.T) {
+	concealer := frameConcealer{last: []byte{9}, needsPrime: true}
+	queue := [][]byte{{1}}
+	head := 0
+	idle := func() []byte { return []byte{0} }
+
+	frame, kind := concealer.nextWithKind(&queue, &head, idle)
+	if kind != webRTCFrameConcealed || len(frame) != 1 || frame[0] != 9 {
+		t.Fatalf("single resume frame = %v/%s, want concealed previous frame", frame, kind)
+	}
+	if head != 0 {
+		t.Fatalf("single resume frame should stay queued, head = %d", head)
+	}
+
+	queue = append(queue, []byte{2})
+	frame, kind = concealer.nextWithKind(&queue, &head, idle)
+	if kind != webRTCFrameReal || len(frame) != 1 || frame[0] != 1 {
+		t.Fatalf("primed resume frame = %v/%s, want first queued real frame", frame, kind)
+	}
+}
+
+func TestWebRTCSilentSourcePCMGetsBedBeforeEncoding(t *testing.T) {
+	chunk := PCMChunk{
+		FeedID:     "sk-0001",
+		SampleRate: 48000,
+		Channels:   1,
+		Duration:   20 * time.Millisecond,
+		Data:       make([]byte, 960*2),
+	}
+	frames := pcm16ToPCMUFrames(chunk)
+	if len(frames) != 1 {
+		t.Fatalf("PCMU frame count = %d, want 1", len(frames))
+	}
+	if allBytesEqual(frames[0], linearToMuLaw(0)) {
+		t.Fatal("silent source PCM encoded as absolute PCMU silence instead of a low-level WebRTC bed")
+	}
+	if allBytesEqual(frames[0], frames[0][0]) {
+		t.Fatal("silent source PCM bed should have sample variation")
+	}
+}
+
 func TestMediaHubPeerOutlivesOfferContext(t *testing.T) {
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
@@ -1959,6 +2009,18 @@ func isPCMUIdlePayload(payload []byte) bool {
 	}
 	for i := range payload {
 		if payload[i] != idle[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func allBytesEqual(data []byte, want byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	for _, value := range data {
+		if value != want {
 			return false
 		}
 	}

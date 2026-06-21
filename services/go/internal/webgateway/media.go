@@ -35,7 +35,7 @@ const (
 	webrtcFrameDuration        = 20 * time.Millisecond
 	webrtcMaxQueuedFrames      = 10
 	webrtcPeerFrameMailbox     = 3
-	webrtcResumeQueuedFrames   = 1
+	webrtcResumeQueuedFrames   = 2
 	webrtcConcealmentFrames    = 25
 	feedIngressCapacity        = 4
 	g722FrameSamples           = g722SampleRate / 50
@@ -48,6 +48,7 @@ const (
 	webrtcPeerFrameWait        = 5 * time.Millisecond
 	webrtcPeerSourceTimeout    = webrtcFrameDuration + webrtcPeerFrameWait
 	webrtcIdleDitherAmplitude  = 256
+	webrtcSourceBedAmplitude   = 192
 )
 
 type webRTCAudioCodec int
@@ -1949,6 +1950,7 @@ func pcm16ToOpusFrames(encoder opusFrameEncoder, chunk PCMChunk) [][]byte {
 	if len(samples) == 0 {
 		return nil
 	}
+	applyWebRTCSourceBed(samples)
 	frameCount := (len(samples) + opusFrameSamples - 1) / opusFrameSamples
 	frames := make([][]byte, 0, frameCount)
 	for frameIndex := 0; frameIndex < frameCount; frameIndex++ {
@@ -1987,6 +1989,7 @@ func pcm16ToG722Frames(encoder *g722.Encoder, chunk PCMChunk) [][]byte {
 	if len(samples) == 0 {
 		return nil
 	}
+	applyWebRTCSourceBed(samples)
 	frameCount := (len(samples) + g722FrameSamples - 1) / g722FrameSamples
 	frames := make([][]byte, 0, frameCount)
 	for frameIndex := 0; frameIndex < frameCount; frameIndex++ {
@@ -2032,6 +2035,7 @@ func pcm16ToPCMUFrames(chunk PCMChunk) [][]byte {
 	if len(samples) == 0 {
 		return nil
 	}
+	applyWebRTCSourceBed(samples)
 	frameCount := (len(samples) + pcmuFrameSamples - 1) / pcmuFrameSamples
 	frames := make([][]byte, 0, frameCount)
 	for frameIndex := 0; frameIndex < frameCount; frameIndex++ {
@@ -2090,6 +2094,21 @@ func resamplePCM16ToMono(chunk PCMChunk, outputSampleRate int) []int16 {
 		out[outputIndex] = int16(clampPCMInt(int(value), int(i16Min), int(i16Max)))
 	}
 	return out
+}
+
+func applyWebRTCSourceBed(samples []int16) {
+	if len(samples) == 0 {
+		return
+	}
+	for _, sample := range samples {
+		if sample < -1 || sample > 1 {
+			return
+		}
+	}
+	for i := range samples {
+		value := ((i*1664525 + 1013904223) >> 16) & 0x7fff
+		samples[i] = int16((value % (webrtcSourceBedAmplitude*2 + 1)) - webrtcSourceBedAmplitude)
+	}
 }
 
 func linearToMuLaw(sample int16) byte {
