@@ -1015,7 +1015,7 @@ function maybeFallbackWebRTCCodecToPCMU(feedId, player, reason) {
         previous_codec: negotiated,
         requested_codec: requested,
     });
-    scheduleWebRTCReconnect(feedId, player, 'Reconnecting with PCMU audio...');
+    scheduleWebRTCReconnect(feedId, player, 'Reconnecting with PCMU audio...', { force: true });
     return true;
 }
 
@@ -1167,9 +1167,14 @@ function scheduleWebRTCDisconnectReconnect(feedId, player, pc) {
     }, WEBRTC_DISCONNECT_GRACE_MS);
 }
 
-function scheduleWebRTCReconnect(feedId, player, reason = 'Reconnecting audio...') {
+function scheduleWebRTCReconnect(feedId, player, reason = 'Reconnecting audio...', { force = false } = {}) {
     if (!isActivePlayer(feedId, player) || player.mode === 'http' || player.stopping) return;
-    if (player.reconnectPending || player.reconnectTimer) return;
+    if (force) {
+        clearPlayerTimer(player, 'reconnectTimer');
+        player.reconnectPending = false;
+    } else if (player.reconnectPending || player.reconnectTimer) {
+        return;
+    }
     recordWebRTCEvent(feedId, 'reconnect_scheduled', {
         reason,
         connection_state: player.pc?.connectionState || '',

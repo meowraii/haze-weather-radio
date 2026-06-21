@@ -1873,7 +1873,7 @@
             if (!query.audio || state.unloading) {
                 return;
             }
-            if (state.audioReconnectPending) {
+            if (state.audioReconnectPending && !force) {
                 return;
             }
             recordBannerAudioEvent('reconnect_scheduled', {
@@ -1891,6 +1891,9 @@
                 }
                 window.clearTimeout(state.audioReconnectTimer);
                 state.audioReconnectTimer = null;
+            }
+            if (force) {
+                state.audioReconnectPending = false;
             }
             state.audioReconnectPending = true;
             if (state.audioDisconnectTimer) {
