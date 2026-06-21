@@ -1023,12 +1023,16 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				return
 			}
 		case <-keepalive.C:
-			if len(lastFrame) > 0 {
-				if !writeFrame(lastFrame, 0) {
-					return
-				}
-			} else {
+			frame, skipped, ok := latestWebRTCFrame(lastFrame, frames)
+			if !ok {
+				return
+			}
+			if len(frame) == 0 {
 				resetWebRTCTimer(keepalive, webrtcFrameDuration)
+				continue
+			}
+			if !writeFrame(frame, skipped) {
+				return
 			}
 		}
 	}
