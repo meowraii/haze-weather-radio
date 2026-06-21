@@ -716,6 +716,8 @@ function markWebRTCPacketsRecent(player, audio = player?.audio) {
     if (audio) {
         audio.dataset.hazeTrackMuted = '0';
     }
+    clearPlayerTimer(player, 'connectionStateTimer');
+    clearPlayerTimer(player, 'disconnectReconnectTimer');
     clearPlayerTimer(player, 'trackMuteTimer');
     clearPlayerTimer(player, 'mediaEventTimer');
 }

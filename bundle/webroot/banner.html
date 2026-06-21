@@ -1381,6 +1381,10 @@
             state.audioLastPacketAt = Date.now();
             state.audioTrackMuted = false;
             cancelAudioReconnect();
+            if (state.audioDisconnectTimer) {
+                window.clearTimeout(state.audioDisconnectTimer);
+                state.audioDisconnectTimer = null;
+            }
             if (state.audioTrackMuteTimer) {
                 window.clearTimeout(state.audioTrackMuteTimer);
                 state.audioTrackMuteTimer = null;
