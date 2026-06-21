@@ -1116,12 +1116,11 @@ async function startFeedWebRTC(feedId) {
                     if (isActivePlayer(feedId, player) && !hasRecentWebRTCPackets(player)) {
                         currentAudio.dataset.hazeTrackMuted = '1';
                         player.trackMuted = true;
-                        recordWebRTCEvent(feedId, 'track_mute_stale_reconnect', {
+                        recordWebRTCEvent(feedId, 'track_mute_stale', {
                             connection_state: pc.connectionState,
                             ice_state: pc.iceConnectionState,
                             last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
                         });
-                        scheduleWebRTCReconnect(feedId, player, 'Reconnecting muted audio track...');
                     }
                 }, WEBRTC_MEDIA_EVENT_GRACE_MS);
             }
