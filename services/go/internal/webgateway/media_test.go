@@ -1318,6 +1318,70 @@ func TestMediaHubKeepsRTPContinuousAfterPublishedPCMStops(t *testing.T) {
 	}
 }
 
+func TestMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T) {
+	hub := newMemoryMediaHub()
+	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer offerPeer.Close()
+	tracks := make(chan *webrtc.TrackRemote, 1)
+	offerPeer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		tracks <- track
+	})
+	if _, err := offerPeer.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := offerPeer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatheringComplete := webrtc.GatheringCompletePromise(offerPeer)
+	if err := offerPeer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-gatheringComplete
+	answer, err := hub.AnswerWithOptions(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP, WebRTCAnswerOptions{PreferredCodec: "pcmu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := offerPeer.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer.SDP}); err != nil {
+		t.Fatal(err)
+	}
+
+	track := waitForRemoteTrack(t, tracks)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pcm := sinePCM(960, 900, 48000, 16000)
+		for i := 0; i < 20; i++ {
+			hub.publish(PCMChunk{FeedID: "sk-0001", SampleRate: 48000, Channels: 1, Duration: 20 * time.Millisecond, Data: pcm})
+			if i%4 == 3 {
+				time.Sleep(45 * time.Millisecond)
+			} else {
+				time.Sleep(13 * time.Millisecond)
+			}
+		}
+	}()
+
+	var previousTimestamp uint32
+	for i := 0; i < 24; i++ {
+		timestamp, payloadLength := waitForRTPPacketInfo(t, track)
+		if payloadLength == 0 {
+			t.Fatal("RTP payload must not be empty under source jitter")
+		}
+		if i > 0 {
+			if delta := timestamp - previousTimestamp; delta != uint32(webrtcRTPClockRate/50) {
+				t.Fatalf("RTP timestamp delta under source jitter = %d, want %d", delta, webrtcRTPClockRate/50)
+			}
+		}
+		previousTimestamp = timestamp
+	}
+	<-done
+}
+
 func TestMediaHubPrefersSourceFramesOverPeerFiller(t *testing.T) {
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
