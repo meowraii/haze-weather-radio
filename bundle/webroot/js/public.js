@@ -197,6 +197,26 @@ function toDatasetKey(name) {
     return name.replace(/-([a-z])/g, (_, char) => char.toUpperCase());
 }
 
+function publicWebRTCAudioElement(feedId) {
+    feedId = String(feedId || '');
+    let audio = Array.from(document.querySelectorAll('[data-feed-audio-sink]'))
+        .find((element) => element.dataset.feedAudioSink === feedId) || null;
+    if (!audio) {
+        audio = document.createElement('audio');
+        audio.dataset.feedAudioSink = feedId;
+        audio.autoplay = true;
+        audio.playsInline = true;
+        audio.muted = false;
+        audio.style.position = 'fixed';
+        audio.style.width = '1px';
+        audio.style.height = '1px';
+        audio.style.opacity = '0';
+        audio.style.pointerEvents = 'none';
+        document.body.appendChild(audio);
+    }
+    return audio;
+}
+
 function renderSummary(summary) {
     summaryState = summary;
     const signature = summarySignature(summary);
@@ -916,7 +936,7 @@ async function startFeedWebRTC(feedId) {
         return;
     }
     stopFeed(feedId, { silent: true });
-    const audio = findFeedElement('feed-audio', feedId);
+    const audio = publicWebRTCAudioElement(feedId);
     const volume = findFeedElement('feed-volume', feedId);
     if (!audio) {
         return;
@@ -1282,7 +1302,9 @@ function stopAllPlayers(options = {}) {
 
 function bindPlayerAudio(feedId, fallbackStream = null) {
     const player = feedPlayers.get(feedId);
-    const audio = findFeedElement('feed-audio', feedId) || player?.audio;
+    const audio = player?.mode === 'webrtc'
+        ? publicWebRTCAudioElement(feedId)
+        : (findFeedElement('feed-audio', feedId) || player?.audio);
     if (!player || !audio) return null;
     const volume = findFeedElement('feed-volume', feedId);
     audio.volume = Number(volume?.value ?? audio.volume ?? 1);
@@ -1296,6 +1318,12 @@ function bindPlayerAudio(feedId, fallbackStream = null) {
 
 function reattachActivePlayers() {
     for (const [feedId, player] of feedPlayers.entries()) {
+        if (player.mode === 'webrtc') {
+            bindPlayerAudio(feedId, player.remoteStream || player.audio?.srcObject || null);
+            setPlayerButtons(feedId, true);
+            setPlayerStatus(feedId, player.trackAttached ? 'Audio connected' : 'Connecting...');
+            continue;
+        }
         const audio = findFeedElement('feed-audio', feedId);
         if (!audio || audio === player.audio) {
             continue;
