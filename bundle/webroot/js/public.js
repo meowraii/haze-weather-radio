@@ -903,7 +903,11 @@ async function readInboundAudioStats(source) {
     report.forEach((stats) => {
         const kind = stats.kind || stats.mediaType;
         if (stats.type !== 'inbound-rtp' || stats.isRemote || (kind && kind !== 'audio')) return;
-        if (!selected || (stats.packetsReceived || 0) > (selected.packetsReceived || 0)) {
+        const statsTimestamp = Number(stats.timestamp || 0);
+        const selectedTimestamp = Number(selected?.timestamp || 0);
+        if (!selected
+            || statsTimestamp > selectedTimestamp
+            || (statsTimestamp === selectedTimestamp && (stats.packetsReceived || 0) > (selected.packetsReceived || 0))) {
             selected = stats;
         }
     });
