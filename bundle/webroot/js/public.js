@@ -535,7 +535,28 @@ function startWebRTCStatsMonitor(feedId, player) {
         }
         try {
             const snapshot = await readInboundAudioStats(player.pc);
-            if (!snapshot) return;
+            if (!snapshot) {
+                if (player.pc.connectionState === 'connected') {
+                    player.missingStatsPolls = (player.missingStatsPolls || 0) + 1;
+                    if (player.missingStatsPolls === WEBRTC_STAGNANT_STATS_POLLS) {
+                        console.warn('Haze WebRTC inbound audio stats are missing.', {
+                            feed_id: feedId,
+                            connection_state: player.pc.connectionState,
+                            ice_state: player.pc.iceConnectionState,
+                            track_attached: Boolean(player.trackAttached),
+                            at: new Date().toISOString(),
+                        });
+                        if (isActivePlayer(feedId, player)) {
+                            setPlayerStatus(feedId, 'Waiting for audio frames...');
+                        }
+                    }
+                    if (player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                        scheduleWebRTCReconnect(feedId, player, 'Reconnecting missing audio stream...');
+                    }
+                }
+                return;
+            }
+            player.missingStatsPolls = 0;
             const previous = player.lastStats || null;
             const packetsDelta = previous ? snapshot.packetsReceived - previous.packetsReceived : 0;
             player.lastStats = snapshot;
@@ -594,6 +615,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     player.remoteStream = player.fallbackStream || new MediaStream();
     player.lastStats = null;
     player.stagnantStatsPolls = 0;
+    player.missingStatsPolls = 0;
     try {
         player.pc?.close();
     } catch {
@@ -756,6 +778,7 @@ async function startFeedWebRTC(feedId) {
         statsPollTimer: null,
         lastStats: null,
         stagnantStatsPolls: 0,
+        missingStatsPolls: 0,
         reconnectTimer: null,
         reconnectAttempts: 0,
         reconnectPending: false,

@@ -342,6 +342,7 @@
             audioStatsTimer: null,
             audioLastStats: null,
             audioStagnantStatsPolls: 0,
+            audioMissingStatsPolls: 0,
             obsController: null,
             unloading: false,
             tickerDormantSignature: '',
@@ -1154,6 +1155,7 @@
             if (!peer?.getStats) return;
             state.audioLastStats = null;
             state.audioStagnantStatsPolls = 0;
+            state.audioMissingStatsPolls = 0;
             state.audioStatsTimer = window.setInterval(async () => {
                 if (state.audioPeer !== peer || peer.connectionState === 'closed') {
                     stopAudioStatsMonitor();
@@ -1161,7 +1163,23 @@
                 }
                 try {
                     const snapshot = await readInboundAudioStats(peer);
-                    if (!snapshot) return;
+                    if (!snapshot) {
+                        if (peer.connectionState === 'connected') {
+                            state.audioMissingStatsPolls += 1;
+                            if (state.audioMissingStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
+                                console.warn('Banner WebRTC inbound audio stats are missing.', {
+                                    connection_state: peer.connectionState,
+                                    ice_state: peer.iceConnectionState,
+                                    at: new Date().toISOString(),
+                                });
+                            }
+                            if (state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                                scheduleAudioReconnect({ force: true });
+                            }
+                        }
+                        return;
+                    }
+                    state.audioMissingStatsPolls = 0;
                     const previous = state.audioLastStats;
                     const packetsDelta = previous ? snapshot.packetsReceived - previous.packetsReceived : 0;
                     state.audioLastStats = snapshot;
