@@ -433,6 +433,8 @@ func TestWebRTCPeerStreamStatsTracksFillerAndSourceGaps(t *testing.T) {
 	stats.recordSourceGap(1)
 	stats.recordFiller(true)
 	stats.recordFiller(false)
+	stats.recordConcealed(true)
+	stats.recordConcealed(false)
 	if stats.skippedFrames != 2 {
 		t.Fatalf("skipped frames = %d, want 2", stats.skippedFrames)
 	}
@@ -442,14 +444,17 @@ func TestWebRTCPeerStreamStatsTracksFillerAndSourceGaps(t *testing.T) {
 	if stats.fillerFrames != 1 {
 		t.Fatalf("filler frames = %d, want 1", stats.fillerFrames)
 	}
-	if stats.totalSkippedFrames != 2 || stats.totalSourceGapFrames != 1 || stats.totalFillerFrames != 1 {
-		t.Fatalf("total frame stats = skipped %d source_gap %d filler %d, want 2/1/1", stats.totalSkippedFrames, stats.totalSourceGapFrames, stats.totalFillerFrames)
+	if stats.concealedFrames != 1 {
+		t.Fatalf("concealed frames = %d, want 1", stats.concealedFrames)
+	}
+	if stats.totalSkippedFrames != 2 || stats.totalSourceGapFrames != 1 || stats.totalFillerFrames != 1 || stats.totalConcealedFrames != 1 {
+		t.Fatalf("total frame stats = skipped %d source_gap %d filler %d concealed %d, want 2/1/1/1", stats.totalSkippedFrames, stats.totalSourceGapFrames, stats.totalFillerFrames, stats.totalConcealedFrames)
 	}
 	stats.resetInterval()
-	if stats.skippedFrames != 0 || stats.sourceGapFrames != 0 || stats.fillerFrames != 0 {
+	if stats.skippedFrames != 0 || stats.sourceGapFrames != 0 || stats.fillerFrames != 0 || stats.concealedFrames != 0 {
 		t.Fatalf("stats were not reset: %+v", stats)
 	}
-	if stats.totalSkippedFrames != 2 || stats.totalSourceGapFrames != 1 || stats.totalFillerFrames != 1 {
+	if stats.totalSkippedFrames != 2 || stats.totalSourceGapFrames != 1 || stats.totalFillerFrames != 1 || stats.totalConcealedFrames != 1 {
 		t.Fatalf("total stats should survive reset: %+v", stats)
 	}
 }
@@ -1327,6 +1332,62 @@ func TestMediaHubKeepsRTPContinuousAfterPublishedPCMStops(t *testing.T) {
 			}
 		}
 		previousTimestamp = timestamp
+	}
+}
+
+func TestMediaHubConcealsShortRTPSourceMissesWithLastPayload(t *testing.T) {
+	hub := newMemoryMediaHub()
+	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer offerPeer.Close()
+	tracks := make(chan *webrtc.TrackRemote, 1)
+	offerPeer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		tracks <- track
+	})
+	if _, err := offerPeer.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := offerPeer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatheringComplete := webrtc.GatheringCompletePromise(offerPeer)
+	if err := offerPeer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-gatheringComplete
+	answer, err := hub.AnswerWithOptions(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP, WebRTCAnswerOptions{PreferredCodec: "pcmu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := offerPeer.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer.SDP}); err != nil {
+		t.Fatal(err)
+	}
+
+	track := waitForRemoteTrack(t, tracks)
+	pcm := sinePCM(960, 950, 48000, 12000)
+	for i := 0; i < 4; i++ {
+		hub.publish(PCMChunk{FeedID: "sk-0001", SampleRate: 48000, Channels: 1, Duration: 20 * time.Millisecond, Data: pcm})
+		time.Sleep(webrtcFrameDuration)
+	}
+
+	for i := 0; i < 20; i++ {
+		if payload := waitForRTPPacket(t, track); !isPCMUIdlePayload(payload) {
+			break
+		}
+		if i == 19 {
+			t.Fatal("never received source-backed PCMU payload")
+		}
+	}
+	for i := 0; i < 8; i++ {
+		payload := waitForRTPPacket(t, track)
+		if isPCMUIdlePayload(payload) {
+			t.Fatalf("packet %d after live payload fell back to generated idle instead of concealment", i+1)
+		}
 	}
 }
 

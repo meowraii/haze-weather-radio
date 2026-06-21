@@ -104,12 +104,14 @@ type webRTCPeerSnapshot struct {
 	UpdatedAt            time.Time
 	Written              uint64
 	FillerFrames         uint64
+	ConcealedFrames      uint64
 	SkippedFrames        uint64
 	SourceGapFrames      uint64
 	LateWrites           uint64
 	WriteErrors          uint64
 	TotalWritten         uint64
 	TotalFillerFrames    uint64
+	TotalConcealedFrames uint64
 	TotalSkippedFrames   uint64
 	TotalSourceGapFrames uint64
 	TotalLateWrites      uint64
@@ -190,12 +192,14 @@ func (h *MediaHub) WebRTCPeerSnapshots() []map[string]any {
 			"updated_at":                 snapshot.UpdatedAt,
 			"interval_written":           snapshot.Written,
 			"interval_filler_frames":     snapshot.FillerFrames,
+			"interval_concealed_frames":  snapshot.ConcealedFrames,
 			"interval_skipped_frames":    snapshot.SkippedFrames,
 			"interval_source_gap_frames": snapshot.SourceGapFrames,
 			"interval_late_writes":       snapshot.LateWrites,
 			"interval_write_errors":      snapshot.WriteErrors,
 			"total_written":              snapshot.TotalWritten,
 			"total_filler_frames":        snapshot.TotalFillerFrames,
+			"total_concealed_frames":     snapshot.TotalConcealedFrames,
 			"total_skipped_frames":       snapshot.TotalSkippedFrames,
 			"total_source_gap_frames":    snapshot.TotalSourceGapFrames,
 			"total_late_writes":          snapshot.TotalLateWrites,
@@ -1216,13 +1220,14 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 	go watchWebRTCSampleWrites(watchdogCtx, feedID, codec, &writeInFlight, &writeStartedAt, webrtcWriteTimeout, func() {
 		failPeer("write_stall")
 	})
-	writeFrame := func(frame webRTCFrame, skipped int, sourceGap int, filler bool) bool {
+	writeFrame := func(frame webRTCFrame, skipped int, sourceGap int, filler bool, concealed bool) bool {
 		if len(frame.payload) == 0 {
 			return true
 		}
 		stats.recordSkipped(skipped)
 		stats.recordSourceGap(sourceGap)
 		stats.recordFiller(filler)
+		stats.recordConcealed(concealed)
 		writeStartedAt.Store(time.Now().UnixNano())
 		writeInFlight.Store(true)
 		packetTimestamp := rtpTimestampForFrame(stats.timestamp)
@@ -1261,12 +1266,14 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 			UpdatedAt:            writeCompletedAt,
 			Written:              stats.written,
 			FillerFrames:         stats.fillerFrames,
+			ConcealedFrames:      stats.concealedFrames,
 			SkippedFrames:        stats.skippedFrames,
 			SourceGapFrames:      stats.sourceGapFrames,
 			LateWrites:           stats.lateWrites,
 			WriteErrors:          stats.writeErrors,
 			TotalWritten:         stats.totalWritten,
 			TotalFillerFrames:    stats.totalFillerFrames,
+			TotalConcealedFrames: stats.totalConcealedFrames,
 			TotalSkippedFrames:   stats.totalSkippedFrames,
 			TotalSourceGapFrames: stats.totalSourceGapFrames,
 			TotalLateWrites:      stats.totalLateWrites,
@@ -1288,10 +1295,14 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 	var pendingSkipped int
 	var lastSourceSequence uint64
 	var fillerFramesSinceSource int
+	var lastPeerSourceFrame webRTCFrame
+	var peerConcealedFrames int
 	writeSourceFrame := func(frame webRTCFrame, drainSkipped int) bool {
 		if len(frame.payload) == 0 {
 			return true
 		}
+		lastPeerSourceFrame = cloneWebRTCFrame(frame)
+		peerConcealedFrames = 0
 		sourceSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
 		sourceGap := webRTCSourceGapFramesAfterFiller(sourceSkipped, fillerFramesSinceSource)
 		pendingSkipped += webRTCDiagnosticSkippedFrames(lastSourceSequence, sourceSkipped, drainSkipped)
@@ -1299,13 +1310,22 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		fillerFramesSinceSource = 0
 		skipped := pendingSkipped
 		pendingSkipped = 0
-		return writeFrame(frame, skipped, sourceGap, false)
+		return writeFrame(frame, skipped, sourceGap, false, false)
 	}
 	writeFillerFrame := func() bool {
-		if len(fillerFrame.payload) == 0 {
+		frame := fillerFrame
+		concealed := false
+		filler := true
+		if len(lastPeerSourceFrame.payload) > 0 && peerConcealedFrames < webrtcConcealmentFrames {
+			frame = cloneWebRTCFrame(lastPeerSourceFrame)
+			peerConcealedFrames++
+			concealed = true
+			filler = false
+		}
+		if len(frame.payload) == 0 {
 			return true
 		}
-		if !writeFrame(fillerFrame, 0, 0, true) {
+		if !writeFrame(frame, 0, 0, filler, concealed) {
 			return false
 		}
 		fillerFramesSinceSource++
@@ -1449,12 +1469,14 @@ func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAud
 type webRTCPeerStreamStats struct {
 	written              uint64
 	fillerFrames         uint64
+	concealedFrames      uint64
 	skippedFrames        uint64
 	sourceGapFrames      uint64
 	lateWrites           uint64
 	writeErrors          uint64
 	totalWritten         uint64
 	totalFillerFrames    uint64
+	totalConcealedFrames uint64
 	totalSkippedFrames   uint64
 	totalSourceGapFrames uint64
 	totalLateWrites      uint64
@@ -1536,6 +1558,13 @@ func (s *webRTCPeerStreamStats) recordFiller(filler bool) {
 	}
 }
 
+func (s *webRTCPeerStreamStats) recordConcealed(concealed bool) {
+	if concealed {
+		s.concealedFrames++
+		s.totalConcealedFrames++
+	}
+}
+
 func (s *webRTCPeerStreamStats) recordWriteCadence(now time.Time) {
 	if s.lastWriteAt.IsZero() {
 		return
@@ -1554,6 +1583,7 @@ func (s *webRTCPeerStreamStats) recordWriteCadence(now time.Time) {
 func (s *webRTCPeerStreamStats) resetInterval() {
 	s.written = 0
 	s.fillerFrames = 0
+	s.concealedFrames = 0
 	s.skippedFrames = 0
 	s.sourceGapFrames = 0
 	s.lateWrites = 0
@@ -1570,11 +1600,12 @@ func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats 
 	if !stats.lastWriteAt.IsZero() {
 		lastWriteAgeMS = now.Sub(stats.lastWriteAt).Milliseconds()
 	}
-	log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d filler_frames=%d skipped_stale_frames=%d source_gap_frames=%d late_writes=%d max_write_gap_ms=%d write_errors=%d next_seq=%d next_ts=%d last_payload_bytes=%d last_write_age_ms=%d",
+	log.Printf("media bridge WebRTC peer diagnostics feed=%s codec=%s written=%d filler_frames=%d concealed_frames=%d skipped_stale_frames=%d source_gap_frames=%d late_writes=%d max_write_gap_ms=%d write_errors=%d next_seq=%d next_ts=%d last_payload_bytes=%d last_write_age_ms=%d",
 		feedID,
 		codec,
 		stats.written,
 		stats.fillerFrames,
+		stats.concealedFrames,
 		stats.skippedFrames,
 		stats.sourceGapFrames,
 		stats.lateWrites,
