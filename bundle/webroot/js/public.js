@@ -712,6 +712,7 @@ function markWebRTCPacketsRecent(player, audio = player?.audio) {
     if (!player) return;
     player.lastPacketAt = Date.now();
     player.trackMuted = false;
+    cancelWebRTCReconnect(player);
     if (audio) {
         audio.dataset.hazeTrackMuted = '0';
     }
