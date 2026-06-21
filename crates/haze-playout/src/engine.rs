@@ -1,16 +1,17 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{interval, Instant, MissedTickBehavior};
 
 use crate::bridge::{self, BridgeClient, ProductRenderRequest, RenderedProduct, SynthJob};
@@ -26,6 +27,8 @@ const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 750;
 const MAX_CATCH_UP_CHUNKS: usize = 1;
 const PCM_PUBLISH_QUEUE_CAPACITY: usize = 8;
 const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
+const AUDIO_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+const AUDIO_CACHE_MAX_READY_ENTRIES: usize = 512;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Options {
@@ -51,7 +54,7 @@ struct AudioItem {
     id: String,
     package_id: String,
     title: String,
-    pcm: Vec<u8>,
+    pcm: Arc<[u8]>,
     resume_offset: usize,
     gap_after: Duration,
     not_before: Option<DateTime<Utc>>,
@@ -60,6 +63,48 @@ struct AudioItem {
     predicted_start: String,
     predicted_finish: String,
     source: ItemSource,
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+enum SharedAudioKey {
+    Wav {
+        path: PathBuf,
+        modified_ns: Option<u128>,
+        len: u64,
+        sample_rate: u32,
+        channels: u16,
+    },
+    RawPcm {
+        path: PathBuf,
+        modified_ns: Option<u128>,
+        len: u64,
+        source_rate: u32,
+        source_channels: u16,
+        sample_rate: u32,
+        channels: u16,
+    },
+    Synth {
+        text: String,
+        reader_id: String,
+        language: String,
+        sample_rate: u32,
+        channels: u16,
+    },
+}
+
+#[derive(Debug)]
+enum SharedAudioEntry {
+    Ready {
+        pcm: Arc<[u8]>,
+        bytes: usize,
+        last_used: Instant,
+    },
+    Loading(Vec<oneshot::Sender<Result<Arc<[u8]>, String>>>),
+}
+
+#[derive(Debug, Default)]
+struct AudioCache {
+    entries: Mutex<HashMap<SharedAudioKey, SharedAudioEntry>>,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +264,7 @@ async fn run_connected(
     options: &Options,
 ) -> ConnectedOutcome {
     let mut handles = HashMap::<String, FeedHandle>::new();
+    let audio_cache = Arc::new(AudioCache::default());
     for feed in cfg.enabled_feeds().cloned() {
         let media_client = match bridge::connect_publish_only_retry(media_bridge_addr).await {
             Ok(client) => client,
@@ -236,6 +282,7 @@ async fn run_connected(
             media_client.clone(),
             feed,
             options.alert_poll,
+            Arc::clone(&audio_cache),
         );
         handles.insert(handle.feed.id.clone(), handle);
     }
@@ -245,13 +292,14 @@ async fn run_connected(
         if bridge::string_at(&event, "type") == "system.shutdown" {
             return ConnectedOutcome::Shutdown;
         }
-        dispatch_event(&cfg, &handles, event).await;
+        dispatch_event(&cfg, &audio_cache, &handles, event).await;
     }
     ConnectedOutcome::Reconnect
 }
 
 async fn dispatch_event(
     cfg: &Arc<LoadedConfig>,
+    audio_cache: &Arc<AudioCache>,
     handles: &HashMap<String, FeedHandle>,
     event: Value,
 ) {
@@ -292,10 +340,11 @@ async fn dispatch_event(
                 return;
             };
             let cfg = Arc::clone(cfg);
+            let audio_cache = Arc::clone(audio_cache);
             let data = data.clone();
             let feed_id = feed_id.to_string();
             tokio::spawn(async move {
-                match audio_item_from_ready(&cfg, &handle.feed, data).await {
+                match audio_item_from_ready(&cfg, &audio_cache, &handle.feed, data).await {
                     Ok(item) => {
                         if handle.audio_tx.send(item).await.is_err() {
                             tracing::warn!(
@@ -466,6 +515,7 @@ impl FeedHandle {
         media_client: BridgeClient,
         feed: FeedConfig,
         alert_poll: Duration,
+        audio_cache: Arc<AudioCache>,
     ) -> Self {
         let (audio_tx, audio_rx) = mpsc::channel(32);
         let (priority_tx, priority_rx) = mpsc::channel(32);
@@ -477,6 +527,7 @@ impl FeedHandle {
             Arc::clone(&cfg),
             client.clone(),
             feed.clone(),
+            Arc::clone(&audio_cache),
             request_rx,
             audio_tx.clone(),
         ));
@@ -486,6 +537,7 @@ impl FeedHandle {
                 Arc::clone(&cfg),
                 client.clone(),
                 feed.clone(),
+                Arc::clone(&audio_cache),
                 priority_tx.clone(),
                 alert_poll,
             ));
@@ -1330,10 +1382,235 @@ fn spawn_pcm_publisher(
     tx
 }
 
+impl AudioCache {
+    async fn read_wav_pcm(&self, path: &Path, cfg: &LoadedConfig) -> Result<Arc<[u8]>> {
+        let (modified_ns, len) = audio_file_stamp(path).await;
+        let key = SharedAudioKey::Wav {
+            path: path.to_path_buf(),
+            modified_ns,
+            len,
+            sample_rate: cfg.root.playout.sample_rate,
+            channels: cfg.root.playout.channels,
+        };
+        let path = path.to_path_buf();
+        let sample_rate = cfg.root.playout.sample_rate;
+        let channels = cfg.root.playout.channels;
+        self.get_or_load(key, move || async move {
+            decode_wav_file_to_shared_pcm(path, sample_rate, channels).await
+        })
+        .await
+    }
+
+    async fn read_raw_pcm(
+        &self,
+        path: &Path,
+        source_rate: u32,
+        source_channels: u16,
+        cfg: &LoadedConfig,
+    ) -> Result<Arc<[u8]>> {
+        let (modified_ns, len) = audio_file_stamp(path).await;
+        let key = SharedAudioKey::RawPcm {
+            path: path.to_path_buf(),
+            modified_ns,
+            len,
+            source_rate,
+            source_channels,
+            sample_rate: cfg.root.playout.sample_rate,
+            channels: cfg.root.playout.channels,
+        };
+        let path = path.to_path_buf();
+        let sample_rate = cfg.root.playout.sample_rate;
+        let channels = cfg.root.playout.channels;
+        self.get_or_load(key, move || async move {
+            let raw = tokio::fs::read(&path)
+                .await
+                .with_context(|| format!("failed to read audio {}", path.display()))?;
+            shared_pcm(normalize_pcm(
+                Pcm {
+                    sample_rate: source_rate,
+                    channels: source_channels.max(1),
+                    data: raw,
+                },
+                sample_rate,
+                channels,
+            ))
+        })
+        .await
+    }
+
+    async fn synthesize_wav(
+        &self,
+        client: &BridgeClient,
+        job: SynthJob,
+        cfg: &LoadedConfig,
+    ) -> Result<Arc<[u8]>> {
+        let key = SharedAudioKey::Synth {
+            text: job.text.clone(),
+            reader_id: job.reader_id.clone(),
+            language: job.language.clone(),
+            sample_rate: cfg.root.playout.sample_rate,
+            channels: cfg.root.playout.channels,
+        };
+        let client = client.clone();
+        let sample_rate = cfg.root.playout.sample_rate;
+        let channels = cfg.root.playout.channels;
+        self.get_or_load(key, move || async move {
+            let wav_path = client.synthesize(job).await?;
+            decode_wav_file_to_shared_pcm(PathBuf::from(wav_path), sample_rate, channels).await
+        })
+        .await
+    }
+
+    async fn get_or_load<Load, Fut>(&self, key: SharedAudioKey, load: Load) -> Result<Arc<[u8]>>
+    where
+        Load: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Arc<[u8]>>>,
+    {
+        let waiter = {
+            let mut entries = self.entries.lock().await;
+            match entries.get_mut(&key) {
+                Some(SharedAudioEntry::Ready { pcm, last_used, .. }) => {
+                    *last_used = Instant::now();
+                    return Ok(Arc::clone(pcm));
+                }
+                Some(SharedAudioEntry::Loading(waiters)) => {
+                    let (tx, rx) = oneshot::channel();
+                    waiters.push(tx);
+                    Some(rx)
+                }
+                None => {
+                    entries.insert(key.clone(), SharedAudioEntry::Loading(Vec::new()));
+                    None
+                }
+            }
+        };
+
+        if let Some(waiter) = waiter {
+            return match waiter.await {
+                Ok(Ok(pcm)) => Ok(pcm),
+                Ok(Err(err)) => anyhow::bail!(err),
+                Err(_) => anyhow::bail!("audio cache loader cancelled"),
+            };
+        }
+
+        let loaded = load().await;
+        let notification = match &loaded {
+            Ok(pcm) => Ok(Arc::clone(pcm)),
+            Err(err) => Err(err.to_string()),
+        };
+        let waiters = {
+            let mut entries = self.entries.lock().await;
+            match entries.remove(&key) {
+                Some(SharedAudioEntry::Loading(waiters)) => {
+                    if let Ok(pcm) = &loaded {
+                        entries.insert(
+                            key.clone(),
+                            SharedAudioEntry::Ready {
+                                pcm: Arc::clone(pcm),
+                                bytes: pcm.len(),
+                                last_used: Instant::now(),
+                            },
+                        );
+                        trim_audio_cache(&mut entries, &key);
+                    }
+                    waiters
+                }
+                Some(SharedAudioEntry::Ready {
+                    pcm,
+                    bytes,
+                    last_used,
+                }) => {
+                    entries.insert(
+                        key,
+                        SharedAudioEntry::Ready {
+                            pcm,
+                            bytes,
+                            last_used,
+                        },
+                    );
+                    Vec::new()
+                }
+                None => Vec::new(),
+            }
+        };
+        for waiter in waiters {
+            let _ = waiter.send(notification.clone());
+        }
+        loaded
+    }
+}
+
+fn trim_audio_cache(
+    entries: &mut HashMap<SharedAudioKey, SharedAudioEntry>,
+    preserve: &SharedAudioKey,
+) {
+    let mut ready = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut ready_entries = 0usize;
+    for (key, entry) in entries.iter() {
+        if let SharedAudioEntry::Ready {
+            bytes, last_used, ..
+        } = entry
+        {
+            total_bytes = total_bytes.saturating_add(*bytes);
+            ready_entries += 1;
+            ready.push((key.clone(), *last_used, *bytes));
+        }
+    }
+    if total_bytes <= AUDIO_CACHE_MAX_BYTES && ready_entries <= AUDIO_CACHE_MAX_READY_ENTRIES {
+        return;
+    }
+
+    ready.sort_by_key(|(_, last_used, _)| *last_used);
+    for (key, _, bytes) in ready {
+        if &key == preserve {
+            continue;
+        }
+        if entries.remove(&key).is_some() {
+            total_bytes = total_bytes.saturating_sub(bytes);
+            ready_entries = ready_entries.saturating_sub(1);
+        }
+        if total_bytes <= AUDIO_CACHE_MAX_BYTES && ready_entries <= AUDIO_CACHE_MAX_READY_ENTRIES {
+            break;
+        }
+    }
+}
+
+async fn audio_file_stamp(path: &Path) -> (Option<u128>, u64) {
+    let Ok(metadata) = tokio::fs::metadata(path).await else {
+        return (None, 0);
+    };
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos());
+    (modified_ns, metadata.len())
+}
+
+async fn decode_wav_file_to_shared_pcm(
+    path: PathBuf,
+    sample_rate: u32,
+    channels: u16,
+) -> Result<Arc<[u8]>> {
+    let raw = tokio::fs::read(&path)
+        .await
+        .with_context(|| format!("failed to read audio {}", path.display()))?;
+    let pcm = tokio::task::spawn_blocking(move || decode_wav(&raw))
+        .await
+        .context("WAV decoder task failed")??;
+    shared_pcm(normalize_pcm(pcm, sample_rate, channels))
+}
+
+fn shared_pcm(pcm: Pcm) -> Result<Arc<[u8]>> {
+    Ok(Arc::from(pcm.data.into_boxed_slice()))
+}
+
 async fn package_builder(
     cfg: Arc<LoadedConfig>,
     client: BridgeClient,
     feed: FeedConfig,
+    audio_cache: Arc<AudioCache>,
     mut requests: mpsc::Receiver<PackageRequest>,
     audio_tx: mpsc::Sender<AudioItem>,
 ) {
@@ -1346,7 +1623,7 @@ async fn package_builder(
         {
             continue;
         }
-        match build_package(&cfg, &client, &feed, &request.package_id).await {
+        match build_package(&cfg, &client, &audio_cache, &feed, &request.package_id).await {
             Ok(item) => {
                 recent.insert(request.package_id.clone(), Instant::now());
                 if audio_tx.send(item).await.is_err() {
@@ -1365,6 +1642,7 @@ async fn package_builder(
 async fn build_package(
     cfg: &LoadedConfig,
     client: &BridgeClient,
+    audio_cache: &AudioCache,
     feed: &FeedConfig,
     package_id: &str,
 ) -> Result<AudioItem> {
@@ -1372,7 +1650,9 @@ async fn build_package(
         anyhow::bail!("package {package_id} is disabled for feed {}", feed.id);
     }
     let product = render_product_with_fallback(cfg, client, feed, package_id).await?;
-    if let Some(item) = audio_item_from_rendered_product(cfg, feed, package_id, &product).await? {
+    if let Some(item) =
+        audio_item_from_rendered_product(cfg, audio_cache, feed, package_id, &product).await?
+    {
         return Ok(item);
     }
     if product.text.trim().is_empty() {
@@ -1387,21 +1667,24 @@ async fn build_package(
         .join("runtime/audio/playout")
         .join(&feed.id)
         .join(format!("{job_id}.wav"));
-    let wav_path = client
-        .synthesize(SynthJob {
-            id: job_id.clone(),
-            text: product.text,
-            reader_id,
-            language,
-            output_path,
-        })
+    let pcm = audio_cache
+        .synthesize_wav(
+            client,
+            SynthJob {
+                id: job_id.clone(),
+                text: product.text,
+                reader_id,
+                language,
+                output_path,
+            },
+            cfg,
+        )
         .await?;
-    let pcm = read_wav_pcm(&PathBuf::from(wav_path), cfg).await?;
     Ok(AudioItem {
         id: job_id,
         package_id: package_id.to_string(),
         title,
-        pcm: pcm.data,
+        pcm,
         resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: None,
@@ -1415,6 +1698,7 @@ async fn build_package(
 
 async fn audio_item_from_rendered_product(
     cfg: &LoadedConfig,
+    audio_cache: &AudioCache,
     feed: &FeedConfig,
     package_id: &str,
     product: &RenderedProduct,
@@ -1432,12 +1716,12 @@ async fn audio_item_from_rendered_product(
         anyhow::bail!("audio URL products require the Go playlist downloader path");
     }
     let path = resolve_path(&cfg.base_dir, audio_path);
-    let pcm = read_wav_pcm(&path, cfg).await?;
+    let pcm = audio_cache.read_wav_pcm(&path, cfg).await?;
     Ok(Some(AudioItem {
         id: queue_id(&format!("{}-{package_id}", feed.id)),
         package_id: package_id.to_string(),
         title: fallback_text(&product.title, &title_for_package(package_id)),
-        pcm: pcm.data,
+        pcm,
         resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: None,
@@ -1656,6 +1940,7 @@ fn spoken_callsign(callsign: &str) -> String {
 
 async fn audio_item_from_ready(
     cfg: &LoadedConfig,
+    audio_cache: &AudioCache,
     _feed: &FeedConfig,
     data: Value,
 ) -> Result<AudioItem> {
@@ -1664,7 +1949,7 @@ async fn audio_item_from_ready(
         anyhow::bail!("audio_path is required");
     }
     let path = resolve_path(&cfg.base_dir, audio_path);
-    let pcm = read_wav_pcm(&path, cfg).await?;
+    let pcm = audio_cache.read_wav_pcm(&path, cfg).await?;
     let package_id = bridge::first_text(&Value::Null, &data, &["package_id", "pkg_id"]).to_string();
     let title = fallback_text(
         bridge::first_text(&Value::Null, &data, &["title"]),
@@ -1677,7 +1962,7 @@ async fn audio_item_from_ready(
         ),
         package_id,
         title,
-        pcm: pcm.data,
+        pcm,
         resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: parse_time(bridge::first_text(
@@ -1695,25 +1980,11 @@ async fn audio_item_from_ready(
     })
 }
 
-async fn read_wav_pcm(path: &Path, cfg: &LoadedConfig) -> Result<Pcm> {
-    let path = path.to_path_buf();
-    let raw = tokio::fs::read(&path)
-        .await
-        .with_context(|| format!("failed to read audio {}", path.display()))?;
-    let pcm = tokio::task::spawn_blocking(move || decode_wav(&raw))
-        .await
-        .context("WAV decoder task failed")??;
-    Ok(normalize_pcm(
-        pcm,
-        cfg.root.playout.sample_rate,
-        cfg.root.playout.channels,
-    ))
-}
-
 async fn alert_scanner(
     cfg: Arc<LoadedConfig>,
     _client: BridgeClient,
     feed: FeedConfig,
+    audio_cache: Arc<AudioCache>,
     audio_tx: mpsc::Sender<AudioItem>,
     poll: Duration,
 ) {
@@ -1722,7 +1993,7 @@ async fn alert_scanner(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
-        if let Err(err) = scan_alerts_once(&cfg, &feed, &audio_tx, &mut seen).await {
+        if let Err(err) = scan_alerts_once(&cfg, &audio_cache, &feed, &audio_tx, &mut seen).await {
             tracing::warn!(feed_id = feed.id, "alert queue scan failed: {err}");
         }
     }
@@ -1730,6 +2001,7 @@ async fn alert_scanner(
 
 async fn scan_alerts_once(
     cfg: &LoadedConfig,
+    audio_cache: &AudioCache,
     feed: &FeedConfig,
     audio_tx: &mpsc::Sender<AudioItem>,
     seen: &mut HashSet<String>,
@@ -1800,7 +2072,7 @@ async fn scan_alerts_once(
             id,
             ..
         } = candidate;
-        match audio_item_from_alert(cfg, feed, &manifest, &mut item, &id) {
+        match audio_item_from_alert(cfg, audio_cache, feed, &manifest, &mut item, &id).await {
             Ok(audio) => {
                 item.status = "queued".to_string();
                 item.claimed_at = Some(Utc::now().to_rfc3339());
@@ -1883,31 +2155,29 @@ fn alert_sequence_rank(item: &AlertQueueItem, id: &str) -> u8 {
     }
 }
 
-fn audio_item_from_alert(
+async fn audio_item_from_alert(
     cfg: &LoadedConfig,
+    audio_cache: &AudioCache,
     _feed: &FeedConfig,
     manifest: &Path,
     item: &mut AlertQueueItem,
     id: &str,
 ) -> Result<AudioItem> {
     let audio_path = resolve_path(&cfg.base_dir, &item.audio_path);
-    let raw = fs::read(&audio_path)
-        .with_context(|| format!("failed to read alert audio {}", audio_path.display()))?;
-    let pcm = normalize_pcm(
-        Pcm {
-            sample_rate: first_positive(item.sample_rate, 48_000),
-            channels: item.channels.max(1),
-            data: raw,
-        },
-        cfg.root.playout.sample_rate,
-        cfg.root.playout.channels,
-    );
+    let pcm = audio_cache
+        .read_raw_pcm(
+            &audio_path,
+            first_positive(item.sample_rate, 48_000),
+            item.channels.max(1),
+            cfg,
+        )
+        .await?;
     let title = fallback_text(&item.header, "SAME Alert");
     Ok(AudioItem {
         id: id.to_string(),
         package_id: "same_alert".to_string(),
         title,
-        pcm: pcm.data,
+        pcm,
         resume_offset: 0,
         gap_after: Duration::from_millis(500),
         not_before: None,
@@ -2100,6 +2370,7 @@ fn safe_id(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn alert_pending_accepts_empty_and_pending_only() {
@@ -2122,7 +2393,7 @@ mod tests {
             id: "routine-1".to_string(),
             package_id: "forecast".to_string(),
             title: "Forecast".to_string(),
-            pcm: vec![1; 16],
+            pcm: Arc::from(vec![1; 16].into_boxed_slice()),
             resume_offset: 0,
             gap_after: Duration::from_secs(1),
             not_before: None,
@@ -2145,7 +2416,7 @@ mod tests {
             id: "routine-1".to_string(),
             package_id: "forecast".to_string(),
             title: "Forecast".to_string(),
-            pcm: vec![1; 16],
+            pcm: Arc::from(vec![1; 16].into_boxed_slice()),
             resume_offset: 0,
             gap_after: Duration::from_secs(1),
             not_before: None,
@@ -2159,6 +2430,50 @@ mod tests {
         let resumed = interrupted_routine_item(item, 99);
 
         assert_eq!(resumed.resume_offset, 16);
+    }
+
+    #[tokio::test]
+    async fn audio_cache_coalesces_concurrent_loads() {
+        let cache = Arc::new(AudioCache::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(tokio::sync::Barrier::new(12));
+        let mut tasks = Vec::new();
+
+        for _ in 0..12 {
+            let cache = Arc::clone(&cache);
+            let calls = Arc::clone(&calls);
+            let barrier = Arc::clone(&barrier);
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                cache
+                    .get_or_load(
+                        SharedAudioKey::Synth {
+                            text: "shared package".to_string(),
+                            reader_id: "00".to_string(),
+                            language: "en-CA".to_string(),
+                            sample_rate: 48_000,
+                            channels: 1,
+                        },
+                        move || async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_millis(25)).await;
+                            Ok(Arc::from(vec![7u8; 4].into_boxed_slice()))
+                        },
+                    )
+                    .await
+                    .expect("audio cache load")
+            }));
+        }
+
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.expect("task"));
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        for result in &results[1..] {
+            assert!(Arc::ptr_eq(&results[0], result));
+        }
     }
 
     #[test]
