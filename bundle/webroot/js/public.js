@@ -554,12 +554,21 @@ function startWebRTCStatsMonitor(feedId, player) {
                 player.stagnantStatsPolls = (player.stagnantStatsPolls || 0) + 1;
                 if (player.stagnantStatsPolls === WEBRTC_STAGNANT_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stalled.', window.hazeLastWebRTCStats[feedId]);
+                    if (isActivePlayer(feedId, player)) {
+                        setPlayerStatus(feedId, 'Waiting for audio frames...');
+                    }
                 }
                 if (player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeLastWebRTCStats[feedId]);
                     scheduleWebRTCReconnect(feedId, player, 'Reconnecting stalled audio...');
                 }
             } else {
+                if ((packetsDelta > 0 || !previous) && player.audio) {
+                    player.audio.dataset.hazeTrackMuted = '0';
+                }
+                if (player.stagnantStatsPolls > 0 && isActivePlayer(feedId, player)) {
+                    setHealthyWebRTCStatus(feedId, player);
+                }
                 player.stagnantStatsPolls = 0;
             }
         } catch (error) {
@@ -813,17 +822,12 @@ async function startFeedWebRTC(feedId) {
             if (isActivePlayer(feedId, player)) {
                 currentAudio.dataset.hazeTrackMuted = '1';
                 clearPlayerTimer(player, 'trackMuteTimer');
-                player.trackMuteTimer = window.setTimeout(() => {
-                    if (isActivePlayer(feedId, player) && currentAudio.dataset.hazeTrackMuted === '1') {
-                        setPlayerStatus(feedId, 'Waiting for audio frames...');
-                    }
-                }, WEBRTC_TRANSIENT_STATUS_DELAY_MS);
             }
         };
         event.track.onunmute = () => {
             if (isActivePlayer(feedId, player)) {
                 currentAudio.dataset.hazeTrackMuted = '0';
-                setHealthyWebRTCStatus(feedId, player, currentAudio);
+                clearPlayerTimer(player, 'trackMuteTimer');
             }
         };
         event.track.onended = () => {

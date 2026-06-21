@@ -1286,12 +1286,8 @@
                 event.track.onmute = () => {
                     if (state.audioTrackMuteTimer) {
                         window.clearTimeout(state.audioTrackMuteTimer);
+                        state.audioTrackMuteTimer = null;
                     }
-                    state.audioTrackMuteTimer = window.setTimeout(() => {
-                        if (event.track.muted) {
-                            console.warn('Banner WebRTC audio track is waiting for frames.');
-                        }
-                    }, AUDIO_TRANSIENT_STATUS_DELAY_MS);
                 };
                 event.track.onunmute = () => {
                     if (state.audioTrackMuteTimer) {
