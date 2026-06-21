@@ -692,9 +692,10 @@ function hasRecentWebRTCPackets(player, now = Date.now()) {
 }
 
 function hasLiveWebRTCAudioTrack(player) {
-    const tracks = player?.audio?.srcObject?.getAudioTracks?.()
-        || player?.remoteStream?.getAudioTracks?.()
-        || [];
+    const tracks = [
+        ...(player?.audio?.srcObject?.getAudioTracks?.() || []),
+        ...(player?.remoteStream?.getAudioTracks?.() || []),
+    ];
     return tracks.some((track) => track.readyState === 'live');
 }
 
