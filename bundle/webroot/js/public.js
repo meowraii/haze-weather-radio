@@ -94,6 +94,7 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
             track_states: webRTCAudioTrackStates(player, audio),
             output_mixer_active: Boolean(player.audioOutputMixer),
             output_mixer_state: player.audioOutputMixer?.context?.state || '',
+            output_mixer_disabled: webRTCOutputMixerDisabled(),
             last_output_mixer_recovery_age_ms: player.lastOutputMixerRecoveryAt ? now - player.lastOutputMixerRecoveryAt : null,
             output_mixer_recovery_count: Number(player.outputMixerRecoveryCount || 0),
             output_mixer_bypass_remaining_ms: player.outputMixerBypassUntil && player.outputMixerBypassUntil > now ? player.outputMixerBypassUntil - now : null,
@@ -902,7 +903,7 @@ function closeWebRTCAudioOutput(player) {
 function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
     if (!sourceStream || !audio) return sourceStream;
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-    if (player?.outputMixerBypassUntil && player.outputMixerBypassUntil > Date.now()) {
+    if (webRTCOutputMixerDisabled() || (player?.outputMixerBypassUntil && player.outputMixerBypassUntil > Date.now())) {
         closeWebRTCAudioOutput(player);
         audio.srcObject = sourceStream;
         return sourceStream;
@@ -2161,6 +2162,12 @@ function requestedListenFeedID(feeds) {
 function requestedListenCodec() {
     const params = new URLSearchParams(window.location.search);
     return normalizeHTTPCodec(params.get('codec') || params.get('format') || 'pcm16');
+}
+
+function webRTCOutputMixerDisabled() {
+    const params = new URLSearchParams(window.location.search);
+    const value = String(params.get('webrtcMixer') || params.get('audioMixer') || '').trim().toLowerCase();
+    return ['0', 'false', 'off', 'no', 'raw', 'disabled'].includes(value);
 }
 
 function renderListen(feeds) {

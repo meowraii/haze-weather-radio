@@ -432,6 +432,7 @@
                 track_states: bannerAudioTrackStates(audio),
                 output_mixer_active: Boolean(state.audioOutputMixer),
                 output_mixer_state: state.audioOutputMixer?.context?.state || '',
+                output_mixer_disabled: !query.audioMixer,
                 last_output_mixer_recovery_age_ms: state.audioLastOutputMixerRecoveryAt ? Date.now() - state.audioLastOutputMixerRecoveryAt : null,
                 output_mixer_recovery_count: Number(state.audioOutputMixerRecoveryCount || 0),
                 output_mixer_bypass_remaining_ms: state.audioOutputMixerBypassUntil && state.audioOutputMixerBypassUntil > Date.now() ? state.audioOutputMixerBypassUntil - Date.now() : null,
@@ -581,6 +582,7 @@
             const speed = Number.parseFloat(params.get('speed') || '240');
             const aspectKey = parseAspect(params.get('aspect'));
             const audio = String(params.get('audio') || '').trim().toLowerCase();
+            const audioMixer = String(params.get('audioMixer') || params.get('webrtcMixer') || '').trim().toLowerCase();
             const fragment = new URLSearchParams(String(window.location.hash || '').replace(/^#/, ''));
             const obsPassword = String(fragment.get('obsPassword') || params.get('obsPassword') || '').trim();
             const obsUrl = String(
@@ -598,6 +600,7 @@
                 scroll: Number.isFinite(scroll) && scroll >= 0 ? scroll : 1,
                 speed: Number.isFinite(speed) && speed > 0 ? speed : 30,
                 audio: ['1', 'true', 'yes', 'on'].includes(audio),
+                audioMixer: !['0', 'false', 'off', 'no', 'raw', 'disabled'].includes(audioMixer),
                 audioCodec: parseWebRTCAudioCodec(params.get('audioCodec') || params.get('codec')),
                 obs: {
                     url: obsUrl,
@@ -1782,7 +1785,7 @@
         function bindBannerAudioOutput(sourceStream, audio = state.audioElement) {
             if (!sourceStream || !audio) return sourceStream;
             const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-            if (state.audioOutputMixerBypassUntil && state.audioOutputMixerBypassUntil > Date.now()) {
+            if (!query.audioMixer || (state.audioOutputMixerBypassUntil && state.audioOutputMixerBypassUntil > Date.now())) {
                 closeBannerAudioOutput();
                 audio.srcObject = sourceStream;
                 return sourceStream;
