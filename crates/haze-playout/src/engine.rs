@@ -661,6 +661,7 @@ impl FeedRunner {
         let mut current: Option<AudioItem> = None;
         let mut pending: Option<AudioItem> = None;
         let mut priority_pending = VecDeque::<AudioItem>::new();
+        let mut active_priority_ids = HashSet::<String>::new();
         let mut deferred_routine = VecDeque::<AudioItem>::new();
         let mut live_breakin: Option<LiveBreakIn> = None;
         let mut out = vec![0u8; chunk.len()];
@@ -689,6 +690,7 @@ impl FeedRunner {
                             }
                             if let Some(item) = current.take() {
                                 if item.is_alert() {
+                                    active_priority_ids.remove(&item.id);
                                     spawn_interrupt_item(
                                         self.client.clone(),
                                         self.feed.id.clone(),
@@ -793,6 +795,14 @@ impl FeedRunner {
                     for _ in 0..chunks_due {
                         let now = Utc::now();
                         while let Ok(item) = self.priority_rx.try_recv() {
+                            if !remember_priority_item(&mut active_priority_ids, &item.id) {
+                                tracing::warn!(
+                                    feed_id = self.feed.id,
+                                    queue_id = item.id,
+                                    "skipping duplicate active priority alert"
+                                );
+                                continue;
+                            }
                             spawn_accept_item(self.client.clone(), self.feed.id.clone(), item.clone());
                             priority_pending.push_back(item);
                         }
@@ -918,6 +928,9 @@ impl FeedRunner {
 
                         if live_breakin.is_none() && current.as_ref().is_some_and(|item| position >= item.pcm.len()) {
                             if let Some(item) = current.take() {
+                                if item.is_alert() {
+                                    active_priority_ids.remove(&item.id);
+                                }
                                 let gap_after = item.gap_after;
                                 spawn_finish_item(self.client.clone(), self.feed.id.clone(), item);
                                 gap_until = Instant::now() + gap_after;
@@ -2349,6 +2362,11 @@ fn alert_pending(status: &str) -> bool {
     )
 }
 
+fn remember_priority_item(active_ids: &mut HashSet<String>, id: &str) -> bool {
+    let id = id.trim();
+    !id.is_empty() && active_ids.insert(id.to_string())
+}
+
 fn alert_item_stale_for_priority(item: &AlertQueueItem, now: DateTime<Utc>) -> bool {
     if item.message_type.eq_ignore_ascii_case("cancel") {
         return true;
@@ -2487,6 +2505,17 @@ mod tests {
         assert!(alert_pending("claimed"));
         assert!(alert_pending("playing"));
         assert!(!alert_pending("played"));
+    }
+
+    #[test]
+    fn active_priority_ids_reject_duplicate_alerts() {
+        let mut active = HashSet::<String>::new();
+
+        assert!(remember_priority_item(&mut active, "alert-1"));
+        assert!(!remember_priority_item(&mut active, "alert-1"));
+
+        active.remove("alert-1");
+        assert!(remember_priority_item(&mut active, "alert-1"));
     }
 
     #[test]
