@@ -1202,7 +1202,7 @@
                         if (state.audioStagnantStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stalled.', window.hazeBannerWebRTCStats);
                         }
-                        if (state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                        if (!state.audioTrackAttached && state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeBannerWebRTCStats);
                             scheduleAudioReconnect({ force: true });
                         }
@@ -1333,7 +1333,7 @@
                     }
                     state.audioTrackMuteTimer = window.setTimeout(() => {
                         state.audioTrackMuteTimer = null;
-                        if (!hasRecentBannerAudioPackets()) {
+                        if (!state.audioTrackAttached && !hasRecentBannerAudioPackets()) {
                             scheduleAudioReconnect({ force: true });
                         }
                     }, AUDIO_MEDIA_EVENT_GRACE_MS);

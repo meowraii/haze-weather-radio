@@ -684,11 +684,11 @@ function startWebRTCStatsMonitor(feedId, player) {
                 player.stagnantStatsPolls = (player.stagnantStatsPolls || 0) + 1;
                 if (player.stagnantStatsPolls === WEBRTC_STAGNANT_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stalled.', window.hazeLastWebRTCStats[feedId]);
-                    if (isActivePlayer(feedId, player)) {
+                    if (isActivePlayer(feedId, player) && !player.trackAttached) {
                         setPlayerStatus(feedId, 'Waiting for audio frames...');
                     }
                 }
-                if (player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                if (!player.trackAttached && player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeLastWebRTCStats[feedId]);
                     scheduleWebRTCReconnect(feedId, player, 'Reconnecting stalled audio...');
                 }
