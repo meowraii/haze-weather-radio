@@ -253,6 +253,22 @@ func TestWatchWebRTCSampleWritesIgnoresIdleWriter(t *testing.T) {
 	}
 }
 
+func TestStoppedWebRTCTimerStartsDisarmed(t *testing.T) {
+	timer := stoppedWebRTCTimer()
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		t.Fatal("stopped timer fired before reset")
+	case <-time.After(10 * time.Millisecond):
+	}
+	resetWebRTCTimer(timer, time.Millisecond)
+	select {
+	case <-timer.C:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("reset timer did not fire")
+	}
+}
+
 func TestMediaHubUsesIndependentFeedIngressQueues(t *testing.T) {
 	hub := newMemoryMediaHub()
 	left := hub.feedIngress("sk-0001")

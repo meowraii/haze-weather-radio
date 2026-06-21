@@ -1038,7 +1038,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			}
 		})
 	})
-	keepalive := time.NewTimer(webrtcFrameDuration)
+	keepalive := stoppedWebRTCTimer()
 	defer keepalive.Stop()
 	var lastFrame []byte
 	writeFrame := func(frame []byte, skipped int) bool {
@@ -1113,6 +1113,17 @@ func resetWebRTCTimer(timer *time.Timer, delay time.Duration) {
 		}
 	}
 	timer.Reset(delay)
+}
+
+func stoppedWebRTCTimer() *time.Timer {
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	return timer
 }
 
 func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAudioCodec, inFlight *atomic.Bool, startedAt *atomic.Int64, timeout time.Duration, onTimeout func()) {
