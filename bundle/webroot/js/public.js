@@ -719,27 +719,13 @@ function hasUsableWebRTCAudio(player) {
     return Boolean(player?.trackAttached || hasLiveWebRTCAudioTrack(player));
 }
 
-function hasStaleMutedWebRTCAudio(player) {
-    return Boolean(player?.trackMuted || player?.audio?.dataset?.hazeTrackMuted === '1')
-        && !hasRecentWebRTCPackets(player);
-}
-
-function markWebRTCTrackActive(player, audio = player?.audio) {
-    if (!player) return;
-    player.trackMuted = false;
-    if (audio) {
-        audio.dataset.hazeTrackMuted = '0';
-    }
-}
-
 function shouldReconnectWebRTCForMissingPackets(player) {
     return !hasUsableWebRTCAudio(player) || !hasRecentWebRTCPackets(player);
 }
 
-function markWebRTCPacketsRecent(player, audio = player?.audio) {
+function markWebRTCPacketsRecent(player) {
     if (!player) return;
     player.lastPacketAt = Date.now();
-    markWebRTCTrackActive(player, audio);
     cancelWebRTCReconnect(player);
     clearPlayerTimer(player, 'connectionStateTimer');
     clearPlayerTimer(player, 'disconnectReconnectTimer');
@@ -815,8 +801,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                     stats_source: statsResult.source,
                     connection_state: player.pc.connectionState,
                     ice_state: player.pc.iceConnectionState,
-                    track_muted: player.audio?.dataset?.hazeTrackMuted === '1',
-                    track_mute_pending: Boolean(player.trackMuted),
+                    packets_recent: hasRecentWebRTCPackets(player),
                     at: new Date().toISOString(),
                 },
             };
@@ -876,7 +861,6 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     player.mediaRecent = null;
     player.negotiatedCodec = '';
     player.negotiatedPayloadType = null;
-    player.trackMuted = true;
     try {
         player.pc?.close();
     } catch {
@@ -886,7 +870,6 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     if (audio) {
         audio.srcObject = player.remoteStream;
         audio.dataset.hazeTrackAttached = '0';
-        audio.dataset.hazeTrackMuted = '1';
         audio.dataset.hazePlayerState = 'reconnecting';
     }
 }
@@ -1094,7 +1077,6 @@ async function startFeedWebRTC(feedId) {
         reconnectAttempts: 0,
         reconnectPending: false,
         stopping: false,
-        trackMuted: false,
     };
     feedPlayers.set(feedId, player);
 
@@ -1149,11 +1131,9 @@ async function startFeedWebRTC(feedId) {
         player.trackAttached = true;
         currentAudio.dataset.hazeTrackAttached = '1';
         currentAudio.dataset.hazeTrackState = event.track.readyState || '';
-        markWebRTCTrackActive(player, currentAudio);
         event.track.onmute = () => {
             if (isActivePlayer(feedId, player)) {
                 if (hasRecentWebRTCPackets(player)) {
-                    markWebRTCTrackActive(player, currentAudio);
                     recordWebRTCEvent(feedId, 'track_mute_ignored', {
                         connection_state: pc.connectionState,
                         ice_state: pc.iceConnectionState,
@@ -1173,8 +1153,6 @@ async function startFeedWebRTC(feedId) {
                 player.trackMuteTimer = window.setTimeout(() => {
                     player.trackMuteTimer = null;
                     if (isActivePlayer(feedId, player) && !hasRecentWebRTCPackets(player)) {
-                        currentAudio.dataset.hazeTrackMuted = '1';
-                        player.trackMuted = true;
                         recordWebRTCEvent(feedId, 'track_mute_stale', {
                             connection_state: pc.connectionState,
                             ice_state: pc.iceConnectionState,
@@ -1186,16 +1164,14 @@ async function startFeedWebRTC(feedId) {
         };
         event.track.onunmute = () => {
             if (isActivePlayer(feedId, player)) {
-                const wasMuted = player.trackMuted || currentAudio.dataset.hazeTrackMuted === '1';
                 recordWebRTCEvent(feedId, 'track_unmute', {
                     connection_state: pc.connectionState,
                     ice_state: pc.iceConnectionState,
                     last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
                     track_state: event.track.readyState || '',
-                    app_was_muted: wasMuted,
+                    packets_recent: hasRecentWebRTCPackets(player),
                 });
                 clearPlayerTimer(player, 'trackMuteTimer');
-                markWebRTCTrackActive(player, currentAudio);
                 ensureWebRTCAudioPlaying(feedId, player, currentAudio);
             }
         };
