@@ -443,6 +443,25 @@ func TestDrainLatestWebRTCFrameWithWaitBridgesPeerSourcePhaseDrift(t *testing.T)
 	}
 }
 
+func TestDrainLatestWebRTCFrameWithWaitCoversWindowsTimerGranularity(t *testing.T) {
+	frames := make(chan webRTCFrame, 1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		frames <- webRTCFrame{sequence: 1, payload: []byte{7}}
+	}()
+
+	latest, skipped, ok, hasFrame := drainLatestWebRTCFrameWithWait(frames, webrtcPeerSourceWait)
+	if !ok || !hasFrame {
+		t.Fatalf("scheduler-late source frame was not drained: ok=%v hasFrame=%v", ok, hasFrame)
+	}
+	if skipped != 0 {
+		t.Fatalf("skipped = %d, want 0", skipped)
+	}
+	if string(latest.payload) != string([]byte{7}) {
+		t.Fatalf("latest frame = %v, want [7]", latest.payload)
+	}
+}
+
 func TestDrainLatestWebRTCFrameWithWaitKeepsPeerWaitShort(t *testing.T) {
 	if webrtcPeerSourceWait <= 0 || webrtcPeerSourceWait >= webrtcFrameDuration {
 		t.Fatalf("peer source wait = %s, want short sub-frame wait", webrtcPeerSourceWait)

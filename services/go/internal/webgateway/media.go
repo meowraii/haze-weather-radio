@@ -46,7 +46,7 @@ const (
 	webrtcWriteTimeout         = 3 * time.Second
 	webrtcFrameSourceIdleGrace = 15 * time.Second
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
-	webrtcPeerSourceWait       = 5 * time.Millisecond
+	webrtcPeerSourceWait       = 15 * time.Millisecond
 	webrtcIdleDitherAmplitude  = 768
 	webrtcSourceBedAmplitude   = 512
 )
