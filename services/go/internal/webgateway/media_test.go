@@ -802,12 +802,20 @@ func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 		t.Fatal("G.722-capable offers should use G.722")
 	}
 	got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9 0\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{})
-	if err != nil || got != webRTCAudioPCMU {
-		t.Fatal("auto codec should prefer PCMU for receiver stability")
+	if opusBackendAvailable() {
+		if err != nil || got != webRTCAudioOpus {
+			t.Fatal("auto codec should prefer Opus for browser WebRTC resilience")
+		}
+	} else if err != nil || got != webRTCAudioG722 {
+		t.Fatal("auto codec should use G.722 when Opus is unavailable")
 	}
 	got, err = preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111 9\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\n", WebRTCAnswerOptions{})
-	if err != nil || got != webRTCAudioG722 {
-		t.Fatal("auto codec should use G.722 when PCMU is unavailable")
+	if opusBackendAvailable() {
+		if err != nil || got != webRTCAudioOpus {
+			t.Fatal("auto codec should prefer Opus when PCMU is unavailable")
+		}
+	} else if err != nil || got != webRTCAudioG722 {
+		t.Fatal("auto codec should use G.722 when Opus is unavailable")
 	}
 	got, err = preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n", WebRTCAnswerOptions{})
 	if opusBackendAvailable() && (err != nil || got != webRTCAudioOpus) {
@@ -990,7 +998,7 @@ func TestMediaHubAnswersAudioOffer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCodec := "PCMU"
+	wantCodec := expectedAutoWebRTCSDPCodec()
 	if !strings.Contains(answer, wantCodec) {
 		t.Fatalf("answer did not include %s: %s", wantCodec, answer)
 	}
@@ -999,7 +1007,7 @@ func TestMediaHubAnswersAudioOffer(t *testing.T) {
 	}
 }
 
-func TestMediaHubReceiverAnswerUsesPCMUWhenAvailable(t *testing.T) {
+func TestMediaHubReceiverAnswerUsesAutoCodecPolicy(t *testing.T) {
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
 	if err != nil {
@@ -1025,10 +1033,17 @@ func TestMediaHubReceiverAnswerUsesPCMUWhenAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCodec := "PCMU"
+	wantCodec := expectedAutoWebRTCSDPCodec()
 	if !strings.Contains(answer, wantCodec) {
 		t.Fatalf("receiver answer should include %s: %s", wantCodec, answer)
 	}
+}
+
+func expectedAutoWebRTCSDPCodec() string {
+	if opusBackendAvailable() {
+		return "opus"
+	}
+	return "G722"
 }
 
 func TestMediaHubStreamsRTPToPeer(t *testing.T) {

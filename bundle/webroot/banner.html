@@ -566,7 +566,8 @@
 
         function parseWebRTCAudioCodec(value) {
             const codec = String(value || '').trim().toLowerCase().replace('.', '');
-            if (!codec || codec === 'stable') return 'pcmu';
+            if (!codec) return 'auto';
+            if (codec === 'stable') return 'pcmu';
             if (codec === 'g711u' || codec === 'ulaw' || codec === 'mulaw' || codec === 'u-law') return 'pcmu';
             if (codec === 'g722' || codec === 'g.722') return 'g722';
             return WEBRTC_AUDIO_CODECS.has(codec) ? codec : 'pcmu';

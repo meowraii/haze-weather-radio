@@ -103,10 +103,10 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
 };
 
 const WEBRTC_CODECS = [
-    ['pcmu', 'PCMU'],
+    ['auto', 'Auto'],
     ['opus', 'Opus'],
     ['g722', 'G.722'],
-    ['auto', 'Auto'],
+    ['pcmu', 'PCMU'],
 ];
 const HTTP_CODECS = [
     ['pcm16', 'PCM16 / WAV'],
@@ -491,7 +491,7 @@ function feedCanHTTP(feed) {
 }
 
 function normalizedFeedPreferences(feedId, feed = null) {
-    const current = feedPreferences.get(feedId) || { mode: 'webrtc', codec: 'pcmu' };
+    const current = feedPreferences.get(feedId) || { mode: 'webrtc', codec: 'auto' };
     const canWebRTC = feed ? feedCanWebRTC(feed) : true;
     const canHTTP = feed ? feedCanHTTP(feed) : true;
     let mode = current.mode === 'http' ? 'http' : 'webrtc';
