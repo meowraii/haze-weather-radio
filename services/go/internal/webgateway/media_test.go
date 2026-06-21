@@ -410,12 +410,12 @@ func TestDrainLatestWebRTCFrameReturnsLatestWithoutBlocking(t *testing.T) {
 func TestDrainLatestWebRTCFrameWithWaitBridgesPeerSourcePhaseDrift(t *testing.T) {
 	frames := make(chan webRTCFrame, 2)
 	go func() {
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(webrtcPeerSourceWait / 2)
 		frames <- webRTCFrame{sequence: 1, payload: []byte{1}}
 		frames <- webRTCFrame{sequence: 2, payload: []byte{2}}
 	}()
 
-	latest, skipped, ok, hasFrame := drainLatestWebRTCFrameWithWait(frames, 50*time.Millisecond)
+	latest, skipped, ok, hasFrame := drainLatestWebRTCFrameWithWait(frames, webrtcPeerSourceWait)
 	if !ok || !hasFrame {
 		t.Fatalf("delayed source frame was not drained: ok=%v hasFrame=%v", ok, hasFrame)
 	}
@@ -424,6 +424,12 @@ func TestDrainLatestWebRTCFrameWithWaitBridgesPeerSourcePhaseDrift(t *testing.T)
 	}
 	if string(latest.payload) != string([]byte{2}) {
 		t.Fatalf("latest frame = %v, want [2]", latest.payload)
+	}
+}
+
+func TestDrainLatestWebRTCFrameWithWaitKeepsPeerWaitShort(t *testing.T) {
+	if webrtcPeerSourceWait <= 0 || webrtcPeerSourceWait >= webrtcFrameDuration {
+		t.Fatalf("peer source wait = %s, want short sub-frame wait", webrtcPeerSourceWait)
 	}
 }
 

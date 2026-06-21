@@ -46,6 +46,7 @@ const (
 	webrtcWriteTimeout         = 3 * time.Second
 	webrtcFrameSourceIdleGrace = 15 * time.Second
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
+	webrtcPeerSourceWait       = 5 * time.Millisecond
 	webrtcIdleDitherAmplitude  = 768
 	webrtcSourceBedAmplitude   = 512
 )
@@ -1476,7 +1477,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		return true
 	}
 	writeNextSourceFrame := func() bool {
-		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
+		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrameWithWait(frames, webrtcPeerSourceWait)
 		if !ok {
 			failPeer("frame_source_closed")
 			return false
