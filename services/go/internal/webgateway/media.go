@@ -958,14 +958,6 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		select {
 		case <-ctx.Done():
 			return
-		case frame, ok := <-frames:
-			if !ok {
-				return
-			}
-			if len(frame) == 0 {
-				continue
-			}
-			lastFrame = frame
 		case <-ticker.C:
 			frame, skipped, ok := latestWebRTCFrame(lastFrame, frames)
 			if !ok {
