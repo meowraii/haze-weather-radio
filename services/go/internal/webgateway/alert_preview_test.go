@@ -2,6 +2,7 @@ package webgateway
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 )
@@ -35,5 +36,20 @@ func TestAlertPreviewAttentionToneEnabled(t *testing.T) {
 	}
 	if alertPreviewAttentionToneEnabled(map[string]any{"tone_type": "NONE"}) {
 		t.Fatal("NONE should disable tone")
+	}
+}
+
+func TestNormalizePreviewVoicePCMKeepsTargetRateRawPCM(t *testing.T) {
+	raw := []byte{0, 1, 2, 3, 4, 5}
+	got, err := normalizePreviewVoicePCM(context.Background(), raw, wxSynthResult{
+		Format:     "pcm_s16le",
+		SampleRate: 48000,
+		Channels:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatalf("raw PCM changed: %#v", got)
 	}
 }

@@ -155,6 +155,7 @@ type sameQueueItem struct {
 	Type         string             `json:"type"`
 	Status       string             `json:"status"`
 	CreatedAt    time.Time          `json:"created_at"`
+	FeedID       string             `json:"feed_id,omitempty"`
 	FeedIDs      []string           `json:"feed_ids"`
 	Header       string             `json:"header"`
 	Originator   string             `json:"originator"`
@@ -634,12 +635,33 @@ func activeQueueStatus(status string) bool {
 }
 
 func itemTargetsFeed(item sameQueueItem, feedID string) bool {
-	for _, id := range item.FeedIDs {
+	for _, id := range queueItemFeedIDs(item) {
 		if id == feedID {
 			return true
 		}
 	}
 	return false
+}
+
+func queueItemFeedIDs(item sameQueueItem) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	add(item.FeedID)
+	for _, id := range item.FeedIDs {
+		add(id)
+	}
+	return out
 }
 
 func sortSameQueueItems(items []sameQueueItem) {

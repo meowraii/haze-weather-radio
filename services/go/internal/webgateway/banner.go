@@ -259,7 +259,7 @@ func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []
 		if !bannerQueueItemFresh(item, now) {
 			continue
 		}
-		for _, targetFeedID := range item.FeedIDs {
+		for _, targetFeedID := range queueItemFeedIDs(item) {
 			targetFeedID = strings.TrimSpace(targetFeedID)
 			if targetFeedID == "" {
 				continue
@@ -290,7 +290,7 @@ func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []
 
 func bannerQueueItemOnAir(item sameQueueItem) bool {
 	switch strings.ToLower(strings.TrimSpace(item.Status)) {
-	case "playing", "claimed", "queued":
+	case "playing", "claimed", "queued", "pending":
 		return true
 	default:
 		return false
@@ -309,7 +309,7 @@ func bannerQueueItemFresh(item sameQueueItem, now time.Time) bool {
 	switch status {
 	case "playing":
 		return now.Sub(anchor) <= 2*time.Hour
-	case "claimed", "queued":
+	case "claimed", "queued", "pending":
 		return now.Sub(anchor) <= 30*time.Minute
 	default:
 		return false

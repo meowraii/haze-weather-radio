@@ -1,10 +1,12 @@
 package webgateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -61,14 +63,14 @@ func synthesizeAlertPreviewVoice(ctx context.Context, configPath string, payload
 	}
 	defer bridge.Close()
 	jobID := safeID("alert-preview-" + alertID)
-	outputPath := resolveConfigPath(configPath, filepath.Join("runtime", "audio", "previews", jobID+".wav"))
+	outputPath := resolveConfigPath(configPath, filepath.Join("runtime", "audio", "previews", jobID+".pcm16le"))
 	synth, err := bridge.Synthesize(ctx, jobID, wxRenderedProduct{
 		FeedID:   feedID,
 		Title:    "Alert Preview",
 		Text:     text,
 		ReaderID: strings.TrimSpace(firstNonBlank(stringPayload(payload, "reader_id", ""), "00")),
 		Language: strings.TrimSpace(firstNonBlank(stringPayload(payload, "language", ""), "en-CA")),
-	}, outputPath, "wav")
+	}, outputPath, "pcm_s16le")
 	if err != nil {
 		return nil, err
 	}
@@ -77,11 +79,80 @@ func synthesizeAlertPreviewVoice(ctx context.Context, configPath string, payload
 	if err != nil {
 		return nil, err
 	}
-	if pcm, info, err := wavPCM16Info(raw); err == nil && info.SampleRate == 48000 && info.Channels == 1 {
-		return pcm, nil
+	return normalizePreviewVoicePCM(ctx, raw, synth)
+}
+
+func normalizePreviewVoicePCM(ctx context.Context, raw []byte, synth wxSynthResult) ([]byte, error) {
+	format := strings.ToLower(strings.TrimSpace(synth.Format))
+	if bytes.HasPrefix(raw, []byte("RIFF")) {
+		if pcm, info, err := wavPCM16Info(raw); err == nil && info.SampleRate == 48000 && info.Channels == 1 {
+			return pcm, nil
+		}
+		outputFormat, _ := wxAudioFormatByID("raw")
+		return transcodeWxAudio(ctx, raw, outputFormat)
 	}
-	format, _ := wxAudioFormatByID("raw")
-	return transcodeWxAudio(ctx, raw, format)
+	if format == "" || format == "pcm_s16le" || format == "raw" || format == "raw_pcm16" {
+		sampleRate := synth.SampleRate
+		if sampleRate <= 0 {
+			sampleRate = 48000
+		}
+		channels := synth.Channels
+		if channels <= 0 {
+			channels = 1
+		}
+		return transcodeRawPCM16ToPCM(ctx, raw, sampleRate, channels, 48000, 1)
+	}
+	outputFormat, _ := wxAudioFormatByID("raw")
+	return transcodeWxAudio(ctx, raw, outputFormat)
+}
+
+func transcodeRawPCM16ToPCM(ctx context.Context, raw []byte, sourceRate int, sourceChannels int, targetRate int, targetChannels int) ([]byte, error) {
+	if sourceRate <= 0 {
+		sourceRate = 48000
+	}
+	if sourceChannels <= 0 {
+		sourceChannels = 1
+	}
+	if targetRate <= 0 {
+		targetRate = 48000
+	}
+	if targetChannels <= 0 {
+		targetChannels = 1
+	}
+	if sourceRate == targetRate && sourceChannels == targetChannels {
+		return raw, nil
+	}
+	ffmpeg, err := resolveFFmpegExecutable()
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg is required to resample preview TTS: %w", err)
+	}
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-nostdin",
+		"-f", "s16le",
+		"-acodec", "pcm_s16le",
+		"-ar", fmt.Sprintf("%d", sourceRate),
+		"-ac", fmt.Sprintf("%d", sourceChannels),
+		"-i", "pipe:0",
+		"-vn",
+		"-sn",
+		"-dn",
+		"-f", "s16le",
+		"-acodec", "pcm_s16le",
+		"-ar", fmt.Sprintf("%d", targetRate),
+		"-ac", fmt.Sprintf("%d", targetChannels),
+		"pipe:1",
+	}
+	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	cmd.Stdin = bytes.NewReader(raw)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg preview PCM resample failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
 }
 
 func alertPreviewLeadTail(configPath string, payload map[string]any, includeSame bool) ([]byte, []byte, string, error) {

@@ -84,13 +84,14 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 			Header  string   `json:"header"`
 			Event   string   `json:"event"`
 			AlertID string   `json:"alert_id"`
+			Title   string   `json:"title"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return
 	}
 	eventType := strings.TrimSpace(event.Type)
-	if !strings.HasPrefix(eventType, "alert.playout.") && eventType != "playout.interrupted" {
+	if !strings.HasPrefix(eventType, "alert.playout.") && eventType != "playout.interrupted" && eventType != "cap.alert.audio.ready" {
 		return
 	}
 	feedIDs := eventFeedIDs(event.FeedID, event.FeedIDs, event.Data.FeedID, event.Data.FeedIDs)
@@ -106,7 +107,7 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 	defer h.mu.Unlock()
 	for _, feedID := range feedIDs {
 		switch eventType {
-		case "alert.playout.started":
+		case "alert.playout.started", "cap.alert.audio.ready":
 			item := h.queueItem(queueID, feedID)
 			alertID := fallbackString(event.Data.AlertID, item.AlertID, alertIDFromQueueID(queueID, feedID))
 			if alertID == "" {
@@ -117,7 +118,7 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 				AlertID:   alertID,
 				QueueID:   queueID,
 				Event:     fallbackString(event.Data.Event, event.Event, item.Event),
-				Header:    fallbackString(event.Data.Header, event.Header, item.Header),
+				Header:    fallbackString(event.Data.Header, event.Header, item.Header, event.Data.Title),
 				ExpiresAt: now.Add(30 * time.Minute),
 				UpdatedAt: now,
 			}

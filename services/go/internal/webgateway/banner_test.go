@@ -219,6 +219,80 @@ func TestBannerPayloadUsesQueuedQueueItemWhenHubMissedEvent(t *testing.T) {
 	}
 }
 
+func TestBannerPayloadUsesPendingQueueItemWhenHubMissedEvent(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	queue := sameQueueItem{
+		ID:        "pending-queue-1",
+		AlertID:   "pending-alert-1",
+		Type:      "cap_alert",
+		Status:    "pending",
+		FeedIDs:   []string{"CAP-IT-ALL"},
+		Header:    "Tornado Warning",
+		Event:     "TOR",
+		CreatedAt: time.Now().UTC().Add(-time.Second),
+	}
+	rawQueue, err := json.Marshal(queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, dir+"/runtime/queues/alerts/pending-queue-1.json", string(rawQueue))
+
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", NewBannerHub(configPath, ""))
+
+	if !payload.Active || len(payload.Alerts) != 1 {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.Alerts[0].Headline != "Tornado Warning" || payload.Alerts[0].FeedID != "CAP-IT-ALL" {
+		t.Fatalf("alert = %#v", payload.Alerts[0])
+	}
+}
+
+func TestBannerPayloadUsesSingularFeedIDQueueItem(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	queue := sameQueueItem{
+		ID:        "single-feed-queue-1",
+		AlertID:   "single-feed-alert-1",
+		Type:      "cap_alert",
+		Status:    "queued",
+		FeedID:    "CAP-IT-ALL",
+		Header:    "Required Weekly Test",
+		Event:     "RWT",
+		CreatedAt: time.Now().UTC().Add(-time.Second),
+	}
+	rawQueue, err := json.Marshal(queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, dir+"/runtime/queues/alerts/single-feed-queue-1.json", string(rawQueue))
+
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", NewBannerHub(configPath, ""))
+
+	if !payload.Active || len(payload.Alerts) != 1 {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.Alerts[0].Headline != "Required Weekly Test" || payload.Alerts[0].FeedID != "CAP-IT-ALL" {
+		t.Fatalf("alert = %#v", payload.Alerts[0])
+	}
+}
+
+func TestBannerHubActivatesFromAudioReadyEvent(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	hub := NewBannerHub(configPath, "")
+	hub.handleEvent([]byte(`{"type":"cap.alert.audio.ready","feed_ids":["CAP-IT-ALL"],"queue_id":"audio-ready-1","data":{"alert_id":"audio-ready-alert","event":"RWT","title":"Required Weekly Test"}}`), time.Now().UTC())
+
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
+
+	if !payload.Active || len(payload.Alerts) != 1 {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.Alerts[0].Headline != "Required Weekly Test" || payload.Alerts[0].FeedID != "CAP-IT-ALL" {
+		t.Fatalf("alert = %#v", payload.Alerts[0])
+	}
+}
+
 func TestBannerPayloadIgnoresStaleQueuedQueueItem(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
