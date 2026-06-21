@@ -155,11 +155,6 @@ func (s *Server) admin(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) banner(writer http.ResponseWriter, request *http.Request) {
-	if !s.auth.Authenticated(request) {
-		target := "/login?next=" + request.URL.EscapedPath()
-		http.Redirect(writer, request, target, http.StatusSeeOther)
-		return
-	}
 	s.serveHTML(writer, request, "banner.html")
 }
 

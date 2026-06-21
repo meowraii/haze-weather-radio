@@ -27,10 +27,6 @@ type bannerPayload struct {
 }
 
 func (s *Server) bannerStream(writer http.ResponseWriter, request *http.Request) {
-	if !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
 		http.Error(writer, "streaming is not supported", http.StatusInternalServerError)
@@ -65,10 +61,6 @@ func (s *Server) bannerStream(writer http.ResponseWriter, request *http.Request)
 }
 
 func (s *Server) bannerAudio(writer http.ResponseWriter, request *http.Request) {
-	if !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	connection, err := websocket.Accept(writer, request, &websocket.AcceptOptions{
 		OriginPatterns: sameOriginPatterns(request),
 	})
@@ -85,10 +77,6 @@ func (s *Server) bannerAudio(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Request) {
-	if !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	if request.Method != http.MethodPost {
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -227,6 +215,9 @@ func activeBannerRecords(configPath string, feedID string, now time.Time) []arch
 func onAirBannerRecords(configPath string, feedID string, hub *BannerHub, now time.Time) []archiveCAPRecord {
 	active := hub.Active(feedID, now)
 	if len(active) == 0 {
+		active = activeQueueBannerAlerts(configPath, feedID, now)
+	}
+	if len(active) == 0 {
 		return nil
 	}
 	out := make([]archiveCAPRecord, 0, len(active))
@@ -253,6 +244,54 @@ func onAirBannerRecords(configPath string, feedID string, hub *BannerHub, now ti
 		return bannerSortKey(out[i].Alert).less(bannerSortKey(out[j].Alert))
 	})
 	return out
+}
+
+func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []bannerOnAirAlert {
+	items, err := loadAlertQueueItems(configPath)
+	if err != nil {
+		return nil
+	}
+	out := []bannerOnAirAlert{}
+	for _, item := range items {
+		if !bannerQueueItemOnAir(item) {
+			continue
+		}
+		for _, targetFeedID := range item.FeedIDs {
+			targetFeedID = strings.TrimSpace(targetFeedID)
+			if targetFeedID == "" {
+				continue
+			}
+			if feedID != "" && targetFeedID != feedID {
+				continue
+			}
+			expires := now.Add(30 * time.Minute)
+			if !item.CreatedAt.IsZero() {
+				expires = item.CreatedAt.Add(30 * time.Minute)
+				if expires.Before(now) {
+					expires = now.Add(15 * time.Second)
+				}
+			}
+			out = append(out, bannerOnAirAlert{
+				FeedID:    targetFeedID,
+				AlertID:   item.AlertID,
+				QueueID:   item.ID,
+				Event:     item.Event,
+				Header:    item.Header,
+				ExpiresAt: expires,
+				UpdatedAt: now,
+			})
+		}
+	}
+	return out
+}
+
+func bannerQueueItemOnAir(item sameQueueItem) bool {
+	switch strings.ToLower(strings.TrimSpace(item.Status)) {
+	case "playing", "claimed":
+		return true
+	default:
+		return false
+	}
 }
 
 func findArchiveAlertByQueueHint(configPath string, item bannerOnAirAlert) (archiveCAPRecord, bool) {

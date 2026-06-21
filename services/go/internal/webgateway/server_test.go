@@ -99,6 +99,45 @@ func TestAdminRedirectsWithoutSession(t *testing.T) {
 	}
 }
 
+func TestBannerDoesNotRequireSession(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "banner.html"), "<!doctype html><title>banner</title>")
+	server := NewServerWithSurface(authEnabledConfig(), "config.yaml", dir, "admin")
+	request := httptest.NewRequest(http.MethodGet, "/banner?feed=CAP-IT-ALL", nil)
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "banner") {
+		t.Fatalf("body = %q", response.Body.String())
+	}
+}
+
+func TestBannerStreamDoesNotRequireSession(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	mustWrite(t, configPath, "")
+	server := NewServerWithSurface(authEnabledConfig(), configPath, dir, "admin")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/banner/stream?feed=CAP-IT-ALL", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code == http.StatusUnauthorized || response.Code == http.StatusSeeOther {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "event: banner") {
+		t.Fatalf("body = %q", response.Body.String())
+	}
+}
+
 func TestPublicSurfaceDoesNotExposeAdminRoutes(t *testing.T) {
 	server := NewServerWithSurface(Config{}, "config.yaml", ".", "public")
 
