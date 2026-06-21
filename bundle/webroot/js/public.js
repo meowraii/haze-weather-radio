@@ -69,6 +69,7 @@ const WEBRTC_STAGNANT_STATS_POLLS = 3;
 const WEBRTC_RECOVER_STATS_POLLS = 6;
 const WEBRTC_RECONNECT_BASE_DELAY_MS = 1000;
 const WEBRTC_RECONNECT_MAX_DELAY_MS = 10000;
+const WEBRTC_DISCONNECT_GRACE_MS = 15000;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -517,6 +518,7 @@ function clearPlayerTimer(player, key) {
 function setHealthyWebRTCStatus(feedId, player, audio = player?.audio) {
     clearPlayerTimer(player, 'trackMuteTimer');
     clearPlayerTimer(player, 'connectionStateTimer');
+    clearPlayerTimer(player, 'disconnectReconnectTimer');
     if (!isActivePlayer(feedId, player)) return;
     if (audio?.dataset.hazePlayerState === 'play-blocked' || audio?.dataset.hazePlayerState === 'needs-play') {
         setPlayerStatus(feedId, 'Press Play to start audio');
@@ -610,6 +612,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     if (!isActivePlayer(feedId, player) || player.mode === 'http') return;
     clearPlayerTimer(player, 'trackMuteTimer');
     clearPlayerTimer(player, 'connectionStateTimer');
+    clearPlayerTimer(player, 'disconnectReconnectTimer');
     stopWebRTCStatsMonitor(player);
     player.trackAttached = false;
     player.connected = false;
@@ -629,6 +632,17 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
         audio.dataset.hazeTrackMuted = '1';
         audio.dataset.hazePlayerState = 'reconnecting';
     }
+}
+
+function scheduleWebRTCDisconnectReconnect(feedId, player, pc) {
+    if (!isActivePlayer(feedId, player) || player.mode === 'http' || player.stopping) return;
+    if (player.disconnectReconnectTimer || player.reconnectPending || player.reconnectTimer) return;
+    player.disconnectReconnectTimer = window.setTimeout(() => {
+        player.disconnectReconnectTimer = null;
+        if (isActivePlayer(feedId, player) && player.pc === pc && pc.connectionState === 'disconnected') {
+            scheduleWebRTCReconnect(feedId, player, 'Reconnecting disconnected audio...');
+        }
+    }, WEBRTC_DISCONNECT_GRACE_MS);
 }
 
 function scheduleWebRTCReconnect(feedId, player, reason = 'Reconnecting audio...') {
@@ -776,6 +790,7 @@ async function startFeedWebRTC(feedId) {
         mediaRecent: null,
         trackMuteTimer: null,
         connectionStateTimer: null,
+        disconnectReconnectTimer: null,
         statsPollTimer: null,
         lastStats: null,
         stagnantStatsPolls: 0,
@@ -901,6 +916,7 @@ async function startFeedWebRTC(feedId) {
         if (pc.connectionState === 'connected') {
             player.connected = true;
             clearPlayerTimer(player, 'connectionStateTimer');
+            clearPlayerTimer(player, 'disconnectReconnectTimer');
             if (currentAudio?.dataset.hazePlayerState === 'play-blocked' || currentAudio?.dataset.hazePlayerState === 'needs-play') {
                 setPlayerStatus(feedId, 'Press Play to start audio');
                 setPlayerButtons(feedId, false);
@@ -917,6 +933,7 @@ async function startFeedWebRTC(feedId) {
                     setPlayerStatus(feedId, 'Reconnecting...');
                 }
             }, WEBRTC_TRANSIENT_STATUS_DELAY_MS);
+            scheduleWebRTCDisconnectReconnect(feedId, player, pc);
             setPlayerButtons(feedId, true);
         } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
             scheduleWebRTCReconnect(feedId, player, 'Reconnecting audio...');
@@ -1044,6 +1061,7 @@ function stopFeed(feedId, { silent = false } = {}) {
         player.pc?.close();
         clearPlayerTimer(player, 'trackMuteTimer');
         clearPlayerTimer(player, 'connectionStateTimer');
+        clearPlayerTimer(player, 'disconnectReconnectTimer');
         clearPlayerTimer(player, 'reconnectTimer');
         player.reconnectPending = false;
         stopWebRTCStatsMonitor(player);
