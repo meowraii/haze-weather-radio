@@ -1149,7 +1149,7 @@ async function startFeedWebRTC(feedId) {
                 setPlayerStatus(feedId, 'Connected, no audio track yet');
             }
         }, 5000);
-        setPlayerStatus(feedId, player.mediaRecent ? 'Waiting for audio...' : 'Connected, waiting for playout audio...');
+        setPlayerStatus(feedId, player.mediaRecent ? 'Waiting for audio...' : 'Connected');
     } catch (error) {
         stopFeed(feedId, { silent: true });
         setPlayerStatus(feedId, error.message || 'Could not start stream');
