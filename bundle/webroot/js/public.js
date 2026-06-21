@@ -741,7 +741,8 @@ function startWebRTCStatsMonitor(feedId, player) {
             return;
         }
         try {
-            const snapshot = await readInboundAudioStats(player.pc);
+            const statsSource = player.audioReceiver?.getStats ? player.audioReceiver : player.pc;
+            const snapshot = await readInboundAudioStats(statsSource);
             if (!snapshot) {
                 if (player.pc.connectionState === 'connected') {
                     player.missingStatsPolls = (player.missingStatsPolls || 0) + 1;
@@ -775,6 +776,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                     ...snapshot,
                     packets_delta: packetsDelta,
                     packets_reset: packetsReset,
+                    stats_source: statsSource === player.audioReceiver ? 'receiver' : 'peer',
                     connection_state: player.pc.connectionState,
                     ice_state: player.pc.iceConnectionState,
                     track_muted: player.audio?.dataset?.hazeTrackMuted === '1',
@@ -829,6 +831,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     player.trackAttached = false;
     player.connected = false;
     player.remoteStream = player.fallbackStream || new MediaStream();
+    player.audioReceiver = null;
     player.lastStats = null;
     player.lastPacketAt = 0;
     player.stagnantStatsPolls = 0;
@@ -894,8 +897,8 @@ function cancelWebRTCReconnect(player) {
     player.reconnectPending = false;
 }
 
-async function readInboundAudioStats(pc) {
-    const report = await pc.getStats();
+async function readInboundAudioStats(source) {
+    const report = await source.getStats();
     let selected = null;
     report.forEach((stats) => {
         const kind = stats.kind || stats.mediaType;
@@ -1016,6 +1019,7 @@ async function startFeedWebRTC(feedId) {
         audio,
         fallbackStream,
         remoteStream: fallbackStream,
+        audioReceiver: null,
         trackAttached: false,
         connected: false,
         mediaRecent: null,
@@ -1089,6 +1093,10 @@ async function startFeedWebRTC(feedId) {
             setPlayerStatus(feedId, 'Audio element unavailable');
             return;
         }
+        player.audioReceiver = event.receiver || null;
+        player.lastStats = null;
+        player.stagnantStatsPolls = 0;
+        player.missingStatsPolls = 0;
         player.trackAttached = true;
         currentAudio.dataset.hazeTrackAttached = '1';
         currentAudio.dataset.hazeTrackState = event.track.readyState || '';

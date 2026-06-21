@@ -335,6 +335,7 @@
             payload: null,
             stream: null,
             audioPeer: null,
+            audioReceiver: null,
             audioFallbackStream: null,
             audioRetryCount: 0,
             audioElement: null,
@@ -1188,6 +1189,7 @@
             stopAudioStatsMonitor();
             state.audioTrackAttached = false;
             state.audioTrackMuted = true;
+            state.audioReceiver = null;
             state.audioLastStats = null;
             state.audioLastPacketAt = 0;
             state.audioStagnantStatsPolls = 0;
@@ -1225,7 +1227,8 @@
                     return;
                 }
                 try {
-                    const snapshot = await readInboundAudioStats(peer);
+                    const statsSource = state.audioReceiver?.getStats ? state.audioReceiver : peer;
+                    const snapshot = await readInboundAudioStats(statsSource);
                     if (!snapshot) {
                         if (peer.connectionState === 'connected') {
                             state.audioMissingStatsPolls += 1;
@@ -1253,6 +1256,7 @@
                         ...snapshot,
                         packets_delta: packetsDelta,
                         packets_reset: packetsReset,
+                        stats_source: statsSource === state.audioReceiver ? 'receiver' : 'peer',
                         connection_state: peer.connectionState,
                         ice_state: peer.iceConnectionState,
                         track_muted: state.audioTrackMuted,
@@ -1280,8 +1284,8 @@
             }, AUDIO_STATS_INTERVAL_MS);
         }
 
-        async function readInboundAudioStats(peer) {
-            const report = await peer.getStats();
+        async function readInboundAudioStats(source) {
+            const report = await source.getStats();
             let selected = null;
             report.forEach((stats) => {
                 const kind = stats.kind || stats.mediaType;
@@ -1309,6 +1313,7 @@
             stopAudioStatsMonitor();
             state.audioTrackAttached = false;
             state.audioTrackMuted = true;
+            state.audioReceiver = null;
             state.audioLastStats = null;
             state.audioLastPacketAt = 0;
             state.audioStagnantStatsPolls = 0;
@@ -1446,6 +1451,10 @@
                     stream_track_count: stream.getTracks().length,
                     track_state: event.track.readyState || '',
                 });
+                state.audioReceiver = event.receiver || null;
+                state.audioLastStats = null;
+                state.audioStagnantStatsPolls = 0;
+                state.audioMissingStatsPolls = 0;
                 state.audioTrackAttached = true;
                 state.audioTrackMuted = event.track.muted === true;
                 event.track.onmute = () => {
