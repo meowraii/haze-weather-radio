@@ -2164,10 +2164,14 @@ function requestedListenCodec() {
     return normalizeHTTPCodec(params.get('codec') || params.get('format') || 'pcm16');
 }
 
-function webRTCOutputMixerDisabled() {
+function webRTCOutputMixerEnabled() {
     const params = new URLSearchParams(window.location.search);
     const value = String(params.get('webrtcMixer') || params.get('audioMixer') || '').trim().toLowerCase();
-    return ['0', 'false', 'off', 'no', 'raw', 'disabled'].includes(value);
+    return ['1', 'true', 'on', 'yes', 'mixer', 'mixed'].includes(value);
+}
+
+function webRTCOutputMixerDisabled() {
+    return !webRTCOutputMixerEnabled();
 }
 
 function renderListen(feeds) {

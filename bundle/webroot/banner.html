@@ -600,7 +600,7 @@
                 scroll: Number.isFinite(scroll) && scroll >= 0 ? scroll : 1,
                 speed: Number.isFinite(speed) && speed > 0 ? speed : 30,
                 audio: ['1', 'true', 'yes', 'on'].includes(audio),
-                audioMixer: !['0', 'false', 'off', 'no', 'raw', 'disabled'].includes(audioMixer),
+                audioMixer: ['1', 'true', 'on', 'yes', 'mixer', 'mixed'].includes(audioMixer),
                 audioCodec: parseWebRTCAudioCodec(params.get('audioCodec') || params.get('codec')),
                 obs: {
                     url: obsUrl,
