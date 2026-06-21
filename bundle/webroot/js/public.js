@@ -77,6 +77,8 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
             media_recent: player.mediaRecent,
             negotiated_codec: player.negotiatedCodec || '',
             negotiated_payload_type: player.negotiatedPayloadType,
+            output_mixer_active: Boolean(player.audioOutputMixer),
+            output_mixer_state: player.audioOutputMixer?.context?.state || '',
             audio: audio ? {
                 paused: audio.paused,
                 ended: audio.ended,
@@ -135,6 +137,8 @@ const WEBRTC_MEDIA_EVENT_GRACE_MS = 12000;
 const WEBRTC_RECENT_PACKET_GRACE_MS = 30000;
 const WEBRTC_HARD_PACKET_STALE_MS = 120000;
 const WEBRTC_PLAYBACK_WATCHDOG_MS = 2500;
+const WEBRTC_OUTPUT_BED_GAIN = 0.0008;
+const WEBRTC_OUTPUT_BED_FREQUENCY = 37;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -782,6 +786,76 @@ function keepWebRTCAudioLive(feedId, player, audio = player?.audio) {
             packets_recent: hasRecentWebRTCPackets(player),
         });
     }
+    if (player.audioOutputMixer?.context?.state === 'suspended') {
+        player.audioOutputMixer.context.resume().catch(() => {});
+    }
+}
+
+function closeWebRTCAudioOutput(player) {
+    const mixer = player?.audioOutputMixer;
+    if (!mixer) return;
+    player.audioOutputMixer = null;
+    try {
+        mixer.oscillator?.stop();
+    } catch {
+        // The oscillator may already be stopped during reconnect cleanup.
+    }
+    try {
+        mixer.source?.disconnect();
+        mixer.gain?.disconnect();
+        mixer.oscillator?.disconnect();
+    } catch {
+        // Best-effort Web Audio cleanup.
+    }
+    if (mixer.context?.state !== 'closed') {
+        mixer.context?.close?.().catch(() => {});
+    }
+}
+
+function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
+    if (!sourceStream || !audio) return sourceStream;
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor || !sourceStream.getAudioTracks?.().length) {
+        closeWebRTCAudioOutput(player);
+        audio.srcObject = sourceStream;
+        return sourceStream;
+    }
+    if (player.audioOutputMixer?.sourceStream === sourceStream) {
+        audio.srcObject = player.audioOutputMixer.outputStream;
+        player.audioOutputMixer.context?.resume?.().catch(() => {});
+        return player.audioOutputMixer.outputStream;
+    }
+    closeWebRTCAudioOutput(player);
+    try {
+        const context = new AudioContextCtor({ latencyHint: 'interactive' });
+        const destination = context.createMediaStreamDestination();
+        const source = context.createMediaStreamSource(sourceStream);
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = WEBRTC_OUTPUT_BED_FREQUENCY;
+        gain.gain.value = WEBRTC_OUTPUT_BED_GAIN;
+        source.connect(destination);
+        oscillator.connect(gain);
+        gain.connect(destination);
+        oscillator.start();
+        const outputStream = destination.stream;
+        player.audioOutputMixer = { context, source, oscillator, gain, destination, sourceStream, outputStream };
+        audio.srcObject = outputStream;
+        context.resume?.().catch(() => {});
+        recordWebRTCEvent(feedId, 'audio_output_mixer_bound', {
+            source_track_count: sourceStream.getAudioTracks?.().length || 0,
+            output_track_count: outputStream.getAudioTracks?.().length || 0,
+        });
+        return outputStream;
+    } catch (error) {
+        closeWebRTCAudioOutput(player);
+        audio.srcObject = sourceStream;
+        recordWebRTCEvent(feedId, 'audio_output_mixer_failed', {
+            error: error?.name || 'mixer_failed',
+        });
+        return sourceStream;
+    }
 }
 
 function hasRecentWebRTCPackets(player, now = Date.now()) {
@@ -965,6 +1039,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     clearPlayerTimer(player, 'mediaEventTimer');
     stopWebRTCStatsMonitor(player);
     clearPlayerInterval(player, 'playbackWatchdogTimer');
+    closeWebRTCAudioOutput(player);
     player.trackAttached = false;
     player.connected = false;
     player.remoteStream = player.fallbackStream || new MediaStream();
@@ -984,7 +1059,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     }
     const audio = player.audio || publicWebRTCAudioElement(feedId);
     if (audio) {
-        audio.srcObject = player.remoteStream;
+        bindWebRTCAudioOutput(feedId, player, player.remoteStream, audio);
         audio.dataset.hazeTrackAttached = '0';
         audio.dataset.hazePlayerState = 'reconnecting';
     }
@@ -1289,7 +1364,7 @@ async function startFeedWebRTC(feedId) {
             stream.addTrack(event.track);
         }
         player.remoteStream = stream;
-        currentAudio.srcObject = stream;
+        bindWebRTCAudioOutput(feedId, player, stream, currentAudio);
         currentAudio.dataset.hazeStreamAttached = currentAudio.srcObject ? '1' : '0';
         currentAudio.dataset.hazePlayerState = 'audio-attached';
         setPlayerStatus(feedId, 'Starting audio...');
@@ -1491,6 +1566,7 @@ function stopFeed(feedId, { silent = false } = {}) {
         clearPlayerInterval(player, 'playbackWatchdogTimer');
         player.reconnectPending = false;
         stopWebRTCStatsMonitor(player);
+        closeWebRTCAudioOutput(player);
         const audio = player.mode === 'webrtc'
             ? (player.audio || publicWebRTCAudioElement(feedId))
             : (findFeedElement('feed-audio', feedId) || player.audio);
@@ -1545,7 +1621,7 @@ function bindPlayerAudio(feedId, fallbackStream = null) {
             track_count: fallbackStream.getTracks?.().length || 0,
             current_track_count: currentTrackCount,
         });
-        audio.srcObject = fallbackStream;
+        bindWebRTCAudioOutput(feedId, player, fallbackStream, audio);
     }
     audio.dataset.hazeStreamAttached = audio.srcObject ? '1' : '0';
     player.audio = audio;
@@ -1575,7 +1651,7 @@ function reattachActivePlayers() {
             audio.play().catch(() => {});
             continue;
         }
-        audio.srcObject = player.remoteStream || player.audio?.srcObject || null;
+        bindWebRTCAudioOutput(feedId, player, player.remoteStream || player.audio?.srcObject || null, audio);
         audio.dataset.hazePlayerState = player.audio?.dataset?.hazePlayerState || 'reattached';
         audio.dataset.hazeTrackAttached = player.trackAttached ? '1' : '0';
         player.audio = audio;

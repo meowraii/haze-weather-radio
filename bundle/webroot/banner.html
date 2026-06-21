@@ -311,6 +311,8 @@
         const AUDIO_RECENT_PACKET_GRACE_MS = 30000;
         const AUDIO_HARD_PACKET_STALE_MS = 120000;
         const AUDIO_PLAYBACK_WATCHDOG_MS = 2500;
+        const AUDIO_OUTPUT_BED_GAIN = 0.0008;
+        const AUDIO_OUTPUT_BED_FREQUENCY = 37;
         const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu']);
 
         const frame = document.getElementById('frame');
@@ -341,6 +343,7 @@
             audioTrackId: '',
             audioRemoteStream: null,
             audioFallbackStream: null,
+            audioOutputMixer: null,
             audioRetryCount: 0,
             audioElement: null,
             audioReconnectTimer: null,
@@ -394,6 +397,8 @@
                 reconnect_pending: Boolean(state.audioReconnectPending || state.audioReconnectTimer),
                 disconnect_reconnect_pending: Boolean(state.audioDisconnectTimer),
                 retry_count: Number(state.audioRetryCount || 0),
+                output_mixer_active: Boolean(state.audioOutputMixer),
+                output_mixer_state: state.audioOutputMixer?.context?.state || '',
                 audio: audio ? {
                     paused: audio.paused,
                     ended: audio.ended,
@@ -1236,6 +1241,7 @@
             state.audioStagnantStatsPolls = 0;
             state.audioMissingStatsPolls = 0;
             state.audioFallbackStream = null;
+            closeBannerAudioOutput();
             if (state.audioPeer) {
                 state.audioPeer.ontrack = null;
                 state.audioPeer.onconnectionstatechange = null;
@@ -1412,6 +1418,7 @@
             state.audioStagnantStatsPolls = 0;
             state.audioMissingStatsPolls = 0;
             state.audioFallbackStream = null;
+            closeBannerAudioOutput();
             if (state.audioPeer) {
                 state.audioPeer.ontrack = null;
                 state.audioPeer.onconnectionstatechange = null;
@@ -1522,6 +1529,76 @@
                     packets_recent: hasRecentBannerAudioPackets(),
                 });
             }
+            if (state.audioOutputMixer?.context?.state === 'suspended') {
+                state.audioOutputMixer.context.resume().catch(() => {});
+            }
+        }
+
+        function closeBannerAudioOutput() {
+            const mixer = state.audioOutputMixer;
+            if (!mixer) return;
+            state.audioOutputMixer = null;
+            try {
+                mixer.oscillator?.stop();
+            } catch {
+                // The oscillator may already be stopped during reconnect cleanup.
+            }
+            try {
+                mixer.source?.disconnect();
+                mixer.gain?.disconnect();
+                mixer.oscillator?.disconnect();
+            } catch {
+                // Best-effort Web Audio cleanup.
+            }
+            if (mixer.context?.state !== 'closed') {
+                mixer.context?.close?.().catch(() => {});
+            }
+        }
+
+        function bindBannerAudioOutput(sourceStream, audio = state.audioElement) {
+            if (!sourceStream || !audio) return sourceStream;
+            const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextCtor || !sourceStream.getAudioTracks?.().length) {
+                closeBannerAudioOutput();
+                audio.srcObject = sourceStream;
+                return sourceStream;
+            }
+            if (state.audioOutputMixer?.sourceStream === sourceStream) {
+                audio.srcObject = state.audioOutputMixer.outputStream;
+                state.audioOutputMixer.context?.resume?.().catch(() => {});
+                return state.audioOutputMixer.outputStream;
+            }
+            closeBannerAudioOutput();
+            try {
+                const context = new AudioContextCtor({ latencyHint: 'interactive' });
+                const destination = context.createMediaStreamDestination();
+                const source = context.createMediaStreamSource(sourceStream);
+                const oscillator = context.createOscillator();
+                const gain = context.createGain();
+                oscillator.type = 'sine';
+                oscillator.frequency.value = AUDIO_OUTPUT_BED_FREQUENCY;
+                gain.gain.value = AUDIO_OUTPUT_BED_GAIN;
+                source.connect(destination);
+                oscillator.connect(gain);
+                gain.connect(destination);
+                oscillator.start();
+                const outputStream = destination.stream;
+                state.audioOutputMixer = { context, source, oscillator, gain, destination, sourceStream, outputStream };
+                audio.srcObject = outputStream;
+                context.resume?.().catch(() => {});
+                recordBannerAudioEvent('audio_output_mixer_bound', {
+                    source_track_count: sourceStream.getAudioTracks?.().length || 0,
+                    output_track_count: outputStream.getAudioTracks?.().length || 0,
+                });
+                return outputStream;
+            } catch (error) {
+                closeBannerAudioOutput();
+                audio.srcObject = sourceStream;
+                recordBannerAudioEvent('audio_output_mixer_failed', {
+                    error: error?.name || 'mixer_failed',
+                });
+                return sourceStream;
+            }
         }
 
         function handleStreamPayload(event) {
@@ -1620,7 +1697,7 @@
                     });
                     scheduleAudioReconnect({ force: true });
                 };
-                audio.srcObject = stream;
+                bindBannerAudioOutput(stream, audio);
                 const playPromise = audio.play();
                 if (playPromise && typeof playPromise.catch === 'function') {
                     playPromise.catch(() => console.error('Unable to autoplay banner WebRTC audio.'));
