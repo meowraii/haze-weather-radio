@@ -328,6 +328,58 @@ function cardMarkup(feed) {
     `;
 }
 
+function createFeedCard(feed) {
+    const template = document.createElement('template');
+    template.innerHTML = cardMarkup(feed).trim();
+    return template.content.firstElementChild;
+}
+
+function updateExistingFeedCard(card, feed) {
+    const tx = feed.transmitter || {};
+    const feedId = String(feed.id || '');
+    const siteNames = (tx.site_names || [tx.site_name]).filter(Boolean).join(', ') || feed.name || 'Unnamed site';
+    const canWebRTC = feedCanWebRTC(feed);
+    const canHTTP = feedCanHTTP(feed);
+    const canPlay = canWebRTC || canHTTP;
+    const feedState = !feed.enabled
+        ? 'disabled'
+        : (canPlay ? 'ready' : (summaryState?.media_available ? 'unavailable' : 'waiting'));
+    const feedStateLabel = {
+        disabled: 'Disabled',
+        ready: 'Live',
+        unavailable: 'Unavailable',
+        waiting: 'Waiting',
+    }[feedState];
+    card.dataset.feedState = feedState;
+    setTextIfChanged(card.querySelector('h3'), siteNames);
+    setTextIfChanged(card.querySelector('.public-feed-status-pill'), feedStateLabel);
+    const now = findFeedElement('feed-now', feedId);
+    if (now) setTextIfChanged(now, feed.runtime?.now_playing || 'Idle');
+    const mode = findFeedElement('feed-mode', feedId);
+    if (mode) {
+        mode.disabled = !canPlay;
+        for (const option of mode.options) {
+            option.disabled = option.value === 'webrtc' ? !canWebRTC : !canHTTP;
+        }
+    }
+    const codec = findFeedElement('feed-codec', feedId);
+    if (codec) codec.disabled = !canPlay;
+    const play = findFeedElement('feed-play', feedId);
+    if (play) {
+        play.dataset.feedPlayable = canPlay ? '1' : '0';
+        play.disabled = feedPlayers.has(feedId) || !canPlay;
+    }
+    const stop = findFeedElement('feed-stop', feedId);
+    if (stop) stop.disabled = !feedPlayers.has(feedId);
+    const share = findFeedElement('feed-share', feedId);
+    if (share) share.disabled = !canHTTP;
+    if (!feedPlayers.has(feedId)) {
+        setPlayerStatus(feedId, canPlay
+            ? (summaryState?.media_available ? 'Ready' : 'Waiting for playout audio')
+            : (feed.enabled ? 'Streaming unavailable' : 'Feed disabled'));
+    }
+}
+
 function feedCanWebRTC(feed) {
     return Boolean(feed.enabled && feed.webrtc_enabled && summaryState?.webrtc_enabled && summaryState?.media_available);
 }
@@ -451,7 +503,18 @@ function renderFeeds(feeds) {
     }
     stopRemovedPlayers(new Set(feeds.map((feed) => String(feed.id || ''))));
     lastFeedsSignature = signature;
-    feedsGrid.innerHTML = feeds.map(cardMarkup).join('');
+    const fragment = document.createDocumentFragment();
+    for (const feed of feeds) {
+        const feedId = String(feed.id || '');
+        const existing = findFeedElement('feed-card', feedId);
+        if (existing && feedPlayers.has(feedId)) {
+            updateExistingFeedCard(existing, feed);
+            fragment.appendChild(existing);
+        } else {
+            fragment.appendChild(createFeedCard(feed));
+        }
+    }
+    feedsGrid.replaceChildren(fragment);
     attachFeedControls();
     reattachActivePlayers();
     window.lucide?.createIcons();
@@ -459,6 +522,8 @@ function renderFeeds(feeds) {
 
 function attachFeedControls() {
     feedsGrid.querySelectorAll('[data-feed-mode]').forEach((select) => {
+        if (select.dataset.hazeBound === '1') return;
+        select.dataset.hazeBound = '1';
         select.addEventListener('change', () => {
             const feedId = select.dataset.feedMode;
             setFeedMode(feedId, select.value);
@@ -467,6 +532,8 @@ function attachFeedControls() {
         });
     });
     feedsGrid.querySelectorAll('[data-feed-codec]').forEach((select) => {
+        if (select.dataset.hazeBound === '1') return;
+        select.dataset.hazeBound = '1';
         select.addEventListener('change', () => {
             const feedId = select.dataset.feedCodec;
             const prefs = normalizedFeedPreferences(feedId);
@@ -477,15 +544,23 @@ function attachFeedControls() {
         });
     });
     feedsGrid.querySelectorAll('[data-feed-play]').forEach((button) => {
+        if (button.dataset.hazeBound === '1') return;
+        button.dataset.hazeBound = '1';
         button.addEventListener('click', () => startFeed(button.dataset.feedPlay));
     });
     feedsGrid.querySelectorAll('[data-feed-stop]').forEach((button) => {
+        if (button.dataset.hazeBound === '1') return;
+        button.dataset.hazeBound = '1';
         button.addEventListener('click', () => stopFeed(button.dataset.feedStop));
     });
     feedsGrid.querySelectorAll('[data-feed-share]').forEach((button) => {
+        if (button.dataset.hazeBound === '1') return;
+        button.dataset.hazeBound = '1';
         button.addEventListener('click', () => copyHTTPLink(button.dataset.feedShare));
     });
     feedsGrid.querySelectorAll('[data-feed-volume]').forEach((input) => {
+        if (input.dataset.hazeBound === '1') return;
+        input.dataset.hazeBound = '1';
         input.addEventListener('input', () => {
             const player = feedPlayers.get(input.dataset.feedVolume);
             if (player?.audio) {
