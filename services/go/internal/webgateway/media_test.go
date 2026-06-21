@@ -882,6 +882,61 @@ func TestMediaHubStreamsIdleRTPContinuously(t *testing.T) {
 	}
 }
 
+func TestMediaHubKeepsRTPContinuousAfterPublishedPCMStops(t *testing.T) {
+	hub := newMemoryMediaHub()
+	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer offerPeer.Close()
+	tracks := make(chan *webrtc.TrackRemote, 1)
+	offerPeer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		tracks <- track
+	})
+	if _, err := offerPeer.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := offerPeer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatheringComplete := webrtc.GatheringCompletePromise(offerPeer)
+	if err := offerPeer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-gatheringComplete
+	answer, err := hub.Answer(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := offerPeer.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}); err != nil {
+		t.Fatal(err)
+	}
+
+	track := waitForRemoteTrack(t, tracks)
+	pcm := sinePCM(960, 1000, 48000, 8000)
+	for i := 0; i < 5; i++ {
+		hub.publish(PCMChunk{FeedID: "sk-0001", SampleRate: 48000, Channels: 1, Duration: 20 * time.Millisecond, Data: pcm})
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var previousTimestamp uint32
+	for i := 0; i < 14; i++ {
+		timestamp, payloadLength := waitForRTPPacketInfo(t, track)
+		if payloadLength == 0 {
+			t.Fatal("RTP payload must not be empty after PCM stops")
+		}
+		if i > 0 {
+			if delta := timestamp - previousTimestamp; delta != uint32(webrtcRTPClockRate/50) {
+				t.Fatalf("RTP timestamp delta after PCM stopped = %d, want %d", delta, webrtcRTPClockRate/50)
+			}
+		}
+		previousTimestamp = timestamp
+	}
+}
+
 func TestMediaHubPeerOutlivesOfferContext(t *testing.T) {
 	hub := newMemoryMediaHub()
 	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
