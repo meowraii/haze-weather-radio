@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,6 +72,9 @@ func (c webRTCAudioCodec) String() string {
 }
 
 func defaultWebRTCAudioCodec() webRTCAudioCodec {
+	if codec, ok := parseWebRTCAudioCodec(os.Getenv("HAZE_WEBRTC_DEFAULT_CODEC")); ok {
+		return codec
+	}
 	return webRTCAudioG722
 }
 
