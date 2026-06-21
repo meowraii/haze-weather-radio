@@ -42,6 +42,17 @@ const feedPlayers = new Map();
 const feedPreferences = new Map();
 window.hazeFeedPlayers = feedPlayers;
 
+function recordWebRTCEvent(feedId, event, details = {}) {
+    const events = window.hazeWebRTCEvents || [];
+    events.push({
+        feed_id: String(feedId || ''),
+        event,
+        ...details,
+        at: new Date().toISOString(),
+    });
+    window.hazeWebRTCEvents = events.slice(-80);
+}
+
 const WEBRTC_CODECS = [
     ['pcmu', 'PCMU'],
     ['opus', 'Opus'],
@@ -770,6 +781,14 @@ function scheduleWebRTCDisconnectReconnect(feedId, player, pc) {
 function scheduleWebRTCReconnect(feedId, player, reason = 'Reconnecting audio...') {
     if (!isActivePlayer(feedId, player) || player.mode === 'http' || player.stopping) return;
     if (player.reconnectPending || player.reconnectTimer) return;
+    recordWebRTCEvent(feedId, 'reconnect_scheduled', {
+        reason,
+        connection_state: player.pc?.connectionState || '',
+        ice_state: player.pc?.iceConnectionState || '',
+        track_attached: Boolean(player.trackAttached),
+        has_live_track: hasLiveWebRTCAudioTrack(player),
+        last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
+    });
     const attempts = Math.max(0, Number(player.reconnectAttempts || 0));
     const delay = Math.min(WEBRTC_RECONNECT_BASE_DELAY_MS * (2 ** attempts), WEBRTC_RECONNECT_MAX_DELAY_MS);
     player.reconnectAttempts = attempts + 1;
@@ -985,6 +1004,12 @@ async function startFeedWebRTC(feedId) {
         markWebRTCPacketsRecent(player, currentAudio);
         event.track.onmute = () => {
             if (isActivePlayer(feedId, player)) {
+                recordWebRTCEvent(feedId, 'track_mute', {
+                    connection_state: pc.connectionState,
+                    ice_state: pc.iceConnectionState,
+                    packets_recent: hasRecentWebRTCPackets(player),
+                    track_state: event.track.readyState || '',
+                });
                 clearPlayerTimer(player, 'trackMuteTimer');
                 player.trackMuteTimer = window.setTimeout(() => {
                     player.trackMuteTimer = null;
@@ -996,11 +1021,20 @@ async function startFeedWebRTC(feedId) {
         };
         event.track.onunmute = () => {
             if (isActivePlayer(feedId, player)) {
+                recordWebRTCEvent(feedId, 'track_unmute', {
+                    connection_state: pc.connectionState,
+                    ice_state: pc.iceConnectionState,
+                    track_state: event.track.readyState || '',
+                });
                 markWebRTCPacketsRecent(player, currentAudio);
             }
         };
         event.track.onended = () => {
             if (isActivePlayer(feedId, player)) {
+                recordWebRTCEvent(feedId, 'track_ended', {
+                    connection_state: pc.connectionState,
+                    ice_state: pc.iceConnectionState,
+                });
                 currentAudio.dataset.hazeTrackState = 'ended';
                 scheduleWebRTCReconnect(feedId, player, 'Reconnecting ended audio track...');
             }
@@ -1039,6 +1073,13 @@ async function startFeedWebRTC(feedId) {
     pc.addEventListener('connectionstatechange', () => {
         if (!isActivePlayer(feedId, player)) return;
         const currentAudio = player.audio;
+        recordWebRTCEvent(feedId, 'connection_state', {
+            connection_state: pc.connectionState,
+            ice_state: pc.iceConnectionState,
+            signaling_state: pc.signalingState || '',
+            track_attached: Boolean(player.trackAttached),
+            has_live_track: hasLiveWebRTCAudioTrack(player),
+        });
         if (currentAudio) {
             currentAudio.dataset.hazeConnectionState = pc.connectionState;
             currentAudio.dataset.hazeIceState = pc.iceConnectionState;

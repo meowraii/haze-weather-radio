@@ -357,6 +357,16 @@
             tickerPlayedKeys: [],
         };
 
+        function recordBannerAudioEvent(event, details = {}) {
+            const events = window.hazeBannerWebRTCEvents || [];
+            events.push({
+                event,
+                ...details,
+                at: new Date().toISOString(),
+            });
+            window.hazeBannerWebRTCEvents = events.slice(-80);
+        }
+
         const ASPECT_RESOLUTIONS = {
             '16:9': { width: 1920, height: 1080 },
             '4:3': { width: 1440, height: 1080 },
@@ -1364,6 +1374,12 @@
                 state.audioTrackAttached = true;
                 markBannerAudioPacketsRecent();
                 event.track.onmute = () => {
+                    recordBannerAudioEvent('track_mute', {
+                        connection_state: pc.connectionState,
+                        ice_state: pc.iceConnectionState,
+                        packets_recent: hasRecentBannerAudioPackets(),
+                        track_state: event.track.readyState || '',
+                    });
                     if (state.audioTrackAttached || hasRecentBannerAudioPackets()) return;
                     state.audioTrackMuteTimer = window.setTimeout(() => {
                         state.audioTrackMuteTimer = null;
@@ -1373,9 +1389,18 @@
                     }, AUDIO_MEDIA_EVENT_GRACE_MS);
                 };
                 event.track.onunmute = () => {
+                    recordBannerAudioEvent('track_unmute', {
+                        connection_state: pc.connectionState,
+                        ice_state: pc.iceConnectionState,
+                        track_state: event.track.readyState || '',
+                    });
                     markBannerAudioPacketsRecent();
                 };
                 event.track.onended = () => {
+                    recordBannerAudioEvent('track_ended', {
+                        connection_state: pc.connectionState,
+                        ice_state: pc.iceConnectionState,
+                    });
                     scheduleAudioReconnect({ force: true });
                 };
                 audio.srcObject = stream;
@@ -1386,6 +1411,13 @@
             };
 
             pc.onconnectionstatechange = () => {
+                recordBannerAudioEvent('connection_state', {
+                    connection_state: pc.connectionState,
+                    ice_state: pc.iceConnectionState,
+                    signaling_state: pc.signalingState || '',
+                    track_attached: state.audioTrackAttached,
+                    has_live_track: hasLiveBannerAudioTrack(),
+                });
                 if (pc.connectionState === 'connected') {
                     clearAudioTransientTimers();
                     state.audioRetryCount = 0;
@@ -1445,6 +1477,14 @@
             if (state.audioReconnectPending) {
                 return;
             }
+            recordBannerAudioEvent('reconnect_scheduled', {
+                force,
+                connection_state: state.audioPeer?.connectionState || '',
+                ice_state: state.audioPeer?.iceConnectionState || '',
+                track_attached: state.audioTrackAttached,
+                has_live_track: hasLiveBannerAudioTrack(),
+                last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+            });
             if (state.audioReconnectTimer) {
                 if (!force) {
                     return;
