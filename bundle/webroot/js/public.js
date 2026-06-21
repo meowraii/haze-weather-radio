@@ -1221,6 +1221,30 @@ async function startFeedWebRTC(feedId) {
         player.trackAttached = true;
         currentAudio.dataset.hazeTrackAttached = '1';
         currentAudio.dataset.hazeTrackState = event.track.readyState || '';
+        event.track.onmute = () => {
+            if (isActivePlayer(feedId, player)) {
+                recordWebRTCEvent(feedId, 'track_muted', {
+                    connection_state: pc.connectionState,
+                    ice_state: pc.iceConnectionState,
+                    last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
+                    packet_source_age_ms: webRTCPacketSourceAgeMS(player),
+                    packets_recent: hasRecentWebRTCPackets(player),
+                    hard_stale_packets: hasHardStaleWebRTCPackets(player),
+                });
+            }
+        };
+        event.track.onunmute = () => {
+            if (isActivePlayer(feedId, player)) {
+                recordWebRTCEvent(feedId, 'track_unmuted', {
+                    connection_state: pc.connectionState,
+                    ice_state: pc.iceConnectionState,
+                    last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
+                    packet_source_age_ms: webRTCPacketSourceAgeMS(player),
+                    packets_recent: hasRecentWebRTCPackets(player),
+                    hard_stale_packets: hasHardStaleWebRTCPackets(player),
+                });
+            }
+        };
         event.track.onended = () => {
             if (isActivePlayer(feedId, player)) {
                 recordWebRTCEvent(feedId, 'track_ended', {

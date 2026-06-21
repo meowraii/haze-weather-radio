@@ -1564,6 +1564,26 @@
                 state.audioStagnantStatsPolls = 0;
                 state.audioMissingStatsPolls = 0;
                 state.audioTrackAttached = true;
+                event.track.onmute = () => {
+                    recordBannerAudioEvent('track_muted', {
+                        connection_state: pc.connectionState,
+                        ice_state: pc.iceConnectionState,
+                        last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                        packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
+                        packets_recent: hasRecentBannerAudioPackets(),
+                        hard_stale_packets: hasHardStaleBannerAudioPackets(),
+                    });
+                };
+                event.track.onunmute = () => {
+                    recordBannerAudioEvent('track_unmuted', {
+                        connection_state: pc.connectionState,
+                        ice_state: pc.iceConnectionState,
+                        last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                        packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
+                        packets_recent: hasRecentBannerAudioPackets(),
+                        hard_stale_packets: hasHardStaleBannerAudioPackets(),
+                    });
+                };
                 event.track.onended = () => {
                     recordBannerAudioEvent('track_ended', {
                         connection_state: pc.connectionState,
