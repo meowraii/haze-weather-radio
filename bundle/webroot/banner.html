@@ -1475,7 +1475,11 @@
                         ice_state: pc.iceConnectionState,
                         track_state: event.track.readyState || '',
                     });
-                    state.audioTrackMuted = true;
+                    if (state.audioTrackMuteTimer) {
+                        window.clearTimeout(state.audioTrackMuteTimer);
+                        state.audioTrackMuteTimer = null;
+                    }
+                    state.audioTrackMuted = false;
                     ensureBannerAudioPlaying();
                 };
                 event.track.onended = () => {
