@@ -76,6 +76,13 @@ func defaultWebRTCAudioCodec() webRTCAudioCodec {
 	return webRTCAudioG722
 }
 
+func WebRTCAudioCapabilities() map[string]any {
+	return map[string]any{
+		"webrtc_opus":          opusBackendAvailable(),
+		"webrtc_default_codec": defaultWebRTCAudioCodec().String(),
+	}
+}
+
 type WebRTCAnswerOptions struct {
 	DisableG722    bool
 	RequireOpus    bool

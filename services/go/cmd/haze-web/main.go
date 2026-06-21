@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -29,7 +31,22 @@ func run() error {
 	webroot := flag.String("webroot", "webroot", "webroot directory")
 	configPath := flag.String("config", "config.yaml", "Haze config path")
 	surface := flag.String("surface", "combined", "HTTP surface: public, admin, or combined")
+	checkCodecs := flag.Bool("check-codecs", false, "print WebRTC codec capabilities and exit")
+	requireOpus := flag.Bool("require-opus", false, "fail --check-codecs unless native Opus is available")
 	flag.Parse()
+
+	if *checkCodecs {
+		capabilities := webgateway.WebRTCAudioCapabilities()
+		if *requireOpus {
+			opus, _ := capabilities["webrtc_opus"].(bool)
+			if !opus {
+				return fmt.Errorf("native Opus is not available in this haze-web build")
+			}
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(capabilities)
+	}
 
 	if envFile := os.Getenv("HAZE_ENV_FILE"); envFile != "" {
 		if err := webgateway.LoadDotEnv(envFile); err != nil {

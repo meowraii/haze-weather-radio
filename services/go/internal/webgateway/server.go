@@ -175,13 +175,10 @@ func (s *Server) serveHTML(writer http.ResponseWriter, request *http.Request, na
 
 func (s *Server) health(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, map[string]any{
-		"ok":         true,
-		"service":    "haze-web",
-		"started_at": s.startedAt,
-		"capabilities": map[string]any{
-			"webrtc_opus":          opusBackendAvailable(),
-			"webrtc_default_codec": defaultWebRTCAudioCodec().String(),
-		},
+		"ok":           true,
+		"service":      "haze-web",
+		"started_at":   s.startedAt,
+		"capabilities": WebRTCAudioCapabilities(),
 	})
 }
 

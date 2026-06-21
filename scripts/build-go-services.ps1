@@ -214,6 +214,7 @@ try {
     go build -o (Join-Path $BinFull "haze-playlist.exe") ./cmd/haze-playlist
     go build -o (Join-Path $BinFull "haze-webhook.exe") ./cmd/haze-webhook
     go build -o (Join-Path $BinFull "haze-ivr.exe") ./cmd/haze-ivr
+    Copy-SherpaOnnxRuntimeLibraries -DestinationDir $BinFull
     if ($BuildWebArgs.Count -gt 0) {
         foreach ($DllName in @("libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll", "libwinpthread-1.dll")) {
             $DllPath = Join-Path $OpusBin $DllName
@@ -221,8 +222,11 @@ try {
                 Copy-Item -Force -Path $DllPath -Destination $BinFull
             }
         }
+        & (Join-Path $BinFull "haze-web.exe") --check-codecs --require-opus | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "haze-web native Opus smoke check failed"
+        }
     }
-    Copy-SherpaOnnxRuntimeLibraries -DestinationDir $BinFull
     Write-Host "Built Go services in $BinFull"
 } finally {
     Pop-Location

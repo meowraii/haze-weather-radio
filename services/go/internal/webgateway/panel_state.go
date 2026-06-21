@@ -219,11 +219,12 @@ func summaryPayload(config Config, configPath string, startedAt time.Time, reque
 		"admin_url":          adminURL(config, request),
 		"tls":                tlsStatePayload(config, request),
 		"capabilities": map[string]any{
-			"public_alerts":        publicAlertsArchiveAccess(config) == "public",
-			"webrtc":               webrtcEnabled,
-			"webrtc_opus":          opusBackendAvailable(),
-			"webrtc_default_codec": defaultWebRTCAudioCodec().String(),
+			"public_alerts": publicAlertsArchiveAccess(config) == "public",
+			"webrtc":        webrtcEnabled,
 		},
+	}
+	for key, value := range WebRTCAudioCapabilities() {
+		summary["capabilities"].(map[string]any)[key] = value
 	}
 	if admin {
 		summary["data_pool_key_count"] = len(readJSONMap(resolveConfigPath(configPath, "runtime/state/dataPool.json")))

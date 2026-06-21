@@ -184,6 +184,10 @@ else
 fi
 
 go build "${build_web_args[@]}" -ldflags "$web_ldflags" -o "$bin_full/haze-web" ./cmd/haze-web
+copy_sherpa_onnx_runtime_libraries "$bin_full"
+if [[ "${#build_web_args[@]}" -gt 0 ]]; then
+  "$bin_full/haze-web" --check-codecs --require-opus
+fi
 go build -o "$bin_full/haze-data-ingest" ./cmd/haze-data-ingest
 go build -o "$bin_full/haze-cap-ingest" ./cmd/haze-cap-ingest
 go build -o "$bin_full/haze-tts" ./cmd/haze-tts
@@ -201,8 +205,6 @@ chmod +x \
   "$bin_full/haze-playlist" \
   "$bin_full/haze-webhook" \
   "$bin_full/haze-ivr"
-
-copy_sherpa_onnx_runtime_libraries "$bin_full"
 
 for bundled_dir in webroot managed audio; do
   copy_bundle_dir "$bundled_dir"
