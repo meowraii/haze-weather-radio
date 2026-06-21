@@ -347,6 +347,10 @@
             audioFallbackStream: null,
             audioOutputMixer: null,
             audioRetryCount: 0,
+            audioForcedCodec: '',
+            audioRequestedCodec: 'auto',
+            audioNegotiatedCodec: '',
+            audioCodecFallbackApplied: false,
             audioElement: null,
             audioReconnectTimer: null,
             audioReconnectPending: false,
@@ -1315,6 +1319,9 @@
                                 });
                             }
                             if (shouldReconnectBannerAudioForMissingPackets() && state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                                if (maybeFallbackBannerAudioCodecToPCMU('missing_inbound_stats')) {
+                                    return;
+                                }
                                 scheduleAudioReconnect({ force: true });
                             }
                         }
@@ -1350,6 +1357,9 @@
                         }
                         if (shouldReconnectBannerAudioForMissingPackets() && state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeBannerWebRTCStats);
+                            if (maybeFallbackBannerAudioCodecToPCMU('stalled_inbound_packets')) {
+                                return;
+                            }
                             scheduleAudioReconnect({ force: true });
                         }
                     } else {
@@ -1477,6 +1487,27 @@
             return !hasUsableBannerAudio() || hasHardStaleBannerAudioPackets();
         }
 
+        function effectiveBannerAudioCodec() {
+            return state.audioForcedCodec || query.audioCodec || 'auto';
+        }
+
+        function maybeFallbackBannerAudioCodecToPCMU(reason) {
+            const requested = String(state.audioRequestedCodec || 'auto').trim().toLowerCase();
+            const negotiated = String(state.audioNegotiatedCodec || '').trim().toLowerCase();
+            if (state.audioCodecFallbackApplied || query.audioCodec !== 'auto' || requested !== 'auto' || negotiated !== 'g722') {
+                return false;
+            }
+            state.audioCodecFallbackApplied = true;
+            state.audioForcedCodec = 'pcmu';
+            recordBannerAudioEvent('codec_fallback_pcmu', {
+                reason,
+                previous_codec: negotiated,
+                requested_codec: requested,
+            });
+            scheduleAudioReconnect({ force: true });
+            return true;
+        }
+
         function markBannerAudioPacketsRecent() {
             state.audioLastPacketAt = Date.now();
             cancelAudioReconnect();
@@ -1509,6 +1540,7 @@
                 }
                 state.audioTrackMutedReported = true;
                 recordBannerAudioEvent('track_muted', bannerAudioTrackEventDetails());
+                maybeFallbackBannerAudioCodecToPCMU('sustained_track_mute');
             }, AUDIO_TRACK_MUTE_GRACE_MS);
         }
 
@@ -1783,12 +1815,16 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
-                    body: JSON.stringify({
-                        feed_id: query.feed,
-                        sdp: pc.localDescription?.sdp || '',
-                        require_opus: false,
-                        codec: query.audioCodec === 'auto' ? '' : query.audioCodec,
-                    }),
+                    body: (() => {
+                        const codec = effectiveBannerAudioCodec();
+                        state.audioRequestedCodec = codec || 'auto';
+                        return JSON.stringify({
+                            feed_id: query.feed,
+                            sdp: pc.localDescription?.sdp || '',
+                            require_opus: false,
+                            codec: codec === 'auto' ? '' : codec,
+                        });
+                    })(),
                 }))
                 .then((response) => {
                     if (!response.ok) {
@@ -1797,6 +1833,7 @@
                     return response.json();
                 })
                 .then((answer) => {
+                    state.audioNegotiatedCodec = answer.codec || '';
                     recordBannerAudioEvent('answer_received', {
                         codec: answer.codec || '',
                         payload_type: answer.payload_type ?? null,

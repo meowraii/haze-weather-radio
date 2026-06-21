@@ -978,6 +978,7 @@ function scheduleWebRTCTrackMuteReport(feedId, player) {
         }
         player.trackMutedReported = true;
         recordWebRTCEvent(feedId, 'track_muted', webRTCTrackEventDetails(player));
+        maybeFallbackWebRTCCodecToPCMU(feedId, player, 'sustained_track_mute');
     }, WEBRTC_TRACK_MUTE_GRACE_MS);
 }
 
@@ -991,6 +992,27 @@ function clearWebRTCTrackMuteReport(feedId, player) {
     } else if (hadPendingMute) {
         recordWebRTCEvent(feedId, 'track_mute_transient', webRTCTrackEventDetails(player));
     }
+}
+
+function maybeFallbackWebRTCCodecToPCMU(feedId, player, reason) {
+    if (!isActivePlayer(feedId, player) || player.mode !== 'webrtc' || player.stopping) return false;
+    const requested = String(player.requestedCodec || 'auto').trim().toLowerCase();
+    const negotiated = String(player.negotiatedCodec || '').trim().toLowerCase();
+    if (player.codecFallbackApplied || requested !== 'auto' || negotiated !== 'g722') return false;
+    player.codecFallbackApplied = true;
+    const prefs = normalizedFeedPreferences(feedId);
+    prefs.mode = 'webrtc';
+    prefs.codec = 'pcmu';
+    feedPreferences.set(feedId, prefs);
+    const codecSelect = findFeedElement('feed-codec', feedId);
+    if (codecSelect) codecSelect.value = 'pcmu';
+    recordWebRTCEvent(feedId, 'codec_fallback_pcmu', {
+        reason,
+        previous_codec: negotiated,
+        requested_codec: requested,
+    });
+    scheduleWebRTCReconnect(feedId, player, 'Reconnecting with PCMU audio...');
+    return true;
 }
 
 function startWebRTCStatsMonitor(feedId, player) {
@@ -1021,6 +1043,9 @@ function startWebRTCStatsMonitor(feedId, player) {
                         }
                     }
                     if (shouldReconnectWebRTCForMissingPackets(player) && player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                        if (maybeFallbackWebRTCCodecToPCMU(feedId, player, 'missing_inbound_stats')) {
+                            return;
+                        }
                         scheduleWebRTCReconnect(feedId, player, 'Reconnecting missing audio stream...');
                     }
                 }
@@ -1062,6 +1087,9 @@ function startWebRTCStatsMonitor(feedId, player) {
                 }
                 if (shouldReconnectWebRTCForMissingPackets(player) && player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeLastWebRTCStats[feedId]);
+                    if (maybeFallbackWebRTCCodecToPCMU(feedId, player, 'stalled_inbound_packets')) {
+                        return;
+                    }
                     scheduleWebRTCReconnect(feedId, player, 'Reconnecting stalled audio...');
                 }
             } else {
@@ -1315,6 +1343,7 @@ async function startFeedWebRTC(feedId) {
         trackAttached: false,
         connected: false,
         mediaRecent: null,
+        requestedCodec: 'auto',
         connectionStateTimer: null,
         disconnectReconnectTimer: null,
         mediaEventTimer: null,
@@ -1329,6 +1358,7 @@ async function startFeedWebRTC(feedId) {
         reconnectTimer: null,
         reconnectAttempts: 0,
         reconnectPending: false,
+        codecFallbackApplied: false,
         trackMutedReported: false,
         stopping: false,
     };
@@ -1490,6 +1520,7 @@ async function startFeedWebRTC(feedId) {
         await waitForIceGathering(pc);
         const local = pc.localDescription;
         const codec = selectedFeedCodec(feedId);
+        player.requestedCodec = codec || 'auto';
         const payload = {
             feed_id: feedId,
             sdp: local.sdp,
