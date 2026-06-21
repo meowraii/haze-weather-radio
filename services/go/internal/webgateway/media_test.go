@@ -179,6 +179,30 @@ func TestWebRTCFrameSourceBroadcastCountsSlowSubscribers(t *testing.T) {
 	}
 }
 
+func TestWebRTCFrameSourceMailboxKeepsLatestFrame(t *testing.T) {
+	source := &webRTCFrameSource{subs: map[chan []byte]struct{}{}}
+	frames, unsubscribe, ok := source.subscribe()
+	if !ok {
+		t.Fatal("subscriber should attach")
+	}
+	_ = unsubscribe
+
+	if dropped, _ := source.broadcast([]byte{1}); dropped != 0 {
+		t.Fatalf("first broadcast dropped = %d, want 0 for empty mailbox", dropped)
+	}
+	if dropped, _ := source.broadcast([]byte{2}); dropped != 1 {
+		t.Fatalf("second broadcast dropped = %d, want 1 for stale mailbox replacement", dropped)
+	}
+	select {
+	case frame := <-frames:
+		if string(frame) != string([]byte{2}) {
+			t.Fatalf("mailbox frame = %v, want latest [2]", frame)
+		}
+	default:
+		t.Fatal("mailbox did not retain latest frame")
+	}
+}
+
 func TestLatestWebRTCFrameSkipsStaleFrames(t *testing.T) {
 	frames := make(chan []byte, 4)
 	frames <- []byte{2}

@@ -33,6 +33,7 @@ const (
 	opusEncoderChannels        = 1
 	webrtcFrameDuration        = 20 * time.Millisecond
 	webrtcMaxQueuedFrames      = 10
+	webrtcPeerFrameMailbox     = 1
 	webrtcResumeQueuedFrames   = 2
 	webrtcConcealmentFrames    = 6
 	feedIngressCapacity        = 4
@@ -783,7 +784,7 @@ func (h *MediaHub) webRTCFrameSource(feedID string, codec webRTCAudioCodec) (*we
 }
 
 func (s *webRTCFrameSource) subscribe() (<-chan []byte, func(), bool) {
-	ch := make(chan []byte, webrtcMaxQueuedFrames)
+	ch := make(chan []byte, webrtcPeerFrameMailbox)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
