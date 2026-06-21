@@ -1470,6 +1470,68 @@ func TestMediaHubMaintainsRTPCadenceThroughSourceJitter(t *testing.T) {
 	assertMediaHubMaintainsRTPCadenceThroughSourceJitter(t, "pcmu", webRTCAudioPCMU)
 }
 
+func TestMediaHubDeliversRTPAtSteadyWallClockCadence(t *testing.T) {
+	hub := newMemoryMediaHub()
+	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer offerPeer.Close()
+	tracks := make(chan *webrtc.TrackRemote, 1)
+	offerPeer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		tracks <- track
+	})
+	if _, err := offerPeer.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := offerPeer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatheringComplete := webrtc.GatheringCompletePromise(offerPeer)
+	if err := offerPeer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-gatheringComplete
+	answer, err := hub.AnswerWithOptions(t.Context(), "sk-0001", offerPeer.LocalDescription().SDP, WebRTCAnswerOptions{PreferredCodec: "pcmu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := offerPeer.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer.SDP}); err != nil {
+		t.Fatal(err)
+	}
+
+	track := waitForRemoteTrack(t, tracks)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pcm := sinePCM(960, 1100, 48000, 12000)
+		ticker := time.NewTicker(webrtcFrameDuration)
+		defer ticker.Stop()
+		for i := 0; i < 32; i++ {
+			hub.publish(PCMChunk{FeedID: "sk-0001", SampleRate: 48000, Channels: 1, Duration: 20 * time.Millisecond, Data: pcm})
+			<-ticker.C
+		}
+	}()
+
+	for i := 0; i < 4; i++ {
+		_ = waitForRTPPacket(t, track)
+	}
+	previous := time.Now()
+	for i := 0; i < 16; i++ {
+		_ = waitForRTPPacket(t, track)
+		now := time.Now()
+		gap := now.Sub(previous)
+		if gap > 100*time.Millisecond {
+			t.Fatalf("RTP receiver wall-clock gap = %s, want <= 100ms", gap)
+		}
+		previous = now
+	}
+	<-done
+}
+
 func TestMediaHubMaintainsOpusRTPCadenceThroughSourceJitter(t *testing.T) {
 	if !opusBackendAvailable() {
 		t.Skip("native Opus encoder is not available")
