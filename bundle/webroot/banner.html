@@ -1368,12 +1368,16 @@
                     const concealedDelta = bannerWebRTCStatsDelta(previous, snapshot, 'concealedSamples', packetsReset);
                     const silentConcealedDelta = bannerWebRTCStatsDelta(previous, snapshot, 'silentConcealedSamples', packetsReset);
                     const jitterBufferEmittedDelta = bannerWebRTCStatsDelta(previous, snapshot, 'jitterBufferEmittedCount', packetsReset);
+                    const samplesReceivedDelta = bannerWebRTCStatsDelta(previous, snapshot, 'totalSamplesReceived', packetsReset);
+                    const audioEnergyDelta = bannerWebRTCStatsDelta(previous, snapshot, 'totalAudioEnergy', packetsReset);
                     const audioProgress = bannerWebRTCStatsShowAudioProgress(snapshot, {
                         packetsDelta,
                         bytesDelta,
                         concealedDelta,
                         silentConcealedDelta,
                         jitterBufferEmittedDelta,
+                        samplesReceivedDelta,
+                        audioEnergyDelta,
                         packetsReset,
                         previous,
                     });
@@ -1385,6 +1389,8 @@
                         concealed_samples_delta: concealedDelta,
                         silent_concealed_samples_delta: silentConcealedDelta,
                         jitter_buffer_emitted_delta: jitterBufferEmittedDelta,
+                        total_samples_received_delta: samplesReceivedDelta,
+                        total_audio_energy_delta: audioEnergyDelta,
                         audio_progress: audioProgress,
                         packets_reset: packetsReset,
                         stats_source: statsResult.source,
@@ -1445,6 +1451,8 @@
                 silentConcealedSamples: Number(selected.silentConcealedSamples || 0),
                 jitterBufferDelay: Number(selected.jitterBufferDelay || 0),
                 jitterBufferEmittedCount: Number(selected.jitterBufferEmittedCount || 0),
+                totalSamplesReceived: Number(selected.totalSamplesReceived || 0),
+                totalAudioEnergy: Number(selected.totalAudioEnergy || 0),
                 trackIdentifier: selected.trackIdentifier || '',
                 timestamp: selected.timestamp || performance.now(),
             };
@@ -1525,6 +1533,8 @@
                 || Number(deltas?.concealedDelta || 0) > 0
                 || Number(deltas?.silentConcealedDelta || 0) > 0
                 || Number(deltas?.jitterBufferEmittedDelta || 0) > 0
+                || Number(deltas?.samplesReceivedDelta || 0) > 0
+                || Number(deltas?.audioEnergyDelta || 0) > 0
                 || (!deltas?.previous && (Number(snapshot.packetsReceived || 0) > 0 || Number(snapshot.bytesReceived || 0) > 0)));
         }
 

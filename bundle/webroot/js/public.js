@@ -1239,12 +1239,16 @@ function startWebRTCStatsMonitor(feedId, player) {
             const concealedDelta = webRTCStatsDelta(previous, snapshot, 'concealedSamples', packetsReset);
             const silentConcealedDelta = webRTCStatsDelta(previous, snapshot, 'silentConcealedSamples', packetsReset);
             const jitterBufferEmittedDelta = webRTCStatsDelta(previous, snapshot, 'jitterBufferEmittedCount', packetsReset);
+            const samplesReceivedDelta = webRTCStatsDelta(previous, snapshot, 'totalSamplesReceived', packetsReset);
+            const audioEnergyDelta = webRTCStatsDelta(previous, snapshot, 'totalAudioEnergy', packetsReset);
             const audioProgress = webRTCStatsShowAudioProgress(snapshot, {
                 packetsDelta,
                 bytesDelta,
                 concealedDelta,
                 silentConcealedDelta,
                 jitterBufferEmittedDelta,
+                samplesReceivedDelta,
+                audioEnergyDelta,
                 packetsReset,
                 previous,
             });
@@ -1258,6 +1262,8 @@ function startWebRTCStatsMonitor(feedId, player) {
                     concealed_samples_delta: concealedDelta,
                     silent_concealed_samples_delta: silentConcealedDelta,
                     jitter_buffer_emitted_delta: jitterBufferEmittedDelta,
+                    total_samples_received_delta: samplesReceivedDelta,
+                    total_audio_energy_delta: audioEnergyDelta,
                     audio_progress: audioProgress,
                     packets_reset: packetsReset,
                     stats_source: statsResult.source,
@@ -1306,6 +1312,8 @@ function webRTCStatsShowAudioProgress(snapshot, deltas) {
         || Number(deltas?.concealedDelta || 0) > 0
         || Number(deltas?.silentConcealedDelta || 0) > 0
         || Number(deltas?.jitterBufferEmittedDelta || 0) > 0
+        || Number(deltas?.samplesReceivedDelta || 0) > 0
+        || Number(deltas?.audioEnergyDelta || 0) > 0
         || (!deltas?.previous && (Number(snapshot.packetsReceived || 0) > 0 || Number(snapshot.bytesReceived || 0) > 0)));
 }
 
@@ -1442,6 +1450,8 @@ async function readInboundAudioStats(source, trackId = '') {
         silentConcealedSamples: Number(selected.silentConcealedSamples || 0),
         jitterBufferDelay: Number(selected.jitterBufferDelay || 0),
         jitterBufferEmittedCount: Number(selected.jitterBufferEmittedCount || 0),
+        totalSamplesReceived: Number(selected.totalSamplesReceived || 0),
+        totalAudioEnergy: Number(selected.totalAudioEnergy || 0),
         trackIdentifier: selected.trackIdentifier || '',
         timestamp: selected.timestamp || performance.now(),
     };
