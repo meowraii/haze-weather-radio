@@ -1424,8 +1424,7 @@
                     return;
                 }
                 state.audioTrackAttached = true;
-                state.audioTrackMuted = false;
-                markBannerAudioPacketsRecent();
+                state.audioTrackMuted = true;
                 event.track.onmute = () => {
                     state.audioTrackMuted = true;
                     recordBannerAudioEvent('track_mute', {
@@ -1455,7 +1454,7 @@
                         ice_state: pc.iceConnectionState,
                         track_state: event.track.readyState || '',
                     });
-                    markBannerAudioPacketsRecent();
+                    state.audioTrackMuted = true;
                     ensureBannerAudioPlaying();
                 };
                 event.track.onended = () => {
