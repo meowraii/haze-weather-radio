@@ -827,8 +827,12 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     player.connected = false;
     player.remoteStream = player.fallbackStream || new MediaStream();
     player.lastStats = null;
+    player.lastPacketAt = 0;
     player.stagnantStatsPolls = 0;
     player.missingStatsPolls = 0;
+    player.mediaRecent = null;
+    player.negotiatedCodec = '';
+    player.negotiatedPayloadType = null;
     player.trackMuted = true;
     try {
         player.pc?.close();
