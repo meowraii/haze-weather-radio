@@ -568,6 +568,74 @@ func TestMediaHubStreamsRTPToPeer(t *testing.T) {
 	}
 }
 
+func TestMediaHubPeerOutlivesOfferContext(t *testing.T) {
+	hub := newMemoryMediaHub()
+	offerPeer, err := newWebRTCPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer offerPeer.Close()
+	tracks := make(chan *webrtc.TrackRemote, 1)
+	offerPeer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		tracks <- track
+	})
+	if _, err := offerPeer.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := offerPeer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatheringComplete := webrtc.GatheringCompletePromise(offerPeer)
+	if err := offerPeer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-gatheringComplete
+
+	offerCtx, cancelOffer := context.WithCancel(context.Background())
+	answer, err := hub.Answer(offerCtx, "sk-0001", offerPeer.LocalDescription().SDP)
+	cancelOffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := offerPeer.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		track := <-tracks
+		packet, _, err := track.ReadRTP()
+		if err != nil {
+			done <- err
+			return
+		}
+		if len(packet.Payload) == 0 {
+			done <- errEmptyRTPPayload
+			return
+		}
+		done <- nil
+	}()
+	pcm := make([]byte, 960)
+	for index := 0; index+1 < len(pcm); index += 2 {
+		pcm[index] = byte(index)
+	}
+	for i := 0; i < 20; i++ {
+		hub.publish(PCMChunk{FeedID: "sk-0001", SampleRate: 48000, Channels: 1, Duration: 20 * time.Millisecond, Data: pcm})
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for WebRTC RTP after offer context cancellation")
+	}
+}
+
 var errEmptyRTPPayload = &testError{"empty RTP payload"}
 
 type testError struct {

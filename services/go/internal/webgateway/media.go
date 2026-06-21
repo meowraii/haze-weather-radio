@@ -137,7 +137,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 	if !h.HasRecentPCM(feedID, 5*time.Second) {
 		log.Printf("media bridge has no recent PCM for feed %s; WebRTC peer will receive silence until playout publishes audio", feedID)
 	}
-	peerCtx, cancelPeer := context.WithCancel(ctx)
+	peerCtx, cancelPeer := context.WithCancel(context.Background())
 	peerID := fmt.Sprintf("%s-%d", mediaSafeID(feedID), time.Now().UnixNano())
 	h.mu.Lock()
 	h.peers[peerID] = peerConnection
