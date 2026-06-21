@@ -1352,6 +1352,15 @@
                     const concealedDelta = bannerWebRTCStatsDelta(previous, snapshot, 'concealedSamples', packetsReset);
                     const silentConcealedDelta = bannerWebRTCStatsDelta(previous, snapshot, 'silentConcealedSamples', packetsReset);
                     const jitterBufferEmittedDelta = bannerWebRTCStatsDelta(previous, snapshot, 'jitterBufferEmittedCount', packetsReset);
+                    const audioProgress = bannerWebRTCStatsShowAudioProgress(snapshot, {
+                        packetsDelta,
+                        bytesDelta,
+                        concealedDelta,
+                        silentConcealedDelta,
+                        jitterBufferEmittedDelta,
+                        packetsReset,
+                        previous,
+                    });
                     state.audioLastStats = snapshot;
                     window.hazeBannerWebRTCStats = {
                         ...snapshot,
@@ -1360,6 +1369,7 @@
                         concealed_samples_delta: concealedDelta,
                         silent_concealed_samples_delta: silentConcealedDelta,
                         jitter_buffer_emitted_delta: jitterBufferEmittedDelta,
+                        audio_progress: audioProgress,
                         packets_reset: packetsReset,
                         stats_source: statsResult.source,
                         connection_state: peer.connectionState,
@@ -1367,7 +1377,7 @@
                         packets_recent: hasRecentBannerAudioPackets(),
                         at: new Date().toISOString(),
                     };
-                    if (previous && !packetsReset && packetsDelta <= 0 && peer.connectionState === 'connected') {
+                    if (previous && !audioProgress && peer.connectionState === 'connected') {
                         state.audioStagnantStatsPolls += 1;
                         if (state.audioStagnantStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stalled.', window.hazeBannerWebRTCStats);
@@ -1380,7 +1390,7 @@
                             scheduleAudioReconnect({ force: true });
                         }
                     } else {
-                        if (packetsDelta > 0 || snapshot.packetsReceived > 0) {
+                        if (audioProgress) {
                             markBannerAudioPacketsRecent();
                             ensureBannerAudioPlaying();
                         }
@@ -1491,6 +1501,17 @@
         function bannerWebRTCStatsDelta(previous, snapshot, field, reset = false) {
             if (!previous || reset) return 0;
             return Number(snapshot?.[field] || 0) - Number(previous?.[field] || 0);
+        }
+
+        function bannerWebRTCStatsShowAudioProgress(snapshot, deltas) {
+            if (!snapshot) return false;
+            return Boolean(deltas?.packetsReset
+                || Number(deltas?.packetsDelta || 0) > 0
+                || Number(deltas?.bytesDelta || 0) > 0
+                || Number(deltas?.concealedDelta || 0) > 0
+                || Number(deltas?.silentConcealedDelta || 0) > 0
+                || Number(deltas?.jitterBufferEmittedDelta || 0) > 0
+                || (!deltas?.previous && (Number(snapshot.packetsReceived || 0) > 0 || Number(snapshot.bytesReceived || 0) > 0)));
         }
 
         function hasLiveBannerAudioTrack() {

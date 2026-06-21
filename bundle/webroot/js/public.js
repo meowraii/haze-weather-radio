@@ -1113,6 +1113,15 @@ function startWebRTCStatsMonitor(feedId, player) {
             const concealedDelta = webRTCStatsDelta(previous, snapshot, 'concealedSamples', packetsReset);
             const silentConcealedDelta = webRTCStatsDelta(previous, snapshot, 'silentConcealedSamples', packetsReset);
             const jitterBufferEmittedDelta = webRTCStatsDelta(previous, snapshot, 'jitterBufferEmittedCount', packetsReset);
+            const audioProgress = webRTCStatsShowAudioProgress(snapshot, {
+                packetsDelta,
+                bytesDelta,
+                concealedDelta,
+                silentConcealedDelta,
+                jitterBufferEmittedDelta,
+                packetsReset,
+                previous,
+            });
             player.lastStats = snapshot;
             window.hazeLastWebRTCStats = {
                 ...(window.hazeLastWebRTCStats || {}),
@@ -1123,6 +1132,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                     concealed_samples_delta: concealedDelta,
                     silent_concealed_samples_delta: silentConcealedDelta,
                     jitter_buffer_emitted_delta: jitterBufferEmittedDelta,
+                    audio_progress: audioProgress,
                     packets_reset: packetsReset,
                     stats_source: statsResult.source,
                     connection_state: player.pc.connectionState,
@@ -1131,7 +1141,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                     at: new Date().toISOString(),
                 },
             };
-            if (previous && !packetsReset && packetsDelta <= 0 && player.pc.connectionState === 'connected') {
+            if (previous && !audioProgress && player.pc.connectionState === 'connected') {
                 player.stagnantStatsPolls = (player.stagnantStatsPolls || 0) + 1;
                 if (player.stagnantStatsPolls === WEBRTC_STAGNANT_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stalled.', window.hazeLastWebRTCStats[feedId]);
@@ -1147,11 +1157,9 @@ function startWebRTCStatsMonitor(feedId, player) {
                     scheduleWebRTCReconnect(feedId, player, 'Reconnecting stalled audio...');
                 }
             } else {
-                if ((packetsDelta > 0 || packetsReset || !previous) && player.audio) {
-                    if (packetsDelta > 0 || snapshot.packetsReceived > 0) {
-                        markWebRTCPacketsRecent(feedId, player);
-                        ensureWebRTCAudioPlaying(feedId, player);
-                    }
+                if (audioProgress && player.audio) {
+                    markWebRTCPacketsRecent(feedId, player);
+                    ensureWebRTCAudioPlaying(feedId, player);
                 }
                 if (player.stagnantStatsPolls > 0 && isActivePlayer(feedId, player)) {
                     setHealthyWebRTCStatus(feedId, player);
@@ -1162,6 +1170,17 @@ function startWebRTCStatsMonitor(feedId, player) {
             console.warn('Unable to read Haze WebRTC stats.', error);
         }
     }, WEBRTC_STATS_INTERVAL_MS);
+}
+
+function webRTCStatsShowAudioProgress(snapshot, deltas) {
+    if (!snapshot) return false;
+    return Boolean(deltas?.packetsReset
+        || Number(deltas?.packetsDelta || 0) > 0
+        || Number(deltas?.bytesDelta || 0) > 0
+        || Number(deltas?.concealedDelta || 0) > 0
+        || Number(deltas?.silentConcealedDelta || 0) > 0
+        || Number(deltas?.jitterBufferEmittedDelta || 0) > 0
+        || (!deltas?.previous && (Number(snapshot.packetsReceived || 0) > 0 || Number(snapshot.bytesReceived || 0) > 0)));
 }
 
 function stopWebRTCStatsMonitor(player) {
