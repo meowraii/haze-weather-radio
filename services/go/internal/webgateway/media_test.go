@@ -345,6 +345,28 @@ func TestWebRTCFrameSourcePrimesIdleFrame(t *testing.T) {
 	}
 }
 
+func TestWebRTCFrameSourceSeedsLateSubscriber(t *testing.T) {
+	hub := newMemoryMediaHub()
+	source, err := hub.webRTCFrameSource("sk-0001", webRTCAudioPCMU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached := waitForCachedWebRTCFrame(t, source)
+	frames, unsubscribe, ok := source.subscribe()
+	if !ok {
+		t.Fatal("late subscriber could not attach to frame source")
+	}
+	defer unsubscribe()
+	select {
+	case frame := <-frames:
+		if string(frame) != string(cached) {
+			t.Fatalf("seeded frame = %v, want cached %v", frame, cached)
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("timed out waiting for seeded frame")
+	}
+}
+
 func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{}); err != nil || got != webRTCAudioPCMU {
 		t.Fatal("PCMU-only offers should use PCMU")
@@ -770,6 +792,22 @@ func waitForWebRTCFrame(t *testing.T, frames <-chan []byte) []byte {
 		t.Fatal("timed out waiting for WebRTC frame")
 		return nil
 	}
+}
+
+func waitForCachedWebRTCFrame(t *testing.T, source *webRTCFrameSource) []byte {
+	t.Helper()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		source.mu.Lock()
+		frame := append([]byte(nil), source.lastFrame...)
+		source.mu.Unlock()
+		if len(frame) > 0 {
+			return frame
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for cached WebRTC frame")
+	return nil
 }
 
 func waitForRemoteTrack(t *testing.T, tracks <-chan *webrtc.TrackRemote) *webrtc.TrackRemote {

@@ -679,14 +679,15 @@ type webRTCFrameSourceKey struct {
 }
 
 type webRTCFrameSource struct {
-	hub      *MediaHub
-	key      webRTCFrameSourceKey
-	encoder  opusFrameEncoder
-	mu       sync.Mutex
-	subs     map[chan []byte]struct{}
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	closed   bool
+	hub       *MediaHub
+	key       webRTCFrameSourceKey
+	encoder   opusFrameEncoder
+	mu        sync.Mutex
+	subs      map[chan []byte]struct{}
+	lastFrame []byte
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	closed    bool
 }
 
 type webRTCFrameKind int
@@ -769,6 +770,9 @@ func (s *webRTCFrameSource) subscribe() (<-chan []byte, func(), bool) {
 		return nil, nil, false
 	}
 	s.subs[ch] = struct{}{}
+	if len(s.lastFrame) > 0 {
+		ch <- append([]byte(nil), s.lastFrame...)
+	}
 	s.mu.Unlock()
 	var once sync.Once
 	return ch, func() {
@@ -946,6 +950,7 @@ func (s *webRTCFrameSourceStats) resetInterval() {
 func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastFrame = append(s.lastFrame[:0], frame...)
 	dropped := 0
 	for subscriber := range s.subs {
 		select {
