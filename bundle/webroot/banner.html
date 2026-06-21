@@ -309,6 +309,7 @@
         const AUDIO_RECOVER_STATS_POLLS = 15;
         const AUDIO_MEDIA_EVENT_GRACE_MS = 12000;
         const AUDIO_RECENT_PACKET_GRACE_MS = 30000;
+        const AUDIO_HARD_PACKET_STALE_MS = 120000;
         const AUDIO_PLAYBACK_WATCHDOG_MS = 2500;
         const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu']);
 
@@ -349,6 +350,7 @@
             audioPlaybackWatchdogTimer: null,
             audioLastStats: null,
             audioLastPacketAt: 0,
+            audioStartedAt: 0,
             audioTrackAttached: false,
             audioStagnantStatsPolls: 0,
             audioMissingStatsPolls: 0,
@@ -384,6 +386,7 @@
                 track_attached: Boolean(state.audioTrackAttached),
                 has_live_track: hasLiveBannerAudioTrack(),
                 last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
                 packets_recent: hasRecentBannerAudioPackets(),
                 playback_watchdog_active: Boolean(state.audioPlaybackWatchdogTimer),
                 stagnant_stats_polls: Number(state.audioStagnantStatsPolls || 0),
@@ -1427,6 +1430,15 @@
             return state.audioLastPacketAt > 0 && now - state.audioLastPacketAt <= AUDIO_RECENT_PACKET_GRACE_MS;
         }
 
+        function bannerAudioPacketSourceAgeMS(now = Date.now()) {
+            const sourceAt = Number(state.audioLastPacketAt || state.audioStartedAt || 0);
+            return sourceAt > 0 ? now - sourceAt : Number.POSITIVE_INFINITY;
+        }
+
+        function hasHardStaleBannerAudioPackets(now = Date.now()) {
+            return bannerAudioPacketSourceAgeMS(now) >= AUDIO_HARD_PACKET_STALE_MS;
+        }
+
         function bannerWebRTCStatsDelta(previous, snapshot, field, reset = false) {
             if (!previous || reset) return 0;
             return Number(snapshot?.[field] || 0) - Number(previous?.[field] || 0);
@@ -1445,7 +1457,7 @@
         }
 
         function shouldReconnectBannerAudioForMissingPackets() {
-            return !hasUsableBannerAudio() || !hasRecentBannerAudioPackets();
+            return !hasUsableBannerAudio() || hasHardStaleBannerAudioPackets();
         }
 
         function markBannerAudioPacketsRecent() {
@@ -1522,6 +1534,7 @@
             const pc = new RTCPeerConnection();
             state.audioPeer = pc;
             state.audioFallbackStream = new MediaStream();
+            state.audioStartedAt = Date.now();
             startAudioPlaybackWatchdog();
             const audio = bannerAudioElement();
             audio.pause();
@@ -1648,6 +1661,7 @@
                 track_attached: state.audioTrackAttached,
                 has_live_track: hasLiveBannerAudioTrack(),
                 last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                packet_source_age_ms: bannerAudioPacketSourceAgeMS(),
             });
             if (state.audioReconnectTimer) {
                 if (!force) {
