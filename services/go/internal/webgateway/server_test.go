@@ -58,6 +58,16 @@ func TestHealth(t *testing.T) {
 	if payload["service"] != "haze-web" {
 		t.Fatalf("service = %v", payload["service"])
 	}
+	capabilities, ok := payload["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing capabilities: %#v", payload)
+	}
+	if _, ok := capabilities["webrtc_opus"].(bool); !ok {
+		t.Fatalf("missing webrtc_opus capability: %#v", capabilities)
+	}
+	if strings.TrimSpace(fmt.Sprint(capabilities["webrtc_default_codec"])) == "" {
+		t.Fatalf("missing webrtc_default_codec capability: %#v", capabilities)
+	}
 }
 
 func TestAdminRedirectsWithoutSession(t *testing.T) {
@@ -571,6 +581,13 @@ func TestPublicWebSocketSendsPublicState(t *testing.T) {
 		if strings.TrimSpace(fmt.Sprint(summary[key])) == "" {
 			t.Fatalf("missing public summary %s in %#v", key, summary)
 		}
+	}
+	capabilities := summary["capabilities"].(map[string]any)
+	if _, ok := capabilities["webrtc_opus"].(bool); !ok {
+		t.Fatalf("missing public webrtc_opus capability: %#v", capabilities)
+	}
+	if strings.TrimSpace(fmt.Sprint(capabilities["webrtc_default_codec"])) == "" {
+		t.Fatalf("missing public webrtc_default_codec capability: %#v", capabilities)
 	}
 	feeds := summary["feeds"].([]any)
 	if len(feeds) != 1 {

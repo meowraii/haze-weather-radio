@@ -219,8 +219,10 @@ func summaryPayload(config Config, configPath string, startedAt time.Time, reque
 		"admin_url":          adminURL(config, request),
 		"tls":                tlsStatePayload(config, request),
 		"capabilities": map[string]any{
-			"public_alerts": publicAlertsArchiveAccess(config) == "public",
-			"webrtc":        webrtcEnabled,
+			"public_alerts":        publicAlertsArchiveAccess(config) == "public",
+			"webrtc":               webrtcEnabled,
+			"webrtc_opus":          opusBackendAvailable(),
+			"webrtc_default_codec": defaultWebRTCAudioCodec().String(),
 		},
 	}
 	if admin {

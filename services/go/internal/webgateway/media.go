@@ -69,6 +69,13 @@ func (c webRTCAudioCodec) String() string {
 	}
 }
 
+func defaultWebRTCAudioCodec() webRTCAudioCodec {
+	if opusBackendAvailable() {
+		return webRTCAudioOpus
+	}
+	return webRTCAudioG722
+}
+
 type WebRTCAnswerOptions struct {
 	DisableG722    bool
 	RequireOpus    bool

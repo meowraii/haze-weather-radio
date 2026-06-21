@@ -178,6 +178,10 @@ func (s *Server) health(writer http.ResponseWriter, request *http.Request) {
 		"ok":         true,
 		"service":    "haze-web",
 		"started_at": s.startedAt,
+		"capabilities": map[string]any{
+			"webrtc_opus":          opusBackendAvailable(),
+			"webrtc_default_codec": defaultWebRTCAudioCodec().String(),
+		},
 	})
 }
 
