@@ -1445,7 +1445,7 @@
                     track_state: event.track.readyState || '',
                 });
                 state.audioTrackAttached = true;
-                state.audioTrackMuted = true;
+                state.audioTrackMuted = event.track.muted === true;
                 event.track.onmute = () => {
                     recordBannerAudioEvent('track_mute', {
                         connection_state: pc.connectionState,

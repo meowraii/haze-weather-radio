@@ -1089,8 +1089,8 @@ async function startFeedWebRTC(feedId) {
         player.trackAttached = true;
         currentAudio.dataset.hazeTrackAttached = '1';
         currentAudio.dataset.hazeTrackState = event.track.readyState || '';
-        player.trackMuted = true;
-        currentAudio.dataset.hazeTrackMuted = '1';
+        player.trackMuted = event.track.muted === true;
+        currentAudio.dataset.hazeTrackMuted = player.trackMuted ? '1' : '0';
         event.track.onmute = () => {
             if (isActivePlayer(feedId, player)) {
                 recordWebRTCEvent(feedId, 'track_mute', {
