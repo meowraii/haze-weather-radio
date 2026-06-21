@@ -307,6 +307,21 @@ func TestRTPTimestampAdvanceIncludesSkippedFrames(t *testing.T) {
 	}
 }
 
+func TestWebRTCTimestampSkippedFramesUsesSourceSequenceGap(t *testing.T) {
+	if got := webRTCTimestampSkippedFrames(0, 4); got != 0 {
+		t.Fatalf("first sent frame skipped count = %d, want 0", got)
+	}
+	if got := webRTCTimestampSkippedFrames(1, 2); got != 0 {
+		t.Fatalf("contiguous frame skipped count = %d, want 0", got)
+	}
+	if got := webRTCTimestampSkippedFrames(1, 4); got != 2 {
+		t.Fatalf("source sequence gap skipped count = %d, want 2", got)
+	}
+	if got := webRTCTimestampSkippedFrames(4, 4); got != 0 {
+		t.Fatalf("duplicate frame skipped count = %d, want 0", got)
+	}
+}
+
 func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
 	var inFlight atomic.Bool
 	var startedAt atomic.Int64

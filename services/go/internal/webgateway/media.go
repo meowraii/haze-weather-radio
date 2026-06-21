@@ -1111,7 +1111,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	go watchWebRTCSampleWrites(watchdogCtx, feedID, codec, &writeInFlight, &writeStartedAt, webrtcWriteTimeout, func() {
 		failPeer("write_stall")
 	})
-	writeFrame := func(frame webRTCFrame, skipped int) bool {
+	writeFrame := func(frame webRTCFrame, skipped int, timestampSkipped int) bool {
 		if len(frame.payload) == 0 {
 			return true
 		}
@@ -1137,7 +1137,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		}
 		stats.written++
 		stats.sequenceNumber++
-		stats.timestamp += rtpTimestampAdvance(codec, skipped)
+		stats.timestamp += rtpTimestampAdvance(codec, timestampSkipped)
 		stats.lastWriteAt = time.Now()
 		stats.lastPayloadBytes = len(frame.payload)
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
@@ -1169,22 +1169,21 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				failPeer("frame_source_closed")
 				return
 			}
-			if lastSourceSequence > 0 && frame.sequence > lastSourceSequence+1 {
-				pendingSkipped += int(frame.sequence - lastSourceSequence - 1)
-			}
+			timestampSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
+			pendingSkipped += timestampSkipped
 			lastSourceSequence = frame.sequence
 			lastFrame = cloneWebRTCFrame(frame)
 			pendingSkipped += drainSkipped
 			skipped := pendingSkipped
 			pendingSkipped = 0
-			if !writeFrame(frame, skipped) {
+			if !writeFrame(frame, skipped, timestampSkipped) {
 				return
 			}
 		case <-idleTicker.C:
 			if len(lastFrame.payload) == 0 || (!stats.lastWriteAt.IsZero() && time.Since(stats.lastWriteAt) < 2*webrtcFrameDuration) {
 				continue
 			}
-			if !writeFrame(lastFrame, 0) {
+			if !writeFrame(lastFrame, 0, 0) {
 				return
 			}
 		}
@@ -1225,6 +1224,13 @@ func rtpTimestampAdvance(codec webRTCAudioCodec, skippedFrames int) uint32 {
 		frames = 1
 	}
 	return rtpTimestampStep(codec) * uint32(frames)
+}
+
+func webRTCTimestampSkippedFrames(lastSequence uint64, currentSequence uint64) int {
+	if lastSequence == 0 || currentSequence <= lastSequence+1 {
+		return 0
+	}
+	return int(currentSequence - lastSequence - 1)
 }
 
 func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAudioCodec, inFlight *atomic.Bool, startedAt *atomic.Int64, timeout time.Duration, onTimeout func()) {
