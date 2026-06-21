@@ -1,11 +1,13 @@
 package webgateway
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"math"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,6 +192,45 @@ func TestLatestWebRTCFrameSkipsStaleFrames(t *testing.T) {
 	}
 	if skipped != 3 {
 		t.Fatalf("skipped = %d, want 3", skipped)
+	}
+}
+
+func TestWatchWebRTCSampleWritesClosesStalledPeer(t *testing.T) {
+	var inFlight atomic.Bool
+	var startedAt atomic.Int64
+	inFlight.Store(true)
+	startedAt.Store(time.Now().Add(-time.Second).UnixNano())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go watchWebRTCSampleWrites(ctx, "sk-0001", webRTCAudioPCMU, &inFlight, &startedAt, 10*time.Millisecond, func() {
+		close(done)
+	})
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stalled WebRTC write watchdog")
+	}
+}
+
+func TestWatchWebRTCSampleWritesIgnoresIdleWriter(t *testing.T) {
+	var inFlight atomic.Bool
+	var startedAt atomic.Int64
+	startedAt.Store(time.Now().Add(-time.Second).UnixNano())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go watchWebRTCSampleWrites(ctx, "sk-0001", webRTCAudioPCMU, &inFlight, &startedAt, 10*time.Millisecond, func() {
+		close(done)
+	})
+
+	select {
+	case <-done:
+		t.Fatal("idle WebRTC write watchdog should not fire")
+	case <-time.After(40 * time.Millisecond):
 	}
 }
 
