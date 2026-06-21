@@ -77,12 +77,12 @@ const HTTP_CODEC_VALUES = new Set(HTTP_CODECS.map(([value]) => value));
 const WEBRTC_TRANSIENT_STATUS_DELAY_MS = 2000;
 const WEBRTC_STATS_INTERVAL_MS = 2000;
 const WEBRTC_STAGNANT_STATS_POLLS = 3;
-const WEBRTC_RECOVER_STATS_POLLS = 6;
+const WEBRTC_RECOVER_STATS_POLLS = 15;
 const WEBRTC_RECONNECT_BASE_DELAY_MS = 1000;
 const WEBRTC_RECONNECT_MAX_DELAY_MS = 10000;
 const WEBRTC_DISCONNECT_GRACE_MS = 15000;
-const WEBRTC_MEDIA_EVENT_GRACE_MS = 8000;
-const WEBRTC_RECENT_PACKET_GRACE_MS = 12000;
+const WEBRTC_MEDIA_EVENT_GRACE_MS = 12000;
+const WEBRTC_RECENT_PACKET_GRACE_MS = 30000;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -718,6 +718,10 @@ function hasStaleMutedWebRTCAudio(player) {
         && !hasRecentWebRTCPackets(player);
 }
 
+function shouldReconnectWebRTCForMissingPackets(player) {
+    return !hasUsableWebRTCAudio(player) || !hasRecentWebRTCPackets(player);
+}
+
 function markWebRTCPacketsRecent(player, audio = player?.audio) {
     if (!player) return;
     player.lastPacketAt = Date.now();
@@ -772,7 +776,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                             setPlayerStatus(feedId, 'Waiting for audio frames...');
                         }
                     }
-                    if ((!hasUsableWebRTCAudio(player) || hasStaleMutedWebRTCAudio(player)) && player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                    if (shouldReconnectWebRTCForMissingPackets(player) && player.missingStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                         scheduleWebRTCReconnect(feedId, player, 'Reconnecting missing audio stream...');
                     }
                 }
@@ -813,7 +817,7 @@ function startWebRTCStatsMonitor(feedId, player) {
                         setPlayerStatus(feedId, 'Waiting for audio frames...');
                     }
                 }
-                if ((!hasUsableWebRTCAudio(player) || hasStaleMutedWebRTCAudio(player)) && player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
+                if (shouldReconnectWebRTCForMissingPackets(player) && player.stagnantStatsPolls >= WEBRTC_RECOVER_STATS_POLLS) {
                     console.warn('Haze WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeLastWebRTCStats[feedId]);
                     scheduleWebRTCReconnect(feedId, player, 'Reconnecting stalled audio...');
                 }

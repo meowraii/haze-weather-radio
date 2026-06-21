@@ -306,9 +306,9 @@
         const AUDIO_DISCONNECT_GRACE_MS = 15000;
         const AUDIO_STATS_INTERVAL_MS = 2000;
         const AUDIO_STAGNANT_STATS_POLLS = 3;
-        const AUDIO_RECOVER_STATS_POLLS = 6;
-        const AUDIO_MEDIA_EVENT_GRACE_MS = 8000;
-        const AUDIO_RECENT_PACKET_GRACE_MS = 12000;
+        const AUDIO_RECOVER_STATS_POLLS = 15;
+        const AUDIO_MEDIA_EVENT_GRACE_MS = 12000;
+        const AUDIO_RECENT_PACKET_GRACE_MS = 30000;
         const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu']);
 
         const frame = document.getElementById('frame');
@@ -1243,7 +1243,7 @@
                                     at: new Date().toISOString(),
                                 });
                             }
-                            if ((!hasUsableBannerAudio() || hasStaleMutedBannerAudio()) && state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                            if (shouldReconnectBannerAudioForMissingPackets() && state.audioMissingStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
                                 scheduleAudioReconnect({ force: true });
                             }
                         }
@@ -1277,7 +1277,7 @@
                         if (state.audioStagnantStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stalled.', window.hazeBannerWebRTCStats);
                         }
-                        if ((!hasUsableBannerAudio() || hasStaleMutedBannerAudio()) && state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
+                        if (shouldReconnectBannerAudioForMissingPackets() && state.audioStagnantStatsPolls >= AUDIO_RECOVER_STATS_POLLS) {
                             console.warn('Banner WebRTC inbound audio packets stayed stalled; reconnecting.', window.hazeBannerWebRTCStats);
                             scheduleAudioReconnect({ force: true });
                         }
@@ -1388,6 +1388,10 @@
 
         function hasStaleMutedBannerAudio() {
             return state.audioTrackMuted && !hasRecentBannerAudioPackets();
+        }
+
+        function shouldReconnectBannerAudioForMissingPackets() {
+            return !hasUsableBannerAudio() || !hasRecentBannerAudioPackets();
         }
 
         function markBannerAudioPacketsRecent() {
