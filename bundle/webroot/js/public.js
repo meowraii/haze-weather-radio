@@ -140,6 +140,7 @@ const WEBRTC_PLAYBACK_WATCHDOG_MS = 2500;
 const WEBRTC_OUTPUT_BED_GAIN = 0.0008;
 const WEBRTC_OUTPUT_BED_FREQUENCY = 37;
 const WEBRTC_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
+const WEBRTC_OUTPUT_MIXER_RETRY_MS = 5000;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -793,11 +794,18 @@ function keepWebRTCAudioLive(feedId, player, audio = player?.audio) {
 }
 
 function closeWebRTCAudioOutput(player) {
+    if (player?.audioOutputMixerRetry) {
+        window.clearTimeout(player.audioOutputMixerRetry);
+        player.audioOutputMixerRetry = null;
+    }
     const mixer = player?.audioOutputMixer;
     if (!mixer) return;
     player.audioOutputMixer = null;
     if (mixer.resumeFallbackTimer) {
         window.clearTimeout(mixer.resumeFallbackTimer);
+    }
+    if (mixer.retryTimer) {
+        window.clearTimeout(mixer.retryTimer);
     }
     try {
         mixer.oscillator?.stop();
@@ -859,6 +867,11 @@ function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
             });
             closeWebRTCAudioOutput(player);
             audio.srcObject = sourceStream;
+            player.audioOutputMixerRetry = window.setTimeout(() => {
+                player.audioOutputMixerRetry = null;
+                if (!isActivePlayer(feedId, player) || player.stopping || audio.srcObject !== sourceStream) return;
+                bindWebRTCAudioOutput(feedId, player, sourceStream, audio);
+            }, WEBRTC_OUTPUT_MIXER_RETRY_MS);
         }, WEBRTC_OUTPUT_MIXER_RESUME_GRACE_MS);
         recordWebRTCEvent(feedId, 'audio_output_mixer_bound', {
             source_track_count: sourceStream.getAudioTracks?.().length || 0,

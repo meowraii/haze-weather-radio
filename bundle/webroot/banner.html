@@ -314,6 +314,7 @@
         const AUDIO_OUTPUT_BED_GAIN = 0.0008;
         const AUDIO_OUTPUT_BED_FREQUENCY = 37;
         const AUDIO_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
+        const AUDIO_OUTPUT_MIXER_RETRY_MS = 5000;
         const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu']);
 
         const frame = document.getElementById('frame');
@@ -345,6 +346,7 @@
             audioRemoteStream: null,
             audioFallbackStream: null,
             audioOutputMixer: null,
+            audioOutputMixerRetry: null,
             audioRetryCount: 0,
             audioElement: null,
             audioReconnectTimer: null,
@@ -1536,6 +1538,10 @@
         }
 
         function closeBannerAudioOutput() {
+            if (state.audioOutputMixerRetry) {
+                window.clearTimeout(state.audioOutputMixerRetry);
+                state.audioOutputMixerRetry = null;
+            }
             const mixer = state.audioOutputMixer;
             if (!mixer) return;
             state.audioOutputMixer = null;
@@ -1602,6 +1608,11 @@
                     });
                     closeBannerAudioOutput();
                     audio.srcObject = sourceStream;
+                    state.audioOutputMixerRetry = window.setTimeout(() => {
+                        state.audioOutputMixerRetry = null;
+                        if (state.unloading || audio.srcObject !== sourceStream) return;
+                        bindBannerAudioOutput(sourceStream, audio);
+                    }, AUDIO_OUTPUT_MIXER_RETRY_MS);
                 }, AUDIO_OUTPUT_MIXER_RESUME_GRACE_MS);
                 recordBannerAudioEvent('audio_output_mixer_bound', {
                     source_track_count: sourceStream.getAudioTracks?.().length || 0,
