@@ -223,6 +223,18 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 			scheduleDisconnectCleanup()
 		}
 	})
+	peerConnection.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		if shouldCleanupWebRTCICE(state) {
+			cleanup()
+			return
+		}
+		switch state {
+		case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
+			stopDisconnectTimer()
+		case webrtc.ICEConnectionStateDisconnected:
+			scheduleDisconnectCleanup()
+		}
+	})
 
 	if err := peerConnection.SetRemoteDescription(webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer,
@@ -265,6 +277,10 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 
 func shouldCleanupWebRTCPeer(state webrtc.PeerConnectionState) bool {
 	return state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed
+}
+
+func shouldCleanupWebRTCICE(state webrtc.ICEConnectionState) bool {
+	return state == webrtc.ICEConnectionStateClosed || state == webrtc.ICEConnectionStateFailed
 }
 
 func newWebRTCPeerConnection(configuration webrtc.Configuration) (*webrtc.PeerConnection, error) {

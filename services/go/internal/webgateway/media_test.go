@@ -393,6 +393,18 @@ func TestWebRTCPeerStateCleanupPolicyKeepsTransientDisconnects(t *testing.T) {
 	}
 }
 
+func TestWebRTCICECleanupPolicyKeepsTransientDisconnects(t *testing.T) {
+	if shouldCleanupWebRTCICE(webrtc.ICEConnectionStateDisconnected) {
+		t.Fatal("transient ICE disconnects should be given a recovery window")
+	}
+	if !shouldCleanupWebRTCICE(webrtc.ICEConnectionStateFailed) {
+		t.Fatal("failed ICE peers should be cleaned up")
+	}
+	if !shouldCleanupWebRTCICE(webrtc.ICEConnectionStateClosed) {
+		t.Fatal("closed ICE peers should be cleaned up")
+	}
+}
+
 func TestWriteWAVStreamHeader(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	if err := writeWAVStreamHeader(recorder, 48000, 1, 16); err != nil {
