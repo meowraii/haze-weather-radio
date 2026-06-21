@@ -75,7 +75,7 @@ func defaultWebRTCAudioCodec() webRTCAudioCodec {
 	if codec, ok := parseWebRTCAudioCodec(os.Getenv("HAZE_WEBRTC_DEFAULT_CODEC")); ok {
 		return codec
 	}
-	return webRTCAudioG722
+	return webRTCAudioPCMU
 }
 
 func WebRTCAudioCapabilities() map[string]any {

@@ -65,12 +65,12 @@ func TestWebRTCIdleFramesCarryDither(t *testing.T) {
 
 func TestDefaultWebRTCAudioCodecPrefersStablePlayout(t *testing.T) {
 	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "")
-	if got := defaultWebRTCAudioCodec(); got != webRTCAudioG722 {
-		t.Fatalf("default WebRTC codec = %s, want g722", got)
+	if got := defaultWebRTCAudioCodec(); got != webRTCAudioPCMU {
+		t.Fatalf("default WebRTC codec = %s, want pcmu", got)
 	}
 	capabilities := WebRTCAudioCapabilities()
-	if got := fmt.Sprint(capabilities["webrtc_default_codec"]); got != "g722" {
-		t.Fatalf("reported default WebRTC codec = %s, want g722", got)
+	if got := fmt.Sprint(capabilities["webrtc_default_codec"]); got != "pcmu" {
+		t.Fatalf("reported default WebRTC codec = %s, want pcmu", got)
 	}
 }
 
@@ -85,8 +85,8 @@ func TestDefaultWebRTCAudioCodecCanBeOverridden(t *testing.T) {
 	}
 
 	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "not-a-codec")
-	if got := defaultWebRTCAudioCodec(); got != webRTCAudioG722 {
-		t.Fatalf("invalid default WebRTC codec fallback = %s, want g722", got)
+	if got := defaultWebRTCAudioCodec(); got != webRTCAudioPCMU {
+		t.Fatalf("invalid default WebRTC codec fallback = %s, want pcmu", got)
 	}
 }
 
