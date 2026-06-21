@@ -63,6 +63,22 @@ func TestWebRTCIdleFramesCarryDither(t *testing.T) {
 	}
 }
 
+func TestWebRTCIdleFramesAdvanceDitherPhase(t *testing.T) {
+	first := pcmuIdleFrameWithPhase(0)
+	second := pcmuIdleFrameWithPhase(1)
+	if len(first) != pcmuFrameSamples || len(second) != pcmuFrameSamples {
+		t.Fatalf("PCMU idle frame lengths = %d/%d, want %d", len(first), len(second), pcmuFrameSamples)
+	}
+	if string(first) == string(second) {
+		t.Fatal("consecutive PCMU idle frames should not repeat the exact same dither payload")
+	}
+	samples := idleFrameSamplesWithPhase(g722IdleFrameSamples(), 1)
+	if len(samples) != g722FrameSamples {
+		t.Fatalf("phase-shifted G.722 idle samples = %d, want %d", len(samples), g722FrameSamples)
+	}
+	assertIdleDither(t, "phase-shifted G.722", samples)
+}
+
 func TestDefaultWebRTCAudioCodecPrefersStablePlayout(t *testing.T) {
 	t.Setenv("HAZE_WEBRTC_DEFAULT_CODEC", "")
 	if got := defaultWebRTCAudioCodec(); got != webRTCAudioPCMU {

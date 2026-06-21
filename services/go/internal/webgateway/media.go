@@ -1110,7 +1110,7 @@ func (s *webRTCFrameSource) run() {
 	g722Encoder := g722.NewEncoder(g722.Rate64000, 0)
 	g722Idle := g722IdleFrameSamples()
 	opusIdle := opusIdleFrameSamples()
-	pcmuIdle := pcmuIdleFrame()
+	idleFrameIndex := 0
 	loggedFirstFrame := false
 	stats := webRTCFrameSourceStats{startedAt: time.Now(), lastReport: time.Now()}
 
@@ -1138,7 +1138,9 @@ func (s *webRTCFrameSource) run() {
 			return false
 		}
 		frame, kind := concealer.nextWithKind(&frameQueue, &frameHead, func() []byte {
-			return s.idleFrame(g722Encoder, g722Idle, opusIdle, pcmuIdle)
+			frame := s.idleFrame(g722Encoder, g722Idle, opusIdle, idleFrameIndex)
+			idleFrameIndex++
+			return frame
 		})
 		if len(frame) == 0 {
 			return true
@@ -1180,18 +1182,18 @@ func (s *webRTCFrameSource) appendFrames(queue [][]byte, g722Encoder *g722.Encod
 	}
 }
 
-func (s *webRTCFrameSource) idleFrame(g722Encoder *g722.Encoder, g722Idle []int16, opusIdle []int16, pcmuIdle []byte) []byte {
+func (s *webRTCFrameSource) idleFrame(g722Encoder *g722.Encoder, g722Idle []int16, opusIdle []int16, phase int) []byte {
 	switch s.key.codec {
 	case webRTCAudioOpus:
-		encoded, err := s.encoder.Encode(opusIdle)
+		encoded, err := s.encoder.Encode(idleFrameSamplesWithPhase(opusIdle, phase))
 		if err != nil {
 			return nil
 		}
 		return encoded
 	case webRTCAudioPCMU:
-		return pcmuIdle
+		return pcmuIdleFrameWithPhase(phase)
 	default:
-		return encodeG722Frame(g722Encoder, g722Idle)
+		return encodeG722Frame(g722Encoder, idleFrameSamplesWithPhase(g722Idle, phase))
 	}
 }
 
@@ -1937,6 +1939,14 @@ func g722IdleFrameSamples() []int16 {
 	return samples
 }
 
+func idleFrameSamplesWithPhase(base []int16, phase int) []int16 {
+	samples := make([]int16, len(base))
+	for i := range samples {
+		samples[i] = webRTCIdleDitherSample(i + phase*len(base))
+	}
+	return samples
+}
+
 func webRTCIdleDitherSample(index int) int16 {
 	value := ((index*1103515245 + 12345) >> 16) & 0x7fff
 	return int16((value % (webrtcIdleDitherAmplitude*2 + 1)) - webrtcIdleDitherAmplitude)
@@ -2154,9 +2164,13 @@ func linearToMuLaw(sample int16) byte {
 }
 
 func pcmuIdleFrame() []byte {
+	return pcmuIdleFrameWithPhase(0)
+}
+
+func pcmuIdleFrameWithPhase(phase int) []byte {
 	frame := make([]byte, pcmuFrameSamples)
 	for i := range frame {
-		frame[i] = linearToMuLaw(webRTCIdleDitherSample(i))
+		frame[i] = linearToMuLaw(webRTCIdleDitherSample(i + phase*pcmuFrameSamples))
 	}
 	return frame
 }
