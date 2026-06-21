@@ -335,6 +335,7 @@
             payload: null,
             stream: null,
             audioPeer: null,
+            audioFallbackStream: null,
             audioRetryCount: 0,
             audioElement: null,
             audioReconnectTimer: null,
@@ -1186,6 +1187,7 @@
             }
             stopAudioStatsMonitor();
             state.audioTrackAttached = false;
+            state.audioFallbackStream = null;
             if (state.audioPeer) {
                 state.audioPeer.ontrack = null;
                 state.audioPeer.onconnectionstatechange = null;
@@ -1408,6 +1410,7 @@
 
             const pc = new RTCPeerConnection();
             state.audioPeer = pc;
+            state.audioFallbackStream = new MediaStream();
             const audio = bannerAudioElement();
             audio.pause();
             audio.srcObject = null;
@@ -1419,10 +1422,16 @@
 
             pc.addTransceiver('audio', { direction: 'recvonly' });
             pc.ontrack = (event) => {
-                const [stream] = event.streams;
-                if (!stream) {
-                    return;
+                const usedFallbackStream = !event.streams?.[0];
+                const stream = event.streams?.[0] || state.audioFallbackStream || new MediaStream();
+                if (!stream.getTracks().some((track) => track.id === event.track.id)) {
+                    stream.addTrack(event.track);
                 }
+                recordBannerAudioEvent('track_attached', {
+                    used_fallback_stream: usedFallbackStream,
+                    stream_track_count: stream.getTracks().length,
+                    track_state: event.track.readyState || '',
+                });
                 state.audioTrackAttached = true;
                 state.audioTrackMuted = true;
                 event.track.onmute = () => {
