@@ -156,6 +156,7 @@ enum ItemSource {
 struct FeedHandle {
     feed: FeedConfig,
     audio_tx: mpsc::Sender<AudioItem>,
+    priority_tx: mpsc::Sender<AudioItem>,
     breakin_tx: mpsc::Sender<BreakInCommand>,
     request_tx: mpsc::Sender<PackageRequest>,
     control_tx: mpsc::Sender<PlayoutControl>,
@@ -177,6 +178,8 @@ struct AlertQueueItem {
     created_at: String,
     #[serde(default)]
     status: String,
+    #[serde(default)]
+    feed_id: String,
     #[serde(default)]
     feed_ids: Vec<String>,
     #[serde(default)]
@@ -356,6 +359,31 @@ async fn dispatch_event(
                     Err(err) => tracing::warn!(feed_id, "playlist item rejected: {err}"),
                 }
             });
+        }
+        "cap.alert.audio.ready" => {
+            let targets = feed_targets_from_event(&event);
+            for handle in matching_feed_handles(handles, &targets) {
+                let cfg = Arc::clone(cfg);
+                let audio_cache = Arc::clone(audio_cache);
+                let data = bridge::data(&event).clone();
+                let feed = handle.feed.clone();
+                let priority_tx = handle.priority_tx.clone();
+                tokio::spawn(async move {
+                    match audio_item_from_priority_ready(&cfg, &audio_cache, &feed, data).await {
+                        Ok(item) => {
+                            if priority_tx.send(item).await.is_err() {
+                                tracing::warn!(
+                                    feed_id = feed.id,
+                                    "priority queue closed before alert audio could be queued"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(feed_id = feed.id, "priority alert rejected: {err}")
+                        }
+                    }
+                });
+            }
         }
         "playlist.control" => {
             let data = bridge::data(&event);
@@ -572,6 +600,7 @@ impl FeedHandle {
         Self {
             feed,
             audio_tx,
+            priority_tx,
             breakin_tx,
             request_tx,
             control_tx,
@@ -1980,6 +2009,64 @@ async fn audio_item_from_ready(
     })
 }
 
+async fn audio_item_from_priority_ready(
+    cfg: &LoadedConfig,
+    audio_cache: &AudioCache,
+    feed: &FeedConfig,
+    data: Value,
+) -> Result<AudioItem> {
+    let audio_path = bridge::first_text(&Value::Null, &data, &["audio_path"]);
+    if audio_path.is_empty() {
+        anyhow::bail!("audio_path is required");
+    }
+    let path = resolve_path(&cfg.base_dir, audio_path);
+    let queue_id = fallback_text(
+        bridge::first_text(&Value::Null, &data, &["queue_id", "id"]),
+        &queue_id("priority-alert"),
+    );
+    let sample_rate = u32_at(&data, "sample_rate", 48_000);
+    let channels = u16_at(&data, "channels", 1);
+    let pcm = audio_cache
+        .read_raw_pcm(&path, sample_rate, channels.max(1), cfg)
+        .await?;
+    let title = fallback_text(
+        bridge::first_text(&Value::Null, &data, &["title", "header"]),
+        "Weather Alert",
+    );
+    let event = bridge::first_text(&Value::Null, &data, &["same_event", "event"]).to_string();
+    let manifest_path = cfg
+        .base_dir
+        .join(ALERT_QUEUE_DIR)
+        .join(format!("{queue_id}.json"));
+    if manifest_path.exists() {
+        if let Err(err) = mark_alert_event_queued(&manifest_path) {
+            tracing::warn!(
+                feed_id = feed.id,
+                queue_id,
+                "failed to mark alert event queued: {err}"
+            );
+        }
+    }
+    Ok(AudioItem {
+        id: queue_id.clone(),
+        package_id: "same_alert".to_string(),
+        title: title.clone(),
+        pcm,
+        resume_offset: 0,
+        gap_after: Duration::from_millis(500),
+        not_before: None,
+        queued_at: Utc::now().to_rfc3339(),
+        target_start: String::new(),
+        predicted_start: String::new(),
+        predicted_finish: String::new(),
+        source: ItemSource::Alert {
+            manifest_path,
+            header: title,
+            event,
+        },
+    })
+}
+
 async fn alert_scanner(
     cfg: Arc<LoadedConfig>,
     _client: BridgeClient,
@@ -2231,11 +2318,28 @@ fn mark_alert_started(path: &Path) -> Result<()> {
     write_alert_item(path, &item)
 }
 
+fn mark_alert_event_queued(path: &Path) -> Result<()> {
+    let mut item = read_alert_item(path)?;
+    item.status = "event_queued".to_string();
+    item.claimed_at = Some(Utc::now().to_rfc3339());
+    item.failed_at = None;
+    item.last_error = None;
+    write_alert_item(path, &item)
+}
+
 fn alert_targets_feed(item: &AlertQueueItem, feed: &FeedConfig) -> bool {
-    item.feed_ids.iter().any(|id| {
-        let id = id.trim();
-        id == feed.id || id == "*" || (feed.alert_covers_all_locations() && !id.is_empty())
-    })
+    alert_feed_id_targets(&item.feed_id, feed)
+        || item
+            .feed_ids
+            .iter()
+            .any(|id| alert_feed_id_targets(id, feed))
+}
+
+fn alert_feed_id_targets(feed_id: &str, feed: &FeedConfig) -> bool {
+    let feed_id = feed_id.trim();
+    feed_id == feed.id
+        || feed_id == "*"
+        || (feed.alert_covers_all_locations() && !feed_id.is_empty())
 }
 
 fn alert_pending(status: &str) -> bool {
@@ -2404,6 +2508,20 @@ mod tests {
         };
         let item = AlertQueueItem {
             feed_ids: vec!["sk-0001".to_string()],
+            ..Default::default()
+        };
+
+        assert!(alert_targets_feed(&item, &feed));
+    }
+
+    #[test]
+    fn alert_queue_item_accepts_singular_feed_target() {
+        let feed = FeedConfig {
+            id: "CAP-IT-ALL".to_string(),
+            ..Default::default()
+        };
+        let item = AlertQueueItem {
+            feed_id: "CAP-IT-ALL".to_string(),
             ..Default::default()
         };
 
