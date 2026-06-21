@@ -211,6 +211,21 @@ func TestWebRTCFrameSourceMailboxKeepsLatestFrame(t *testing.T) {
 	}
 }
 
+func TestPCMSubscriberMailboxKeepsLatestChunk(t *testing.T) {
+	subscriber := make(chan PCMChunk, 1)
+	deliverPCMToSubscriber(subscriber, PCMChunk{FeedID: "sk-0001", Data: []byte{1}})
+	deliverPCMToSubscriber(subscriber, PCMChunk{FeedID: "sk-0001", Data: []byte{2}})
+
+	select {
+	case chunk := <-subscriber:
+		if string(chunk.Data) != string([]byte{2}) {
+			t.Fatalf("mailbox chunk = %v, want latest [2]", chunk.Data)
+		}
+	default:
+		t.Fatal("mailbox did not retain latest PCM chunk")
+	}
+}
+
 func TestLatestWebRTCFrameSkipsStaleFrames(t *testing.T) {
 	frames := make(chan []byte, 4)
 	frames <- []byte{2}

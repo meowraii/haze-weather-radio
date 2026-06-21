@@ -583,6 +583,7 @@ func (h *MediaHub) runFeedIngress(_ string, ingress <-chan PCMChunk) {
 
 func (h *MediaHub) publishReady(chunk PCMChunk) {
 	now := time.Now()
+	var subscribers []chan PCMChunk
 	h.mu.Lock()
 	if h.last == nil {
 		h.last = map[string]PCMChunk{}
@@ -600,20 +601,28 @@ func (h *MediaHub) publishReady(chunk PCMChunk) {
 		log.Printf("media bridge receiving PCM for feed %s (%d Hz, %d channel)", chunk.FeedID, chunk.SampleRate, chunk.Channels)
 	}
 	for subscriber := range h.subscribers[chunk.FeedID] {
+		subscribers = append(subscribers, subscriber)
+	}
+	h.mu.Unlock()
+
+	for _, subscriber := range subscribers {
+		deliverPCMToSubscriber(subscriber, chunk)
+	}
+}
+
+func deliverPCMToSubscriber(subscriber chan PCMChunk, chunk PCMChunk) {
+	select {
+	case subscriber <- chunk:
+	default:
+		select {
+		case <-subscriber:
+		default:
+		}
 		select {
 		case subscriber <- chunk:
 		default:
-			select {
-			case <-subscriber:
-			default:
-			}
-			select {
-			case subscriber <- chunk:
-			default:
-			}
 		}
 	}
-	h.mu.Unlock()
 }
 
 func validatePCMChunk(chunk PCMChunk) (PCMChunk, bool, string) {
