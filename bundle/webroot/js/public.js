@@ -217,11 +217,17 @@ function publicWebRTCAudioElement(feedId) {
     if (audio.dataset.hazeSinkBound !== '1') {
         audio.dataset.hazeSinkBound = '1';
         audio.addEventListener('pause', () => {
+            const feedId = audio.dataset.feedAudioSink;
+            const player = feedPlayers.get(feedId);
             recordWebRTCEvent(audio.dataset.feedAudioSink, 'audio_pause', {
                 ready_state: audio.readyState,
                 network_state: audio.networkState,
                 ended: audio.ended,
+                packets_recent: hasRecentWebRTCPackets(player),
             });
+            if (player?.mode === 'webrtc' && hasRecentWebRTCPackets(player)) {
+                ensureWebRTCAudioPlaying(feedId, player, audio);
+            }
         });
         audio.addEventListener('playing', () => {
             recordWebRTCEvent(audio.dataset.feedAudioSink, 'audio_playing', {
@@ -1106,13 +1112,19 @@ async function startFeedWebRTC(feedId) {
     };
     audio.onwaiting = () => {
         if (isActivePlayer(feedId, player)) {
-            if (hasRecentWebRTCPackets(player)) return;
+            if (hasRecentWebRTCPackets(player)) {
+                ensureWebRTCAudioPlaying(feedId, player, audio);
+                return;
+            }
             scheduleWebRTCMediaEventStatus(feedId, player, 'waiting', 'Buffering...');
         }
     };
     audio.onstalled = () => {
         if (isActivePlayer(feedId, player)) {
-            if (hasRecentWebRTCPackets(player)) return;
+            if (hasRecentWebRTCPackets(player)) {
+                ensureWebRTCAudioPlaying(feedId, player, audio);
+                return;
+            }
             scheduleWebRTCMediaEventStatus(feedId, player, 'stalled', 'Audio stalled');
         }
     };

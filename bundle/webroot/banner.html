@@ -1161,7 +1161,11 @@
                         ready_state: audio.readyState,
                         network_state: audio.networkState,
                         ended: audio.ended,
+                        packets_recent: hasRecentBannerAudioPackets(),
                     });
+                    if (hasRecentBannerAudioPackets()) {
+                        ensureBannerAudioPlaying();
+                    }
                 });
                 audio.addEventListener('playing', () => {
                     recordBannerAudioEvent('audio_playing', {
