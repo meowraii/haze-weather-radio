@@ -1021,6 +1021,49 @@ func TestTargetFeedIDsRejectsUnknownFeed(t *testing.T) {
 	}
 }
 
+func TestAlertTargetFeedIDsIncludesAllLocationCatchalls(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "config.yaml"), `version: test
+feeds_file: managed/configs/feeds.xml
+`)
+	mustWrite(t, filepath.Join(dir, "managed", "configs", "feeds.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<feeds>
+  <feed id="sk-0001" enabled="true">
+    <locations>
+      <coverage><region id="065500"><subregion id="065522"/></region></coverage>
+    </locations>
+  </feed>
+  <feed id="CAP-IT-ALL" enabled="true">
+    <alerts>
+      <cap_cp enabled="true"/>
+      <nws_cap enabled="true"/>
+    </alerts>
+    <locations><coverage/></locations>
+  </feed>
+</feeds>
+`)
+
+	targets, err := targetFeedIDs(filepath.Join(dir, "config.yaml"), map[string]any{
+		"feed_ids": []any{"sk-0001"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(targets, ","); got != "sk-0001" {
+		t.Fatalf("targetFeedIDs = %q", got)
+	}
+
+	targets, err = alertTargetFeedIDs(filepath.Join(dir, "config.yaml"), map[string]any{
+		"feed_ids": []any{"sk-0001"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(targets, ","); got != "sk-0001,CAP-IT-ALL" {
+		t.Fatalf("alertTargetFeedIDs = %q", got)
+	}
+}
+
 func TestSameGeneratorIntegration(t *testing.T) {
 	generator := os.Getenv("HAZE_SAME_GENERATOR")
 	if generator == "" {

@@ -113,7 +113,7 @@ func (s *wsSession) airSame(payload map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	targets, err := targetFeedIDs(s.configPath, payload)
+	targets, err := alertTargetFeedIDs(s.configPath, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -653,6 +653,14 @@ func minInt(left int, right int) int {
 	return right
 }
 
+func alertTargetFeedIDs(configPath string, payload map[string]any) ([]string, error) {
+	targets, err := targetFeedIDs(configPath, payload)
+	if err != nil {
+		return nil, err
+	}
+	return includeAllLocationAlertFeeds(configPath, targets)
+}
+
 func targetFeedIDs(configPath string, payload map[string]any) ([]string, error) {
 	feeds, err := loadFeedSummaries(configPath)
 	if err != nil {
@@ -699,6 +707,34 @@ func targetFeedIDs(configPath string, payload map[string]any) ([]string, error) 
 		return nil, fmt.Errorf("no target feeds selected")
 	}
 	return targets, nil
+}
+
+func includeAllLocationAlertFeeds(configPath string, targets []string) ([]string, error) {
+	feeds, err := loadFeedSummaries(configPath)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]string{}, targets...)
+	seen := map[string]struct{}{}
+	for _, feedID := range out {
+		seen[feedID] = struct{}{}
+	}
+	for _, feed := range feeds {
+		id := strings.TrimSpace(fmt.Sprint(feed["id"]))
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		enabled, _ := feed["enabled"].(bool)
+		allLocations, _ := feed["same_all_locations"].(bool)
+		if enabled && allLocations {
+			out = append(out, id)
+			seen[id] = struct{}{}
+		}
+	}
+	return out, nil
 }
 
 func outputTargetsForFeeds(configPath string, feedIDs []string) ([]sameOutputTarget, error) {

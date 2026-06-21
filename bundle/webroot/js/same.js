@@ -369,8 +369,14 @@ function selectedFeeds() {
 
 function feedCoverageRows(feed) {
     const rows = [];
-    if (feed.same_all_locations) {
-        rows.push({ code: '000000', name: 'All areas', region: 'National / all locations', feedID: feed.id });
+    if (feed.same_all_locations && Array.isArray(feed.same_locations) && feed.same_locations.length) {
+        return [...new Set(feed.same_locations.map(normalizeLocationCode).filter(Boolean))]
+            .map((code) => ({
+                code,
+                name: locationName(code),
+                region: code === '000000' ? 'National / all locations' : feedName(feed),
+                feedID: feed.id,
+            }));
     }
     const regions = Array.isArray(feed.coverage_regions) ? feed.coverage_regions : [];
     for (const region of regions) {

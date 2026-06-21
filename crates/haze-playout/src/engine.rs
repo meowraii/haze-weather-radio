@@ -2033,7 +2033,7 @@ async fn scan_alerts_once(
             let _ = write_alert_item(&manifest, &item);
             continue;
         }
-        if !alert_targets_feed(&item, &feed.id) || !alert_pending(&item.status) {
+        if !alert_targets_feed(&item, feed) || !alert_pending(&item.status) {
             continue;
         }
         if alert_item_stale_for_priority(&item, Utc::now()) {
@@ -2231,8 +2231,11 @@ fn mark_alert_started(path: &Path) -> Result<()> {
     write_alert_item(path, &item)
 }
 
-fn alert_targets_feed(item: &AlertQueueItem, feed_id: &str) -> bool {
-    item.feed_ids.iter().any(|id| id.trim() == feed_id)
+fn alert_targets_feed(item: &AlertQueueItem, feed: &FeedConfig) -> bool {
+    item.feed_ids.iter().any(|id| {
+        let id = id.trim();
+        id == feed.id || id == "*" || (feed.alert_covers_all_locations() && !id.is_empty())
+    })
 }
 
 fn alert_pending(status: &str) -> bool {
@@ -2380,6 +2383,31 @@ mod tests {
         assert!(alert_pending("claimed"));
         assert!(alert_pending("playing"));
         assert!(!alert_pending("played"));
+    }
+
+    #[test]
+    fn all_location_alert_feed_accepts_concrete_feed_targets() {
+        let feed = FeedConfig {
+            id: "CAP-IT-ALL".to_string(),
+            playout: crate::config::FeedPlayoutConfig {
+                same: Some("true".to_string()),
+                ..Default::default()
+            },
+            alerts: Some(crate::config::FeedAlertsConfig {
+                cap_cp: crate::config::FeedAlertProviderConfig {
+                    enabled: Some("true".to_string()),
+                },
+                ..Default::default()
+            }),
+            locations: crate::config::FeedLocationsConfig::default(),
+            ..Default::default()
+        };
+        let item = AlertQueueItem {
+            feed_ids: vec!["sk-0001".to_string()],
+            ..Default::default()
+        };
+
+        assert!(alert_targets_feed(&item, &feed));
     }
 
     #[test]

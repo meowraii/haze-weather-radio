@@ -157,6 +157,10 @@ pub(crate) struct FeedConfig {
     #[serde(default)]
     pub(crate) playout: FeedPlayoutConfig,
     #[serde(default)]
+    pub(crate) alerts: Option<FeedAlertsConfig>,
+    #[serde(default)]
+    pub(crate) locations: FeedLocationsConfig,
+    #[serde(default)]
     pub(crate) languages: LanguagesConfig,
     #[serde(default)]
     pub(crate) description: DescriptionConfig,
@@ -172,6 +176,38 @@ pub(crate) struct FeedPlayoutConfig {
     pub(crate) routine: Option<String>,
     #[serde(rename = "@same", default)]
     pub(crate) same: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FeedAlertsConfig {
+    #[serde(default)]
+    pub(crate) cap_cp: FeedAlertProviderConfig,
+    #[serde(default)]
+    pub(crate) nws_cap: FeedAlertProviderConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FeedAlertProviderConfig {
+    #[serde(rename = "@enabled", default)]
+    pub(crate) enabled: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FeedLocationsConfig {
+    #[serde(default)]
+    pub(crate) coverage: FeedCoverageConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FeedCoverageConfig {
+    #[serde(rename = "region", default)]
+    pub(crate) regions: Vec<FeedCoverageRegionConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FeedCoverageRegionConfig {
+    #[serde(rename = "@id", default)]
+    pub(crate) id: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -491,6 +527,33 @@ impl FeedConfig {
             .unwrap_or(true)
     }
 
+    pub(crate) fn alert_covers_all_locations(&self) -> bool {
+        if self
+            .locations
+            .coverage
+            .regions
+            .iter()
+            .any(|region| !region.id.trim().is_empty())
+        {
+            return false;
+        }
+        let Some(alerts) = &self.alerts else {
+            return false;
+        };
+        alerts
+            .cap_cp
+            .enabled
+            .as_deref()
+            .map(|raw| xml_bool(raw, true))
+            .unwrap_or(true)
+            || alerts
+                .nws_cap
+                .enabled
+                .as_deref()
+                .map(|raw| xml_bool(raw, false))
+                .unwrap_or(false)
+    }
+
     pub(crate) fn language(&self) -> String {
         self.languages
             .langs
@@ -693,6 +756,7 @@ mod tests {
         assert_eq!(feed.site_name(), "Saskatoon");
         assert_eq!(feed.station_callsign(), "");
         assert_eq!(feed.station_frequency_mhz(), "162.550");
+        assert!(!feed.alert_covers_all_locations());
         assert_eq!(feed.transmitter_metadata.transmitters.len(), 3);
         assert_eq!(
             feed.replacement_transmitter()
@@ -709,6 +773,27 @@ mod tests {
             feed.transmitter_metadata.transmitters[1].frequency_mhz.gpio,
             "6"
         );
+    }
+
+    #[test]
+    fn parses_all_location_alert_relay_feed() {
+        let raw = r#"
+<feeds>
+  <feed id="CAP-IT-ALL" enabled="true">
+    <playout routine="false" same="true"/>
+    <alerts>
+      <cap_cp enabled="true"/>
+      <nws_cap enabled="true"/>
+    </alerts>
+    <locations><coverage/></locations>
+  </feed>
+</feeds>
+"#;
+        let parsed: FeedsXml = quick_xml::de::from_str(raw).expect("feeds XML");
+        let feed = &parsed.feeds[0];
+
+        assert!(feed.same_enabled());
+        assert!(feed.alert_covers_all_locations());
     }
 
     #[test]

@@ -10,7 +10,7 @@ import (
 )
 
 func (s *wsSession) broadcastAlert(payload map[string]any) (map[string]any, error) {
-	targets, err := targetFeedIDs(s.configPath, payload)
+	targets, err := alertTargetFeedIDs(s.configPath, payload)
 	if err != nil {
 		return nil, err
 	}
