@@ -1131,32 +1131,39 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		}
 		return true
 	}
-	ticker := time.NewTicker(webrtcFrameDuration)
-	defer ticker.Stop()
+	idleTicker := time.NewTicker(webrtcFrameDuration)
+	defer idleTicker.Stop()
 	lastFrame := initialWebRTCFrame(codec)
 	var pendingSkipped int
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			frame, drainSkipped, ok := latestWebRTCFrame(nil, frames)
+		case frame, ok := <-frames:
 			if !ok {
 				failPeer("frame_source_closed")
 				return
 			}
 			if len(frame) == 0 {
-				frame = lastFrame
-			} else {
-				lastFrame = append(lastFrame[:0], frame...)
-				pendingSkipped += drainSkipped
-			}
-			if len(frame) == 0 {
 				continue
 			}
+			frame, drainSkipped, ok := latestWebRTCFrame(frame, frames)
+			if !ok {
+				failPeer("frame_source_closed")
+				return
+			}
+			lastFrame = append(lastFrame[:0], frame...)
+			pendingSkipped += drainSkipped
 			skipped := pendingSkipped
 			pendingSkipped = 0
 			if !writeFrame(frame, skipped) {
+				return
+			}
+		case <-idleTicker.C:
+			if len(lastFrame) == 0 || (!stats.lastWriteAt.IsZero() && time.Since(stats.lastWriteAt) < 2*webrtcFrameDuration) {
+				continue
+			}
+			if !writeFrame(lastFrame, 0) {
 				return
 			}
 		}
