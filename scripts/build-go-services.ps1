@@ -97,7 +97,7 @@ function Copy-BundleDirectory {
 
 New-Item -ItemType Directory -Force -Path $OutFull | Out-Null
 New-Item -ItemType Directory -Force -Path $BinFull | Out-Null
-foreach ($File in @("haze-web.exe", "haze-data-ingest.exe", "haze-cap-ingest.exe", "haze-tts.exe", "haze-product-render.exe", "haze-playlist.exe", "haze-webhook.exe", "haze-ivr.exe", "libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll")) {
+foreach ($File in @("haze-web.exe", "haze-data-ingest.exe", "haze-cap-ingest.exe", "haze-tts.exe", "haze-product-render.exe", "haze-playlist.exe", "haze-webhook.exe", "haze-ivr.exe", "libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll", "libwinpthread-1.dll")) {
     $LegacyTarget = Join-Path $OutFull $File
     if (Test-Path -LiteralPath $LegacyTarget) {
         Remove-Item -LiteralPath $LegacyTarget -Force
@@ -215,7 +215,7 @@ try {
     go build -o (Join-Path $BinFull "haze-webhook.exe") ./cmd/haze-webhook
     go build -o (Join-Path $BinFull "haze-ivr.exe") ./cmd/haze-ivr
     if ($BuildWebArgs.Count -gt 0) {
-        foreach ($DllName in @("libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll")) {
+        foreach ($DllName in @("libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll", "libwinpthread-1.dll")) {
             $DllPath = Join-Path $OpusBin $DllName
             if (Test-Path $DllPath) {
                 Copy-Item -Force -Path $DllPath -Destination $BinFull
