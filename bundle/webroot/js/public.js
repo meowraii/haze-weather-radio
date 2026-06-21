@@ -1125,6 +1125,7 @@ async function startFeedWebRTC(feedId) {
                     connection_state: pc.connectionState,
                     ice_state: pc.iceConnectionState,
                     packets_recent: hasRecentWebRTCPackets(player),
+                    last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
                     track_state: event.track.readyState || '',
                 });
                 clearPlayerTimer(player, 'trackMuteTimer');
@@ -1147,6 +1148,7 @@ async function startFeedWebRTC(feedId) {
                 recordWebRTCEvent(feedId, 'track_unmute', {
                     connection_state: pc.connectionState,
                     ice_state: pc.iceConnectionState,
+                    last_packet_age_ms: player.lastPacketAt ? Date.now() - player.lastPacketAt : null,
                     track_state: event.track.readyState || '',
                 });
                 clearPlayerTimer(player, 'trackMuteTimer');

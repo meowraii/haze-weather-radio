@@ -1489,6 +1489,7 @@
                         connection_state: pc.connectionState,
                         ice_state: pc.iceConnectionState,
                         packets_recent: hasRecentBannerAudioPackets(),
+                        last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
                         track_state: event.track.readyState || '',
                     });
                     if (state.audioTrackMuteTimer) {
@@ -1497,6 +1498,7 @@
                     state.audioTrackMuteTimer = window.setTimeout(() => {
                         state.audioTrackMuteTimer = null;
                         if (!hasRecentBannerAudioPackets()) {
+                            state.audioTrackMuted = true;
                             recordBannerAudioEvent('track_mute_stale', {
                                 connection_state: pc.connectionState,
                                 ice_state: pc.iceConnectionState,
@@ -1509,6 +1511,7 @@
                     recordBannerAudioEvent('track_unmute', {
                         connection_state: pc.connectionState,
                         ice_state: pc.iceConnectionState,
+                        last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
                         track_state: event.track.readyState || '',
                     });
                     if (state.audioTrackMuteTimer) {
