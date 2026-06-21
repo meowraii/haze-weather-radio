@@ -89,6 +89,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		mux.HandleFunc("/admin", s.admin)
 		mux.HandleFunc("/banner", s.banner)
+		mux.HandleFunc("/api/v1/banner/current", s.bannerCurrent)
 		mux.HandleFunc("/api/v1/banner/stream", s.bannerStream)
 		mux.HandleFunc("/api/v1/banner/audio", s.bannerAudio)
 		mux.HandleFunc("/api/v1/banner/webrtc/offer", s.bannerWebRTCOffer)

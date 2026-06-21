@@ -60,6 +60,15 @@ func (s *Server) bannerStream(writer http.ResponseWriter, request *http.Request)
 	}
 }
 
+func (s *Server) bannerCurrent(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	feedID := strings.TrimSpace(request.URL.Query().Get("feed"))
+	writeJSON(writer, buildBannerPayload(s.configPath, feedID, s.bannerHub))
+}
+
 func (s *Server) bannerAudio(writer http.ResponseWriter, request *http.Request) {
 	connection, err := websocket.Accept(writer, request, &websocket.AcceptOptions{
 		OriginPatterns: sameOriginPatterns(request),

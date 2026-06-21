@@ -138,6 +138,25 @@ func TestBannerStreamDoesNotRequireSession(t *testing.T) {
 	}
 }
 
+func TestBannerCurrentDoesNotRequireSession(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	mustWrite(t, configPath, "")
+	server := NewServerWithSurface(authEnabledConfig(), configPath, dir, "admin")
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/banner/current?feed=CAP-IT-ALL", nil)
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), `"feed_id": "CAP-IT-ALL"`) {
+		t.Fatalf("body = %q", response.Body.String())
+	}
+}
+
 func TestPublicSurfaceDoesNotExposeAdminRoutes(t *testing.T) {
 	server := NewServerWithSurface(Config{}, "config.yaml", ".", "public")
 
