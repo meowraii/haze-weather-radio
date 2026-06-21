@@ -178,7 +178,7 @@ func TestFrameConcealerReportsFrameKind(t *testing.T) {
 }
 
 func TestWebRTCFrameSourceBroadcastCountsSlowSubscribers(t *testing.T) {
-	source := &webRTCFrameSource{subs: map[chan []byte]struct{}{make(chan []byte): {}}}
+	source := &webRTCFrameSource{subs: map[chan webRTCFrame]struct{}{make(chan webRTCFrame): {}}}
 	dropped, subscribers := source.broadcast([]byte{1})
 	if subscribers != 1 {
 		t.Fatalf("subscribers = %d, want 1", subscribers)
@@ -189,7 +189,7 @@ func TestWebRTCFrameSourceBroadcastCountsSlowSubscribers(t *testing.T) {
 }
 
 func TestWebRTCFrameSourceMailboxKeepsLatestFrame(t *testing.T) {
-	source := &webRTCFrameSource{subs: map[chan []byte]struct{}{}}
+	source := &webRTCFrameSource{subs: map[chan webRTCFrame]struct{}{}}
 	frames, unsubscribe, ok := source.subscribe()
 	if !ok {
 		t.Fatal("subscriber should attach")
@@ -204,8 +204,11 @@ func TestWebRTCFrameSourceMailboxKeepsLatestFrame(t *testing.T) {
 	}
 	select {
 	case frame := <-frames:
-		if string(frame) != string([]byte{2}) {
+		if string(frame.payload) != string([]byte{2}) {
 			t.Fatalf("mailbox frame = %v, want latest [2]", frame)
+		}
+		if frame.sequence != 2 {
+			t.Fatalf("mailbox frame sequence = %d, want 2", frame.sequence)
 		}
 	default:
 		t.Fatal("mailbox did not retain latest frame")
@@ -213,7 +216,7 @@ func TestWebRTCFrameSourceMailboxKeepsLatestFrame(t *testing.T) {
 }
 
 func TestWebRTCFrameSourceBroadcastCopiesFramePayload(t *testing.T) {
-	source := &webRTCFrameSource{subs: map[chan []byte]struct{}{}}
+	source := &webRTCFrameSource{subs: map[chan webRTCFrame]struct{}{}}
 	frames, unsubscribe, ok := source.subscribe()
 	if !ok {
 		t.Fatal("subscriber should attach")
@@ -226,12 +229,12 @@ func TestWebRTCFrameSourceBroadcastCopiesFramePayload(t *testing.T) {
 	}
 	frame[0] = 9
 	source.mu.Lock()
-	source.lastFrame[1] = 8
+	source.lastFrame.payload[1] = 8
 	source.mu.Unlock()
 
 	select {
 	case got := <-frames:
-		if string(got) != string([]byte{1, 2, 3}) {
+		if string(got.payload) != string([]byte{1, 2, 3}) {
 			t.Fatalf("subscriber frame = %v, want copied [1 2 3]", got)
 		}
 	case <-time.After(time.Second):
@@ -255,17 +258,17 @@ func TestPCMSubscriberMailboxKeepsLatestChunk(t *testing.T) {
 }
 
 func TestLatestWebRTCFrameSkipsStaleFrames(t *testing.T) {
-	frames := make(chan []byte, 4)
-	frames <- []byte{2}
-	frames <- nil
-	frames <- []byte{3}
-	frames <- []byte{4}
+	frames := make(chan webRTCFrame, 4)
+	frames <- webRTCFrame{sequence: 2, payload: []byte{2}}
+	frames <- webRTCFrame{sequence: 3}
+	frames <- webRTCFrame{sequence: 4, payload: []byte{3}}
+	frames <- webRTCFrame{sequence: 5, payload: []byte{4}}
 
-	latest, skipped, ok := latestWebRTCFrame([]byte{1}, frames)
+	latest, skipped, ok := latestWebRTCFrame(webRTCFrame{sequence: 1, payload: []byte{1}}, frames)
 	if !ok {
 		t.Fatal("open frame channel was reported closed")
 	}
-	if string(latest) != string([]byte{4}) {
+	if string(latest.payload) != string([]byte{4}) {
 		t.Fatalf("latest frame = %v, want [4]", latest)
 	}
 	if skipped != 3 {
@@ -274,18 +277,33 @@ func TestLatestWebRTCFrameSkipsStaleFrames(t *testing.T) {
 }
 
 func TestLatestWebRTCFrameDoesNotSkipStartupFrame(t *testing.T) {
-	frames := make(chan []byte, 2)
-	frames <- []byte{1}
+	frames := make(chan webRTCFrame, 2)
+	frames <- webRTCFrame{sequence: 1, payload: []byte{1}}
 
-	latest, skipped, ok := latestWebRTCFrame(nil, frames)
+	latest, skipped, ok := latestWebRTCFrame(webRTCFrame{}, frames)
 	if !ok {
 		t.Fatal("open frame channel was reported closed")
 	}
-	if string(latest) != string([]byte{1}) {
+	if string(latest.payload) != string([]byte{1}) {
 		t.Fatalf("latest frame = %v, want [1]", latest)
 	}
 	if skipped != 0 {
 		t.Fatalf("skipped = %d, want 0", skipped)
+	}
+}
+
+func TestRTPTimestampAdvanceIncludesSkippedFrames(t *testing.T) {
+	if got := rtpTimestampAdvance(webRTCAudioPCMU, 0); got != rtpTimestampStep(webRTCAudioPCMU) {
+		t.Fatalf("PCMU timestamp advance without skips = %d, want %d", got, rtpTimestampStep(webRTCAudioPCMU))
+	}
+	if got := rtpTimestampAdvance(webRTCAudioPCMU, 2); got != 3*rtpTimestampStep(webRTCAudioPCMU) {
+		t.Fatalf("PCMU timestamp advance with skips = %d, want %d", got, 3*rtpTimestampStep(webRTCAudioPCMU))
+	}
+	if got := rtpTimestampAdvance(webRTCAudioOpus, 1); got != 2*rtpTimestampStep(webRTCAudioOpus) {
+		t.Fatalf("Opus timestamp advance with skips = %d, want %d", got, 2*rtpTimestampStep(webRTCAudioOpus))
+	}
+	if got := rtpTimestampAdvance(webRTCAudioPCMU, -1); got != rtpTimestampStep(webRTCAudioPCMU) {
+		t.Fatalf("negative skipped timestamp advance = %d, want %d", got, rtpTimestampStep(webRTCAudioPCMU))
 	}
 }
 
@@ -422,8 +440,8 @@ func TestWebRTCFrameSourcePrimesIdleFrame(t *testing.T) {
 	defer unsubscribe()
 	select {
 	case frame := <-frames:
-		if len(frame) != pcmuFrameSamples {
-			t.Fatalf("primed idle frame length = %d, want %d", len(frame), pcmuFrameSamples)
+		if len(frame.payload) != pcmuFrameSamples {
+			t.Fatalf("primed idle frame length = %d, want %d", len(frame.payload), pcmuFrameSamples)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("timed out waiting for primed idle frame")
@@ -458,8 +476,11 @@ func TestWebRTCFrameSourceSeedsLateSubscriber(t *testing.T) {
 	defer unsubscribe()
 	select {
 	case frame := <-frames:
-		if string(frame) != string(cached) {
+		if string(frame.payload) != string(cached) {
 			t.Fatalf("seeded frame = %v, want cached %v", frame, cached)
+		}
+		if frame.sequence == 0 {
+			t.Fatal("seeded frame sequence should be set")
 		}
 	case <-time.After(50 * time.Millisecond):
 		t.Fatal("timed out waiting for seeded frame")
@@ -519,7 +540,7 @@ func TestWebRTCFrameSourceStopClosesSubscribers(t *testing.T) {
 
 func TestMediaHubClosesPeerWhenWebRTCFrameSourceEnds(t *testing.T) {
 	hub := newMemoryMediaHub()
-	frames := make(chan []byte)
+	frames := make(chan webRTCFrame)
 	close(frames)
 	ready := make(chan struct{})
 	close(ready)
@@ -1179,11 +1200,11 @@ func newMemoryMediaHub() *MediaHub {
 	}
 }
 
-func waitForWebRTCFrame(t *testing.T, frames <-chan []byte) []byte {
+func waitForWebRTCFrame(t *testing.T, frames <-chan webRTCFrame) []byte {
 	t.Helper()
 	select {
 	case frame := <-frames:
-		return frame
+		return frame.payload
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for WebRTC frame")
 		return nil
@@ -1195,7 +1216,7 @@ func waitForCachedWebRTCFrame(t *testing.T, source *webRTCFrameSource) []byte {
 	deadline := time.Now().Add(250 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		source.mu.Lock()
-		frame := append([]byte(nil), source.lastFrame...)
+		frame := append([]byte(nil), source.lastFrame.payload...)
 		source.mu.Unlock()
 		if len(frame) > 0 {
 			return frame

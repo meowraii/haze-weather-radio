@@ -729,12 +729,18 @@ type webRTCFrameSource struct {
 	key       webRTCFrameSourceKey
 	encoder   opusFrameEncoder
 	mu        sync.Mutex
-	subs      map[chan []byte]struct{}
-	lastFrame []byte
+	subs      map[chan webRTCFrame]struct{}
+	lastFrame webRTCFrame
+	sequence  uint64
 	stopCh    chan struct{}
 	stopOnce  sync.Once
 	closed    bool
 	idleEpoch uint64
+}
+
+type webRTCFrame struct {
+	sequence uint64
+	payload  []byte
 }
 
 type webRTCFrameKind int
@@ -754,7 +760,7 @@ type webRTCFrameSourceStats struct {
 	lastReport time.Time
 }
 
-func (h *MediaHub) SubscribeWebRTCFrames(feedID string, codec webRTCAudioCodec) (<-chan []byte, func(), error) {
+func (h *MediaHub) SubscribeWebRTCFrames(feedID string, codec webRTCAudioCodec) (<-chan webRTCFrame, func(), error) {
 	for {
 		source, err := h.webRTCFrameSource(feedID, codec)
 		if err != nil {
@@ -792,7 +798,7 @@ func (h *MediaHub) webRTCFrameSource(feedID string, codec webRTCAudioCodec) (*we
 		hub:     h,
 		key:     key,
 		encoder: encoder,
-		subs:    map[chan []byte]struct{}{},
+		subs:    map[chan webRTCFrame]struct{}{},
 		stopCh:  make(chan struct{}),
 	}
 
@@ -809,8 +815,8 @@ func (h *MediaHub) webRTCFrameSource(feedID string, codec webRTCAudioCodec) (*we
 	return source, nil
 }
 
-func (s *webRTCFrameSource) subscribe() (<-chan []byte, func(), bool) {
-	ch := make(chan []byte, webrtcPeerFrameMailbox)
+func (s *webRTCFrameSource) subscribe() (<-chan webRTCFrame, func(), bool) {
+	ch := make(chan webRTCFrame, webrtcPeerFrameMailbox)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -818,8 +824,8 @@ func (s *webRTCFrameSource) subscribe() (<-chan []byte, func(), bool) {
 	}
 	s.idleEpoch++
 	s.subs[ch] = struct{}{}
-	if len(s.lastFrame) > 0 {
-		ch <- append([]byte(nil), s.lastFrame...)
+	if len(s.lastFrame.payload) > 0 {
+		ch <- cloneWebRTCFrame(s.lastFrame)
 	}
 	s.mu.Unlock()
 	var once sync.Once
@@ -887,7 +893,7 @@ func (h *MediaHub) removeWebRTCFrameSourceIfIdle(source *webRTCFrameSource, idle
 }
 
 func (s *webRTCFrameSource) stop() {
-	var subscribers []chan []byte
+	var subscribers []chan webRTCFrame
 	s.mu.Lock()
 	if !s.closed {
 		s.closed = true
@@ -1041,12 +1047,13 @@ func (s *webRTCFrameSourceStats) resetInterval() {
 func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	frameCopy := append([]byte(nil), frame...)
-	s.lastFrame = append(s.lastFrame[:0], frameCopy...)
+	s.sequence++
+	frameCopy := webRTCFrame{sequence: s.sequence, payload: append([]byte(nil), frame...)}
+	s.lastFrame = cloneWebRTCFrame(frameCopy)
 	dropped := 0
 	for subscriber := range s.subs {
 		select {
-		case subscriber <- append([]byte(nil), frameCopy...):
+		case subscriber <- cloneWebRTCFrame(frameCopy):
 		default:
 			select {
 			case <-subscriber:
@@ -1054,7 +1061,7 @@ func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 			default:
 			}
 			select {
-			case subscriber <- append([]byte(nil), frameCopy...):
+			case subscriber <- cloneWebRTCFrame(frameCopy):
 			default:
 				dropped++
 			}
@@ -1063,7 +1070,14 @@ func (s *webRTCFrameSource) broadcast(frame []byte) (int, int) {
 	return dropped, len(s.subs)
 }
 
-func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, payloadType uint8, track *webrtc.TrackLocalStaticRTP, frames <-chan []byte, unsubscribe func(), ready <-chan struct{}, onWriteStall func()) {
+func cloneWebRTCFrame(frame webRTCFrame) webRTCFrame {
+	if len(frame.payload) > 0 {
+		frame.payload = append([]byte(nil), frame.payload...)
+	}
+	return frame
+}
+
+func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec webRTCAudioCodec, payloadType uint8, track *webrtc.TrackLocalStaticRTP, frames <-chan webRTCFrame, unsubscribe func(), ready <-chan struct{}, onWriteStall func()) {
 	var unsubscribeOnce sync.Once
 	unsubscribePeer := func() {
 		if unsubscribe != nil {
@@ -1097,8 +1111,8 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	go watchWebRTCSampleWrites(watchdogCtx, feedID, codec, &writeInFlight, &writeStartedAt, webrtcWriteTimeout, func() {
 		failPeer("write_stall")
 	})
-	writeFrame := func(frame []byte, skipped int) bool {
-		if len(frame) == 0 {
+	writeFrame := func(frame webRTCFrame, skipped int) bool {
+		if len(frame.payload) == 0 {
 			return true
 		}
 		stats.recordSkipped(skipped)
@@ -1112,7 +1126,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				SequenceNumber: stats.sequenceNumber,
 				Timestamp:      stats.timestamp,
 			},
-			Payload: append([]byte(nil), frame...),
+			Payload: append([]byte(nil), frame.payload...),
 		})
 		writeInFlight.Store(false)
 		if err != nil {
@@ -1123,20 +1137,21 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		}
 		stats.written++
 		stats.sequenceNumber++
-		stats.timestamp += rtpTimestampStep(codec)
+		stats.timestamp += rtpTimestampAdvance(codec, skipped)
 		stats.lastWriteAt = time.Now()
-		stats.lastPayloadBytes = len(frame)
+		stats.lastPayloadBytes = len(frame.payload)
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
 		if !loggedWrite {
-			log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame))
+			log.Printf("media bridge WebRTC stream wrote first frame for feed %s codec=%s (%d bytes)", feedID, codec, len(frame.payload))
 			loggedWrite = true
 		}
 		return true
 	}
 	idleTicker := time.NewTicker(webrtcFrameDuration)
 	defer idleTicker.Stop()
-	lastFrame := initialWebRTCFrame(codec)
+	lastFrame := webRTCFrame{payload: initialWebRTCFrame(codec)}
 	var pendingSkipped int
+	var lastSourceSequence uint64
 	for {
 		select {
 		case <-ctx.Done():
@@ -1146,7 +1161,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				failPeer("frame_source_closed")
 				return
 			}
-			if len(frame) == 0 {
+			if len(frame.payload) == 0 {
 				continue
 			}
 			frame, drainSkipped, ok := latestWebRTCFrame(frame, frames)
@@ -1154,7 +1169,11 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				failPeer("frame_source_closed")
 				return
 			}
-			lastFrame = append(lastFrame[:0], frame...)
+			if lastSourceSequence > 0 && frame.sequence > lastSourceSequence+1 {
+				pendingSkipped += int(frame.sequence - lastSourceSequence - 1)
+			}
+			lastSourceSequence = frame.sequence
+			lastFrame = cloneWebRTCFrame(frame)
 			pendingSkipped += drainSkipped
 			skipped := pendingSkipped
 			pendingSkipped = 0
@@ -1162,7 +1181,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				return
 			}
 		case <-idleTicker.C:
-			if len(lastFrame) == 0 || (!stats.lastWriteAt.IsZero() && time.Since(stats.lastWriteAt) < 2*webrtcFrameDuration) {
+			if len(lastFrame.payload) == 0 || (!stats.lastWriteAt.IsZero() && time.Since(stats.lastWriteAt) < 2*webrtcFrameDuration) {
 				continue
 			}
 			if !writeFrame(lastFrame, 0) {
@@ -1198,6 +1217,14 @@ func rtpTimestampStep(codec webRTCAudioCodec) uint32 {
 		return uint32(opusSampleRate / 50)
 	}
 	return uint32(webrtcRTPClockRate / 50)
+}
+
+func rtpTimestampAdvance(codec webRTCAudioCodec, skippedFrames int) uint32 {
+	frames := skippedFrames + 1
+	if frames < 1 {
+		frames = 1
+	}
+	return rtpTimestampStep(codec) * uint32(frames)
 }
 
 func watchWebRTCSampleWrites(ctx context.Context, feedID string, codec webRTCAudioCodec, inFlight *atomic.Bool, startedAt *atomic.Int64, timeout time.Duration, onTimeout func()) {
@@ -1292,7 +1319,7 @@ func maybeLogWebRTCPeerDiagnostics(feedID string, codec webRTCAudioCodec, stats 
 	stats.resetInterval()
 }
 
-func latestWebRTCFrame(current []byte, frames <-chan []byte) ([]byte, int, bool) {
+func latestWebRTCFrame(current webRTCFrame, frames <-chan webRTCFrame) (webRTCFrame, int, bool) {
 	latest := current
 	collected := 0
 	for {
@@ -1301,7 +1328,7 @@ func latestWebRTCFrame(current []byte, frames <-chan []byte) ([]byte, int, bool)
 			if !ok {
 				return latest, skippedCollectedFrames(current, collected), false
 			}
-			if len(frame) == 0 {
+			if len(frame.payload) == 0 {
 				continue
 			}
 			latest = frame
@@ -1312,11 +1339,11 @@ func latestWebRTCFrame(current []byte, frames <-chan []byte) ([]byte, int, bool)
 	}
 }
 
-func skippedCollectedFrames(current []byte, collected int) int {
+func skippedCollectedFrames(current webRTCFrame, collected int) int {
 	if collected <= 0 {
 		return 0
 	}
-	if len(current) == 0 {
+	if len(current.payload) == 0 {
 		return collected - 1
 	}
 	return collected
