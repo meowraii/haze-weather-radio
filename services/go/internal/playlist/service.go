@@ -1203,6 +1203,7 @@ func (p *feedPlanner) applyControl(action string) {
 func (p *feedPlanner) markPriorityStarted() {
 	if p.priorityActive == 0 {
 		p.modeBeforePriority = p.mode
+		p.publishPlayoutControl("pause")
 	}
 	p.priorityActive++
 	p.mode = "priority"
@@ -1216,8 +1217,25 @@ func (p *feedPlanner) markPriorityCompleted() {
 	if p.priorityActive == 0 {
 		p.mode = fallbackText(p.modeBeforePriority, "running")
 		p.modeBeforePriority = ""
+		if p.mode == "running" {
+			p.publishPlayoutControl("resume")
+		}
 	}
 	p.writeState()
+}
+
+func (p *feedPlanner) publishPlayoutControl(action string) {
+	if p.bridge == nil {
+		return
+	}
+	if err := p.bridge.Publish(map[string]any{
+		"type":    "playlist.control",
+		"source":  serviceID,
+		"feed_id": p.feed.ID,
+		"data":    map[string]any{"feed_id": p.feed.ID, "action": action},
+	}); err != nil {
+		p.lastError = err.Error()
+	}
 }
 
 func (p *feedPlanner) markStarted(queueID string) {

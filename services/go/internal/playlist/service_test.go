@@ -3,6 +3,8 @@ package playlist
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,6 +353,69 @@ func TestInterruptedItemRemainsCurrentUntilRestartAndCompletion(t *testing.T) {
 	if planner.current != nil {
 		t.Fatalf("current after completion = %#v", planner.current)
 	}
+}
+
+func TestPriorityWindowPublishesRoutinePauseAndResume(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	messages := make(chan map[string]any, 4)
+	go func() {
+		decoder := json.NewDecoder(serverConn)
+		for {
+			var message map[string]any
+			if err := decoder.Decode(&message); err != nil {
+				close(messages)
+				return
+			}
+			messages <- message
+		}
+	}()
+
+	planner := &feedPlanner{
+		bridge: &bridgeClient{conn: clientConn},
+		feed:   feedXML{ID: "sk-0001"},
+		mode:   "running",
+	}
+
+	planner.markPriorityStarted()
+	planner.markPriorityStarted()
+	planner.markPriorityCompleted()
+	planner.markPriorityCompleted()
+
+	first := readPublishedTestMessage(t, messages)
+	second := readPublishedTestMessage(t, messages)
+	if actionFromPublishedControl(first) != "pause" {
+		t.Fatalf("first control = %#v", first)
+	}
+	if actionFromPublishedControl(second) != "resume" {
+		t.Fatalf("second control = %#v", second)
+	}
+	select {
+	case extra := <-messages:
+		t.Fatalf("unexpected extra control = %#v", extra)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func readPublishedTestMessage(t *testing.T, messages <-chan map[string]any) map[string]any {
+	t.Helper()
+	select {
+	case message, ok := <-messages:
+		if !ok {
+			t.Fatal("published message stream closed")
+		}
+		return message
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for published message")
+	}
+	return nil
+}
+
+func actionFromPublishedControl(message map[string]any) string {
+	data, _ := message["data"].(map[string]any)
+	return firstText(message, data, "action")
 }
 
 func TestIsPlayoutReadyEvent(t *testing.T) {
