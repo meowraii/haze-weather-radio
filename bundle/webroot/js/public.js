@@ -896,7 +896,7 @@ async function readInboundAudioStats(pc) {
     let selected = null;
     report.forEach((stats) => {
         const kind = stats.kind || stats.mediaType;
-        if (stats.type !== 'inbound-rtp' || kind !== 'audio' || stats.isRemote) return;
+        if (stats.type !== 'inbound-rtp' || stats.isRemote || (kind && kind !== 'audio')) return;
         if (!selected || (stats.packetsReceived || 0) > (selected.packetsReceived || 0)) {
             selected = stats;
         }
