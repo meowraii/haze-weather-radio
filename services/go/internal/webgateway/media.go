@@ -1099,6 +1099,10 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		}
 		return true
 	}
+	ticker := time.NewTicker(webrtcFrameDuration)
+	defer ticker.Stop()
+	var lastFrame []byte
+	var pendingSkipped int
 	for {
 		select {
 		case <-ctx.Done():
@@ -1114,7 +1118,15 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 			if !ok {
 				return
 			}
-			if !writeFrame(frame, skipped) {
+			lastFrame = append(lastFrame[:0], frame...)
+			pendingSkipped += skipped
+		case <-ticker.C:
+			if len(lastFrame) == 0 {
+				continue
+			}
+			skipped := pendingSkipped
+			pendingSkipped = 0
+			if !writeFrame(lastFrame, skipped) {
 				return
 			}
 		}
