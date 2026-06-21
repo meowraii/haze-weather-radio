@@ -1097,7 +1097,6 @@ async function startFeedWebRTC(feedId) {
     audio.controls = false;
     audio.muted = false;
     audio.playsInline = true;
-    audio.srcObject = fallbackStream;
     audio.dataset.hazePlayerState = 'connecting';
     audio.dataset.hazeTrackAttached = '0';
     audio.onplaying = () => {
@@ -1123,19 +1122,6 @@ async function startFeedWebRTC(feedId) {
             setPlayerStatus(feedId, 'Audio playback error');
         }
     };
-    audio.play()
-        .then(() => {
-            if (isActivePlayer(feedId, player) && !player.trackAttached) {
-                audio.controls = false;
-                audio.dataset.hazePlayerState = 'primed';
-                setPlayerStatus(feedId, 'Connecting audio...');
-            }
-        })
-        .catch(() => {
-            if (isActivePlayer(feedId, player)) {
-                audio.dataset.hazePlayerState = 'needs-play';
-            }
-        });
     pc.addTransceiver('audio', { direction: 'recvonly' });
     pc.addEventListener('track', (event) => {
         const currentAudio = bindPlayerAudio(feedId, fallbackStream);
@@ -1466,7 +1452,7 @@ function bindPlayerAudio(feedId, fallbackStream = null) {
     audio.volume = Number(volume?.value ?? audio.volume ?? 1);
     const fallbackTrackCount = fallbackStream?.getAudioTracks?.().length || 0;
     const currentTrackCount = audio.srcObject?.getAudioTracks?.().length || 0;
-    if (fallbackStream && audio.srcObject !== fallbackStream && (fallbackTrackCount > 0 || currentTrackCount === 0)) {
+    if (fallbackStream && fallbackTrackCount > 0 && audio.srcObject !== fallbackStream) {
         recordWebRTCEvent(feedId, 'audio_stream_bound', {
             replaced_existing_stream: Boolean(audio.srcObject),
             track_count: fallbackStream.getTracks?.().length || 0,
