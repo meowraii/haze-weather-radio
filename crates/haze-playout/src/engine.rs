@@ -52,6 +52,7 @@ struct AudioItem {
     package_id: String,
     title: String,
     pcm: Vec<u8>,
+    resume_offset: usize,
     gap_after: Duration,
     not_before: Option<DateTime<Utc>>,
     queued_at: String,
@@ -193,16 +194,11 @@ pub(crate) async fn run(options: Options) -> Result<()> {
         } else {
             options.media_bridge_addr.trim()
         };
-        let media_client = if media_bridge_addr == options.bridge_addr.trim() {
-            connection.client.clone()
-        } else {
-            bridge::connect_publish_only_retry(media_bridge_addr).await?
-        };
         match run_connected(
             Arc::clone(&cfg),
             connection.client,
-            media_client,
             connection.events,
+            media_bridge_addr,
             &options,
         )
         .await
@@ -218,12 +214,22 @@ pub(crate) async fn run(options: Options) -> Result<()> {
 async fn run_connected(
     cfg: Arc<LoadedConfig>,
     client: BridgeClient,
-    media_client: BridgeClient,
     mut events: mpsc::Receiver<Value>,
+    media_bridge_addr: &str,
     options: &Options,
 ) -> ConnectedOutcome {
     let mut handles = HashMap::<String, FeedHandle>::new();
     for feed in cfg.enabled_feeds().cloned() {
+        let media_client = match bridge::connect_publish_only_retry(media_bridge_addr).await {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::warn!(
+                    feed_id = feed.id,
+                    "failed to connect feed media bridge publisher: {err}"
+                );
+                return ConnectedOutcome::Reconnect;
+            }
+        };
         let handle = FeedHandle::spawn(
             Arc::clone(&cfg),
             client.clone(),
@@ -592,14 +598,29 @@ impl FeedRunner {
                     match command {
                         BreakInCommand::Start { id, title } => {
                             if let Some(done) = live_breakin.take() {
-                                complete_live_breakin(&self.client, &self.cfg, &self.feed.id, &done, true).await;
+                                spawn_complete_live_breakin(
+                                    self.client.clone(),
+                                    Arc::clone(&self.cfg),
+                                    self.feed.id.clone(),
+                                    done,
+                                    true,
+                                );
                             }
                             if let Some(item) = current.take() {
-                                interrupt_item(&self.client, &self.feed.id, &item).await;
                                 if item.is_alert() {
-                                    finish_item(&self.client, &self.feed.id, &item).await;
+                                    spawn_interrupt_item(
+                                        self.client.clone(),
+                                        self.feed.id.clone(),
+                                        item.clone(),
+                                    );
+                                    spawn_finish_item(
+                                        self.client.clone(),
+                                        self.feed.id.clone(),
+                                        item,
+                                    );
                                 } else {
-                                    deferred_routine.push_front(item);
+                                    deferred_routine
+                                        .push_front(interrupted_routine_item(item, position));
                                 }
                             }
                             if let Some(item) = pending.take() {
@@ -647,7 +668,13 @@ impl FeedRunner {
                         BreakInCommand::Cancel { id } => {
                             if live_breakin.as_ref().is_some_and(|live| live.id == id) {
                                 if let Some(done) = live_breakin.take() {
-                                    complete_live_breakin(&self.client, &self.cfg, &self.feed.id, &done, true).await;
+                                    spawn_complete_live_breakin(
+                                        self.client.clone(),
+                                        Arc::clone(&self.cfg),
+                                        self.feed.id.clone(),
+                                        done,
+                                        true,
+                                    );
                                 }
                             }
                         }
@@ -685,15 +712,19 @@ impl FeedRunner {
                     for _ in 0..chunks_due {
                         let now = Utc::now();
                         while let Ok(item) = self.priority_rx.try_recv() {
-                            accept_item(&self.client, &self.feed.id, &item).await;
+                            spawn_accept_item(self.client.clone(), self.feed.id.clone(), item.clone());
                             priority_pending.push_back(item);
                         }
                         if live_breakin.is_none() && !priority_pending.is_empty()
                             && current.as_ref().is_some_and(|item| !item.is_alert())
                         {
                             if let Some(item) = current.take() {
-                                interrupt_item(&self.client, &self.feed.id, &item).await;
-                                deferred_routine.push_front(item);
+                                spawn_interrupt_item(
+                                    self.client.clone(),
+                                    self.feed.id.clone(),
+                                    item.clone(),
+                                );
+                                deferred_routine.push_front(interrupted_routine_item(item, position));
                             }
                             if let Some(item) = pending.take() {
                                 if !item.is_alert() {
@@ -702,7 +733,6 @@ impl FeedRunner {
                                     priority_pending.push_front(item);
                                 }
                             }
-                            position = 0;
                             gap_until = Instant::now();
                         }
                         if live_breakin.is_none() && !priority_pending.is_empty()
@@ -719,7 +749,7 @@ impl FeedRunner {
                             } else if let Some(item) = deferred_routine.pop_front() {
                                 pending = Some(item);
                             } else if let Ok(item) = self.audio_rx.try_recv() {
-                                accept_item(&self.client, &self.feed.id, &item).await;
+                                spawn_accept_item(self.client.clone(), self.feed.id.clone(), item.clone());
                                 pending = Some(item);
                             }
                         }
@@ -727,9 +757,14 @@ impl FeedRunner {
                             if let Some(item) = pending.as_ref() {
                                 if item.not_before.is_none_or(|not_before| now >= not_before) {
                                     current = pending.take();
-                                    position = 0;
                                     if let Some(item) = current.as_ref() {
-                                        start_item(&self.client, &self.cfg, &self.feed.id, item).await;
+                                        position = item.resume_offset.min(item.pcm.len());
+                                        spawn_start_item(
+                                            self.client.clone(),
+                                            Arc::clone(&self.cfg),
+                                            self.feed.id.clone(),
+                                            item.clone(),
+                                        );
                                     }
                                 }
                             }
@@ -791,14 +826,25 @@ impl FeedRunner {
                             }
                         }
                         if let Some(done) = completed_breakin {
-                            complete_live_breakin(&self.client, &self.cfg, &self.feed.id, &done, false).await;
+                            spawn_complete_live_breakin(
+                                self.client.clone(),
+                                Arc::clone(&self.cfg),
+                                self.feed.id.clone(),
+                                done,
+                                false,
+                            );
                         }
 
                         if live_breakin.is_none() && current.as_ref().is_some_and(|item| position >= item.pcm.len()) {
                             if let Some(item) = current.take() {
-                                finish_item(&self.client, &self.feed.id, &item).await;
-                                gap_until = Instant::now() + item.gap_after;
-                                update_runtime(&self.cfg, &self.feed.id, "Idle").await;
+                                let gap_after = item.gap_after;
+                                spawn_finish_item(self.client.clone(), self.feed.id.clone(), item);
+                                gap_until = Instant::now() + gap_after;
+                                spawn_update_runtime(
+                                    Arc::clone(&self.cfg),
+                                    self.feed.id.clone(),
+                                    "Idle".to_string(),
+                                );
                                 if !self.after_current_action.is_empty() {
                                     let action = std::mem::take(&mut self.after_current_action);
                                     self.apply_control(&action, false);
@@ -849,6 +895,58 @@ impl AudioItem {
     fn is_alert(&self) -> bool {
         matches!(self.source, ItemSource::Alert { .. })
     }
+}
+
+fn interrupted_routine_item(mut item: AudioItem, position: usize) -> AudioItem {
+    item.resume_offset = position.min(item.pcm.len());
+    item
+}
+
+fn spawn_accept_item(client: BridgeClient, feed_id: String, item: AudioItem) {
+    tokio::spawn(async move {
+        accept_item(&client, &feed_id, &item).await;
+    });
+}
+
+fn spawn_start_item(
+    client: BridgeClient,
+    cfg: Arc<LoadedConfig>,
+    feed_id: String,
+    item: AudioItem,
+) {
+    tokio::spawn(async move {
+        start_item(&client, &cfg, &feed_id, &item).await;
+    });
+}
+
+fn spawn_finish_item(client: BridgeClient, feed_id: String, item: AudioItem) {
+    tokio::spawn(async move {
+        finish_item(&client, &feed_id, &item).await;
+    });
+}
+
+fn spawn_interrupt_item(client: BridgeClient, feed_id: String, item: AudioItem) {
+    tokio::spawn(async move {
+        interrupt_item(&client, &feed_id, &item).await;
+    });
+}
+
+fn spawn_complete_live_breakin(
+    client: BridgeClient,
+    cfg: Arc<LoadedConfig>,
+    feed_id: String,
+    live: LiveBreakIn,
+    cancelled: bool,
+) {
+    tokio::spawn(async move {
+        complete_live_breakin(&client, &cfg, &feed_id, &live, cancelled).await;
+    });
+}
+
+fn spawn_update_runtime(cfg: Arc<LoadedConfig>, feed_id: String, now_playing: String) {
+    tokio::spawn(async move {
+        update_runtime(&cfg, &feed_id, &now_playing).await;
+    });
 }
 
 async fn accept_item(client: &BridgeClient, feed_id: &str, item: &AudioItem) {
@@ -1300,6 +1398,7 @@ async fn build_package(
         package_id: package_id.to_string(),
         title,
         pcm: pcm.data,
+        resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
@@ -1335,6 +1434,7 @@ async fn audio_item_from_rendered_product(
         package_id: package_id.to_string(),
         title: fallback_text(&product.title, &title_for_package(package_id)),
         pcm: pcm.data,
+        resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
@@ -1574,6 +1674,7 @@ async fn audio_item_from_ready(
         package_id,
         title,
         pcm: pcm.data,
+        resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: parse_time(bridge::first_text(
             &Value::Null,
@@ -1803,6 +1904,7 @@ fn audio_item_from_alert(
         package_id: "same_alert".to_string(),
         title,
         pcm: pcm.data,
+        resume_offset: 0,
         gap_after: Duration::from_millis(500),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
@@ -2008,6 +2110,51 @@ mod tests {
     #[test]
     fn safe_id_removes_path_characters() {
         assert_eq!(safe_id("../sk 0001:forecast"), "sk0001forecast");
+    }
+
+    #[test]
+    fn interrupted_routine_item_preserves_resume_offset() {
+        let item = AudioItem {
+            id: "routine-1".to_string(),
+            package_id: "forecast".to_string(),
+            title: "Forecast".to_string(),
+            pcm: vec![1; 16],
+            resume_offset: 0,
+            gap_after: Duration::from_secs(1),
+            not_before: None,
+            queued_at: String::new(),
+            target_start: String::new(),
+            predicted_start: String::new(),
+            predicted_finish: String::new(),
+            source: ItemSource::Generated,
+        };
+
+        let resumed = interrupted_routine_item(item, 10);
+
+        assert_eq!(resumed.resume_offset, 10);
+        assert_eq!(resumed.title, "Forecast");
+    }
+
+    #[test]
+    fn interrupted_routine_item_clamps_resume_offset_to_audio_len() {
+        let item = AudioItem {
+            id: "routine-1".to_string(),
+            package_id: "forecast".to_string(),
+            title: "Forecast".to_string(),
+            pcm: vec![1; 16],
+            resume_offset: 0,
+            gap_after: Duration::from_secs(1),
+            not_before: None,
+            queued_at: String::new(),
+            target_start: String::new(),
+            predicted_start: String::new(),
+            predicted_finish: String::new(),
+            source: ItemSource::Generated,
+        };
+
+        let resumed = interrupted_routine_item(item, 99);
+
+        assert_eq!(resumed.resume_offset, 16);
     }
 
     #[test]
