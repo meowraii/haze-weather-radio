@@ -304,6 +304,8 @@
         const PAGE_MS = 6000;
         const AUDIO_TRANSIENT_STATUS_DELAY_MS = 2000;
         const AUDIO_DISCONNECT_GRACE_MS = 15000;
+        const AUDIO_STATS_INTERVAL_MS = 2000;
+        const AUDIO_STAGNANT_STATS_POLLS = 3;
 
         const frame = document.getElementById('frame');
         const tickerWindow = document.getElementById('tickerWindow');
@@ -334,6 +336,9 @@
             audioReconnectTimer: null,
             audioDisconnectTimer: null,
             audioTrackMuteTimer: null,
+            audioStatsTimer: null,
+            audioLastStats: null,
+            audioStagnantStatsPolls: 0,
             obsController: null,
             unloading: false,
             tickerDormantSignature: '',
@@ -1110,6 +1115,7 @@
                 window.clearTimeout(state.audioTrackMuteTimer);
                 state.audioTrackMuteTimer = null;
             }
+            stopAudioStatsMonitor();
             if (state.audioPeer) {
                 state.audioPeer.ontrack = null;
                 state.audioPeer.onconnectionstatechange = null;
@@ -1121,6 +1127,74 @@
                 state.audioElement.srcObject = null;
                 state.audioElement = null;
             }
+        }
+
+        function stopAudioStatsMonitor() {
+            if (state.audioStatsTimer) {
+                window.clearInterval(state.audioStatsTimer);
+                state.audioStatsTimer = null;
+            }
+        }
+
+        function startAudioStatsMonitor(peer) {
+            stopAudioStatsMonitor();
+            if (!peer?.getStats) return;
+            state.audioLastStats = null;
+            state.audioStagnantStatsPolls = 0;
+            state.audioStatsTimer = window.setInterval(async () => {
+                if (state.audioPeer !== peer || peer.connectionState === 'closed') {
+                    stopAudioStatsMonitor();
+                    return;
+                }
+                try {
+                    const snapshot = await readInboundAudioStats(peer);
+                    if (!snapshot) return;
+                    const previous = state.audioLastStats;
+                    const packetsDelta = previous ? snapshot.packetsReceived - previous.packetsReceived : 0;
+                    state.audioLastStats = snapshot;
+                    window.hazeBannerWebRTCStats = {
+                        ...snapshot,
+                        packets_delta: packetsDelta,
+                        connection_state: peer.connectionState,
+                        ice_state: peer.iceConnectionState,
+                        at: new Date().toISOString(),
+                    };
+                    if (previous && packetsDelta <= 0 && peer.connectionState === 'connected') {
+                        state.audioStagnantStatsPolls += 1;
+                        if (state.audioStagnantStatsPolls === AUDIO_STAGNANT_STATS_POLLS) {
+                            console.warn('Banner WebRTC inbound audio packets stalled.', window.hazeBannerWebRTCStats);
+                        }
+                    } else {
+                        state.audioStagnantStatsPolls = 0;
+                    }
+                } catch (error) {
+                    console.warn('Unable to read banner WebRTC stats.', error);
+                }
+            }, AUDIO_STATS_INTERVAL_MS);
+        }
+
+        async function readInboundAudioStats(peer) {
+            const report = await peer.getStats();
+            let selected = null;
+            report.forEach((stats) => {
+                const kind = stats.kind || stats.mediaType;
+                if (stats.type !== 'inbound-rtp' || kind !== 'audio' || stats.isRemote) return;
+                if (!selected || (stats.packetsReceived || 0) > (selected.packetsReceived || 0)) {
+                    selected = stats;
+                }
+            });
+            if (!selected) return null;
+            return {
+                packetsReceived: Number(selected.packetsReceived || 0),
+                bytesReceived: Number(selected.bytesReceived || 0),
+                packetsLost: Number(selected.packetsLost || 0),
+                jitter: Number(selected.jitter || 0),
+                concealedSamples: Number(selected.concealedSamples || 0),
+                silentConcealedSamples: Number(selected.silentConcealedSamples || 0),
+                jitterBufferDelay: Number(selected.jitterBufferDelay || 0),
+                jitterBufferEmittedCount: Number(selected.jitterBufferEmittedCount || 0),
+                timestamp: selected.timestamp || performance.now(),
+            };
         }
 
         function closeAudioPeerOnly() {
@@ -1247,6 +1321,7 @@
                 .then((answer) => pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp }))
                 .then(() => {
                     state.audioRetryCount = 0;
+                    startAudioStatsMonitor(pc);
                 })
                 .catch((error) => {
                     console.error(error);

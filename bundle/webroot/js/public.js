@@ -64,6 +64,8 @@ const HTTP_CODECS = [
 ];
 const HTTP_CODEC_VALUES = new Set(HTTP_CODECS.map(([value]) => value));
 const WEBRTC_TRANSIENT_STATUS_DELAY_MS = 2000;
+const WEBRTC_STATS_INTERVAL_MS = 2000;
+const WEBRTC_STAGNANT_STATS_POLLS = 3;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -520,6 +522,76 @@ function setHealthyWebRTCStatus(feedId, player, audio = player?.audio) {
     setPlayerStatus(feedId, audio?.paused ? 'Audio ready' : 'Playing');
 }
 
+function startWebRTCStatsMonitor(feedId, player) {
+    stopWebRTCStatsMonitor(player);
+    if (!player?.pc?.getStats) return;
+    player.statsPollTimer = window.setInterval(async () => {
+        if (!isActivePlayer(feedId, player) || player.pc.connectionState === 'closed') {
+            stopWebRTCStatsMonitor(player);
+            return;
+        }
+        try {
+            const snapshot = await readInboundAudioStats(player.pc);
+            if (!snapshot) return;
+            const previous = player.lastStats || null;
+            const packetsDelta = previous ? snapshot.packetsReceived - previous.packetsReceived : 0;
+            player.lastStats = snapshot;
+            window.hazeLastWebRTCStats = {
+                ...(window.hazeLastWebRTCStats || {}),
+                [feedId]: {
+                    ...snapshot,
+                    packets_delta: packetsDelta,
+                    connection_state: player.pc.connectionState,
+                    ice_state: player.pc.iceConnectionState,
+                    track_muted: player.audio?.dataset?.hazeTrackMuted === '1',
+                    at: new Date().toISOString(),
+                },
+            };
+            if (previous && packetsDelta <= 0 && player.pc.connectionState === 'connected') {
+                player.stagnantStatsPolls = (player.stagnantStatsPolls || 0) + 1;
+                if (player.stagnantStatsPolls === WEBRTC_STAGNANT_STATS_POLLS) {
+                    console.warn('Haze WebRTC inbound audio packets stalled.', window.hazeLastWebRTCStats[feedId]);
+                }
+            } else {
+                player.stagnantStatsPolls = 0;
+            }
+        } catch (error) {
+            console.warn('Unable to read Haze WebRTC stats.', error);
+        }
+    }, WEBRTC_STATS_INTERVAL_MS);
+}
+
+function stopWebRTCStatsMonitor(player) {
+    if (player?.statsPollTimer) {
+        window.clearInterval(player.statsPollTimer);
+        player.statsPollTimer = null;
+    }
+}
+
+async function readInboundAudioStats(pc) {
+    const report = await pc.getStats();
+    let selected = null;
+    report.forEach((stats) => {
+        const kind = stats.kind || stats.mediaType;
+        if (stats.type !== 'inbound-rtp' || kind !== 'audio' || stats.isRemote) return;
+        if (!selected || (stats.packetsReceived || 0) > (selected.packetsReceived || 0)) {
+            selected = stats;
+        }
+    });
+    if (!selected) return null;
+    return {
+        packetsReceived: Number(selected.packetsReceived || 0),
+        bytesReceived: Number(selected.bytesReceived || 0),
+        packetsLost: Number(selected.packetsLost || 0),
+        jitter: Number(selected.jitter || 0),
+        concealedSamples: Number(selected.concealedSamples || 0),
+        silentConcealedSamples: Number(selected.silentConcealedSamples || 0),
+        jitterBufferDelay: Number(selected.jitterBufferDelay || 0),
+        jitterBufferEmittedCount: Number(selected.jitterBufferEmittedCount || 0),
+        timestamp: selected.timestamp || performance.now(),
+    };
+}
+
 async function startFeed(feedId) {
     if (selectedFeedMode(feedId) === 'http') {
         return startFeedHTTP(feedId);
@@ -622,6 +694,9 @@ async function startFeedWebRTC(feedId) {
         mediaRecent: null,
         trackMuteTimer: null,
         connectionStateTimer: null,
+        statsPollTimer: null,
+        lastStats: null,
+        stagnantStatsPolls: 0,
     };
     feedPlayers.set(feedId, player);
 
@@ -790,6 +865,7 @@ async function startFeedWebRTC(feedId) {
             type: answer.sdp_type || 'answer',
             sdp: answer.sdp,
         });
+        startWebRTCStatsMonitor(feedId, player);
         window.setTimeout(() => {
             const active = feedPlayers.get(feedId);
             if (active === player && !active.trackAttached) {
@@ -885,6 +961,7 @@ function stopFeed(feedId, { silent = false } = {}) {
         player.pc?.close();
         clearPlayerTimer(player, 'trackMuteTimer');
         clearPlayerTimer(player, 'connectionStateTimer');
+        stopWebRTCStatsMonitor(player);
         const audio = findFeedElement('feed-audio', feedId) || player.audio;
         if (audio) {
             audio.pause();
