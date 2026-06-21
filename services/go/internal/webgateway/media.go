@@ -1089,26 +1089,23 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		select {
 		case <-ctx.Done():
 			return
-		case frame, ok := <-frames:
+		case <-ticker.C:
+			frame, drainSkipped, ok := latestWebRTCFrame(nil, frames)
 			if !ok {
 				return
 			}
 			if len(frame) == 0 {
-				continue
+				frame = lastFrame
+			} else {
+				lastFrame = append(lastFrame[:0], frame...)
+				pendingSkipped += drainSkipped
 			}
-			frame, skipped, ok := latestWebRTCFrame(frame, frames)
-			if !ok {
-				return
-			}
-			lastFrame = append(lastFrame[:0], frame...)
-			pendingSkipped += skipped
-		case <-ticker.C:
-			if len(lastFrame) == 0 {
+			if len(frame) == 0 {
 				continue
 			}
 			skipped := pendingSkipped
 			pendingSkipped = 0
-			if !writeFrame(lastFrame, skipped) {
+			if !writeFrame(frame, skipped) {
 				return
 			}
 		}
