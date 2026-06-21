@@ -1137,6 +1137,16 @@ func initialWebRTCFrame(codec webRTCAudioCodec) []byte {
 		return pcmuIdleFrame()
 	case webRTCAudioG722:
 		return encodeG722Frame(g722.NewEncoder(g722.Rate64000, 0), g722IdleFrameSamples())
+	case webRTCAudioOpus:
+		encoder, err := newOpusFrameEncoder(opusSampleRate, opusEncoderChannels)
+		if err != nil {
+			return nil
+		}
+		encoded, err := encoder.Encode(opusIdleFrameSamples())
+		if err != nil {
+			return nil
+		}
+		return encoded
 	default:
 		return nil
 	}

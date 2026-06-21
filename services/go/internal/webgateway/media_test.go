@@ -409,8 +409,10 @@ func TestInitialWebRTCFrameSeedsPacketWriter(t *testing.T) {
 	if frame := initialWebRTCFrame(webRTCAudioG722); len(frame) == 0 {
 		t.Fatal("G.722 initial frame should not be empty")
 	}
-	if frame := initialWebRTCFrame(webRTCAudioOpus); len(frame) != 0 {
-		t.Fatalf("Opus initial frame length = %d, want 0 without a peer-local encoder", len(frame))
+	if frame := initialWebRTCFrame(webRTCAudioOpus); opusBackendAvailable() && len(frame) == 0 {
+		t.Fatal("Opus initial frame should not be empty when the encoder is available")
+	} else if !opusBackendAvailable() && len(frame) != 0 {
+		t.Fatalf("Opus initial frame length = %d, want 0 without an encoder", len(frame))
 	}
 }
 
