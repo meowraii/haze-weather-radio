@@ -328,6 +328,23 @@ func TestMediaHubSharesWebRTCFrameSourcePerFeedCodec(t *testing.T) {
 	}
 }
 
+func TestWebRTCFrameSourcePrimesIdleFrame(t *testing.T) {
+	hub := newMemoryMediaHub()
+	frames, unsubscribe, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioPCMU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	select {
+	case frame := <-frames:
+		if len(frame) != pcmuFrameSamples {
+			t.Fatalf("primed idle frame length = %d, want %d", len(frame), pcmuFrameSamples)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for primed idle frame")
+	}
+}
+
 func TestPreferredWebRTCAudioCodecFallsBackForReceiverOffers(t *testing.T) {
 	if got, err := preferredWebRTCAudioCodec("m=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000\r\n", WebRTCAnswerOptions{}); err != nil || got != webRTCAudioPCMU {
 		t.Fatal("PCMU-only offers should use PCMU")

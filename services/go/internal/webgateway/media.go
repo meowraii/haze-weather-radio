@@ -825,35 +825,45 @@ func (s *webRTCFrameSource) run() {
 	loggedFirstFrame := false
 	stats := webRTCFrameSourceStats{lastReport: time.Now()}
 
+	emitFrame := func() bool {
+		for drained := 0; drained < cap(updates); drained++ {
+			select {
+			case chunk, ok := <-updates:
+				if !ok {
+					return false
+				}
+				compactQueuedFrames(&frameQueue, &frameHead)
+				frameQueue = s.appendFrames(frameQueue, g722Encoder, chunk)
+			default:
+				drained = cap(updates)
+			}
+		}
+		frame, kind := concealer.nextWithKind(&frameQueue, &frameHead, func() []byte {
+			return s.idleFrame(g722Encoder, g722Silence, opusIdle, pcmuIdle)
+		})
+		if len(frame) == 0 {
+			return true
+		}
+		dropped, subscribers := s.broadcast(frame)
+		stats.record(kind, dropped)
+		s.maybeLogDiagnostics(&stats, subscribers, queuedFrameCount(frameQueue, frameHead))
+		if !loggedFirstFrame {
+			log.Printf("media bridge WebRTC frame source started for feed %s codec=%s (%d bytes)", s.key.feedID, s.key.codec, len(frame))
+			loggedFirstFrame = true
+		}
+		return true
+	}
+	if !emitFrame() {
+		return
+	}
+
 	for {
 		select {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			for drained := 0; drained < cap(updates); drained++ {
-				select {
-				case chunk, ok := <-updates:
-					if !ok {
-						return
-					}
-					compactQueuedFrames(&frameQueue, &frameHead)
-					frameQueue = s.appendFrames(frameQueue, g722Encoder, chunk)
-				default:
-					drained = cap(updates)
-				}
-			}
-			frame, kind := concealer.nextWithKind(&frameQueue, &frameHead, func() []byte {
-				return s.idleFrame(g722Encoder, g722Silence, opusIdle, pcmuIdle)
-			})
-			if len(frame) == 0 {
-				continue
-			}
-			dropped, subscribers := s.broadcast(frame)
-			stats.record(kind, dropped)
-			s.maybeLogDiagnostics(&stats, subscribers, queuedFrameCount(frameQueue, frameHead))
-			if !loggedFirstFrame {
-				log.Printf("media bridge WebRTC frame source started for feed %s codec=%s (%d bytes)", s.key.feedID, s.key.codec, len(frame))
-				loggedFirstFrame = true
+			if !emitFrame() {
+				return
 			}
 		}
 	}
