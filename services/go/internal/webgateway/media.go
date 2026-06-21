@@ -1083,7 +1083,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 	}
 	ticker := time.NewTicker(webrtcFrameDuration)
 	defer ticker.Stop()
-	var lastFrame []byte
+	lastFrame := initialWebRTCFrame(codec)
 	var pendingSkipped int
 	for {
 		select {
@@ -1112,6 +1112,17 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 				return
 			}
 		}
+	}
+}
+
+func initialWebRTCFrame(codec webRTCAudioCodec) []byte {
+	switch codec {
+	case webRTCAudioPCMU:
+		return pcmuIdleFrame()
+	case webRTCAudioG722:
+		return encodeG722Frame(g722.NewEncoder(g722.Rate64000, 0), g722IdleFrameSamples())
+	default:
+		return nil
 	}
 }
 

@@ -387,6 +387,18 @@ func TestWebRTCFrameSourcePrimesIdleFrame(t *testing.T) {
 	}
 }
 
+func TestInitialWebRTCFrameSeedsPacketWriter(t *testing.T) {
+	if frame := initialWebRTCFrame(webRTCAudioPCMU); len(frame) != pcmuFrameSamples {
+		t.Fatalf("PCMU initial frame length = %d, want %d", len(frame), pcmuFrameSamples)
+	}
+	if frame := initialWebRTCFrame(webRTCAudioG722); len(frame) == 0 {
+		t.Fatal("G.722 initial frame should not be empty")
+	}
+	if frame := initialWebRTCFrame(webRTCAudioOpus); len(frame) != 0 {
+		t.Fatalf("Opus initial frame length = %d, want 0 without a peer-local encoder", len(frame))
+	}
+}
+
 func TestWebRTCFrameSourceSeedsLateSubscriber(t *testing.T) {
 	hub := newMemoryMediaHub()
 	source, err := hub.webRTCFrameSource("sk-0001", webRTCAudioPCMU)
