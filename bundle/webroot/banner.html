@@ -316,6 +316,9 @@
         const AUDIO_OUTPUT_BED_FREQUENCY = 180;
         const AUDIO_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
         const AUDIO_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS = 10000;
+        const AUDIO_OUTPUT_MIXER_RECOVERY_WINDOW_MS = 60000;
+        const AUDIO_OUTPUT_MIXER_RECOVERY_LIMIT = 3;
+        const AUDIO_OUTPUT_MIXER_BYPASS_MS = 60000;
         const WEBRTC_AUDIO_CODECS = new Set(['auto', 'opus', 'g722', 'pcmu']);
 
         const frame = document.getElementById('frame');
@@ -367,6 +370,9 @@
             audioLastPacketAt: 0,
             audioLastProgressAt: 0,
             audioLastOutputMixerRecoveryAt: 0,
+            audioOutputMixerRecoveryWindowAt: 0,
+            audioOutputMixerRecoveryCount: 0,
+            audioOutputMixerBypassUntil: 0,
             audioStartedAt: 0,
             audioTrackAttached: false,
             audioTrackMutedReported: false,
@@ -427,6 +433,8 @@
                 output_mixer_active: Boolean(state.audioOutputMixer),
                 output_mixer_state: state.audioOutputMixer?.context?.state || '',
                 last_output_mixer_recovery_age_ms: state.audioLastOutputMixerRecoveryAt ? Date.now() - state.audioLastOutputMixerRecoveryAt : null,
+                output_mixer_recovery_count: Number(state.audioOutputMixerRecoveryCount || 0),
+                output_mixer_bypass_remaining_ms: state.audioOutputMixerBypassUntil && state.audioOutputMixerBypassUntil > Date.now() ? state.audioOutputMixerBypassUntil - Date.now() : null,
                 audio: audio ? {
                     paused: audio.paused,
                     ended: audio.ended,
@@ -1703,14 +1711,33 @@
             if (!hasRecentBannerAudioPackets() && hasHardStaleBannerAudioPackets()) return false;
             const now = Date.now();
             if (now - Number(state.audioLastOutputMixerRecoveryAt || 0) < AUDIO_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS) return false;
+            const windowStartedAt = Number(state.audioOutputMixerRecoveryWindowAt || 0);
+            if (!windowStartedAt || now - windowStartedAt > AUDIO_OUTPUT_MIXER_RECOVERY_WINDOW_MS) {
+                state.audioOutputMixerRecoveryWindowAt = now;
+                state.audioOutputMixerRecoveryCount = 0;
+            }
+            state.audioOutputMixerRecoveryCount = Number(state.audioOutputMixerRecoveryCount || 0) + 1;
             state.audioLastOutputMixerRecoveryAt = now;
+            const sourceStream = mixer.sourceStream;
+            if (state.audioOutputMixerRecoveryCount >= AUDIO_OUTPUT_MIXER_RECOVERY_LIMIT) {
+                state.audioOutputMixerBypassUntil = now + AUDIO_OUTPUT_MIXER_BYPASS_MS;
+                recordBannerAudioEvent('audio_output_mixer_bypassed', {
+                    reason,
+                    recovery_count: state.audioOutputMixerRecoveryCount,
+                    bypass_ms: AUDIO_OUTPUT_MIXER_BYPASS_MS,
+                    packets_recent: hasRecentBannerAudioPackets(),
+                });
+                closeBannerAudioOutput();
+                audio.srcObject = sourceStream;
+                ensureBannerAudioPlaying();
+                return true;
+            }
             recordBannerAudioEvent('audio_output_mixer_rebind', {
                 reason,
                 track_count: outputTracks.length,
                 context_state: mixer.context?.state || '',
                 packets_recent: hasRecentBannerAudioPackets(),
             });
-            const sourceStream = mixer.sourceStream;
             closeBannerAudioOutput();
             bindBannerAudioOutput(sourceStream, audio);
             ensureBannerAudioPlaying();
@@ -1755,6 +1782,11 @@
         function bindBannerAudioOutput(sourceStream, audio = state.audioElement) {
             if (!sourceStream || !audio) return sourceStream;
             const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            if (state.audioOutputMixerBypassUntil && state.audioOutputMixerBypassUntil > Date.now()) {
+                closeBannerAudioOutput();
+                audio.srcObject = sourceStream;
+                return sourceStream;
+            }
             if (!AudioContextCtor || !sourceStream.getAudioTracks?.().length) {
                 closeBannerAudioOutput();
                 audio.srcObject = sourceStream;

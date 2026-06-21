@@ -95,6 +95,8 @@ window.hazeDumpWebRTC = function hazeDumpWebRTC(feedId = '') {
             output_mixer_active: Boolean(player.audioOutputMixer),
             output_mixer_state: player.audioOutputMixer?.context?.state || '',
             last_output_mixer_recovery_age_ms: player.lastOutputMixerRecoveryAt ? now - player.lastOutputMixerRecoveryAt : null,
+            output_mixer_recovery_count: Number(player.outputMixerRecoveryCount || 0),
+            output_mixer_bypass_remaining_ms: player.outputMixerBypassUntil && player.outputMixerBypassUntil > now ? player.outputMixerBypassUntil - now : null,
             audio: audio ? {
                 paused: audio.paused,
                 ended: audio.ended,
@@ -158,6 +160,9 @@ const WEBRTC_OUTPUT_BED_GAIN = 0.0025;
 const WEBRTC_OUTPUT_BED_FREQUENCY = 180;
 const WEBRTC_OUTPUT_MIXER_RESUME_GRACE_MS = 1500;
 const WEBRTC_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS = 10000;
+const WEBRTC_OUTPUT_MIXER_RECOVERY_WINDOW_MS = 60000;
+const WEBRTC_OUTPUT_MIXER_RECOVERY_LIMIT = 3;
+const WEBRTC_OUTPUT_MIXER_BYPASS_MS = 60000;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -823,14 +828,33 @@ function recoverMutedWebRTCOutputMixer(feedId, player, audio = player?.audio, re
     if (!hasRecentWebRTCPackets(player) && hasHardStaleWebRTCPackets(player)) return false;
     const now = Date.now();
     if (now - Number(player.lastOutputMixerRecoveryAt || 0) < WEBRTC_OUTPUT_MIXER_RECOVERY_COOLDOWN_MS) return false;
+    const windowStartedAt = Number(player.outputMixerRecoveryWindowAt || 0);
+    if (!windowStartedAt || now - windowStartedAt > WEBRTC_OUTPUT_MIXER_RECOVERY_WINDOW_MS) {
+        player.outputMixerRecoveryWindowAt = now;
+        player.outputMixerRecoveryCount = 0;
+    }
+    player.outputMixerRecoveryCount = Number(player.outputMixerRecoveryCount || 0) + 1;
     player.lastOutputMixerRecoveryAt = now;
+    const sourceStream = mixer.sourceStream;
+    if (player.outputMixerRecoveryCount >= WEBRTC_OUTPUT_MIXER_RECOVERY_LIMIT) {
+        player.outputMixerBypassUntil = now + WEBRTC_OUTPUT_MIXER_BYPASS_MS;
+        recordWebRTCEvent(feedId, 'audio_output_mixer_bypassed', {
+            reason,
+            recovery_count: player.outputMixerRecoveryCount,
+            bypass_ms: WEBRTC_OUTPUT_MIXER_BYPASS_MS,
+            packets_recent: hasRecentWebRTCPackets(player),
+        });
+        closeWebRTCAudioOutput(player);
+        audio.srcObject = sourceStream;
+        ensureWebRTCAudioPlaying(feedId, player, audio);
+        return true;
+    }
     recordWebRTCEvent(feedId, 'audio_output_mixer_rebind', {
         reason,
         track_count: outputTracks.length,
         context_state: mixer.context?.state || '',
         packets_recent: hasRecentWebRTCPackets(player),
     });
-    const sourceStream = mixer.sourceStream;
     closeWebRTCAudioOutput(player);
     bindWebRTCAudioOutput(feedId, player, sourceStream, audio);
     ensureWebRTCAudioPlaying(feedId, player, audio);
@@ -878,6 +902,11 @@ function closeWebRTCAudioOutput(player) {
 function bindWebRTCAudioOutput(feedId, player, sourceStream, audio) {
     if (!sourceStream || !audio) return sourceStream;
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (player?.outputMixerBypassUntil && player.outputMixerBypassUntil > Date.now()) {
+        closeWebRTCAudioOutput(player);
+        audio.srcObject = sourceStream;
+        return sourceStream;
+    }
     if (!AudioContextCtor || !sourceStream.getAudioTracks?.().length) {
         closeWebRTCAudioOutput(player);
         audio.srcObject = sourceStream;
@@ -1548,6 +1577,9 @@ async function startFeedWebRTC(feedId) {
         lastPacketAt: 0,
         lastAudioProgressAt: 0,
         lastOutputMixerRecoveryAt: 0,
+        outputMixerRecoveryWindowAt: 0,
+        outputMixerRecoveryCount: 0,
+        outputMixerBypassUntil: 0,
         stagnantStatsPolls: 0,
         missingStatsPolls: 0,
         reconnectTimer: null,
