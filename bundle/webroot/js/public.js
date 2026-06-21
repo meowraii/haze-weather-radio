@@ -829,7 +829,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     } catch {
         // Closing an already-failed peer is best-effort cleanup.
     }
-    const audio = findFeedElement('feed-audio', feedId) || player.audio;
+    const audio = player.audio || publicWebRTCAudioElement(feedId);
     if (audio) {
         audio.srcObject = player.remoteStream;
         audio.dataset.hazeTrackAttached = '0';
@@ -1317,7 +1317,9 @@ function stopFeed(feedId, { silent = false } = {}) {
         clearPlayerTimer(player, 'reconnectTimer');
         player.reconnectPending = false;
         stopWebRTCStatsMonitor(player);
-        const audio = findFeedElement('feed-audio', feedId) || player.audio;
+        const audio = player.mode === 'webrtc'
+            ? (player.audio || publicWebRTCAudioElement(feedId))
+            : (findFeedElement('feed-audio', feedId) || player.audio);
         if (audio) {
             audio.pause();
             if (player.mode === 'http') {
