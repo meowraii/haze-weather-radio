@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gotranspile/g722"
+	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
@@ -292,7 +293,14 @@ func newWebRTCPeerConnection(configuration webrtc.Configuration) (*webrtc.PeerCo
 	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
 		return nil, err
 	}
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(&mediaEngine))
+	var registry interceptor.Registry
+	if err := webrtc.RegisterDefaultInterceptors(&mediaEngine, &registry); err != nil {
+		return nil, err
+	}
+	api := webrtc.NewAPI(
+		webrtc.WithMediaEngine(&mediaEngine),
+		webrtc.WithInterceptorRegistry(&registry),
+	)
 	return api.NewPeerConnection(configuration)
 }
 
