@@ -336,6 +336,7 @@
             stream: null,
             audioPeer: null,
             audioReceiver: null,
+            audioTrackId: '',
             audioRemoteStream: null,
             audioFallbackStream: null,
             audioRetryCount: 0,
@@ -1191,6 +1192,7 @@
             state.audioTrackAttached = false;
             state.audioTrackMuted = true;
             state.audioReceiver = null;
+            state.audioTrackId = '';
             state.audioRemoteStream = null;
             state.audioLastStats = null;
             state.audioLastPacketAt = 0;
@@ -1229,7 +1231,7 @@
                     return;
                 }
                 try {
-                    const statsResult = await readActiveInboundAudioStats(state.audioReceiver, peer);
+                    const statsResult = await readActiveInboundAudioStats(state.audioReceiver, peer, state.audioTrackId);
                     const snapshot = statsResult?.snapshot || null;
                     if (!snapshot) {
                         if (peer.connectionState === 'connected') {
@@ -1294,12 +1296,15 @@
             }, AUDIO_STATS_INTERVAL_MS);
         }
 
-        async function readInboundAudioStats(source) {
+        async function readInboundAudioStats(source, trackId = '') {
             const report = await source.getStats();
             let selected = null;
+            const expectedTrackId = String(trackId || '').trim();
             report.forEach((stats) => {
                 const kind = stats.kind || stats.mediaType;
                 if (stats.type !== 'inbound-rtp' || stats.isRemote || (kind && kind !== 'audio')) return;
+                const statsTrackId = String(stats.trackIdentifier || '').trim();
+                if (expectedTrackId && statsTrackId && statsTrackId !== expectedTrackId) return;
                 const statsTimestamp = Number(stats.timestamp || 0);
                 const selectedTimestamp = Number(selected?.timestamp || 0);
                 if (!selected
@@ -1318,17 +1323,18 @@
                 silentConcealedSamples: Number(selected.silentConcealedSamples || 0),
                 jitterBufferDelay: Number(selected.jitterBufferDelay || 0),
                 jitterBufferEmittedCount: Number(selected.jitterBufferEmittedCount || 0),
+                trackIdentifier: selected.trackIdentifier || '',
                 timestamp: selected.timestamp || performance.now(),
             };
         }
 
-        async function readActiveInboundAudioStats(receiver, peer) {
+        async function readActiveInboundAudioStats(receiver, peer, trackId = '') {
             if (receiver?.getStats) {
-                const snapshot = await readInboundAudioStats(receiver);
+                const snapshot = await readInboundAudioStats(receiver, trackId);
                 if (snapshot) return { snapshot, source: 'receiver' };
             }
             if (peer?.getStats) {
-                const snapshot = await readInboundAudioStats(peer);
+                const snapshot = await readInboundAudioStats(peer, trackId);
                 if (snapshot) return { snapshot, source: 'peer' };
             }
             return null;
@@ -1340,6 +1346,7 @@
             state.audioTrackAttached = false;
             state.audioTrackMuted = true;
             state.audioReceiver = null;
+            state.audioTrackId = '';
             state.audioRemoteStream = null;
             state.audioLastStats = null;
             state.audioLastPacketAt = 0;
@@ -1499,6 +1506,7 @@
                     track_state: event.track.readyState || '',
                 });
                 state.audioReceiver = event.receiver || null;
+                state.audioTrackId = event.track.id || '';
                 state.audioRemoteStream = stream;
                 state.audioLastStats = null;
                 state.audioStagnantStatsPolls = 0;

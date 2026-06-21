@@ -763,7 +763,7 @@ function startWebRTCStatsMonitor(feedId, player) {
             return;
         }
         try {
-            const statsResult = await readActiveInboundAudioStats(player.audioReceiver, player.pc);
+            const statsResult = await readActiveInboundAudioStats(player.audioReceiver, player.pc, player.audioTrackId);
             const snapshot = statsResult?.snapshot || null;
             if (!snapshot) {
                 if (player.pc.connectionState === 'connected') {
@@ -862,6 +862,7 @@ function detachWebRTCPlayerForReconnect(feedId, player) {
     player.connected = false;
     player.remoteStream = player.fallbackStream || new MediaStream();
     player.audioReceiver = null;
+    player.audioTrackId = '';
     player.lastStats = null;
     player.lastPacketAt = 0;
     player.stagnantStatsPolls = 0;
@@ -927,12 +928,15 @@ function cancelWebRTCReconnect(player) {
     player.reconnectPending = false;
 }
 
-async function readInboundAudioStats(source) {
+async function readInboundAudioStats(source, trackId = '') {
     const report = await source.getStats();
     let selected = null;
+    const expectedTrackId = String(trackId || '').trim();
     report.forEach((stats) => {
         const kind = stats.kind || stats.mediaType;
         if (stats.type !== 'inbound-rtp' || stats.isRemote || (kind && kind !== 'audio')) return;
+        const statsTrackId = String(stats.trackIdentifier || '').trim();
+        if (expectedTrackId && statsTrackId && statsTrackId !== expectedTrackId) return;
         const statsTimestamp = Number(stats.timestamp || 0);
         const selectedTimestamp = Number(selected?.timestamp || 0);
         if (!selected
@@ -951,17 +955,18 @@ async function readInboundAudioStats(source) {
         silentConcealedSamples: Number(selected.silentConcealedSamples || 0),
         jitterBufferDelay: Number(selected.jitterBufferDelay || 0),
         jitterBufferEmittedCount: Number(selected.jitterBufferEmittedCount || 0),
+        trackIdentifier: selected.trackIdentifier || '',
         timestamp: selected.timestamp || performance.now(),
     };
 }
 
-async function readActiveInboundAudioStats(receiver, peer) {
+async function readActiveInboundAudioStats(receiver, peer, trackId = '') {
     if (receiver?.getStats) {
-        const snapshot = await readInboundAudioStats(receiver);
+        const snapshot = await readInboundAudioStats(receiver, trackId);
         if (snapshot) return { snapshot, source: 'receiver' };
     }
     if (peer?.getStats) {
-        const snapshot = await readInboundAudioStats(peer);
+        const snapshot = await readInboundAudioStats(peer, trackId);
         if (snapshot) return { snapshot, source: 'peer' };
     }
     return null;
@@ -1066,6 +1071,7 @@ async function startFeedWebRTC(feedId) {
         fallbackStream,
         remoteStream: fallbackStream,
         audioReceiver: null,
+        audioTrackId: '',
         trackAttached: false,
         connected: false,
         mediaRecent: null,
@@ -1138,6 +1144,7 @@ async function startFeedWebRTC(feedId) {
             return;
         }
         player.audioReceiver = event.receiver || null;
+        player.audioTrackId = event.track.id || '';
         player.lastStats = null;
         player.stagnantStatsPolls = 0;
         player.missingStatsPolls = 0;
