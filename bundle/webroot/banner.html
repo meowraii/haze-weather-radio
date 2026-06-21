@@ -1523,6 +1523,7 @@
 
         function markBannerAudioPacketsRecent() {
             state.audioLastPacketAt = Date.now();
+            state.audioRetryCount = 0;
             cancelAudioReconnect();
             if (state.audioDisconnectTimer) {
                 window.clearTimeout(state.audioDisconnectTimer);
@@ -1811,7 +1812,6 @@
                     cancelAudioReconnect();
                     ensureBannerAudioPlaying();
                     clearAudioTransientTimers();
-                    state.audioRetryCount = 0;
                 } else if (pc.connectionState === 'disconnected') {
                     scheduleAudioDisconnectReconnect(pc);
                 } else if (['failed', 'closed'].includes(pc.connectionState)) {
@@ -1852,7 +1852,6 @@
                     return pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
                 })
                 .then(() => {
-                    state.audioRetryCount = 0;
                     startAudioStatsMonitor(pc);
                 })
                 .catch((error) => {
