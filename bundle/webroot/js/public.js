@@ -1063,6 +1063,8 @@ function webRTCTrackEventDetails(player) {
 function webRTCAudioTrackStates(player, audio = player?.audio || null) {
     const seen = new Set();
     const tracks = [];
+    const packetsRecent = hasRecentWebRTCPackets(player);
+    const hardStale = hasHardStaleWebRTCPackets(player);
     const addTracks = (source, stream) => {
         for (const track of stream?.getAudioTracks?.() || []) {
             if (!track || seen.has(`${source}:${track.id}`)) continue;
@@ -1080,7 +1082,8 @@ function webRTCAudioTrackStates(player, audio = player?.audio || null) {
             id: track.id || '',
             ready_state: track.readyState || '',
             enabled: Boolean(track.enabled),
-            muted: Boolean(track.muted),
+            raw_muted: Boolean(track.muted),
+            effective_muted: Boolean(track.muted) && !packetsRecent && hardStale,
         }));
 }
 

@@ -1583,6 +1583,8 @@
         function bannerAudioTrackStates(audio = state.audioElement) {
             const seen = new Set();
             const tracks = [];
+            const packetsRecent = hasRecentBannerAudioPackets();
+            const hardStale = hasHardStaleBannerAudioPackets();
             const addTracks = (source, stream) => {
                 for (const track of stream?.getAudioTracks?.() || []) {
                     if (!track || seen.has(`${source}:${track.id}`)) continue;
@@ -1600,7 +1602,8 @@
                     id: track.id || '',
                     ready_state: track.readyState || '',
                     enabled: Boolean(track.enabled),
-                    muted: Boolean(track.muted),
+                    raw_muted: Boolean(track.muted),
+                    effective_muted: Boolean(track.muted) && !packetsRecent && hardStale,
                 }));
         }
 
