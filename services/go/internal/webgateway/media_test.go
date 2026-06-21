@@ -65,35 +65,25 @@ func TestValidatePCMChunkRejectsImpossibleShape(t *testing.T) {
 	}
 }
 
-func TestPCMLooksLikeStaticButAllowsTone(t *testing.T) {
-	if !pcmLooksLikeStatic(alternatingFullScalePCM(960)) {
-		t.Fatal("alternating full-scale PCM should be classified as static-like")
-	}
-	if pcmLooksLikeStatic(sinePCM(960, 1000, 48000, 26000)) {
-		t.Fatal("a loud SAME-like tone should not be classified as static-like")
-	}
-}
-
-func TestMediaHubMutesSuspiciousPCM(t *testing.T) {
+func TestMediaHubPreservesPublishedPCM(t *testing.T) {
 	hub := newMemoryMediaHub()
+	pcm := alternatingFullScalePCM(960)
 	hub.publish(PCMChunk{
 		FeedID:     "sk-0001",
 		SampleRate: 48000,
 		Channels:   1,
 		Duration:   20 * time.Millisecond,
-		Data:       alternatingFullScalePCM(960),
+		Data:       pcm,
 	})
 	updates, unsubscribe := hub.Subscribe("sk-0001")
 	defer unsubscribe()
 	select {
 	case chunk := <-updates:
-		for index, value := range chunk.Data {
-			if value != 0 {
-				t.Fatalf("muted PCM byte %d = %d, want silence", index, value)
-			}
+		if string(chunk.Data) != string(pcm) {
+			t.Fatal("media hub must not replace published PCM with silence")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for muted chunk")
+		t.Fatal("timed out waiting for PCM chunk")
 	}
 }
 
@@ -393,7 +383,6 @@ func newMemoryMediaHub() *MediaHub {
 		last:        map[string]PCMChunk{},
 		lastAt:      map[string]time.Time{},
 		seenLogged:  map[string]bool{},
-		guard:       map[string]pcmGuardState{},
 	}
 }
 

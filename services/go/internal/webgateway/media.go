@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net"
 	"strings"
 	"sync"
@@ -72,12 +71,6 @@ type MediaHub struct {
 	last        map[string]PCMChunk
 	lastAt      map[string]time.Time
 	seenLogged  map[string]bool
-	guard       map[string]pcmGuardState
-}
-
-type pcmGuardState struct {
-	consecutiveMuted int
-	lastLogAt        time.Time
 }
 
 func NewMediaHub(addr string) *MediaHub {
@@ -89,7 +82,6 @@ func NewMediaHub(addr string) *MediaHub {
 		last:        map[string]PCMChunk{},
 		lastAt:      map[string]time.Time{},
 		seenLogged:  map[string]bool{},
-		guard:       map[string]pcmGuardState{},
 	}
 	if hub.addr != "" {
 		go hub.run(context.Background())
@@ -486,10 +478,6 @@ func (h *MediaHub) runFeedIngress(_ string, ingress <-chan PCMChunk) {
 }
 
 func (h *MediaHub) publishReady(chunk PCMChunk) {
-	staticLike := pcmLooksLikeStatic(chunk.Data)
-	if staticLike {
-		chunk.Data = silencePCMBytes(len(chunk.Data))
-	}
 	now := time.Now()
 	h.mu.Lock()
 	if h.last == nil {
@@ -501,21 +489,6 @@ func (h *MediaHub) publishReady(chunk PCMChunk) {
 	if h.seenLogged == nil {
 		h.seenLogged = map[string]bool{}
 	}
-	if h.guard == nil {
-		h.guard = map[string]pcmGuardState{}
-	}
-	guard := h.guard[chunk.FeedID]
-	if staticLike {
-		guard.consecutiveMuted++
-		if guard.consecutiveMuted == 1 || now.Sub(guard.lastLogAt) >= 30*time.Second {
-			log.Printf("media bridge muted suspicious receiver PCM for feed %s (%d bytes, %d consecutive chunk(s))", chunk.FeedID, len(chunk.Data), guard.consecutiveMuted)
-			guard.lastLogAt = now
-		}
-	} else if guard.consecutiveMuted > 0 {
-		log.Printf("media bridge receiver PCM recovered for feed %s after %d muted chunk(s)", chunk.FeedID, guard.consecutiveMuted)
-		guard.consecutiveMuted = 0
-	}
-	h.guard[chunk.FeedID] = guard
 	h.last[chunk.FeedID] = chunk
 	h.lastAt[chunk.FeedID] = now
 	if !h.seenLogged[chunk.FeedID] {
@@ -580,54 +553,6 @@ func validatePCMChunk(chunk PCMChunk) (PCMChunk, bool, string) {
 		return chunk, false, fmt.Sprintf("PCM duration is too large (%s)", chunk.Duration)
 	}
 	return chunk, true, ""
-}
-
-func pcmLooksLikeStatic(data []byte) bool {
-	sampleCount := len(data) / 2
-	if sampleCount < 160 {
-		return false
-	}
-	var sumSquares float64
-	var diffTotal int64
-	var peakCount int
-	var zeroCrossings int
-	previous := int16(binary.LittleEndian.Uint16(data[0:2]))
-	for offset := 0; offset+1 < len(data); offset += 2 {
-		sample := int16(binary.LittleEndian.Uint16(data[offset : offset+2]))
-		absSample := int(sample)
-		if absSample < 0 {
-			absSample = -absSample
-		}
-		if absSample >= 32000 {
-			peakCount++
-		}
-		sumSquares += float64(sample) * float64(sample)
-		if offset > 0 {
-			if (sample < 0 && previous > 0) || (sample > 0 && previous < 0) {
-				zeroCrossings++
-			}
-			diff := int(sample) - int(previous)
-			if diff < 0 {
-				diff = -diff
-			}
-			diffTotal += int64(diff)
-		}
-		previous = sample
-	}
-	rms := math.Sqrt(sumSquares/float64(sampleCount)) / 32768.0
-	peakRatio := float64(peakCount) / float64(sampleCount)
-	zeroCrossingRatio := float64(zeroCrossings) / float64(sampleCount-1)
-	meanDiff := float64(diffTotal) / float64(sampleCount-1) / 65536.0
-	return peakRatio > 0.65 ||
-		(rms > 0.45 && zeroCrossingRatio > 0.32 && meanDiff > 0.35) ||
-		(rms > 0.80 && peakRatio > 0.10 && meanDiff > 0.25)
-}
-
-func silencePCMBytes(length int) []byte {
-	if length <= 0 {
-		return nil
-	}
-	return make([]byte, length)
 }
 
 func (h *MediaHub) HasRecentPCM(feedID string, maxAge time.Duration) bool {
