@@ -146,6 +146,7 @@ type sameGenerateRequest struct {
 	Duration   string
 	Callsign   string
 	Tone       string
+	Sequence   string
 }
 
 type sameQueueItem struct {
@@ -458,6 +459,9 @@ func runSameGenerator(configPath string, request sameGenerateRequest) (map[strin
 		"--duration", request.Duration,
 		"--callsign", request.Callsign,
 		"--tone", request.Tone,
+	}
+	if request.Sequence != "" {
+		args = append(args, "--sequence", request.Sequence)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

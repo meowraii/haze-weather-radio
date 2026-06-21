@@ -1,0 +1,184 @@
+package webgateway
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+const alertPreviewTimeout = 120 * time.Second
+
+func (s *wsSession) previewAlert(payload map[string]any) (map[string]any, error) {
+	targets, err := alertTargetFeedIDs(s.configPath, payload)
+	if err != nil {
+		return nil, err
+	}
+	includeSame := boolPayload(payload, "include_same", true)
+	alertID := safeID(fmt.Sprintf("preview-%d", time.Now().UTC().UnixNano()))
+	data := s.broadcastAlertData(payload, targets, alertID, includeSame)
+	alertText := strings.TrimSpace(stringValue(data, "alert_text"))
+	if alertText == "" {
+		return nil, fmt.Errorf("alert preview text is empty")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), alertPreviewTimeout)
+	defer cancel()
+	voicePCM, err := synthesizeAlertPreviewVoice(ctx, s.configPath, payload, targets[0], alertID, alertText)
+	if err != nil {
+		return nil, err
+	}
+	lead, tail, header, err := alertPreviewLeadTail(s.configPath, payload, includeSame)
+	if err != nil {
+		return nil, err
+	}
+	pcm := assembleAlertPreviewPCM(lead, voicePCM, tail, 48000, 1)
+	return map[string]any{
+		"audio_base64": base64.StdEncoding.EncodeToString(wavFromPCM16(pcm, 48000, 1)),
+		"format":       "wav",
+		"content_type": "audio/wav",
+		"sample_rate":  48000,
+		"channels":     1,
+		"include_same": includeSame,
+		"same_header":  header,
+		"alert_text":   alertText,
+		"feed_id":      targets[0],
+		"feed_ids":     targets,
+	}, nil
+}
+
+func synthesizeAlertPreviewVoice(ctx context.Context, configPath string, payload map[string]any, feedID string, alertID string, text string) ([]byte, error) {
+	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
+	if bridgeAddr == "" {
+		return nil, fmt.Errorf("event bridge is not available")
+	}
+	bridge, err := connectWxBridge(ctx, bridgeAddr)
+	if err != nil {
+		return nil, fmt.Errorf("event bridge connect failed: %w", err)
+	}
+	defer bridge.Close()
+	jobID := safeID("alert-preview-" + alertID)
+	outputPath := resolveConfigPath(configPath, filepath.Join("runtime", "audio", "previews", jobID+".wav"))
+	synth, err := bridge.Synthesize(ctx, jobID, wxRenderedProduct{
+		FeedID:   feedID,
+		Title:    "Alert Preview",
+		Text:     text,
+		ReaderID: strings.TrimSpace(firstNonBlank(stringPayload(payload, "reader_id", ""), "00")),
+		Language: strings.TrimSpace(firstNonBlank(stringPayload(payload, "language", ""), "en-CA")),
+	}, outputPath, "wav")
+	if err != nil {
+		return nil, err
+	}
+	path := firstNonBlank(synth.Path, outputPath)
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	if pcm, info, err := wavPCM16Info(raw); err == nil && info.SampleRate == 48000 && info.Channels == 1 {
+		return pcm, nil
+	}
+	format, _ := wxAudioFormatByID("raw")
+	return transcodeWxAudio(ctx, raw, format)
+}
+
+func alertPreviewLeadTail(configPath string, payload map[string]any, includeSame bool) ([]byte, []byte, string, error) {
+	request, err := buildSameRequest(configPath, payload)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if includeSame {
+		headerRequest := request
+		headerRequest.Sequence = "header"
+		headerResult, err := runSameGenerator(configPath, headerRequest)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("SAME header generation failed: %w", err)
+		}
+		headerAudio, header, err := alertPreviewAudioFromResult(headerResult)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("SAME header generation failed: %w", err)
+		}
+		eomRequest := request
+		eomRequest.Sequence = "eom"
+		eomResult, err := runSameGenerator(configPath, eomRequest)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("SAME EOM generation failed: %w", err)
+		}
+		eomAudio, _, err := alertPreviewAudioFromResult(eomResult)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("SAME EOM generation failed: %w", err)
+		}
+		return headerAudio, eomAudio, header, nil
+	}
+	if !alertPreviewAttentionToneEnabled(payload) {
+		return nil, nil, "", nil
+	}
+	toneRequest := request
+	toneRequest.Sequence = "tone"
+	toneResult, err := runSameGenerator(configPath, toneRequest)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("attention tone generation failed: %w", err)
+	}
+	toneAudio, _, err := alertPreviewAudioFromResult(toneResult)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("attention tone generation failed: %w", err)
+	}
+	return toneAudio, nil, "", nil
+}
+
+func alertPreviewAudioFromResult(result map[string]any) ([]byte, string, error) {
+	audioBase64 := strings.TrimSpace(stringPayload(result, "audio_base64", ""))
+	if audioBase64 == "" {
+		return nil, strings.TrimSpace(stringPayload(result, "header", "")), nil
+	}
+	audio, err := base64.StdEncoding.DecodeString(audioBase64)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode generated audio: %w", err)
+	}
+	return audio, strings.TrimSpace(stringPayload(result, "header", "")), nil
+}
+
+func alertPreviewAttentionToneEnabled(payload map[string]any) bool {
+	tone := strings.ToUpper(strings.TrimSpace(firstNonBlank(
+		stringPayload(payload, "same_tone", ""),
+		stringPayload(payload, "tone_type", ""),
+		stringPayload(payload, "attention_tone", ""),
+	)))
+	switch tone {
+	case "", "NONE", "NO", "OFF", "DISABLED":
+		return false
+	default:
+		return true
+	}
+}
+
+func assembleAlertPreviewPCM(lead []byte, voice []byte, tail []byte, sampleRate int, channels int) []byte {
+	size := len(lead) + len(voice) + len(tail)
+	gap := []byte(nil)
+	if len(lead) > 0 {
+		gap = silencePCMBytes(sampleRate, channels, time.Second)
+		size += len(gap)
+	}
+	out := make([]byte, 0, size)
+	out = append(out, lead...)
+	out = append(out, gap...)
+	out = append(out, voice...)
+	out = append(out, tail...)
+	return out
+}
+
+func silencePCMBytes(sampleRate int, channels int, duration time.Duration) []byte {
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	if channels <= 0 {
+		channels = 1
+	}
+	samples := int(duration.Seconds() * float64(sampleRate) * float64(channels))
+	if samples <= 0 {
+		return nil
+	}
+	return make([]byte, samples*2)
+}

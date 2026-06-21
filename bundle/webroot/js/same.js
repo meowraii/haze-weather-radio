@@ -1,6 +1,5 @@
-import { apiCommand, apiGet, apiPost } from './lib/api.js';
+import { apiCommand, apiGet } from './lib/api.js';
 import { getDashboardState, refreshDashboard, waitForDashboardState } from './dashboard.js';
-import { pcmToWav } from './lib/audio.js';
 
 const TEST_CODES = new Set(['DMO', 'RWT', 'RMT']);
 
@@ -695,33 +694,15 @@ async function previewSameAudio() {
     previewSame.disabled = true;
     previewSame.textContent = 'Generating...';
     try {
-        if (includeSame.checked) {
-            const result = await apiPost('/same/generate', payload());
-            if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
-            const bytes = Uint8Array.from(atob(result.audio_base64 || ''), (char) => char.charCodeAt(0));
-            const wav = pcmToWav(bytes, result.sample_rate || 48000, result.channels || 1);
-            previewObjectUrl = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
-            previewPlayer.src = previewObjectUrl;
-            previewPlayer.hidden = false;
-            headerPreview.textContent = result.header || headerText();
-            setStatus('Alert audio preview ready.', 'ok');
-            previewPlayer.play().catch(() => {});
-            return;
-        }
-        const text = [prependIntro.checked ? introText : '', messageBox.value.trim()].filter(Boolean).join(' ').trim();
-        if (!text) {
-            setStatus('Add message text or enable the generated intro.', 'err');
-            return;
-        }
-        previewPlayer.pause();
-        previewPlayer.hidden = true;
-        if ('speechSynthesis' in window) {
-            window.speechSynthesis.cancel();
-            window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-            setStatus('Playing browser speech preview.', 'ok');
-        } else {
-            setStatus('Text-only alert preview is not supported in this browser.', 'err');
-        }
+        const result = await apiCommand('alert.preview', payload(), 120000);
+        if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+        const bytes = Uint8Array.from(atob(result.audio_base64 || ''), (char) => char.charCodeAt(0));
+        previewObjectUrl = URL.createObjectURL(new Blob([bytes], { type: result.content_type || 'audio/wav' }));
+        previewPlayer.src = previewObjectUrl;
+        previewPlayer.hidden = false;
+        headerPreview.textContent = result.same_header || (includeSame.checked ? headerText() : 'SAME disabled for this broadcast.');
+        setStatus('Alert audio preview ready.', 'ok');
+        previewPlayer.play().catch(() => {});
     } catch (err) {
         setStatus(`Preview failed: ${err.message}`, 'err');
     } finally {

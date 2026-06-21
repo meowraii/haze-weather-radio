@@ -492,6 +492,8 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 		return s.airSame(payload)
 	case "alert.broadcast":
 		return s.broadcastAlert(payload)
+	case "alert.preview":
+		return s.previewAlert(payload)
 	case "operator_breakin.prerolls":
 		return s.listOperatorBreakInPrerolls()
 	case "operator_breakin.upload_preroll":

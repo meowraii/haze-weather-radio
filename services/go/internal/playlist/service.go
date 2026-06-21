@@ -845,9 +845,11 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		return
 	}
 	includeSame := includeSameAlert(data)
+	includeAttentionTone := !includeSame && alertAttentionToneEnabled(data)
 	var sameRequest sameGenerateRequest
 	var sameHeader sameAudioPayload
 	var sameEOM sameAudioPayload
+	var attentionTone sameAudioPayload
 	alertSampleRate := p.cfg.Root.Playout.SampleRate
 	alertChannels := p.cfg.Root.Playout.Channels
 	if includeSame {
@@ -885,6 +887,23 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		}
 		alertSampleRate = sameHeader.SampleRate
 		alertChannels = sameHeader.Channels
+	} else if includeAttentionTone {
+		var err error
+		var toneResult map[string]any
+		_, toneResult, err = p.generatePrioritySAME(ctx, data, "tone")
+		if err != nil {
+			p.lastError = "attention tone generation failed: " + err.Error()
+			p.writeState()
+			return
+		}
+		attentionTone, err = sameAudioFromResult(toneResult, p.cfg.Root.Playout.SampleRate, p.cfg.Root.Playout.Channels)
+		if err != nil {
+			p.lastError = "attention tone generation failed: " + err.Error()
+			p.writeState()
+			return
+		}
+		alertSampleRate = attentionTone.SampleRate
+		alertChannels = attentionTone.Channels
 	}
 	queueID := safeID("001_" + p.feed.ID + "_" + alertID + "_cap")
 	if includeSame {
@@ -893,7 +912,7 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 	audioRel := filepath.ToSlash(filepath.Join("runtime", "audio", "alerts", queueID+".pcm16le"))
 	audioPath := filepath.Join(p.cfg.BaseDir, filepath.FromSlash(audioRel))
 	voicePath := audioPath
-	if includeSame {
+	if includeSame || includeAttentionTone {
 		voicePath = audioPath + ".voice"
 		defer os.Remove(voicePath)
 	}
@@ -931,6 +950,17 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 			source = "cap-same-broadcast-audio"
 		} else {
 			source = "cap-same-tts"
+		}
+	} else if includeAttentionTone {
+		if err := combineAttentionAlertAudio(audioPath, attentionTone.Audio, voicePath, alertSampleRate, alertChannels); err != nil {
+			p.lastError = "attention tone alert assembly failed: " + err.Error()
+			p.writeState()
+			return
+		}
+		if source == "cap-broadcast-audio" {
+			source = "cap-tone-broadcast-audio"
+		} else {
+			source = "cap-tone-tts"
 		}
 	}
 	info, err := pcmInfo(audioPath, alertSampleRate, alertChannels)
@@ -1097,6 +1127,16 @@ func alertTextFromData(data map[string]any) string {
 	return alerttext.SpeechFromData(data)
 }
 
+func alertAttentionToneEnabled(data map[string]any) bool {
+	tone := strings.ToUpper(strings.TrimSpace(firstText(nil, data, "same_tone", "tone_type", "attention_tone")))
+	switch tone {
+	case "", "NONE", "NO", "OFF", "DISABLED":
+		return false
+	default:
+		return true
+	}
+}
+
 func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, outputPath string, alertText string, sampleRate int, channels int) error {
 	readerID := "00"
 	language := feedLanguage(p.feed)
@@ -1135,6 +1175,14 @@ func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, o
 }
 
 func combineSAMEAlertAudio(outputPath string, header []byte, voicePath string, eom []byte, sampleRate int, channels int) error {
+	return combineAlertAudio(outputPath, header, voicePath, eom, sampleRate, channels)
+}
+
+func combineAttentionAlertAudio(outputPath string, tone []byte, voicePath string, sampleRate int, channels int) error {
+	return combineAlertAudio(outputPath, tone, voicePath, nil, sampleRate, channels)
+}
+
+func combineAlertAudio(outputPath string, lead []byte, voicePath string, tail []byte, sampleRate int, channels int) error {
 	voice, err := os.ReadFile(voicePath)
 	if err != nil {
 		return err
@@ -1151,17 +1199,21 @@ func combineSAMEAlertAudio(outputPath string, header []byte, voicePath string, e
 		return err
 	}
 	writeErr := func() error {
-		if _, err := file.Write(header); err != nil {
-			return err
-		}
-		if _, err := file.Write(silencePCM(sampleRate, channels, time.Second)); err != nil {
-			return err
+		if len(lead) > 0 {
+			if _, err := file.Write(lead); err != nil {
+				return err
+			}
+			if _, err := file.Write(silencePCM(sampleRate, channels, time.Second)); err != nil {
+				return err
+			}
 		}
 		if _, err := file.Write(voice); err != nil {
 			return err
 		}
-		if _, err := file.Write(eom); err != nil {
-			return err
+		if len(tail) > 0 {
+			if _, err := file.Write(tail); err != nil {
+				return err
+			}
 		}
 		return nil
 	}()

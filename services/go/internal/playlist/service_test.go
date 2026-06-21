@@ -1,6 +1,7 @@
 package playlist
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -667,6 +668,42 @@ func TestIncludeSameAlertRequiresExplicitOptIn(t *testing.T) {
 	}
 	if !includeSameAlert(map[string]any{"include_same": true}) {
 		t.Fatal("include_same=true should enable SAME tones")
+	}
+}
+
+func TestAlertAttentionToneEnabledIsIndependentOfSame(t *testing.T) {
+	if !alertAttentionToneEnabled(map[string]any{"same_tone": "WXR", "include_same": false}) {
+		t.Fatal("selected attention tone should be enabled even when SAME is disabled")
+	}
+	if alertAttentionToneEnabled(map[string]any{"same_tone": "NONE", "include_same": false}) {
+		t.Fatal("NONE tone should disable attention tone")
+	}
+}
+
+func TestCombineAttentionAlertAudioPrependsToneAndVoice(t *testing.T) {
+	dir := t.TempDir()
+	voicePath := filepath.Join(dir, "voice.pcm16le")
+	outputPath := filepath.Join(dir, "alert.pcm16le")
+	voice := []byte{1, 2, 3, 4}
+	tone := []byte{5, 6}
+	if err := os.WriteFile(voicePath, voice, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := combineAttentionAlertAudio(outputPath, tone, voicePath, 48000, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedLen := len(tone) + len(silencePCM(48000, 1, time.Second)) + len(voice)
+	if len(raw) != expectedLen {
+		t.Fatalf("combined len = %d, want %d", len(raw), expectedLen)
+	}
+	if !bytes.Equal(raw[:len(tone)], tone) || !bytes.Equal(raw[len(raw)-len(voice):], voice) {
+		t.Fatalf("combined audio did not preserve tone and voice: %#v", raw)
 	}
 }
 

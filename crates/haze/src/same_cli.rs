@@ -8,9 +8,9 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::same_core::{
-    eom_sequence, generate_same_header_attention_sequence,
+    attention_tone, eom_sequence, generate_same_header_attention_sequence,
     generate_same_header_attention_sequence_with_attention, generate_same_header_sequence,
-    generate_same_header_sequence_with_attention, SameHeader, ToneType, SAMPLE_RATE,
+    generate_same_header_sequence_with_attention, SameAudio, SameHeader, ToneType, SAMPLE_RATE,
 };
 
 const NPAS_ATTENTION_SIGNAL_PATH: &str = "bundle/audio/Canadian_Alerting_Attention_Signal.wav";
@@ -51,7 +51,7 @@ pub struct SameGenerateArgs {
     #[arg(long, default_value = "WXR")]
     tone: ToneArg,
 
-    /// Audio segment to generate: full, header, or eom.
+    /// Audio segment to generate: full, header, eom, or tone.
     #[arg(long, default_value = "full")]
     sequence: SameSequenceArg,
 
@@ -65,15 +65,6 @@ enum ToneArg {
     None,
     Builtin(ToneType),
     Npas,
-}
-
-impl ToneArg {
-    fn builtin(self) -> Option<ToneType> {
-        match self {
-            Self::Builtin(tone) => Some(tone),
-            Self::None | Self::Npas => None,
-        }
-    }
 }
 
 impl FromStr for ToneArg {
@@ -98,6 +89,7 @@ enum SameSequenceArg {
     Full,
     Header,
     Eom,
+    Tone,
 }
 
 impl FromStr for SameSequenceArg {
@@ -108,6 +100,7 @@ impl FromStr for SameSequenceArg {
             "" | "full" | "all" | "complete" => Ok(Self::Full),
             "header" | "start" | "attention" | "head" => Ok(Self::Header),
             "eom" | "end" | "tail" => Ok(Self::Eom),
+            "tone" | "attention_tone" | "attention-tone" => Ok(Self::Tone),
             other => bail!("unsupported SAME sequence {other:?}"),
         }
     }
@@ -146,24 +139,26 @@ fn run_generate(args: SameGenerateArgs) -> Result<()> {
             .to_string(),
     )
     .context("failed to build SAME header")?;
-    let npas_attention = match args.tone {
-        ToneArg::Npas => Some(load_npas_attention_signal()?),
-        ToneArg::None | ToneArg::Builtin(_) => None,
-    };
-    let audio = match (args.sequence, npas_attention.as_deref()) {
-        (SameSequenceArg::Full, Some(attention)) => {
-            generate_same_header_sequence_with_attention(&header, Some(attention))
+    let audio = match args.sequence {
+        SameSequenceArg::Full => {
+            if let Some(attention) = attention_samples(args.tone)? {
+                generate_same_header_sequence_with_attention(&header, Some(&attention))
+            } else {
+                generate_same_header_sequence(&header, None)
+            }
         }
-        (SameSequenceArg::Header, Some(attention)) => {
-            generate_same_header_attention_sequence_with_attention(&header, Some(attention))
+        SameSequenceArg::Header => {
+            if let Some(attention) = attention_samples(args.tone)? {
+                generate_same_header_attention_sequence_with_attention(&header, Some(&attention))
+            } else {
+                generate_same_header_attention_sequence(&header, None)
+            }
         }
-        (SameSequenceArg::Full, None) => {
-            generate_same_header_sequence(&header, args.tone.builtin())
-        }
-        (SameSequenceArg::Header, None) => {
-            generate_same_header_attention_sequence(&header, args.tone.builtin())
-        }
-        (SameSequenceArg::Eom, _) => eom_sequence(),
+        SameSequenceArg::Eom => eom_sequence(),
+        SameSequenceArg::Tone => SameAudio {
+            sample_rate: SAMPLE_RATE,
+            samples: attention_samples(args.tone)?.unwrap_or_default(),
+        },
     };
     let pcm = audio.to_pcm16le();
     let output = SameGenerateOutput {
@@ -181,6 +176,14 @@ fn run_generate(args: SameGenerateArgs) -> Result<()> {
         println!("{}", output.header);
     }
     Ok(())
+}
+
+fn attention_samples(tone: ToneArg) -> Result<Option<Vec<f32>>> {
+    match tone {
+        ToneArg::None => Ok(None),
+        ToneArg::Builtin(tone) => Ok(Some(attention_tone(tone, 8.0))),
+        ToneArg::Npas => Ok(Some(load_npas_attention_signal()?)),
+    }
 }
 
 fn load_npas_attention_signal() -> Result<Vec<f32>> {
@@ -364,14 +367,14 @@ mod tests {
             ToneArg::Builtin(ToneType::Wxr)
         ));
         assert!(matches!("NPAS".parse::<ToneArg>().unwrap(), ToneArg::Npas));
-        assert_eq!(
-            "EGG_TIMER".parse::<ToneArg>().unwrap().builtin(),
-            Some(ToneType::EggTimer)
-        );
-        assert_eq!(
-            "QUEBEC".parse::<ToneArg>().unwrap().builtin(),
-            Some(ToneType::Quebec)
-        );
+        assert!(matches!(
+            "EGG_TIMER".parse::<ToneArg>().unwrap(),
+            ToneArg::Builtin(ToneType::EggTimer)
+        ));
+        assert!(matches!(
+            "QUEBEC".parse::<ToneArg>().unwrap(),
+            ToneArg::Builtin(ToneType::Quebec)
+        ));
         assert!(matches!("NONE".parse::<ToneArg>().unwrap(), ToneArg::None));
     }
 
@@ -388,6 +391,10 @@ mod tests {
         assert_eq!(
             "eom".parse::<SameSequenceArg>().unwrap(),
             SameSequenceArg::Eom
+        );
+        assert_eq!(
+            "tone".parse::<SameSequenceArg>().unwrap(),
+            SameSequenceArg::Tone
         );
     }
 
