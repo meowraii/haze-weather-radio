@@ -336,6 +336,7 @@
             stream: null,
             audioPeer: null,
             audioReceiver: null,
+            audioRemoteStream: null,
             audioFallbackStream: null,
             audioRetryCount: 0,
             audioElement: null,
@@ -1190,6 +1191,7 @@
             state.audioTrackAttached = false;
             state.audioTrackMuted = true;
             state.audioReceiver = null;
+            state.audioRemoteStream = null;
             state.audioLastStats = null;
             state.audioLastPacketAt = 0;
             state.audioStagnantStatsPolls = 0;
@@ -1330,6 +1332,7 @@
             state.audioTrackAttached = false;
             state.audioTrackMuted = true;
             state.audioReceiver = null;
+            state.audioRemoteStream = null;
             state.audioLastStats = null;
             state.audioLastPacketAt = 0;
             state.audioStagnantStatsPolls = 0;
@@ -1359,7 +1362,10 @@
         }
 
         function hasLiveBannerAudioTrack() {
-            const tracks = state.audioElement?.srcObject?.getAudioTracks?.() || [];
+            const tracks = [
+                ...(state.audioElement?.srcObject?.getAudioTracks?.() || []),
+                ...(state.audioRemoteStream?.getAudioTracks?.() || []),
+            ];
             return tracks.some((track) => track.readyState === 'live');
         }
 
@@ -1468,6 +1474,7 @@
                     track_state: event.track.readyState || '',
                 });
                 state.audioReceiver = event.receiver || null;
+                state.audioRemoteStream = stream;
                 state.audioLastStats = null;
                 state.audioStagnantStatsPolls = 0;
                 state.audioMissingStatsPolls = 0;
