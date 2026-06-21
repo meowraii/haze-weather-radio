@@ -1380,7 +1380,11 @@ function bindPlayerAudio(feedId, fallbackStream = null) {
     if (!player || !audio) return null;
     const volume = findFeedElement('feed-volume', feedId);
     audio.volume = Number(volume?.value ?? audio.volume ?? 1);
-    if (!audio.srcObject && fallbackStream) {
+    if (fallbackStream && audio.srcObject !== fallbackStream) {
+        recordWebRTCEvent(feedId, 'audio_stream_bound', {
+            replaced_existing_stream: Boolean(audio.srcObject),
+            track_count: fallbackStream.getTracks?.().length || 0,
+        });
         audio.srcObject = fallbackStream;
     }
     audio.dataset.hazeStreamAttached = audio.srcObject ? '1' : '0';
