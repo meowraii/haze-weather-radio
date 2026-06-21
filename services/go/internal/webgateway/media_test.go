@@ -606,6 +606,37 @@ func TestWebRTCFrameSourcePrimesIdleFrame(t *testing.T) {
 	}
 }
 
+func TestWebRTCFrameSourceWaitsBrieflyForJitteredPCM(t *testing.T) {
+	hub := newMemoryMediaHub()
+	frames, unsubscribe, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioPCMU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	go func() {
+		time.Sleep(webrtcFrameDuration + webrtcFrameSourceGrace/2)
+		hub.publish(PCMChunk{
+			FeedID:     "sk-0001",
+			SampleRate: 48000,
+			Channels:   1,
+			Duration:   20 * time.Millisecond,
+			Data:       sinePCM(960, 600, 48000, 12000),
+		})
+	}()
+	_ = waitForWebRTCFrame(t, frames)
+	select {
+	case frame, ok := <-frames:
+		if !ok {
+			t.Fatal("frame source closed")
+		}
+		if len(frame.payload) == 0 || isPCMUIdlePayload(frame.payload) {
+			t.Fatalf("next frame after jittered PCM was idle: len=%d", len(frame.payload))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for jittered PCM frame")
+	}
+}
+
 func TestInitialWebRTCFrameSeedsPacketWriter(t *testing.T) {
 	if frame := initialWebRTCFrame(webRTCAudioPCMU); len(frame) != pcmuFrameSamples {
 		t.Fatalf("PCMU initial frame length = %d, want %d", len(frame), pcmuFrameSamples)
