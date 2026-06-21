@@ -34,6 +34,7 @@ const (
 	webrtcFrameDuration        = 20 * time.Millisecond
 	webrtcMaxQueuedFrames      = 10
 	webrtcPeerFrameMailbox     = 1
+	webrtcSourceMaxCatchUp     = 3
 	webrtcResumeQueuedFrames   = 1
 	webrtcConcealmentFrames    = 6
 	feedIngressCapacity        = 4
@@ -910,17 +911,36 @@ func (s *webRTCFrameSource) run() {
 	if !emitFrame() {
 		return
 	}
+	lastEmitAt := time.Now()
 
 	for {
 		select {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			if !emitFrame() {
-				return
+			framesDue := webRTCSourceFramesDue(lastEmitAt, time.Now())
+			for i := 0; i < framesDue; i++ {
+				if !emitFrame() {
+					return
+				}
 			}
+			lastEmitAt = time.Now()
 		}
 	}
+}
+
+func webRTCSourceFramesDue(lastEmitAt time.Time, now time.Time) int {
+	if lastEmitAt.IsZero() || now.Before(lastEmitAt) {
+		return 1
+	}
+	due := int(now.Sub(lastEmitAt) / webrtcFrameDuration)
+	if due < 1 {
+		return 1
+	}
+	if due > webrtcSourceMaxCatchUp {
+		return webrtcSourceMaxCatchUp
+	}
+	return due
 }
 
 func (s *webRTCFrameSource) appendFrames(queue [][]byte, g722Encoder *g722.Encoder, chunk PCMChunk) [][]byte {
