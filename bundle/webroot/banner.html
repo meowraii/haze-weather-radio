@@ -1434,10 +1434,17 @@
                         packets_recent: hasRecentBannerAudioPackets(),
                         track_state: event.track.readyState || '',
                     });
-                    if (hasRecentBannerAudioPackets()) return;
+                    if (state.audioTrackMuteTimer) {
+                        window.clearTimeout(state.audioTrackMuteTimer);
+                    }
                     state.audioTrackMuteTimer = window.setTimeout(() => {
                         state.audioTrackMuteTimer = null;
                         if (!hasRecentBannerAudioPackets()) {
+                            recordBannerAudioEvent('track_mute_stale_reconnect', {
+                                connection_state: pc.connectionState,
+                                ice_state: pc.iceConnectionState,
+                                last_packet_age_ms: state.audioLastPacketAt ? Date.now() - state.audioLastPacketAt : null,
+                            });
                             scheduleAudioReconnect({ force: true });
                         }
                     }, AUDIO_MEDIA_EVENT_GRACE_MS);
