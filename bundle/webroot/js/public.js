@@ -725,6 +725,7 @@ function setHealthyWebRTCStatus(feedId, player, audio = player?.audio) {
 
 function ensureWebRTCAudioPlaying(feedId, player, audio = player?.audio) {
     if (!isActivePlayer(feedId, player) || player?.mode !== 'webrtc' || !audio) return;
+    keepWebRTCAudioLive(feedId, player, audio);
     if (!audio.paused || audio.dataset.hazePlayerState === 'play-blocked' || audio.dataset.hazePlayerState === 'needs-play') return;
     recordWebRTCEvent(feedId, 'audio_resume_attempt', {
         ready_state: audio.readyState,
@@ -756,6 +757,33 @@ function ensureWebRTCAudioPlaying(feedId, player, audio = player?.audio) {
     }
 }
 
+function keepWebRTCAudioLive(feedId, player, audio = player?.audio) {
+    if (!isActivePlayer(feedId, player) || player?.mode !== 'webrtc' || !audio) return;
+    let repaired = false;
+    if (audio.muted) {
+        audio.muted = false;
+        repaired = true;
+    }
+    const tracks = [
+        ...(audio.srcObject?.getAudioTracks?.() || []),
+        ...(player?.remoteStream?.getAudioTracks?.() || []),
+    ];
+    tracks.forEach((track) => {
+        if (track && track.enabled === false) {
+            track.enabled = true;
+            repaired = true;
+        }
+    });
+    if (repaired) {
+        recordWebRTCEvent(feedId, 'audio_liveness_repaired', {
+            track_count: tracks.length,
+            ready_state: audio.readyState,
+            network_state: audio.networkState,
+            packets_recent: hasRecentWebRTCPackets(player),
+        });
+    }
+}
+
 function hasRecentWebRTCPackets(player, now = Date.now()) {
     const lastPacketAt = Number(player?.lastPacketAt || 0);
     return lastPacketAt > 0 && now - lastPacketAt <= WEBRTC_RECENT_PACKET_GRACE_MS;
@@ -781,6 +809,7 @@ function startWebRTCPlaybackWatchdog(feedId, player) {
             return;
         }
         if (hasRecentWebRTCPackets(player)) {
+            keepWebRTCAudioLive(feedId, player, player.audio);
             ensureWebRTCAudioPlaying(feedId, player, player.audio);
         }
     }, WEBRTC_PLAYBACK_WATCHDOG_MS);

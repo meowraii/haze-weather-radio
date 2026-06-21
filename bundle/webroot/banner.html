@@ -1265,6 +1265,7 @@
                     return;
                 }
                 if (hasRecentBannerAudioPackets()) {
+                    keepBannerAudioLive();
                     ensureBannerAudioPlaying();
                 }
             }, AUDIO_PLAYBACK_WATCHDOG_MS);
@@ -1471,6 +1472,7 @@
 
         function ensureBannerAudioPlaying() {
             const audio = state.audioElement;
+            keepBannerAudioLive(audio);
             if (!query.audio || !audio || !audio.paused) return;
             recordBannerAudioEvent('audio_resume_attempt', {
                 ready_state: audio.readyState,
@@ -1491,7 +1493,34 @@
                         recordBannerAudioEvent('audio_resume_blocked', {
                             error: error?.name || 'play_failed',
                         });
-                    });
+                });
+            }
+        }
+
+        function keepBannerAudioLive(audio = state.audioElement) {
+            if (!query.audio || !audio) return;
+            let repaired = false;
+            if (audio.muted) {
+                audio.muted = false;
+                repaired = true;
+            }
+            const tracks = [
+                ...(audio.srcObject?.getAudioTracks?.() || []),
+                ...(state.audioRemoteStream?.getAudioTracks?.() || []),
+            ];
+            tracks.forEach((track) => {
+                if (track && track.enabled === false) {
+                    track.enabled = true;
+                    repaired = true;
+                }
+            });
+            if (repaired) {
+                recordBannerAudioEvent('audio_liveness_repaired', {
+                    track_count: tracks.length,
+                    ready_state: audio.readyState,
+                    network_state: audio.networkState,
+                    packets_recent: hasRecentBannerAudioPackets(),
+                });
             }
         }
 
