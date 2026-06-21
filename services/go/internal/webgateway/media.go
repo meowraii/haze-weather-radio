@@ -1118,13 +1118,14 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		stats.recordSkipped(skipped)
 		writeStartedAt.Store(time.Now().UnixNano())
 		writeInFlight.Store(true)
+		packetTimestamp := rtpTimestampForFrame(codec, stats.timestamp, timestampSkipped)
 		err := track.WriteRTP(&rtp.Packet{
 			Header: rtp.Header{
 				Version:        2,
 				Marker:         !loggedWrite,
 				PayloadType:    payloadType,
 				SequenceNumber: stats.sequenceNumber,
-				Timestamp:      stats.timestamp,
+				Timestamp:      packetTimestamp,
 			},
 			Payload: append([]byte(nil), frame.payload...),
 		})
@@ -1137,7 +1138,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, feedID string, codec 
 		}
 		stats.written++
 		stats.sequenceNumber++
-		stats.timestamp += rtpTimestampAdvance(codec, timestampSkipped)
+		stats.timestamp = rtpTimestampAfterFrame(codec, packetTimestamp)
 		stats.lastWriteAt = time.Now()
 		stats.lastPayloadBytes = len(frame.payload)
 		maybeLogWebRTCPeerDiagnostics(feedID, codec, &stats)
@@ -1229,12 +1230,15 @@ func shouldSendWebRTCFiller(lastWriteAt time.Time, now time.Time) bool {
 	return now.Sub(lastWriteAt).Truncate(time.Millisecond) >= webrtcFrameDuration
 }
 
-func rtpTimestampAdvance(codec webRTCAudioCodec, skippedFrames int) uint32 {
-	frames := skippedFrames + 1
-	if frames < 1 {
-		frames = 1
+func rtpTimestampForFrame(codec webRTCAudioCodec, nextTimestamp uint32, skippedFrames int) uint32 {
+	if skippedFrames <= 0 {
+		return nextTimestamp
 	}
-	return rtpTimestampStep(codec) * uint32(frames)
+	return nextTimestamp + rtpTimestampStep(codec)*uint32(skippedFrames)
+}
+
+func rtpTimestampAfterFrame(codec webRTCAudioCodec, packetTimestamp uint32) uint32 {
+	return packetTimestamp + rtpTimestampStep(codec)
 }
 
 func webRTCTimestampSkippedFrames(lastSequence uint64, currentSequence uint64) int {

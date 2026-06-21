@@ -292,18 +292,26 @@ func TestLatestWebRTCFrameDoesNotSkipStartupFrame(t *testing.T) {
 	}
 }
 
-func TestRTPTimestampAdvanceIncludesSkippedFrames(t *testing.T) {
-	if got := rtpTimestampAdvance(webRTCAudioPCMU, 0); got != rtpTimestampStep(webRTCAudioPCMU) {
-		t.Fatalf("PCMU timestamp advance without skips = %d, want %d", got, rtpTimestampStep(webRTCAudioPCMU))
+func TestRTPTimestampForFrameIncludesSkippedFramesBeforeWrite(t *testing.T) {
+	base := uint32(4000)
+	if got := rtpTimestampForFrame(webRTCAudioPCMU, base, 0); got != base {
+		t.Fatalf("PCMU timestamp without skips = %d, want %d", got, base)
 	}
-	if got := rtpTimestampAdvance(webRTCAudioPCMU, 2); got != 3*rtpTimestampStep(webRTCAudioPCMU) {
-		t.Fatalf("PCMU timestamp advance with skips = %d, want %d", got, 3*rtpTimestampStep(webRTCAudioPCMU))
+	if got := rtpTimestampForFrame(webRTCAudioPCMU, base, 2); got != base+2*rtpTimestampStep(webRTCAudioPCMU) {
+		t.Fatalf("PCMU timestamp with skips = %d, want %d", got, base+2*rtpTimestampStep(webRTCAudioPCMU))
 	}
-	if got := rtpTimestampAdvance(webRTCAudioOpus, 1); got != 2*rtpTimestampStep(webRTCAudioOpus) {
-		t.Fatalf("Opus timestamp advance with skips = %d, want %d", got, 2*rtpTimestampStep(webRTCAudioOpus))
+	if got := rtpTimestampForFrame(webRTCAudioOpus, base, 1); got != base+rtpTimestampStep(webRTCAudioOpus) {
+		t.Fatalf("Opus timestamp with skips = %d, want %d", got, base+rtpTimestampStep(webRTCAudioOpus))
 	}
-	if got := rtpTimestampAdvance(webRTCAudioPCMU, -1); got != rtpTimestampStep(webRTCAudioPCMU) {
-		t.Fatalf("negative skipped timestamp advance = %d, want %d", got, rtpTimestampStep(webRTCAudioPCMU))
+	if got := rtpTimestampForFrame(webRTCAudioPCMU, base, -1); got != base {
+		t.Fatalf("negative skipped timestamp = %d, want %d", got, base)
+	}
+}
+
+func TestRTPTimestampAfterFrameAdvancesOneFrame(t *testing.T) {
+	packetTimestamp := uint32(4000)
+	if got := rtpTimestampAfterFrame(webRTCAudioPCMU, packetTimestamp); got != packetTimestamp+rtpTimestampStep(webRTCAudioPCMU) {
+		t.Fatalf("PCMU next timestamp = %d, want %d", got, packetTimestamp+rtpTimestampStep(webRTCAudioPCMU))
 	}
 }
 
