@@ -820,7 +820,11 @@ function scheduleWebRTCMediaEventStatus(feedId, player, state, message) {
     clearPlayerTimer(player, 'mediaEventTimer');
     player.mediaEventTimer = window.setTimeout(() => {
         player.mediaEventTimer = null;
-        if (!isActivePlayer(feedId, player) || hasRecentWebRTCPackets(player)) return;
+        if (!isActivePlayer(feedId, player)
+            || hasRecentWebRTCPackets(player)
+            || (hasUsableWebRTCAudio(player) && !hasHardStaleWebRTCPackets(player))) {
+            return;
+        }
         const audio = player.audio;
         if (audio) {
             audio.dataset.hazePlayerState = state;
