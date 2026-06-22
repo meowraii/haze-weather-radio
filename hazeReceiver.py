@@ -95,6 +95,7 @@ class ReceiverConfig:
     audio_frame_ms: int
     jitter_buffer_ms: int
     max_jitter_buffer_ms: int
+    preferred_codecs: tuple[str, ...]
 
 
 def _safe_feed_name(feed_id: str) -> str:
@@ -126,13 +127,6 @@ def _normalize_server_url(raw: str, allow_insecure_dev: bool) -> str:
 def _api_url(config: ReceiverConfig, path: str) -> str:
     base = '/' + config.receiver_api_base.strip('/') + '/'
     return urljoin(config.server_url + base, path.lstrip('/'))
-
-
-def _panel_ws_url(config: ReceiverConfig) -> str:
-    parsed = urlparse(config.server_url)
-    scheme = 'wss' if parsed.scheme == 'https' else 'ws'
-    base = urlunparse((scheme, parsed.netloc, '', '', '', '')).rstrip('/')
-    return f'{base}/api/public/v1/panel/ws?feeds=1'
 
 
 def _receiver_proof_message(kind: str, values: dict[str, Any]) -> bytes:
@@ -250,49 +244,71 @@ class ReceiverSupervisor:
     async def _run_once(self) -> str:
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=4, sock_read=None)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            ws_url = _panel_ws_url(self.config)
+            receiver_session = await self._start_receiver_session(session)
+            ws_url = str(receiver_session.get('ws_url') or '').strip()
+            if not ws_url:
+                raise RuntimeError('receiver session did not include ws_url')
             async with session.ws_connect(
                 ws_url,
                 heartbeat=15,
                 receive_timeout=None,
             ) as ws:
-                feed = await self._wait_for_feed(ws)
-                transmitter = feed.get('transmitter') if isinstance(feed.get('transmitter'), dict) else {}
+                transmitter = await self._wait_for_receiver_ready(ws)
                 if transmitter.get('frequency_mhz') is not None:
                     self.last_transmitter = dict(transmitter)
                     self.state['last_transmitter'] = self.last_transmitter
                     _save_state(self.config.state_file, self.state)
                 return await self._run_webrtc_session(ws, transmitter)
 
-    async def _wait_for_feed(self, ws: aiohttp.ClientWebSocketResponse) -> dict[str, Any]:
+    async def _start_receiver_session(self, session: aiohttp.ClientSession) -> dict[str, Any]:
+        credential_id = str(self.state.get('credential_id') or '').strip()
+        credential_secret = str(self.state.get('credential_secret') or '').strip()
+        if credential_id and credential_secret:
+            try:
+                return await self._request_session_cookie(session, credential_id, credential_secret)
+            except ReceiverHttpError as exc:
+                if exc.status not in {401, 403}:
+                    raise
+                log.warning('Stored receiver credential was rejected; falling back to unpaired session')
+        if self.config.pair_token:
+            try:
+                await self._pair_receiver(session)
+                credential_id = str(self.state.get('credential_id') or '').strip()
+                credential_secret = str(self.state.get('credential_secret') or '').strip()
+                if credential_id and credential_secret:
+                    return await self._request_session_cookie(session, credential_id, credential_secret)
+            except ReceiverHttpError as exc:
+                log.warning('Receiver pairing failed: %s', exc)
+        return await self._receiver_auth(session)
+
+    async def _wait_for_receiver_ready(self, ws: aiohttp.ClientWebSocketResponse) -> dict[str, Any]:
         deadline = time.monotonic() + 12.0
         while time.monotonic() < deadline:
             msg = await ws.receive(timeout=max(0.1, deadline - time.monotonic()))
             if msg.type == aiohttp.WSMsgType.ERROR:
-                raise RuntimeError(f'public panel websocket error: {ws.exception()}')
+                raise RuntimeError(f'receiver websocket error: {ws.exception()}')
             if msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE}:
-                raise RuntimeError('public panel websocket closed before feed metadata arrived')
+                raise RuntimeError('receiver websocket closed before transmitter metadata arrived')
             if msg.type != aiohttp.WSMsgType.TEXT:
                 continue
             try:
                 payload = json.loads(msg.data)
             except json.JSONDecodeError:
                 continue
-            if payload.get('type') != 'public_state':
+            if payload.get('type') == 'receiver_error':
+                raise RuntimeError(f"receiver websocket error: {payload.get('detail')}")
+            if payload.get('type') != 'receiver_ready':
                 continue
-            data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
-            summary = data.get('summary') if isinstance(data.get('summary'), dict) else {}
-            feeds = data.get('feeds') if isinstance(data.get('feeds'), list) else []
-            if not feeds:
-                feeds = summary.get('feeds') if isinstance(summary.get('feeds'), list) else []
-            for feed in feeds:
-                if not isinstance(feed, dict):
-                    continue
-                if str(feed.get('id') or '').strip() == self.config.feed_id:
-                    if not bool(feed.get('webrtc_enabled')):
-                        raise RuntimeError(f'feed {self.config.feed_id} does not have WebRTC enabled')
-                    return feed
-        raise RuntimeError(f'feed {self.config.feed_id} was not advertised by the public panel websocket')
+            transmitter = payload.get('transmitter') if isinstance(payload.get('transmitter'), dict) else {}
+            if not transmitter:
+                raise RuntimeError('receiver_ready did not include transmitter metadata')
+            log.info(
+                'Receiver ready for feed %s transmitter=%s',
+                payload.get('feed_id') or self.config.feed_id,
+                _transmitter_label(transmitter),
+            )
+            return transmitter
+        raise RuntimeError(f'feed {self.config.feed_id} receiver metadata timed out')
 
     async def _receiver_auth(self, session: aiohttp.ClientSession) -> dict[str, Any]:
         return await _post_json(session, _api_url(self.config, 'session'), {
@@ -417,7 +433,8 @@ class ReceiverSupervisor:
                 'feed_id': self.config.feed_id,
                 'sdp': pc.localDescription.sdp,
                 'sdp_type': pc.localDescription.type,
-                'require_opus': True,
+                'preferred_codec': self.config.preferred_codecs[0] if self.config.preferred_codecs else '',
+                'require_opus': False,
             })
 
             while True:
@@ -474,14 +491,17 @@ class ReceiverSupervisor:
             return
         with contextlib.suppress(Exception):
             capabilities = RTCRtpSender.getCapabilities('audio')
-            preferred = [
-                codec
-                for codec in getattr(capabilities, 'codecs', [])
-                if str(getattr(codec, 'mimeType', '')).lower() == 'audio/opus'
-            ]
-            preferred.sort(key=lambda codec: {
-                'audio/opus': 0,
-            }.get(str(getattr(codec, 'mimeType', '')).lower(), 99))
+            available = list(getattr(capabilities, 'codecs', []) or [])
+            ordered_mimes = [f'audio/{codec.lower()}' for codec in self.config.preferred_codecs]
+            preferred = []
+            for mime in ordered_mimes:
+                preferred.extend(
+                    codec
+                    for codec in available
+                    if str(getattr(codec, 'mimeType', '')).lower() == mime
+                    and codec not in preferred
+                )
+            preferred.extend(codec for codec in available if codec not in preferred)
             if preferred:
                 transceiver.setCodecPreferences(preferred)
                 names = [str(getattr(codec, 'mimeType', '')).split('/', 1)[-1] for codec in preferred]
@@ -991,6 +1011,7 @@ def _parse_args() -> ReceiverConfig:
     parser.add_argument('--audio-frame-ms', type=int, default=20)
     parser.add_argument('--jitter-buffer-ms', type=int, default=160)
     parser.add_argument('--max-jitter-buffer-ms', type=int, default=800)
+    parser.add_argument('--preferred-codecs', default='opus,g722,pcmu,pcma')
     args = parser.parse_args()
 
     pair_token = args.pair_token
@@ -1006,6 +1027,14 @@ def _parse_args() -> ReceiverConfig:
     audio_frame_ms = max(10, min(100, int(args.audio_frame_ms)))
     jitter_buffer_ms = max(0, int(args.jitter_buffer_ms))
     max_jitter_buffer_ms = max(jitter_buffer_ms + audio_frame_ms, int(args.max_jitter_buffer_ms))
+    preferred_codecs = tuple(
+        codec
+        for codec in (
+            re.sub(r'[^a-z0-9]+', '', part.strip().lower())
+            for part in str(args.preferred_codecs or '').split(',')
+        )
+        if codec
+    )
     return ReceiverConfig(
         server_url=server_url,
         feed_id=str(args.feed_id).strip(),
@@ -1029,6 +1058,7 @@ def _parse_args() -> ReceiverConfig:
         audio_frame_ms=audio_frame_ms,
         jitter_buffer_ms=jitter_buffer_ms,
         max_jitter_buffer_ms=max_jitter_buffer_ms,
+        preferred_codecs=preferred_codecs or ('opus', 'g722', 'pcmu', 'pcma'),
     )
 
 
