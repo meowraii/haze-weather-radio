@@ -7,9 +7,11 @@ const expiredMetric = document.getElementById('alertsExpiredMetric');
 const clearExpiredButton = document.getElementById('alertsClearExpired');
 const clearAllButton = document.getElementById('alertsClearAll');
 const expireAllButton = document.getElementById('alertsExpireAll');
+const feedSelect = document.getElementById('alertsArchiveFeedSelect');
 
 let bound = false;
 let activeTab = 'accepted';
+let activeFeedFilter = '';
 let archiveState = {
     accepted_by_feed: [],
     rejected: [],
@@ -48,6 +50,36 @@ function recordsForTab(tab) {
     if (tab === 'accepted') return Array.isArray(archiveState.accepted_by_feed) ? archiveState.accepted_by_feed : [];
     if (tab === 'rejected') return Array.isArray(archiveState.rejected) ? archiveState.rejected : [];
     return Array.isArray(archiveState.expired) ? archiveState.expired : [];
+}
+
+function archiveFeedIDs() {
+    const seen = new Set();
+    for (const tab of ['accepted', 'rejected', 'expired']) {
+        for (const record of recordsForTab(tab)) {
+            const feedID = record.feed_id || 'unassigned';
+            if (feedID) seen.add(feedID);
+        }
+    }
+    return [...seen].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+function renderFeedSelect() {
+    if (!feedSelect) return;
+    const feeds = archiveFeedIDs();
+    if (activeFeedFilter && !feeds.includes(activeFeedFilter)) {
+        activeFeedFilter = '';
+    }
+    feedSelect.innerHTML = [
+        '<option value="">All feeds</option>',
+        ...feeds.map((feedID) => `<option value="${escapeHtml(feedID)}">${escapeHtml(feedID)}</option>`),
+    ].join('');
+    feedSelect.value = activeFeedFilter;
+    feedSelect.disabled = feeds.length === 0;
+}
+
+function filterRecordsByFeed(records) {
+    if (!activeFeedFilter) return records;
+    return records.filter((record) => (record.feed_id || 'unassigned') === activeFeedFilter);
 }
 
 function groupedAccepted(records) {
@@ -203,12 +235,15 @@ function renderAccepted(records) {
 }
 
 function renderArchive() {
-    const accepted = recordsForTab('accepted');
-    const expired = recordsForTab('expired');
-    acceptedMetric.textContent = String(accepted.length);
-    expiredMetric.textContent = String(expired.length);
+    renderFeedSelect();
+    const acceptedAll = recordsForTab('accepted');
+    const expiredAll = recordsForTab('expired');
+    const accepted = filterRecordsByFeed(acceptedAll);
+    const expired = filterRecordsByFeed(expiredAll);
+    acceptedMetric.textContent = activeFeedFilter ? `${accepted.length}/${acceptedAll.length}` : String(acceptedAll.length);
+    expiredMetric.textContent = activeFeedFilter ? `${expired.length}/${expiredAll.length}` : String(expiredAll.length);
 
-    const records = recordsForTab(activeTab);
+    const records = filterRecordsByFeed(recordsForTab(activeTab));
     if (activeTab === 'accepted') {
         list.innerHTML = renderAccepted(records);
     } else {
@@ -384,6 +419,10 @@ export function initAlertsArchiveView() {
             });
             renderArchive();
         });
+    });
+    feedSelect?.addEventListener('change', () => {
+        activeFeedFilter = feedSelect.value || '';
+        renderArchive();
     });
     bindActionDelegates();
     makeDoubleClickConfirm(clearExpiredButton, () => runAction('clear_expired'));

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
 )
 
 type bannerPayload struct {
@@ -378,14 +380,15 @@ func findArchiveAlertByQueueHint(configPath string, item bannerOnAirAlert) (arch
 			continue
 		}
 		info := chooseArchiveInfo(record.Alert)
+		resolvedEvent := capsame.ResolveEvent(record.Alert, info, filepath.Dir(filepath.Clean(configPath))).Event
 		haystack := strings.ToLower(strings.Join([]string{
 			record.ID,
 			record.Alert.Identifier,
 			info.Event,
 			info.Headline,
-			sameEventFromCAP(info),
+			resolvedEvent,
 		}, " "))
-		sameEvent := strings.ToLower(strings.TrimSpace(sameEventFromCAP(info)))
+		sameEvent := strings.ToLower(strings.TrimSpace(resolvedEvent))
 		if haystack != "" && hint != "" && sameEvent != "" && strings.Contains(hint, sameEvent) {
 			return record, true
 		}

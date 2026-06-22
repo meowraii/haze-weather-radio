@@ -14,6 +14,7 @@ import (
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
 )
@@ -33,6 +34,7 @@ type archiveCAPRecord struct {
 
 func alertsArchivePayload(configPath string) (map[string]any, error) {
 	now := time.Now().UTC()
+	baseDir := filepath.Dir(filepath.Clean(configPath))
 	active := []archiveCAPRecord{}
 	rejected := []archiveCAPRecord{}
 	expired := []archiveCAPRecord{}
@@ -55,9 +57,9 @@ func alertsArchivePayload(configPath string) (map[string]any, error) {
 	sortArchiveRecords(rejected)
 	sortArchiveRecords(expired)
 	return map[string]any{
-		"accepted_by_feed": archiveRecordsPayload(active, "accepted"),
-		"rejected":         archiveRecordsPayload(rejected, "rejected"),
-		"expired":          archiveRecordsPayload(expiredWithin(expired, now, 30*24*time.Hour), "expired"),
+		"accepted_by_feed": archiveRecordsPayload(active, "accepted", baseDir),
+		"rejected":         archiveRecordsPayload(rejected, "rejected", baseDir),
+		"expired":          archiveRecordsPayload(expiredWithin(expired, now, 30*24*time.Hour), "expired", baseDir),
 	}, nil
 }
 
@@ -179,17 +181,18 @@ func withArchiveStore(configPath string, fn func(context.Context, datastore.Stor
 	return nil
 }
 
-func archiveRecordsPayload(records []archiveCAPRecord, bucket string) []map[string]any {
+func archiveRecordsPayload(records []archiveCAPRecord, bucket string, baseDir string) []map[string]any {
 	out := make([]map[string]any, 0, len(records))
 	for _, record := range records {
-		out = append(out, archiveRecordPayload(record, bucket))
+		out = append(out, archiveRecordPayload(record, bucket, baseDir))
 	}
 	return out
 }
 
-func archiveRecordPayload(record archiveCAPRecord, bucket string) map[string]any {
+func archiveRecordPayload(record archiveCAPRecord, bucket string, baseDir string) map[string]any {
 	info := chooseArchiveInfo(record.Alert)
 	audio := archiveBroadcastAudio(record.Alert)
+	resolution := capsame.ResolveEvent(record.Alert, info, baseDir)
 	areas := archiveAreaNames(info)
 	message := alerttext.BuildCAPAlertText(alerttext.CAPMessageRequest{
 		Alert:     record.Alert,
@@ -227,7 +230,14 @@ func archiveRecordPayload(record archiveCAPRecord, bucket string) map[string]any
 		"audio_url":              audio.URL,
 		"audio_mime_type":        audio.MimeType,
 		"cap_xml_url":            archiveCAPXMLURL(record),
-		"same_preview_available": archiveSAMEPreviewAvailable(record.Alert),
+		"same_preview_available": archiveSAMEPreviewAvailable(record.Alert, baseDir),
+		"same_event":             resolution.Event,
+		"same_event_source":      resolution.Source,
+		"same_event_reason":      resolution.Reason,
+		"same_event_confidence":  resolution.Confidence,
+		"same_alert_class":       resolution.AlertClass,
+		"same_event_phenomenon":  resolution.Phenomenon,
+		"same_event_evidence":    resolution.Evidence,
 		"message":                message,
 		"background_color":       visual[0],
 		"background_gradient":    visual,
@@ -258,7 +268,7 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 		return nil, fmt.Errorf("alert %s was not found", id)
 	}
 	if withSAME {
-		if !archiveSAMEAllowed(record.Alert, time.Now().UTC()) {
+		if !archiveSAMEAllowed(configPath, record.Alert, time.Now().UTC()) {
 			withSAME = false
 		} else if item, err := queueArchiveSAME(configPath, record); err == nil {
 			_ = item
@@ -306,12 +316,12 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 	return map[string]any{"accepted": true, "same": withSAME, "audio_url": audio.URL}, nil
 }
 
-func archiveSAMEAllowed(alert capingest.Alert, now time.Time) bool {
+func archiveSAMEAllowed(configPath string, alert capingest.Alert, now time.Time) bool {
 	if archiveAlertExpired(alert, now) {
 		return false
 	}
 	info := chooseArchiveInfo(alert)
-	event := sameEventFromCAP(info)
+	event := capsame.ResolveEvent(alert, info, filepath.Dir(filepath.Clean(configPath))).Event
 	if event == "" {
 		return false
 	}
@@ -327,12 +337,12 @@ func archiveSAMEAllowed(alert capingest.Alert, now time.Time) bool {
 	return now.Sub(anchor) <= limit
 }
 
-func archiveSAMEPreviewAvailable(alert capingest.Alert) bool {
+func archiveSAMEPreviewAvailable(alert capingest.Alert, baseDir string) bool {
 	if strings.EqualFold(alert.MessageType, "Cancel") {
 		return false
 	}
 	info := chooseArchiveInfo(alert)
-	return sameEventFromCAP(info) != "" && len(sameLocationsFromCAP(info)) > 0
+	return capsame.ResolveEvent(alert, info, baseDir).Event != "" && len(sameLocationsFromCAP(info)) > 0
 }
 
 func previewArchivedAlertSAME(configPath string, payload map[string]any) (map[string]any, error) {
@@ -346,7 +356,7 @@ func previewArchivedAlertSAME(configPath string, payload map[string]any) (map[st
 		return nil, fmt.Errorf("alert %s was not found", id)
 	}
 	info := chooseArchiveInfo(record.Alert)
-	event := sameEventFromCAP(info)
+	event := capsame.ResolveEvent(record.Alert, info, filepath.Dir(filepath.Clean(configPath))).Event
 	locations := sameLocationsFromCAP(info)
 	if event == "" || len(locations) == 0 {
 		return nil, fmt.Errorf("alert cannot be mapped to SAME cleanly")
@@ -390,7 +400,7 @@ func previewArchivedAlertSAME(configPath string, payload map[string]any) (map[st
 
 func queueArchiveSAME(configPath string, record archiveCAPRecord) (sameQueueItem, error) {
 	info := chooseArchiveInfo(record.Alert)
-	event := sameEventFromCAP(info)
+	event := capsame.ResolveEvent(record.Alert, info, filepath.Dir(filepath.Clean(configPath))).Event
 	locations := sameLocationsFromCAP(info)
 	if event == "" || len(locations) == 0 {
 		return sameQueueItem{}, fmt.Errorf("alert cannot be mapped to SAME cleanly")
@@ -547,28 +557,6 @@ func archiveAreaNames(info capingest.AlertInfo) []string {
 func archiveAlertTitle(alert capingest.Alert) string {
 	info := chooseArchiveInfo(alert)
 	return fallbackString(info.Headline, info.Event, "Weather Alert")
-}
-
-func sameEventFromCAP(info capingest.AlertInfo) string {
-	haystack := strings.ToLower(strings.Join([]string{info.Event, info.Headline}, " "))
-	switch {
-	case strings.Contains(haystack, "tornado"):
-		return "TOR"
-	case strings.Contains(haystack, "severe thunderstorm") && strings.Contains(haystack, "watch"):
-		return "SVA"
-	case strings.Contains(haystack, "severe thunderstorm"):
-		return "SVR"
-	case strings.Contains(haystack, "flash flood"):
-		return "FFW"
-	case strings.Contains(haystack, "snow squall"):
-		return "SQW"
-	case strings.Contains(haystack, "blizzard"):
-		return "BZW"
-	case strings.Contains(haystack, "winter storm"):
-		return "WSW"
-	default:
-		return ""
-	}
 }
 
 func sameLocationsFromCAP(info capingest.AlertInfo) []string {

@@ -63,6 +63,66 @@ func TestCAPSAMEPayloadDerivesWeatherOriginatorBeforeFeedDefault(t *testing.T) {
 	}
 }
 
+func TestCAPSAMEPayloadPrefersExplicitCAPSAMEEventForECCCWatch(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"naadsToEas":{"tornado":"TOR"}}`)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, ok := cfg.feedByID("sk-0001")
+	if !ok {
+		t.Fatal("fixture feed not found")
+	}
+	alert := parseTestAlert(t, testECCCWatchCAP("urn:test:eccc-watch-explicit", `
+    <eventCode><valueName>SAME</valueName><value>TOA</value></eventCode>
+    <eventCode><valueName>profile:CAP-CP:Event:0.4</valueName><value>tornado</value></eventCode>`))
+
+	payload := capSAMEPayload(alert, feed, cfg.BaseDir, time.Date(2026, 6, 22, 17, 0, 0, 0, time.UTC))
+
+	if payload["same_event"] != "TOA" {
+		t.Fatalf("same_event = %#v, want TOA (%#v)", payload["same_event"], payload)
+	}
+	if payload["same_event_source"] != "cap_event_code" {
+		t.Fatalf("same_event_source = %#v, want cap_event_code", payload["same_event_source"])
+	}
+	if payload["same_event_confidence"] != "high" {
+		t.Fatalf("same_event_confidence = %#v, want high", payload["same_event_confidence"])
+	}
+}
+
+func TestCAPSAMEPayloadUsesWatchMetadataBeforeRawNAADSEvent(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"naadsToEas":{"tornado":"TOR"}}`)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, ok := cfg.feedByID("sk-0001")
+	if !ok {
+		t.Fatal("fixture feed not found")
+	}
+	alert := parseTestAlert(t, testECCCWatchCAP("urn:test:eccc-watch-classified", `
+    <eventCode><valueName>profile:CAP-CP:Event:0.4</valueName><value>tornado</value></eventCode>`))
+
+	payload := capSAMEPayload(alert, feed, cfg.BaseDir, time.Date(2026, 6, 22, 17, 0, 0, 0, time.UTC))
+
+	if payload["same_event"] != "TOA" {
+		t.Fatalf("same_event = %#v, want TOA (%#v)", payload["same_event"], payload)
+	}
+	if payload["same_event_source"] != "cap_alert_class" {
+		t.Fatalf("same_event_source = %#v, want cap_alert_class", payload["same_event_source"])
+	}
+	if payload["same_alert_class"] != "watch" {
+		t.Fatalf("same_alert_class = %#v, want watch", payload["same_alert_class"])
+	}
+	if payload["same_event_phenomenon"] != "tornado" {
+		t.Fatalf("same_event_phenomenon = %#v, want tornado", payload["same_event_phenomenon"])
+	}
+}
+
 func TestCAPSAMEPayloadConvertsBroadcastImmediateCAPToSAMEWithNPAS(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"eas":{"CEM":"Civil Emergency Message"},"naadsToEas":{"civilEmerg":"CEM"}}`)
@@ -434,4 +494,38 @@ func TestExpandedNWSCoverageMatchesFIPSAndSAMECodes(t *testing.T) {
 			t.Fatalf("coverage should match %q with expanded NWS zone/FIPS map: %#v", code, coverage)
 		}
 	}
+}
+
+func testECCCWatchCAP(identifier string, eventCodes string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>` + identifier + `</identifier>
+  <sender>cap-pac@canada.ca</sender>
+  <sent>2026-06-22T10:48:00-06:00</sent>
+  <status>Actual</status>
+  <msgType>Alert</msgType>
+  <scope>Public</scope>
+  <info>
+    <language>en-CA</language>
+    <category>Met</category>
+    <event>tornado</event>
+    ` + eventCodes + `
+    <responseType>Monitor</responseType>
+    <urgency>Future</urgency>
+    <severity>Severe</severity>
+    <certainty>Possible</certainty>
+    <effective>2026-06-22T10:48:00-06:00</effective>
+    <onset>2026-06-22T11:00:00-06:00</onset>
+    <expires>2099-06-22T18:00:00-06:00</expires>
+    <senderName>Environment Canada</senderName>
+    <headline>yellow watch - tornado - in effect</headline>
+    <description>Conditions are favourable for the development of tornadoes.</description>
+    <parameter><valueName>layer:EC-MSC-SMC:1.0:Alert_Type</valueName><value>watch</value></parameter>
+    <parameter><valueName>layer:EC-MSC-SMC:1.0:Alert_Name</valueName><value>yellow watch - tornado</value></parameter>
+    <area>
+      <areaDesc>City of Saskatoon</areaDesc>
+      <geocode><valueName>profile:CAP-CP:Location:0.3</valueName><value>065522</value></geocode>
+    </area>
+  </info>
+</alert>`
 }

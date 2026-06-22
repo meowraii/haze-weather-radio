@@ -159,6 +159,11 @@
             .breakin-side { position: static; }
         }
 
+        .alert-archive-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+        .alert-archive-toolbar .alert-tabs { margin-bottom: 0; }
+        .alert-feed-filter { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 600; }
+        .alert-feed-filter .hd-select { min-width: 180px; margin-left: 0; }
+
         @media (max-width: 1180px) {
             .admin-feed-card { grid-template-columns: 1fr; }
             .admin-feed-side { align-items: stretch; flex-direction: row; }
@@ -820,10 +825,18 @@
                             <span class="section-hd-sub">Accepted alerts are grouped by feed. Expired alerts are kept here for 30 days.</span>
                         </div>
                         <div class="section-body">
-                            <div class="alert-tabs" role="tablist" aria-label="Alert archive tabs">
-                                <button class="alert-tab active" type="button" data-alert-tab="accepted">Accepted Alerts by Feed</button>
-                                <button class="alert-tab" type="button" data-alert-tab="rejected">Rejected Alerts</button>
-                                <button class="alert-tab" type="button" data-alert-tab="expired">Expired Alerts (30 days)</button>
+                            <div class="alert-archive-toolbar">
+                                <div class="alert-tabs" role="tablist" aria-label="Alert archive tabs">
+                                    <button class="alert-tab active" type="button" data-alert-tab="accepted">Accepted Alerts by Feed</button>
+                                    <button class="alert-tab" type="button" data-alert-tab="rejected">Rejected Alerts</button>
+                                    <button class="alert-tab" type="button" data-alert-tab="expired">Expired Alerts (30 days)</button>
+                                </div>
+                                <label class="alert-feed-filter">
+                                    <span>Feed</span>
+                                    <select id="alertsArchiveFeedSelect" class="hd-select">
+                                        <option value="">All feeds</option>
+                                    </select>
+                                </label>
                             </div>
                             <div id="alertsArchiveList" class="alert-archive-list"></div>
                         </div>

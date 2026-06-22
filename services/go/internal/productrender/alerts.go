@@ -17,6 +17,7 @@ import (
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
@@ -165,7 +166,8 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 		payload["same_suppressed_reason"] = "ended"
 		return payload
 	}
-	event := sameEventForCAP(alert, *info, baseDir)
+	resolution := sameEventResolutionForCAP(alert, *info, baseDir)
+	event := resolution.Event
 	locations := sameLocationsForCAP(*info, feed, baseDir)
 	if event == "" {
 		event = "ADR"
@@ -174,6 +176,18 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 		locations = []string{"000000"}
 	}
 	payload["same_event"] = event
+	payload["same_event_source"] = resolution.Source
+	payload["same_event_reason"] = resolution.Reason
+	payload["same_event_confidence"] = resolution.Confidence
+	if resolution.AlertClass != "" {
+		payload["same_alert_class"] = resolution.AlertClass
+	}
+	if resolution.Phenomenon != "" {
+		payload["same_event_phenomenon"] = resolution.Phenomenon
+	}
+	if len(resolution.Evidence) > 0 {
+		payload["same_event_evidence"] = resolution.Evidence
+	}
 	originator := sameOriginatorForCAP(alert, *info)
 	payload["same_originator"] = originator
 	payload["same_originator_name"] = sameOriginatorNameForCAP(alert, *info)
@@ -210,80 +224,11 @@ func sameAlertFreshForTone(alert capingest.Alert, info capingest.AlertInfo, even
 }
 
 func sameEventForCAP(alert capingest.Alert, info capingest.AlertInfo, baseDir string) string {
-	mapping := loadNAADSToEASMapping(baseDir)
-	for _, code := range info.EventCodes {
-		name := strings.ToLower(strings.TrimSpace(code.Name))
-		value := strings.ToUpper(strings.TrimSpace(code.Value))
-		if strings.Contains(name, "same") && len(value) == 3 {
-			return value
-		}
-		if mapped := mapping[normalizeNAADSEventKey(code.Value)]; mapped != "" {
-			return mapped
-		}
-	}
-	for _, param := range info.Parameters {
-		name := strings.ToLower(strings.TrimSpace(param.Name))
-		if strings.Contains(name, "same") || strings.Contains(name, "eas") {
-			value := strings.ToUpper(strings.TrimSpace(param.Value))
-			if len(value) == 3 && value != "WXR" && value != "CIV" {
-				return value
-			}
-		}
-	}
-	if mapped := mapping[normalizeNAADSEventKey(info.Event)]; mapped != "" {
-		return mapped
-	}
-	haystack := strings.ToLower(strings.Join([]string{info.Event, info.Headline, alert.MessageType}, " "))
-	switch {
-	case strings.Contains(haystack, "tornado"):
-		return "TOR"
-	case strings.Contains(haystack, "severe thunderstorm") && strings.Contains(haystack, "watch"):
-		return "SVA"
-	case strings.Contains(haystack, "severe thunderstorm"):
-		return "SVR"
-	case strings.Contains(haystack, "flash flood"):
-		return "FFW"
-	case strings.Contains(haystack, "snow squall"):
-		return "SQW"
-	case strings.Contains(haystack, "blizzard"):
-		return "BZW"
-	case strings.Contains(haystack, "winter storm"):
-		return "WSW"
-	default:
-		return "ADR"
-	}
+	return sameEventResolutionForCAP(alert, info, baseDir).Event
 }
 
-func loadNAADSToEASMapping(baseDir string) map[string]string {
-	path := filepath.Join(baseDir, "managed", "sameMapping.json")
-	raw, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return nil
-	}
-	var payload struct {
-		NAADSToEAS map[string]string `json:"naadsToEas"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil
-	}
-	out := make(map[string]string, len(payload.NAADSToEAS))
-	for key, value := range payload.NAADSToEAS {
-		value = strings.ToUpper(strings.TrimSpace(value))
-		if len(value) == 3 {
-			out[normalizeNAADSEventKey(key)] = value
-		}
-	}
-	return out
-}
-
-func normalizeNAADSEventKey(raw string) string {
-	var builder strings.Builder
-	for _, ch := range strings.ToLower(strings.TrimSpace(raw)) {
-		if ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' {
-			builder.WriteRune(ch)
-		}
-	}
-	return builder.String()
+func sameEventResolutionForCAP(alert capingest.Alert, info capingest.AlertInfo, baseDir string) capsame.EventResolution {
+	return capsame.ResolveEvent(alert, info, baseDir)
 }
 
 func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string) []string {

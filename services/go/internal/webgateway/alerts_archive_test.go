@@ -40,28 +40,30 @@ func TestWithArchiveStoreUsesSQLiteDefault(t *testing.T) {
 }
 
 func TestArchiveSAMEAllowedSuppressesCancellationsAndStaleWarnings(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	cancel := parseArchiveTestAlert(t, archiveTestCAP("urn:test:cancel", "Cancel", "yellow warning - severe thunderstorm - ended", "2099-06-15T21:30:00-06:00", true))
-	if archiveSAMEAllowed(cancel, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC)) {
+	if archiveSAMEAllowed(configPath, cancel, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC)) {
 		t.Fatal("cancellation should not be eligible for SAME rebroadcast")
 	}
 
 	warning := parseArchiveTestAlert(t, archiveTestCAP("urn:test:svr", "Alert", "yellow warning - severe thunderstorm - in effect", "2099-06-15T21:30:00-06:00", false))
-	if !archiveSAMEAllowed(warning, time.Date(2026, 6, 15, 22, 27, 0, 0, time.UTC)) {
+	if !archiveSAMEAllowed(configPath, warning, time.Date(2026, 6, 15, 22, 27, 0, 0, time.UTC)) {
 		t.Fatal("fresh severe thunderstorm warning should be eligible for SAME")
 	}
-	if archiveSAMEAllowed(warning, time.Date(2026, 6, 15, 22, 29, 0, 0, time.UTC)) {
+	if archiveSAMEAllowed(configPath, warning, time.Date(2026, 6, 15, 22, 29, 0, 0, time.UTC)) {
 		t.Fatal("stale severe thunderstorm warning should not be eligible for SAME")
 	}
 }
 
 func TestArchiveRecordPayloadIncludesCAPXMLURLAndSAMEPreviewFlag(t *testing.T) {
+	baseDir := t.TempDir()
 	alert := parseArchiveTestAlert(t, archiveTestCAP("urn:test:svr", "Alert", "yellow warning - severe thunderstorm - in effect", "2099-06-15T21:30:00-06:00", false))
 	payload := archiveRecordPayload(archiveCAPRecord{
 		ID:     "urn:test:svr",
 		FeedID: "sk-0001",
 		Status: "accepted",
 		Alert:  alert,
-	}, "accepted")
+	}, "accepted", baseDir)
 
 	if got := strings.TrimSpace(payload["cap_xml_url"].(string)); !strings.Contains(got, "/api/v1/alerts/archive/cap.xml?") || !strings.Contains(got, "feed_id=sk-0001") {
 		t.Fatalf("cap_xml_url was not populated correctly: %q", got)
