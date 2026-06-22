@@ -1265,7 +1265,14 @@ func alertTextFromData(data map[string]any) string {
 func (p *feedPlanner) alertTextFromData(data map[string]any) string {
 	if strings.EqualFold(firstText(nil, data, "cap_source"), "nws") {
 		if intro := p.sameIntroFromData(data); intro != "" {
-			return intro
+			parts := []string{intro}
+			if description := strings.TrimSpace(firstText(nil, data, "description")); description != "" {
+				parts = append(parts, alerttext.CleanAlertText(description))
+			}
+			if instruction := strings.TrimSpace(firstText(nil, data, "instruction")); instruction != "" {
+				parts = append(parts, alerttext.CleanAlertText(instruction))
+			}
+			return strings.TrimSpace(strings.Join(nonEmptyStrings(parts), " "))
 		}
 	}
 	return alertTextFromData(data)

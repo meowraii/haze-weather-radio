@@ -100,6 +100,21 @@ func TestLoadEventAndAreaLabels(t *testing.T) {
 	}
 }
 
+func TestResolveAreaNamesUsesNWSFIPSNamesAndUnknownFallback(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv"), `STATE|ZONE_CODE|CWA_ID|ZONE_NAME|STATE+ZONE|COUNTY_NAME|FIPS/SAME|TIMEZONE|FE_AREA|LAT|LON
+AL|001|BMX|Autauga|ALC001|Autauga|001001|C|se|32.5364|-86.6445
+AL|003|MOB|Baldwin|ALC003|Baldwin|001003|C|se|30.6592|-87.7461
+`)
+	configPath := filepath.Join(dir, "config.yaml")
+
+	areas := ResolveAreaNames(configPath, nil, []string{"001001", "001003", "012011"})
+	want := []string{"Autauga, AL", "Baldwin, AL", "Unknown Location (012011)"}
+	if strings.Join(areas, "|") != strings.Join(want, "|") {
+		t.Fatalf("areas = %#v, want %#v", areas, want)
+	}
+}
+
 func TestBuildCAPAlertTextUsesSharedWeatherSpeech(t *testing.T) {
 	now := time.Date(2026, 6, 17, 3, 0, 0, 0, time.UTC)
 	alert := capingest.Alert{

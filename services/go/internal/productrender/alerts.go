@@ -191,9 +191,12 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 	originator := sameOriginatorForCAP(alert, *info)
 	payload["same_originator"] = originator
 	payload["same_originator_name"] = sameOriginatorNameForCAP(alert, *info)
-	payload["same_event_name"] = alertSubject(*info)
+	payload["same_event_name"] = sameEventNameForCAP(alert, *info, event, baseDir)
 	if originator == "WXR" {
 		payload["same_weather_service"] = sameWeatherServiceForCAP(alert)
+	}
+	if callsign := sameCallsignForCAP(feed); callsign != "" {
+		payload["same_callsign"] = callsign
 	}
 	payload["same_locations"] = locations
 	payload["same_duration"] = sameDurationForCAP(alert, *info)
@@ -245,7 +248,6 @@ func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string)
 	}
 
 	if len(coverage.Codes) == 0 {
-		out = append(out, "000000")
 		for code := range alertCodes {
 			addCodes(sameLocationCodesForAlertCode(db, code))
 		}
@@ -271,6 +273,22 @@ func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string)
 		out = out[:31]
 	}
 	return out
+}
+
+func sameEventNameForCAP(alert capingest.Alert, info capingest.AlertInfo, event string, baseDir string) string {
+	if detectCAPSource(alert) == "nws" {
+		if name := alerttext.EventName(filepath.Join(baseDir, "config.yaml"), event); strings.TrimSpace(name) != "" {
+			return name
+		}
+	}
+	return alertSubject(info)
+}
+
+func sameCallsignForCAP(feed feedXML) string {
+	if strings.EqualFold(strings.TrimSpace(feed.ID), "CAP-IT-ALL") {
+		return "CAP-IT-ALL"
+	}
+	return strings.TrimSpace(stationTransmitter(feed).Callsign)
 }
 
 func sameLocationCodesForAlertCode(db alertGeoDB, raw string) []string {

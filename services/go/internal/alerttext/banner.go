@@ -493,7 +493,7 @@ func ResolveAreaNames(configPath string, provided []string, locations []string) 
 		}
 		name := locationNames[cleanCode]
 		if name == "" {
-			name = cleanCode
+			name = "Unknown Location (" + cleanCode + ")"
 		}
 		add(name)
 	}
@@ -529,7 +529,7 @@ func LoadLocationLabels(configPath string) map[string]string {
 	loadCSVNames(resolveConfigPath(configPath, "managed/csv/FORECAST_LOCATIONS.csv"), labels, []string{"CODE"}, []string{"NAME", "NOM"})
 	loadCSVNames(resolveConfigPath(configPath, "managed/csv/CLC_Base_Zone.csv"), labels, []string{"CLC", "CODE", "Geocode", "geocode"}, []string{"NAME", "Name", "English", "EN", "name_en"})
 	loadCSVNames(resolveConfigPath(configPath, "managed/csv/CAP-CP_Geocodes.csv"), labels, []string{"CODE", "Geocode", "geocode", "value"}, []string{"NAME", "Name", "English", "EN", "name_en"})
-	loadCSVNames(resolveConfigPath(configPath, "managed/csv/NWS_ZONE_COUNTY_CORRELATION.csv"), labels, []string{"FIPS", "UGC", "ZONE", "COUNTY_FIPS"}, []string{"NAME", "COUNTYNAME", "CountyName", "county_name"})
+	loadNWSLocationLabels(resolveConfigPath(configPath, "managed/csv/NWS_ZONE_COUNTY_CORRELATION.csv"), labels)
 	return labels
 }
 
@@ -1220,6 +1220,73 @@ func loadCSVNames(path string, labels map[string]string, codeColumns []string, n
 			}
 		}
 	}
+}
+
+func loadNWSLocationLabels(path string, labels map[string]string) {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	probe := make([]byte, 4096)
+	n, _ := file.Read(probe)
+	_, _ = file.Seek(0, 0)
+	reader := csv.NewReader(file)
+	reader.Comma = detectCSVDelimiter(string(probe[:n]))
+	reader.FieldsPerRecord = -1
+	rows, err := reader.ReadAll()
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	headerIndex := map[string]int{}
+	for i, name := range rows[0] {
+		headerIndex[strings.ToLower(strings.TrimSpace(name))] = i
+	}
+	fipsIndex := firstHeaderIndex(headerIndex, []string{"FIPS/SAME", "FIPS", "COUNTY_FIPS"})
+	stateZoneIndex := firstHeaderIndex(headerIndex, []string{"STATE+ZONE", "UGC", "ZONE"})
+	countyIndex := firstHeaderIndex(headerIndex, []string{"COUNTY_NAME", "COUNTYNAME", "CountyName", "county_name"})
+	zoneNameIndex := firstHeaderIndex(headerIndex, []string{"ZONE_NAME", "NAME", "Name"})
+	stateIndex := firstHeaderIndex(headerIndex, []string{"STATE", "state"})
+	if fipsIndex < 0 && stateZoneIndex < 0 {
+		return
+	}
+	for _, row := range rows[1:] {
+		state := rowValue(row, stateIndex)
+		countyName := rowValue(row, countyIndex)
+		zoneName := rowValue(row, zoneNameIndex)
+		label := nwsLocationLabel(countyName, zoneName, state)
+		if label == "" {
+			continue
+		}
+		for _, rawCode := range []string{rowValue(row, fipsIndex), rowValue(row, stateZoneIndex)} {
+			code := CleanLocationCode(rawCode)
+			if code == "" {
+				continue
+			}
+			if _, exists := labels[code]; !exists {
+				labels[code] = label
+			}
+		}
+	}
+}
+
+func nwsLocationLabel(countyName string, zoneName string, state string) string {
+	name := CleanFragment(fallbackText(countyName, zoneName))
+	state = strings.ToUpper(strings.TrimSpace(state))
+	if name == "" {
+		return ""
+	}
+	if state == "" || strings.Contains(name, ",") {
+		return name
+	}
+	return name + ", " + state
+}
+
+func rowValue(row []string, index int) string {
+	if index < 0 || index >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[index])
 }
 
 func detectCSVDelimiter(sample string) rune {

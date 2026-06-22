@@ -197,12 +197,44 @@ func TestNWSCAPWarningGeneratesPrioritySAMEForCatchall(t *testing.T) {
 	if payload["cap_source"] != "nws" {
 		t.Fatalf("cap_source = %#v, want nws", payload["cap_source"])
 	}
-	wantLocations := []string{"000000", "028121"}
+	wantLocations := []string{"028121"}
 	if got := payload["same_locations"]; !reflect.DeepEqual(got, wantLocations) {
 		t.Fatalf("same_locations = %#v, want %#v", got, wantLocations)
 	}
+	if payload["same_event_name"] != "Severe Thunderstorm Warning" {
+		t.Fatalf("same_event_name = %#v, want Severe Thunderstorm Warning", payload["same_event_name"])
+	}
+	if payload["same_callsign"] != "CAP-IT-ALL" {
+		t.Fatalf("same_callsign = %#v, want CAP-IT-ALL", payload["same_callsign"])
+	}
 	if payload["same_begins_at"] == "" || payload["same_expires_at"] == "" || payload["same_sent_at"] == "" {
 		t.Fatalf("same timing fields missing in payload %#v", payload)
+	}
+}
+
+func TestNWSCAPUsesEASEventNameInsteadOfHeadline(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"eas":{"SPS":"Special Weather Statement"}}`)
+	var feed feedXML
+	feed.ID = "CAP-IT-ALL"
+	feed.Playout.SAME = "true"
+	feed.Alerts.NWSCAP.EnabledRaw = "true"
+	feed.Alerts.NWSCAP.Filter.UseFeedLocations = "false"
+	feed.Alerts.NWSCAP.Filter.Allowlist.Severities = []string{"Moderate", "Severe", "Extreme"}
+	raw := testNWSCAP("urn:test:nws:sps", "Alert", "2026-06-22T17:00:00-04:00", "2026-06-22T17:45:00-04:00")
+	raw = strings.ReplaceAll(raw, "<event>Severe Thunderstorm Warning</event>", "<event>Special Weather Statement</event>")
+	raw = strings.ReplaceAll(raw, "<severity>Severe</severity>", "<severity>Moderate</severity>")
+	raw = strings.ReplaceAll(raw, "<eventCode><valueName>SAME</valueName><value>SVR</value></eventCode>", "<eventCode><valueName>SAME</valueName><value>SPS</value></eventCode>")
+	raw = strings.ReplaceAll(raw, "Severe Thunderstorm Warning issued June 22 at 12:13PM CDT until June 22 at 12:45PM CDT by NWS Jackson MS", "Special Weather Statement issued June 22 at 5:00PM EDT by NWS Miami FL")
+	alert := parseTestAlert(t, raw)
+
+	payload := capSAMEPayload(alert, feed, dir, time.Date(2026, 6, 22, 21, 5, 0, 0, time.UTC))
+
+	if payload["same_event"] != "SPS" {
+		t.Fatalf("same_event = %#v, want SPS", payload["same_event"])
+	}
+	if payload["same_event_name"] != "Special Weather Statement" {
+		t.Fatalf("same_event_name = %#v, want Special Weather Statement", payload["same_event_name"])
 	}
 }
 
@@ -474,7 +506,7 @@ GA|033|FFC|North Fulton|GA033|Fulton|13121|E|nc|33.9350|-84.3557
 	}
 
 	got := sameLocationsForCAP(info, feed, dir)
-	want := []string{"000000", "013121"}
+	want := []string{"013121"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("same locations = %#v, want %#v", got, want)
 	}
@@ -496,7 +528,15 @@ Wabamun,,4811045,53.56186389990,-114.47830913600,,AB,CA
 	}
 
 	got := sameLocationsForCAP(info, feedXML{}, dir)
-	want := []string{"000000", "076232"}
+	want := []string{"076232"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("same locations = %#v, want %#v", got, want)
+	}
+}
+
+func TestSameLocationsForCAPFallsBackToNationalWhenNoCodesResolve(t *testing.T) {
+	got := sameLocationsForCAP(capingest.AlertInfo{}, feedXML{}, t.TempDir())
+	want := []string{"000000"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("same locations = %#v, want %#v", got, want)
 	}

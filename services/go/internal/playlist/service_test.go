@@ -797,40 +797,40 @@ func TestAlertTextFromDataFallsBackToDescriptionAndInstruction(t *testing.T) {
 	}
 }
 
-func TestNWSAlertTextUsesOnlySameTranslation(t *testing.T) {
+func TestNWSAlertTextUsesSameTranslationWithCAPProse(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "managed", "csv"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "managed", "sameMapping.json"), []byte(`{"eas":{"SVR":"Severe Thunderstorm Warning"}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "managed", "sameMapping.json"), []byte(`{"eas":{"SPS":"Special Weather Statement"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv"), []byte("FIPS|COUNTYNAME\n001053|Escambia, AL\n001051|Elmore, AL\n001049|DeKalb, AL\n001047|Dallas, AL\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv"), []byte("STATE|ZONE_CODE|CWA_ID|ZONE_NAME|STATE+ZONE|COUNTY_NAME|FIPS/SAME|TIMEZONE|FE_AREA|LAT|LON\nAL|001|BMX|Autauga|ALC001|Autauga|001001|C|se|32.5364|-86.6445\nAL|003|MOB|Baldwin|ALC003|Baldwin|001003|C|se|30.6592|-87.7461\nAL|005|BMX|Barbour|ALC005|Barbour|001005|C|se|31.8707|-85.4055\nAL|007|BMX|Bibb|ALC007|Bibb|001007|C|se|33.0159|-87.1271\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	planner := &feedPlanner{cfg: loadedConfig{BaseDir: dir}, feed: feedXML{ID: "CAP-IT-ALL"}}
 	text := planner.alertTextFromData(map[string]any{
 		"cap_source":           "nws",
-		"same_event":           "SVR",
-		"same_event_name":      "Severe Thunderstorm Warning",
+		"same_event":           "SPS",
+		"same_event_name":      "Special Weather Statement",
 		"same_originator":      "WXR",
 		"same_weather_service": "The National Weather Service",
-		"same_locations":       []any{"001053", "001051", "001049", "001047"},
-		"same_callsign":        "meowraii",
-		"same_begins_at":       "2026-06-22T12:38:00-05:00",
-		"same_expires_at":      "2026-06-22T12:39:00-05:00",
+		"same_locations":       []any{"001001", "001003", "001005", "001007"},
+		"same_callsign":        "CAP-IT-ALL",
+		"same_begins_at":       "2026-06-22T15:01:00-05:00",
+		"same_expires_at":      "2026-06-22T16:01:00-05:00",
 		"alert_text":           "CAP text that should not be spoken.",
-		"description":          "Large hail and wind are included in the CAP description.",
-		"instruction":          "Take shelter now.",
+		"description":          "At 500 PM EDT, National Weather Service meteorologists were tracking a strong thunderstorm.",
+		"instruction":          "Seek shelter in a safe building until the storm passes.",
 		"mimic_endec":          "SAGE",
 	})
 
-	want := "The National Weather Service has issued a Severe Thunderstorm Warning for the following areas: Escambia, AL; Elmore, AL; DeKalb, AL; and Dallas, AL. Beginning at 12:38 PM and ending at 12:39 PM on June 22nd, 2026. (meowraii)."
+	want := "The National Weather Service has issued a Special Weather Statement for the following areas: Autauga, AL; Baldwin, AL; Barbour, AL; and Bibb, AL. Beginning at 3:01 PM and ending at 4:01 PM on June 22nd, 2026. (CAP-IT-ALL). At 500 PM EDT, National Weather Service meteorologists were tracking a strong thunderstorm. Seek shelter in a safe building until the storm passes."
 	if text != want {
 		t.Fatalf("alert text = %q, want %q", text, want)
 	}
-	if strings.Contains(text, "CAP text") || strings.Contains(text, "Large hail") || strings.Contains(text, "Take shelter") {
-		t.Fatalf("NWS alert text included CAP prose: %q", text)
+	if strings.Contains(text, "CAP text") {
+		t.Fatalf("NWS alert text included raw CAP fallback text: %q", text)
 	}
 }
 
