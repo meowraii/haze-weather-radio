@@ -535,12 +535,12 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 			storeCAPArchiveRecord(s.cfg.Store, "rejected", record)
 			continue
 		}
-		if !feedAllowsCAPAlert(feed, alert) {
+		if !routineCAPAlertAllowed(alert) {
 			record := capArchiveRecord{
 				ID:        alert.Identifier,
 				FeedID:    feed.ID,
 				Status:    "rejected",
-				Reason:    "feed alert filter",
+				Reason:    "test alert",
 				UpdatedAt: now,
 				Alert:     alert,
 				RawXML:    alert.RawXML,
@@ -671,6 +671,34 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 		})
 	}
 	return updates, nil
+}
+
+func routineCAPAlertAllowed(alert capingest.Alert) bool {
+	switch strings.ToLower(strings.TrimSpace(alert.Status)) {
+	case "test", "exercise", "draft":
+		return false
+	}
+	info := chooseAlertInfo(alert, "en-CA")
+	if info == nil {
+		return true
+	}
+	text := strings.ToLower(strings.Join([]string{
+		info.Event,
+		info.Headline,
+		alertParam(*info, "layer:EC-MSC-SMC:1.0:Alert_Name"),
+	}, " "))
+	for _, marker := range []string{
+		"test message",
+		"practice demo",
+		"practice/demo",
+		"required weekly test",
+		"required monthly test",
+	} {
+		if strings.Contains(text, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 func capPriorityBroadcastAllowed(alert capingest.Alert, feed feedXML, baseDir string, now time.Time) bool {
@@ -1681,7 +1709,7 @@ func (r renderer) alertsProduct(base Product, feed feedXML) (Product, error) {
 	base.Title = "Weather Alerts"
 	base.Inputs = append(base.Inputs, InputRef{Type: "store", ID: "archive.cap_xml/accepted/" + feed.ID})
 	for _, entry := range pruned {
-		if !feedAllowsCAPAlert(feed, entry.Alert) || !alertMatchesFeed(entry.Alert, feed, r.cfg.BaseDir) {
+		if !routineCAPAlertAllowed(entry.Alert) || !alertMatchesFeed(entry.Alert, feed, r.cfg.BaseDir) {
 			continue
 		}
 		info := chooseAlertInfo(entry.Alert, feedLanguage(feed))

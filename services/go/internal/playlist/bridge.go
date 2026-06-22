@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -62,7 +63,7 @@ func connectBridge(ctx context.Context, addr string) (*bridgeClient, error) {
 	}
 	client := &bridgeClient{
 		conn:            conn,
-		events:          make(chan map[string]any, 256),
+		events:          make(chan map[string]any, 8192),
 		pendingProducts: map[string]chan productResult{},
 		pendingSynth:    map[string]chan synthResult{},
 	}
@@ -179,10 +180,7 @@ func (c *bridgeClient) readLoop() {
 		if c.handleProductResult(message) || c.handleSynthResult(message) {
 			continue
 		}
-		select {
-		case c.events <- message:
-		default:
-		}
+		c.enqueueEvent(message)
 	}
 	c.mu.Lock()
 	for id, ch := range c.pendingProducts {
@@ -194,6 +192,38 @@ func (c *bridgeClient) readLoop() {
 		delete(c.pendingSynth, id)
 	}
 	c.mu.Unlock()
+}
+
+func (c *bridgeClient) enqueueEvent(message map[string]any) {
+	select {
+	case c.events <- message:
+		return
+	default:
+	}
+	msgType := stringAt(message, "type")
+	if !playlistLifecycleEvent(msgType) {
+		log.Printf("playlist bridge event buffer full; dropped %s", msgType)
+		return
+	}
+	select {
+	case <-c.events:
+	default:
+	}
+	select {
+	case c.events <- message:
+	default:
+		log.Printf("playlist bridge event buffer full; dropped %s", msgType)
+	}
+}
+
+func playlistLifecycleEvent(msgType string) bool {
+	switch strings.TrimSpace(msgType) {
+	case "playout.accepted", "playout.started", "playout.interrupted", "playout.completed",
+		"alert.playout.started", "alert.playout.completed", "service.ready", "system.shutdown":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *bridgeClient) handleProductResult(message map[string]any) bool {

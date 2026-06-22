@@ -448,6 +448,38 @@ func TestStartupPrimerQueuesStaticItemsAndSkipsUnavailableCurrentConditions(t *t
 	}
 }
 
+func TestStartupProductCanUseCachedAudioWithoutTTSBridge(t *testing.T) {
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "runtime", "audio", "playlist")
+	cachedPath := filepath.Join(outputDir, "sk-0001", "station_id-cached.wav")
+	if err := writeTestWAVFile(cachedPath, 48000, 1, 4800); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	planner := &feedPlanner{
+		cfg: loadedConfig{
+			BaseDir:   dir,
+			OutputDir: outputDir,
+			Root: rootConfig{
+				Playout: playoutConfig{SampleRate: 48000, Channels: 1},
+			},
+		},
+		feed: feedXML{ID: "sk-0001", Timezone: "UTC"},
+	}
+
+	item, err := planner.buildProduct(context.Background(), "station_id", "startup", "", now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.AudioPath != cachedPath {
+		t.Fatalf("audio path = %q, want cached %q", item.AudioPath, cachedPath)
+	}
+	if item.PackageID != "station_id" || item.Source != "startup" {
+		t.Fatalf("cached startup item = %#v", item)
+	}
+}
+
 func serveStartupPrimerBridge(t *testing.T, conn net.Conn, ready chan<- map[string]any) {
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
@@ -630,6 +662,112 @@ func TestIsPlayoutReadyEvent(t *testing.T) {
 		"source": "haze-playlist",
 	}) {
 		t.Fatal("non-playout service should not trigger queue replay")
+	}
+}
+
+func TestPlaylistLifecycleEventClassification(t *testing.T) {
+	if !playlistLifecycleEvent("playout.started") || !playlistLifecycleEvent("alert.playout.completed") {
+		t.Fatal("playout lifecycle events must be retained under bridge backpressure")
+	}
+	if playlistLifecycleEvent("cap.alert.received") {
+		t.Fatal("ordinary CAP traffic should not be classified as playlist lifecycle")
+	}
+}
+
+func TestPendingItemsReplayAfterInterval(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	messages := make(chan map[string]any, 4)
+	go func() {
+		decoder := json.NewDecoder(serverConn)
+		for {
+			var message map[string]any
+			if err := decoder.Decode(&message); err != nil {
+				close(messages)
+				return
+			}
+			messages <- message
+		}
+	}()
+
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	planner := &feedPlanner{
+		bridge: &bridgeClient{conn: clientConn},
+		feed:   feedXML{ID: "sk-0001"},
+		queue: []playlistItem{{
+			QueueID:   "routine-1",
+			FeedID:    "sk-0001",
+			PackageID: "forecast",
+			Title:     "Forecast",
+		}},
+		lastPendingReplayAt: now.Add(-pendingReplayInterval),
+	}
+
+	planner.replayPendingItemsIfDue(now)
+	first := readPublishedTestMessage(t, messages)
+	if packageIDFromReady(first) != "forecast" {
+		t.Fatalf("replayed package = %#v", first)
+	}
+
+	planner.replayPendingItemsIfDue(time.Now())
+	select {
+	case extra := <-messages:
+		t.Fatalf("unexpected replay before interval = %#v", extra)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func TestPendingReplayHeartbeatSkipsCurrentItem(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	messages := make(chan map[string]any, 4)
+	go func() {
+		decoder := json.NewDecoder(serverConn)
+		for {
+			var message map[string]any
+			if err := decoder.Decode(&message); err != nil {
+				close(messages)
+				return
+			}
+			messages <- message
+		}
+	}()
+
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	planner := &feedPlanner{
+		bridge: &bridgeClient{conn: clientConn},
+		feed:   feedXML{ID: "sk-0001"},
+		current: &playlistItem{
+			QueueID:   "current-1",
+			FeedID:    "sk-0001",
+			PackageID: "station_id",
+			Title:     "Station Identification",
+		},
+		queue: []playlistItem{{
+			QueueID:   "queued-1",
+			FeedID:    "sk-0001",
+			PackageID: "forecast",
+			Title:     "Forecast",
+		}},
+		lastPendingReplayAt: now.Add(-pendingReplayInterval),
+	}
+
+	planner.replayPendingItemsIfDue(now)
+	first := readPublishedTestMessage(t, messages)
+	if packageIDFromReady(first) != "forecast" {
+		t.Fatalf("heartbeat replayed wrong item = %#v", first)
+	}
+	select {
+	case extra := <-messages:
+		t.Fatalf("heartbeat replayed current item = %#v", extra)
+	case <-time.After(25 * time.Millisecond):
+	}
+	if got := planner.queuedCount(); got != 2 {
+		t.Fatalf("queued count = %d, want current plus queued", got)
 	}
 }
 

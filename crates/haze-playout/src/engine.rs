@@ -666,6 +666,8 @@ impl FeedRunner {
         let mut pending: Option<AudioItem> = None;
         let mut priority_pending = VecDeque::<AudioItem>::new();
         let mut active_priority_ids = HashSet::<String>::new();
+        let mut active_routine_ids = HashSet::<String>::new();
+        let mut completed_routine_ids = HashSet::<String>::new();
         let mut deferred_routine = VecDeque::<AudioItem>::new();
         let mut live_breakin: Option<LiveBreakIn> = None;
         let mut out = vec![0u8; chunk.len()];
@@ -678,6 +680,8 @@ impl FeedRunner {
                     self.apply_control(&control.action, current.is_some());
                     if clears_deferred_routine(&control.action) {
                         deferred_routine.clear();
+                        active_routine_ids.clear();
+                        completed_routine_ids.clear();
                     }
                 }
                 Some(command) = self.breakin_rx.recv() => {
@@ -843,7 +847,12 @@ impl FeedRunner {
                                 pending = Some(item);
                             } else if let Some(item) = deferred_routine.pop_front() {
                                 pending = Some(item);
-                            } else if let Ok(item) = self.audio_rx.try_recv() {
+                            } else if let Some(item) = next_unique_routine_item(
+                                &mut self.audio_rx,
+                                &mut active_routine_ids,
+                                &completed_routine_ids,
+                                &self.feed.id,
+                            ) {
                                 spawn_accept_item(self.client.clone(), self.feed.id.clone(), item.clone());
                                 pending = Some(item);
                             }
@@ -934,6 +943,9 @@ impl FeedRunner {
                             if let Some(item) = current.take() {
                                 if item.is_alert() {
                                     active_priority_ids.remove(&item.id);
+                                } else {
+                                    active_routine_ids.remove(&item.id);
+                                    completed_routine_ids.insert(item.id.clone());
                                 }
                                 let gap_after = item.gap_after;
                                 spawn_finish_item(self.client.clone(), self.feed.id.clone(), item);
@@ -2371,6 +2383,33 @@ fn remember_priority_item(active_ids: &mut HashSet<String>, id: &str) -> bool {
     !id.is_empty() && active_ids.insert(id.to_string())
 }
 
+fn next_unique_routine_item(
+    rx: &mut mpsc::Receiver<AudioItem>,
+    active_ids: &mut HashSet<String>,
+    completed_ids: &HashSet<String>,
+    feed_id: &str,
+) -> Option<AudioItem> {
+    while let Ok(item) = rx.try_recv() {
+        if completed_ids.contains(item.id.trim()) {
+            tracing::debug!(
+                feed_id,
+                queue_id = item.id,
+                "skipping completed playlist item"
+            );
+            continue;
+        }
+        if remember_priority_item(active_ids, &item.id) {
+            return Some(item);
+        }
+        tracing::debug!(
+            feed_id,
+            queue_id = item.id,
+            "skipping duplicate active playlist item"
+        );
+    }
+    None
+}
+
 fn alert_item_stale_for_priority(item: &AlertQueueItem, now: DateTime<Utc>) -> bool {
     if item.message_type.eq_ignore_ascii_case("cancel") {
         return true;
@@ -2638,6 +2677,67 @@ mod tests {
         let resumed = interrupted_routine_item(item, 99);
 
         assert_eq!(resumed.resume_offset, 16);
+    }
+
+    #[tokio::test]
+    async fn duplicate_routine_items_are_discarded() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.send(test_audio_item("routine-1", "Forecast"))
+            .await
+            .expect("send first routine");
+        tx.send(test_audio_item("routine-1", "Forecast duplicate"))
+            .await
+            .expect("send duplicate routine");
+        tx.send(test_audio_item("routine-2", "Air Quality"))
+            .await
+            .expect("send second routine");
+        drop(tx);
+
+        let mut active = HashSet::<String>::new();
+        let completed = HashSet::<String>::new();
+        let first = next_unique_routine_item(&mut rx, &mut active, &completed, "sk-0001")
+            .expect("first routine item");
+        let second = next_unique_routine_item(&mut rx, &mut active, &completed, "sk-0001")
+            .expect("second routine item");
+
+        assert_eq!(first.id, "routine-1");
+        assert_eq!(second.id, "routine-2");
+    }
+
+    #[tokio::test]
+    async fn completed_routine_items_are_discarded() {
+        let (tx, mut rx) = mpsc::channel(3);
+        tx.send(test_audio_item("routine-1", "Already done"))
+            .await
+            .expect("send completed routine");
+        tx.send(test_audio_item("routine-2", "Forecast"))
+            .await
+            .expect("send next routine");
+        drop(tx);
+
+        let mut active = HashSet::<String>::new();
+        let completed = HashSet::from(["routine-1".to_string()]);
+        let item = next_unique_routine_item(&mut rx, &mut active, &completed, "sk-0001")
+            .expect("next routine item");
+
+        assert_eq!(item.id, "routine-2");
+    }
+
+    fn test_audio_item(id: &str, title: &str) -> AudioItem {
+        AudioItem {
+            id: id.to_string(),
+            package_id: "forecast".to_string(),
+            title: title.to_string(),
+            pcm: Arc::from(vec![1; 16].into_boxed_slice()),
+            resume_offset: 0,
+            gap_after: Duration::from_secs(1),
+            not_before: None,
+            queued_at: String::new(),
+            target_start: String::new(),
+            predicted_start: String::new(),
+            predicted_finish: String::new(),
+            source: ItemSource::Playlist,
+        }
     }
 
     #[tokio::test]

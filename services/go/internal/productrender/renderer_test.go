@@ -919,6 +919,76 @@ func TestAlertsProductUsesNativeCAPRegistry(t *testing.T) {
 	}
 }
 
+func TestMinorCAPAlertBypassesSAMEFilterForRoutinePackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	cfg.Feeds[0].Alerts.CapCP.Filter.Blocklist.Severities = []string{"Minor"}
+	raw := strings.Replace(testCAP("urn:test:alert:minor-statement", "Alert", "active", "2099-06-15T21:30:00-06:00", false), "<severity>Moderate</severity>", "<severity>Minor</severity>", 1)
+	raw = strings.Replace(raw, "<event>thunderstorm</event>", "<event>weather</event>", 1)
+	raw = strings.Replace(raw, "yellow warning - severe thunderstorm", "special weather statement", -1)
+	alert, err := capingest.ParseCAP([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: cfg}
+	updates, err := service.recordCAPAlert(alert, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || !updates[0].Renderable || updates[0].Broadcast {
+		t.Fatalf("updates = %#v", updates)
+	}
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "alerts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(product.Text, "Special Weather Statement") {
+		t.Fatalf("routine alert package missing minor alert:\n%s", product.Text)
+	}
+	rows, err := cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].AlertID != alert.Identifier {
+		t.Fatalf("accepted archive rows = %#v", rows)
+	}
+}
+
+func TestTestCAPAlertDoesNotEnterRoutinePackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	raw := strings.Replace(testCAP("urn:test:alert:test-message", "Alert", "active", "2099-06-15T21:30:00-06:00", false), "<status>Actual</status>", "<status>Test</status>", 1)
+	alert, err := capingest.ParseCAP([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: cfg}
+	updates, err := service.recordCAPAlert(alert, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 0 {
+		t.Fatalf("test alert should not publish routine update: %#v", updates)
+	}
+	rows, err := cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("test alert entered accepted archive: %#v", rows)
+	}
+	rejected, err := cfg.Store.ListCAPArchives(context.Background(), "rejected", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rejected) != 1 || rejected[0].Reason != "test alert" {
+		t.Fatalf("rejected rows = %#v", rejected)
+	}
+}
+
 func TestCAPEndedUpdateRemovesReferencedActiveAlert(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)

@@ -22,6 +22,9 @@ import (
 const serviceID = "haze-playlist"
 const routineRetryDelay = 30 * time.Second
 const startupPrimerDelay = 2 * time.Second
+const pendingReplayInterval = 2 * time.Second
+const cachedRoutineFallbackMaxAge = 15 * time.Minute
+const cachedStartupFallbackMaxAge = 30 * time.Minute
 
 var errSystemShutdown = errors.New("system shutdown requested")
 
@@ -235,6 +238,7 @@ type feedPlanner struct {
 	pendingAfterCurrent  string
 	cursor               int
 	nextRoutineRetryAt   time.Time
+	lastPendingReplayAt  time.Time
 	queue                []playlistItem
 	current              *playlistItem
 	lastFixed            map[string]time.Time
@@ -325,6 +329,7 @@ func (p *feedPlanner) tick(ctx context.Context, now time.Time, lookahead time.Du
 		return
 	}
 	p.dropCompleted()
+	p.replayPendingItemsIfDue(now)
 	maxQueued := p.cfg.Root.Services.Go.Playlist.MaxQueued
 	for p.queuedCount() < maxQueued && p.timelineEnd(now).Before(now.Add(lookahead)) {
 		next, ok := p.nextPlannedItem(ctx, now)
@@ -503,8 +508,11 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 	if strings.TrimSpace(product.Text) == "" {
 		return playlistItem{}, fmt.Errorf("product %s rendered empty text", pkgID)
 	}
+	if cached, ok := p.startupCachedProductItem(pkgID, product, source, targetRaw, timelineEnd, now); ok {
+		return cached, nil
+	}
 	outputPath := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID), queueID+".wav")
-	synthCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	synthCtx, cancel := context.WithTimeout(ctx, p.synthesisTimeoutForBuild(pkgID, source))
 	defer cancel()
 	wavPath, err := p.bridge.Synthesize(synthCtx, synthJob{
 		ID:         queueID,
@@ -515,10 +523,18 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 		OutputPath: outputPath,
 	})
 	if err != nil {
+		if cached, ok := p.cachedProductItem(pkgID, product, source, targetRaw, timelineEnd, now, p.cacheFallbackMaxAge(source)); ok {
+			p.lastError = fmt.Sprintf("using cached %s audio after synthesis failed: %v", pkgID, err)
+			return cached, nil
+		}
 		return playlistItem{}, err
 	}
 	info, err := wavInfo(wavPath)
 	if err != nil {
+		if cached, ok := p.cachedProductItem(pkgID, product, source, targetRaw, timelineEnd, now, p.cacheFallbackMaxAge(source)); ok {
+			p.lastError = fmt.Sprintf("using cached %s audio after synthesized WAV could not be read: %v", pkgID, err)
+			return cached, nil
+		}
 		return playlistItem{}, err
 	}
 	target := parseTime(targetRaw)
@@ -539,6 +555,109 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 		Status:            "queued",
 		Source:            source,
 	}, nil
+}
+
+func (p *feedPlanner) synthesisTimeoutForBuild(pkgID string, source string) time.Duration {
+	if strings.EqualFold(source, "startup") {
+		return 8 * time.Second
+	}
+	if p.cachedProductAudioEligible(pkgID) {
+		if _, _, ok := p.latestCachedProductAudio(pkgID, cachedRoutineFallbackMaxAge); ok {
+			return 12 * time.Second
+		}
+	}
+	return 90 * time.Second
+}
+
+func (p *feedPlanner) startupCachedProductItem(pkgID string, product renderedProduct, source string, targetRaw string, timelineEnd time.Time, now time.Time) (playlistItem, bool) {
+	if !strings.EqualFold(source, "startup") || strings.EqualFold(pkgID, "date_time") {
+		return playlistItem{}, false
+	}
+	return p.cachedProductItem(pkgID, product, source, targetRaw, timelineEnd, now, cachedStartupFallbackMaxAge)
+}
+
+func (p *feedPlanner) cacheFallbackMaxAge(source string) time.Duration {
+	if strings.EqualFold(source, "startup") {
+		return cachedStartupFallbackMaxAge
+	}
+	return cachedRoutineFallbackMaxAge
+}
+
+func (p *feedPlanner) cachedProductItem(pkgID string, product renderedProduct, source string, targetRaw string, timelineEnd time.Time, now time.Time, maxAge time.Duration) (playlistItem, bool) {
+	if !p.cachedProductAudioEligible(pkgID) {
+		return playlistItem{}, false
+	}
+	path, info, ok := p.latestCachedProductAudio(pkgID, maxAge)
+	if !ok {
+		return playlistItem{}, false
+	}
+	target := parseTime(targetRaw)
+	start := predictedStart(now, timelineEnd, target)
+	finish := start.Add(p.itemScheduleDuration(info.DurationMS))
+	return playlistItem{
+		QueueID:           queueID(pkgID),
+		FeedID:            p.feed.ID,
+		Kind:              "product",
+		PackageID:         pkgID,
+		Title:             fallbackText(product.Title, pkgID),
+		AudioPath:         path,
+		DurationMS:        info.DurationMS,
+		QueuedAt:          now.UTC().Format(time.RFC3339Nano),
+		TargetStartAt:     formatOptionalTime(target),
+		PredictedStartAt:  start.UTC().Format(time.RFC3339Nano),
+		PredictedFinishAt: finish.UTC().Format(time.RFC3339Nano),
+		Status:            "queued",
+		Source:            fallbackText(source, "cached"),
+	}, true
+}
+
+func (p *feedPlanner) cachedProductAudioEligible(pkgID string) bool {
+	switch strings.ToLower(strings.TrimSpace(pkgID)) {
+	case "alerts", "date_time":
+		return false
+	default:
+		return true
+	}
+}
+
+func (p *feedPlanner) latestCachedProductAudio(pkgID string, maxAge time.Duration) (string, audioInfo, bool) {
+	dir := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID))
+	prefix := safeID(pkgID) + "-"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", audioInfo{}, false
+	}
+	var bestPath string
+	var bestMod time.Time
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(strings.ToLower(name), ".wav") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		mod := info.ModTime()
+		if maxAge > 0 && time.Since(mod) > maxAge {
+			continue
+		}
+		if bestPath == "" || mod.After(bestMod) {
+			bestPath = filepath.Join(dir, name)
+			bestMod = mod
+		}
+	}
+	if bestPath == "" {
+		return "", audioInfo{}, false
+	}
+	info, err := wavInfo(bestPath)
+	if err != nil {
+		return "", audioInfo{}, false
+	}
+	return bestPath, info, true
 }
 
 func (p *feedPlanner) renderProductForBuild(ctx context.Context, queueID string, pkgID string, source string, now time.Time) (renderedProduct, error) {
@@ -1537,6 +1656,9 @@ func (p *feedPlanner) dropCompleted() {
 }
 
 func (p *feedPlanner) queuedCount() int {
+	if p.current != nil {
+		return len(p.queue) + 1
+	}
 	return len(p.queue)
 }
 
@@ -1568,7 +1690,7 @@ func (p *feedPlanner) timelineEnd(now time.Time) time.Time {
 }
 
 func (p *feedPlanner) publishReady(item playlistItem) error {
-	return p.bridge.Publish(map[string]any{
+	if err := p.bridge.Publish(map[string]any{
 		"type":    "playlist.item.ready",
 		"source":  serviceID,
 		"feed_id": item.FeedID,
@@ -1587,12 +1709,39 @@ func (p *feedPlanner) publishReady(item playlistItem) error {
 			"not_before":          item.PredictedStartAt,
 			"source":              item.Source,
 		},
-	})
+	}); err != nil {
+		return err
+	}
+	p.lastPendingReplayAt = time.Now()
+	return nil
 }
 
 func (p *feedPlanner) replayPendingItems() {
+	p.replayPendingItemsAt(time.Now())
+}
+
+func (p *feedPlanner) replayPendingItemsIfDue(now time.Time) {
+	if len(p.queue) == 0 {
+		return
+	}
+	if !p.lastPendingReplayAt.IsZero() && now.Sub(p.lastPendingReplayAt) < pendingReplayInterval {
+		return
+	}
+	p.replayQueuedItemsAt(now)
+}
+
+func (p *feedPlanner) replayPendingItemsAt(now time.Time) {
+	p.replayItemsAt(now, true)
+}
+
+func (p *feedPlanner) replayQueuedItemsAt(now time.Time) {
+	p.replayItemsAt(now, false)
+}
+
+func (p *feedPlanner) replayItemsAt(now time.Time, includeCurrent bool) {
+	p.lastPendingReplayAt = now
 	items := make([]playlistItem, 0, len(p.queue)+1)
-	if p.current != nil {
+	if includeCurrent && p.current != nil {
 		current := *p.current
 		current.Status = "queued"
 		items = append(items, current)
