@@ -2,6 +2,7 @@ package webgateway
 
 import (
 	"crypto/sha1"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -852,6 +853,63 @@ func loadNWSFIPSNames(path string) map[string]string {
 	return out
 }
 
+func loadNWSMarineNames(path string) map[string]string {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return map[string]string{}
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	rows, err := reader.ReadAll()
+	if err != nil || len(rows) == 0 {
+		return map[string]string{}
+	}
+	header := map[string]int{}
+	for i, value := range rows[0] {
+		header[strings.ToLower(strings.TrimSpace(value))] = i
+	}
+	sameIndex := csvHeaderIndex(header, "same_code", "same", "ssnum")
+	zoneIndex := csvHeaderIndex(header, "zone_ugc", "zone", "ugc")
+	nameIndex := csvHeaderIndex(header, "name", "zonename", "zone_name")
+	if sameIndex < 0 || nameIndex < 0 {
+		return map[string]string{}
+	}
+	out := map[string]string{}
+	for _, row := range rows[1:] {
+		name := csvCell(row, nameIndex)
+		if name == "" {
+			continue
+		}
+		for _, raw := range []string{csvCell(row, sameIndex), csvCell(row, zoneIndex)} {
+			code := cleanLocationCode(raw)
+			if code == "" {
+				code = strings.ToUpper(strings.TrimSpace(raw))
+			}
+			if code != "" {
+				out[code] = name
+			}
+		}
+	}
+	return out
+}
+
+func csvHeaderIndex(header map[string]int, keys ...string) int {
+	for _, key := range keys {
+		if index, ok := header[strings.ToLower(strings.TrimSpace(key))]; ok {
+			return index
+		}
+	}
+	return -1
+}
+
+func csvCell(row []string, index int) string {
+	if index < 0 || index >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[index])
+}
+
 func loadCSVNames(path string, codeIndex int, nameIndex int) map[string]string {
 	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
@@ -1122,6 +1180,9 @@ func loadLocationNames(configPath string) (map[string]any, error) {
 		}
 	}
 	for code, name := range loadNWSFIPSNames(resolveConfigPath(configPath, "managed/csv/NWS_ZONE_COUNTY_CORRELATION.csv")) {
+		names[code] = name
+	}
+	for code, name := range loadNWSMarineNames(resolveConfigPath(configPath, "managed/csv/NWS_MARINE_ZONES.csv")) {
 		names[code] = name
 	}
 	names["000000"] = "All areas"

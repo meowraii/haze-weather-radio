@@ -312,6 +312,11 @@ func sameLocationCodesForAlertCode(db alertGeoDB, raw string) []string {
 			return []string{clean}
 		}
 	}
+	if item, ok := db.Marine[code]; ok {
+		if clean := sameLocationCode(item.FIPS); clean != "" {
+			return []string{clean}
+		}
+	}
 	return nil
 }
 
@@ -1420,10 +1425,11 @@ type coverageRegion struct {
 }
 
 type alertGeoDB struct {
-	CLC   map[string]clcBaseZone
-	CAPCP map[string]capCPGeocode
-	NWS   map[string]nwsZone
-	FIPS  map[string]nwsZone
+	CLC    map[string]clcBaseZone
+	CAPCP  map[string]capCPGeocode
+	NWS    map[string]nwsZone
+	FIPS   map[string]nwsZone
+	Marine map[string]nwsZone
 }
 
 type clcBaseZone struct {
@@ -1538,10 +1544,11 @@ func loadAlertGeoDB(baseDir string) alertGeoDB {
 	alertGeoCache.Unlock()
 
 	db := alertGeoDB{
-		CLC:   loadCLCBaseZones(filepath.Join(baseDir, "managed", "csv", "CLC_Base_Zone.csv")),
-		CAPCP: loadCAPCPGeocodes(filepath.Join(baseDir, "managed", "csv", "CAP-CP_Geocodes.csv")),
-		NWS:   loadNWSZones(filepath.Join(baseDir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv")),
-		FIPS:  loadNWSFIPS(filepath.Join(baseDir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv")),
+		CLC:    loadCLCBaseZones(filepath.Join(baseDir, "managed", "csv", "CLC_Base_Zone.csv")),
+		CAPCP:  loadCAPCPGeocodes(filepath.Join(baseDir, "managed", "csv", "CAP-CP_Geocodes.csv")),
+		NWS:    loadNWSZones(filepath.Join(baseDir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv")),
+		FIPS:   loadNWSFIPS(filepath.Join(baseDir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv")),
+		Marine: loadNWSMarineZones(filepath.Join(baseDir, "managed", "csv", "NWS_MARINE_ZONES.csv")),
 	}
 	alertGeoCache.Lock()
 	alertGeoCache.byBase[key] = db
@@ -1655,6 +1662,50 @@ func loadNWSFIPS(path string) map[string]nwsZone {
 	return out
 }
 
+func loadNWSMarineZones(path string) map[string]nwsZone {
+	rows := readCSVRows(path, ',')
+	out := map[string]nwsZone{}
+	if len(rows) == 0 {
+		return out
+	}
+	header := map[string]int{}
+	for i, value := range rows[0] {
+		header[strings.ToLower(strings.TrimSpace(value))] = i
+	}
+	zoneIndex := csvHeaderLookup(header, "zone_ugc", "zone", "ugc")
+	sameIndex := csvHeaderLookup(header, "same_code", "same", "ssnum")
+	nameIndex := csvHeaderLookup(header, "name", "zonename", "zone_name")
+	if zoneIndex < 0 || sameIndex < 0 || nameIndex < 0 {
+		return out
+	}
+	for _, row := range rows[1:] {
+		zone := strings.ToUpper(csvString(row, zoneIndex))
+		same := sameLocationCode(csvString(row, sameIndex))
+		name := csvString(row, nameIndex)
+		if zone == "" || same == "" || name == "" {
+			continue
+		}
+		item := nwsZone{
+			Code: zone,
+			Name: name,
+			FIPS: same,
+		}
+		out[zone] = item
+		out[normalizeNWSCode(zone)] = item
+		out[same] = item
+	}
+	return out
+}
+
+func csvHeaderLookup(header map[string]int, keys ...string) int {
+	for _, key := range keys {
+		if index, ok := header[strings.ToLower(strings.TrimSpace(key))]; ok {
+			return index
+		}
+	}
+	return -1
+}
+
 func readCSVRows(path string, comma rune) [][]string {
 	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
@@ -1719,6 +1770,9 @@ func expandNWSRegion(db alertGeoDB, regionID string) []string {
 	if item, ok := db.FIPS[code]; ok {
 		return uniqueStrings([]string{item.Code, item.FIPS, sameLocationCode(item.FIPS)})
 	}
+	if item, ok := db.Marine[code]; ok {
+		return uniqueStrings([]string{item.Code, item.FIPS, sameLocationCode(item.FIPS)})
+	}
 	return nil
 }
 
@@ -1749,6 +1803,9 @@ func alertRegionName(db alertGeoDB, code string, lang string) string {
 	}
 	if item, ok := db.FIPS[code]; ok {
 		return fallbackText(item.CountyName, item.Name)
+	}
+	if item, ok := db.Marine[strings.ToUpper(code)]; ok {
+		return strings.TrimSpace(item.Name)
 	}
 	return ""
 }

@@ -817,6 +817,7 @@ func TestNWSAlertTextUsesSameTranslationWithCAPProse(t *testing.T) {
 		"same_weather_service": "The National Weather Service",
 		"same_locations":       []any{"001001", "001003", "001005", "001007"},
 		"same_callsign":        "CAP-IT-ALL",
+		"same_translation":     "The National Weather Service has issued a Special Weather Statement for the following areas: Unknown Location (001001). (CAP-IT-ALL).",
 		"same_begins_at":       "2026-06-22T15:01:00-05:00",
 		"same_expires_at":      "2026-06-22T16:01:00-05:00",
 		"alert_text":           "CAP text that should not be spoken.",

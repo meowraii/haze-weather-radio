@@ -480,6 +480,9 @@ func ResolveAreaNames(configPath string, provided []string, locations []string) 
 		out = append(out, clean)
 	}
 	for _, name := range provided {
+		if len(locations) > 0 && isUnknownLocationName(name) {
+			continue
+		}
 		add(name)
 	}
 	if len(out) > 0 {
@@ -498,6 +501,10 @@ func ResolveAreaNames(configPath string, provided []string, locations []string) 
 		add(name)
 	}
 	return out
+}
+
+func isUnknownLocationName(value string) bool {
+	return strings.Contains(strings.ToLower(CleanFragment(value)), "unknown location (")
 }
 
 // LoadEventLabels loads SAME event labels from managed/sameMapping.json.
@@ -530,6 +537,7 @@ func LoadLocationLabels(configPath string) map[string]string {
 	loadCSVNames(resolveConfigPath(configPath, "managed/csv/CLC_Base_Zone.csv"), labels, []string{"CLC", "CODE", "Geocode", "geocode"}, []string{"NAME", "Name", "English", "EN", "name_en"})
 	loadCSVNames(resolveConfigPath(configPath, "managed/csv/CAP-CP_Geocodes.csv"), labels, []string{"CODE", "Geocode", "geocode", "value"}, []string{"NAME", "Name", "English", "EN", "name_en"})
 	loadNWSLocationLabels(resolveConfigPath(configPath, "managed/csv/NWS_ZONE_COUNTY_CORRELATION.csv"), labels)
+	loadNWSMarineLocationLabels(resolveConfigPath(configPath, "managed/csv/NWS_MARINE_ZONES.csv"), labels)
 	return labels
 }
 
@@ -1265,6 +1273,48 @@ func loadNWSLocationLabels(path string, labels map[string]string) {
 			}
 			if _, exists := labels[code]; !exists {
 				labels[code] = label
+			}
+		}
+	}
+}
+
+func loadNWSMarineLocationLabels(path string, labels map[string]string) {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	rows, err := reader.ReadAll()
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	headerIndex := map[string]int{}
+	for i, name := range rows[0] {
+		headerIndex[strings.ToLower(strings.TrimSpace(name))] = i
+	}
+	sameIndex := firstHeaderIndex(headerIndex, []string{"SAME_CODE", "SAME", "SSNUM"})
+	zoneIndex := firstHeaderIndex(headerIndex, []string{"ZONE_UGC", "ZONE", "UGC"})
+	nameIndex := firstHeaderIndex(headerIndex, []string{"NAME", "ZONENAME", "ZONE_NAME"})
+	if sameIndex < 0 || nameIndex < 0 {
+		return
+	}
+	for _, row := range rows[1:] {
+		name := CleanFragment(rowValue(row, nameIndex))
+		if name == "" {
+			continue
+		}
+		for _, rawCode := range []string{rowValue(row, sameIndex), rowValue(row, zoneIndex)} {
+			code := CleanLocationCode(rawCode)
+			if code == "" {
+				code = strings.ToUpper(strings.TrimSpace(rawCode))
+			}
+			if code == "" {
+				continue
+			}
+			if _, exists := labels[code]; !exists {
+				labels[code] = name
 			}
 		}
 	}

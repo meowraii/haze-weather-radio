@@ -1313,10 +1313,12 @@ func (p *feedPlanner) sameSpeechIntroFromData(data map[string]any) string {
 
 func (p *feedPlanner) sameIntroFromDataWithOptions(data map[string]any, includeSourceLabel bool) string {
 	if intro := strings.TrimSpace(firstText(nil, data, "same_translation", "same_intro")); intro != "" {
-		if !includeSourceLabel {
-			return stripTrailingSourceLabel(intro)
+		if !sameIntroNeedsRebuild(data, intro) {
+			if !includeSourceLabel {
+				return stripTrailingSourceLabel(intro)
+			}
+			return intro
 		}
-		return intro
 	}
 	event := strings.TrimSpace(firstText(nil, data, "same_event", "event"))
 	locations := stringListAny(firstValue(nil, data, "same_locations", "locations"))
@@ -1348,6 +1350,13 @@ func (p *feedPlanner) sameIntroFromDataWithOptions(data map[string]any, includeS
 		ExpiresAt:      expiresAt,
 		MimicENDEC:     fallbackText(firstText(nil, data, "mimic_endec"), "SAGE"),
 	})
+}
+
+func sameIntroNeedsRebuild(data map[string]any, intro string) bool {
+	if !strings.Contains(strings.ToLower(intro), "unknown location (") {
+		return false
+	}
+	return len(stringListAny(firstValue(nil, data, "same_locations", "locations"))) > 0
 }
 
 func sameIntroCallsign(data map[string]any, feed feedXML, includeSourceLabel bool) string {

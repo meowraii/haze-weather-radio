@@ -37,6 +37,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.request import Request, urlopen
 
 try:
     from rapidfuzz import fuzz
@@ -224,6 +225,10 @@ def main() -> int:
     print(f"input:  {input_dir}")
     print(f"output: {output_dir}")
 
+    if args.download_nws_marine_zones:
+        input_dir.mkdir(parents=True, exist_ok=True)
+        download_nws_marine_zones(input_dir / args.nws_marine_csv_name, args.nws_marine_source_url, args.user_agent)
+
     clc = load_clc(input_dir / "CLC_Base_Zone.csv")
     sgc = load_sgc(input_dir / "CAP-CP_Geocodes.csv")
     forecasts = load_forecasts(input_dir / "FORECAST_LOCATIONS.csv")
@@ -231,12 +236,14 @@ def main() -> int:
     postal_codes = [] if args.no_postal else load_postal_codes(input_dir / "postal-codes-canada.csv")
     zip_codes = load_zip_codes(args.zip_csv) if args.zip_csv else []
     nws_places, nws_links = load_nws(input_dir / "NWS_ZONE_COUNTY_CORRELATION.csv")
+    marine_places, marine_links = load_nws_marine_zones(input_dir / args.nws_marine_csv_name)
 
     all_places: list[Place] = []
     all_places.extend(clc)
     all_places.extend(sgc)
     all_places.extend(forecasts)
     all_places.extend(nws_places)
+    all_places.extend(marine_places)
     all_places.extend(stations)
 
     if args.online_geocode:
@@ -248,6 +255,7 @@ def main() -> int:
     links.extend(match_sgc_to_clc(sgc, clc, neural, args))
     links.extend(match_forecasts_to_clc(forecasts, clc, neural, args))
     links.extend(nws_links)
+    links.extend(marine_links)
 
     postal_links: list[PostalLink] = []
     if postal_codes:
@@ -256,7 +264,11 @@ def main() -> int:
         nws_same = [place for place in nws_places if place.source == "nws_same"]
         postal_links.extend(match_postal_to_areas(zip_codes, nws_same, args.max_zip_distance_km))
 
-    canonical_areas = [*clc, *[place for place in nws_places if place.source in {"nws_same", "nws_zone"}]]
+    canonical_areas = [
+        *clc,
+        *[place for place in nws_places if place.source in {"nws_same", "nws_zone"}],
+        *[place for place in marine_places if place.source in {"nws_marine_same", "nws_marine_zone"}],
+    ]
     station_links = match_nearest_stations(canonical_areas, stations, args.max_station_distance_km)
     low_confidence = [link for link in links if link.confidence in {"review", "low"}]
 
@@ -289,6 +301,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--online-geocode", action="store_true", help="Use geopy/Nominatim for rows missing lat/lon.")
     parser.add_argument("--geocoder-user-agent", default="haze-weather-radio-geocode-merge")
     parser.add_argument("--geocoder-min-delay", type=float, default=1.1)
+    parser.add_argument("--download-nws-marine-zones", action="store_true", help="Download official NWS marine zone/SAME pairs into the input CSV directory.")
+    parser.add_argument("--nws-marine-csv-name", default="NWS_MARINE_ZONES.csv")
+    parser.add_argument("--nws-marine-source-url", default="https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt")
+    parser.add_argument("--user-agent", default="haze-weather-radio-geocode-merge")
     parser.add_argument("--no-postal", action="store_true", help="Skip Canadian postal-code linking.")
     parser.add_argument("--zip-csv", type=Path, help="Optional US ZIP CSV with zip, city, state, latitude, longitude columns.")
     parser.add_argument("--max-postal-distance-km", type=float, default=85.0)
@@ -537,6 +553,150 @@ def load_nws(path: Path) -> tuple[list[Place], list[Link]]:
                 )
             )
     return [*county_places.values(), *zone_places.values()], direct_links
+
+
+def load_nws_marine_zones(path: Path) -> tuple[list[Place], list[Link]]:
+    rows = read_table(path, header_markers={"ZONE_UGC", "SAME_CODE"})
+    zone_places: dict[str, Place] = {}
+    same_places: dict[str, Place] = {}
+    direct_links: list[Link] = []
+    seen_link = set()
+    for row in rows:
+        zone_ugc = clean_code(row.get("zone_ugc") or row.get("zone") or row.get("ugc"))
+        same = same_code_from_fips(row.get("same_code") or row.get("same"))
+        name = clean_text(row.get("name") or row.get("zone_name"))
+        if not zone_ugc or not same or not name:
+            continue
+        region = clean_region(row.get("region") or row.get("basin"))
+        operational = clean_text(row.get("operational") or "true").lower() not in {"0", "false", "no"}
+        lat = parse_float(row.get("lat") or row.get("latitude"))
+        lon = parse_float(row.get("lon") or row.get("longitude"))
+        source_url = clean_text(row.get("source_url") or row.get("source"))
+        zone_places.setdefault(
+            zone_ugc,
+            Place(
+                source="nws_marine_zone",
+                code=zone_ugc,
+                name=name,
+                region=region,
+                country="US",
+                kind="NWS marine forecast zone",
+                lat=lat,
+                lon=lon,
+                attrs={
+                    "same": same,
+                    "source_url": source_url,
+                    "operational_nwr": operational,
+                },
+            ),
+        )
+        same_places.setdefault(
+            same,
+            Place(
+                source="nws_marine_same",
+                code=same,
+                name=name,
+                region=region,
+                country="US",
+                kind="NWS marine SAME zone",
+                lat=lat,
+                lon=lon,
+                attrs={
+                    "zone_ugc": zone_ugc,
+                    "source_url": source_url,
+                    "operational_nwr": operational,
+                },
+            ),
+        )
+        link_key = (same, zone_ugc)
+        if link_key in seen_link:
+            continue
+        seen_link.add(link_key)
+        direct_links.append(
+            Link(
+                link_type="nws_marine_same_to_zone",
+                from_source="nws_marine_same",
+                from_code=same,
+                to_source="nws_marine_zone",
+                to_code=zone_ugc,
+                score=1.0,
+                confidence="exact",
+                distance_km=0.0,
+                method="official_nws_eas_nwr_mareas",
+                components={
+                    "name": name,
+                    "region": region,
+                    "source_url": source_url,
+                    "operational_nwr": operational,
+                },
+            )
+        )
+    return [*same_places.values(), *zone_places.values()], direct_links
+
+
+def download_nws_marine_zones(path: Path, source_url: str, user_agent: str) -> None:
+    rows = parse_nws_marine_areas(fetch_text(source_url, user_agent), source_url)
+    rows.sort(key=lambda item: (item["same_code"], item["zone_ugc"]))
+    write_csv(
+        path,
+        ["region", "zone_ugc", "same_code", "name", "lon", "lat", "operational", "source_url"],
+        rows,
+    )
+    print(f"downloaded NWS marine EAS/NWR zones: {len(rows):,} -> {path}")
+
+
+def fetch_text(url: str, user_agent: str) -> str:
+    request = Request(url, headers={"User-Agent": user_agent or "haze-weather-radio-geocode-merge"})
+    with urlopen(request, timeout=30) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="replace")
+
+
+def parse_nws_marine_areas(text: str, source_url: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in iter_marine_area_rows(text):
+        alpha = clean_code(row[0])
+        ssnum = clean_code(row[1])
+        name = clean_text(row[2])
+        if len(alpha) != 2 or len(ssnum) != 5 or not ssnum.isdigit() or not name:
+            continue
+        same = "0" + ssnum
+        zone_ugc = f"{alpha}Z{ssnum[-3:]}"
+        key = (same, zone_ugc)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "region": alpha,
+                    "zone_ugc": zone_ugc,
+                    "same_code": same,
+                    "name": name,
+                    "lon": clean_text(row[4]),
+                    "lat": clean_text(row[3]),
+                    "operational": "true",
+                    "source_url": source_url,
+                }
+            )
+    return rows
+
+
+def iter_marine_area_rows(text: str) -> Iterable[list[str]]:
+    pending = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if pending:
+            pending += " " + line
+        else:
+            pending = line
+        row = next(csv.reader([pending], delimiter="|"))
+        if len(row) < 5:
+            continue
+        yield [cell.strip() for cell in row[:5]]
+        pending = ""
 
 
 def match_sgc_to_clc(sgc: list[Place], clc: list[Place], neural: NeuralReranker, args: argparse.Namespace) -> list[Link]:

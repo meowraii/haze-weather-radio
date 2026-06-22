@@ -1,0 +1,696 @@
+region,zone_ugc,same_code,name,lon,lat,operational,source_url
+PZ,PZZ110,057110,Grays Harbor Bar,-124.04,46.957,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ130,057130,West Entrance U.S. Waters Strait Of Juan De Fuca,-124.4717,48.3736,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ131,057131,Central U.S. Waters Strait Of Juan De Fuca,-123.6538,48.2151,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ132,057132,East Entrance U.S. Waters Strait Of Juan De Fuca,-122.948,48.2596,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ133,057133,Northern Inland Waters Including The San Juan Islands,-122.8031,48.6138,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ134,057134,Admiralty Inlet,-122.6729,48.0667,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ135,057135,Puget Sound and Hood Canal,-122.6094,47.5711,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ150,057150,Coastal Waters From Cape Flattery To James Island Out 10 Nm,-124.8435,48.2065,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ153,057153,Coastal Waters From James Island To Point Grenville Out 10 Nm,-124.5577,47.6192,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ156,057156,Coastal Waters From Point Grenville To Cape Shoalwater Out 10 Nm,-124.3062,47.0289,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ170,057170,Coastal Waters From Cape Flattery To James Island 10 To 60 Nm,-125.4961,48.1051,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ173,057173,Waters From James Island To Point Grenville 10 To 60 Nm,-125.4292,47.6093,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ176,057176,Coastal Waters From Point Grenville To Cape Shoalwater 10 To 60 Nm,-125.1249,47.0222,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ210,057210,Columbia River Bar,-123.7514,46.2309,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ251,057251,Coastal waters from Cape Shoalwater WA to Cape Falcon OR out 10 nm,-124.1232,46.2946,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ252,057252,Coastal waters from Cape Falcon to Cape Foulweather OR out 10 nm,-124.1115,45.2775,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ253,057253,Coastal waters from Cape Foulweather to Florence OR out 10 nm,-124.2174,44.404,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ271,057271,Waters from Cape Shoalwater WA to Cape Falcon OR from 10 to 60 nm,-124.936,46.2507,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ272,057272,Waters from Cape Falcon to Cape Foulweather OR from 10 to 60 nm,-124.8841,45.2709,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ273,057273,Waters from Cape Foulweather to Florence OR from 10 to 60 nm,-124.9727,44.3901,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ350,057350,Coastal waters from Florence to Cape Blanco OR out 10 nm,-124.4415,43.4236,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ356,057356,Coastal waters from Cape Blanco OR to Pt. St. George CA out 10 nm,-124.5003,42.3126,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ370,057370,Waters from Florence to Cape Blanco OR from 10 to 60 nm,-125.2069,43.4244,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ376,057376,Waters from Cape Blanco OR to Pt. St. George CA from 10 to 60 nm,-125.278,42.3124,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ410,057410,Humboldt Bay Bar,-124.2287,40.7565,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ415,057415,Humboldt Bay,-124.1709,40.7913,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ450,057450,Coastal waters from Pt. St. George to Cape Mendocino CA out 10 nm,-124.3031,41.1219,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ455,057455,Coastal waters from Cape Mendocino to Pt. Arena CA out 10 nm,-124.0829,39.7212,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ470,057470,Waters from Pt. St. George to Cape Mendocino CA from 10 to 60 nm,-125.0448,41.1222,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ475,057475,Waters from Cape Mendocino to Pt. Arena CA from 10 to 60 nm,-124.8448,39.7114,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ530,057530,"San Pablo Bay, Suisun Bay, the West Delta and the San Francisco Bay north of the Bay Bridge",-122.2767,38.0023,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ531,057531,San Francisco Bay South of the Bay Bridge,-122.2541,37.6422,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ535,057535,Monterey Bay,-121.9145,36.8085,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ540,057540,Coastal Waters from Point Arena to Point Reyes California out to 10 nm,-123.3934,38.485,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ545,057545,Coastal Waters from Point Reyes to Pigeon Point California out to 10 nm,-122.7263,37.672,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ560,057560,Coastal Waters from Pigeon Point to Point Pinos California out to 10 nm,-122.2632,36.926,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ565,057565,Coastal Waters from Point Pinos to Point Piedras Blancas California out to 10 nm,-121.7926,36.1325,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ570,057570,Waters from Point Arena to Point Reyes 10-60 NM,-124.1968,38.4612,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ571,057571,Waters from Point Reyes to Pigeon Point 10-60 NM,-123.5079,37.5925,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ575,057575,Waters from Pigeon Point to Point Pinos 10-60 NM,-123.0269,36.9035,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ576,057576,Waters from Point Pinos to Point Piedras Blancas 10-60 NM,-122.5525,36.1237,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ645,057645,Point Piedras Blancas to Point Sal westward out to 10 NM,-121.0136,35.2993,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ650,057650,East Santa Barbara Channel from Pt. Conception to Pt. Mugu CA including Santa Cruz Island,-119.7492,34.2489,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ655,057655,Inner waters from Point Mugu to San Mateo Pt. CA including Santa Catalina and Anacapa Islands,-118.598,33.606,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ670,057670,Point Piedras Blancas to Point Sal from 10 to 60 NM,-121.8002,35.2853,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ673,057673,Waters from Pt. Sal to Santa Cruz Island CA and westward 60 nm including San Miguel and Santa Rosa Islands,-121.0407,34.3218,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ676,057676,Outer waters from Santa Cruz Island to San Clemente Island to 60 NM offshore including San Nicolas and Santa Barbara Islands,-119.7735,33.5355,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ750,057750,Coastal Waters from San Mateo Point to the Mexican Border and out to 30 nm,-117.5853,32.9324,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ775,057775,Waters from San Mateo point to the Mexican Border Extending 30 to 60 nm out including San Clemente Island,-118.1241,32.8057,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ800,057800,Cape Flattery to Cape Shoalwater between 60 NM and 150 NM offshore,-126.9189,47.5947,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ805,057805,Cape Shoalwater to Cape Lookout between 60 NM and 150 NM offshore,-126.3375,45.9189,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ810,057810,"Cape Lookout to Florence, OR between 60 NM and 150 NM offshore",-126.3446,44.5287,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ815,057815,"Florence, OR to Point St. George between 60 NM and 150 NM offshore",-126.6655,42.8893,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ820,057820,Point St. George to Point Arena between 60 NM and 150 NM offshore,-126.3613,40.2889,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ825,057825,Point Arena to Pigeon Point between 60 NM and 150 NM offshore,-125.3887,37.9372,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ830,057830,Pigeon Point to Point Piedras Blancas between 60 NM and 150 NM offshore,-124.2301,36.321,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ835,057835,"Point Piedras Blancas to Santa Cruz Island, CA between 60 NM and 150 NM offshore",-122.8842,34.541,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ840,057840,"Santa Cruz Island, CA to San Clemente Island, CA between 60 NM and 150 NM offshore",-120.256,32.5989,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ900,057900,Cape Flattery to Cape Shoalwater between 150 NM and 250 NM offshore,-129.3384,47.6233,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ905,057905,Cape Shoalwater to Cape Lookout between 150 NM and 250 NM offshore,-128.6552,45.919,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ910,057910,"Cape Lookout to Florence, OR between 150 NM and 250 NM offshore",-128.5837,44.5387,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ915,057915,"Florence, OR to Point St. George between 150 NM and 250 NM offshore",-128.8492,42.8895,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ920,057920,Point St. George to Point Arena between 150 NM and 250 NM offshore,-128.4979,40.2048,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ925,057925,Point Arena to Pigeon Point between 150 NM and 250 NM offshore,-127.4812,37.7108,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ930,057930,Pigeon Point to Point Piedras Blancas between 150 NM and 250 NM offshore,-126.2475,36.0182,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ935,057935,"Point Piedras Blancas to Santa Cruz Island, CA between 150 NM and 250 NM offshore",-124.8594,34.1584,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ940,057940,"Santa Cruz Island, CA to 120W between 150 NM and 250 NM offshore",-122.1041,31.5138,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PZ,PZZ945,057945,"San Clemente Island, CA to Guadalupe Island from 60 NM offshore west to 120W",-118.5114,30.2026,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ011,058011,Glacier Bay,-136.2855,58.7341,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ012,058012,Northern Lynn Canal,-135.2963,59.0351,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ013,058013,Southern Lynn Canal,-135.0359,58.5282,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ021,058021,Icy Strait,-135.6347,58.2407,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ022,058022,Cross Sound,-136.4451,58.2054,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ031,058031,Stephens Passage,-133.9149,57.7976,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ032,058032,Northern Chatham Strait,-134.9441,57.6044,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ033,058033,Southern Chatham Strait,-134.4516,56.5004,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ034,058034,Frederick Sound,-133.6539,57.0007,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ035,058035,Sumner Strait,-133.4696,56.3560,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ036,058036,Clarence Strait,-131.7749,55.4143,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ053,058053,Yakutat Bay,-139.7032,59.7479,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ311,058311,Gulf of Alaska North of 57 Degrees North and East of 144 W,57.7376,-141.9074,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ312,058312,Gulf of Alaska South of 57 Degrees North and East of 144 W,55.9642,-140.5758,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ351,058351,Gulf of Alaska Offshore North of 57N and West of 144W,-146.8108,57.8347,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ352,058352,Gulf of Alaska Offshore South of 57N North of 55N and West of 144W,-148.1238,55.9624,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ411,058411,Bering Sea Offshore West of 180 and East of the International Date Line,177.0484,55.8835,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ412,058412,Bering Sea Offshore 171W to 180 and North of 56N,-175.4995,57.5223,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ413,058413,Bering Sea Offshore 171W to 180 and South of 56N,-175.7346,54.7174,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ414,058414,Bering Sea Offshore East of 171W,-167.6504,56.896,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ500,058500,Western US Arctic Offshore,-165.9835,71.8611,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ505,058505,Central US Arctic Offshore,-157.5491,73.4404,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ510,058510,Eastern US Arctic Offshore,-146.4418,72.677,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ641,058641,Dixon Entrance to Cape Decision out to 15 NM,-133.5399,55.3108,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ642,058642,Cape Decision to Cape Edgecumbe out to 15 NM,-135.2276,56.4772,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ643,058643,Cape Edgecumbe to Cape Spencer out to 15 NM,-136.3781,57.5495,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ644,058644,Cape Spencer to Cape Fairweather out to 15 NM,-137.5210,58.4271,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ651,058651,Cape Fairweather to Icy Cape out to 15 NM,-139.8841,59.3698,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ652,058652,Icy Cape to Cape Suckling out to 15 NM,-142.8043,59.9200,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ661,058661,Dixon Entrance to Cape Decision from 15 to 90 NM,-134.7818,54.8456,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ662,058662,Cape Decision to Cape Edgecumbe from 15 to 80 NM,-136.1277,56.0321,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ663,058663,Cape Edgecumbe to Cape Spencer from 15 to 80 NM,-137.4880,57.1808,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ664,058664,Cape Spencer to Cape Fairweather from 15 to 85 NM,-138.6056,57.9890,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ671,058671,Cape Fairweather to Icy Cape from 15 to 80 NM,-140.4136,58.8054,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ672,058672,Icy Cape to Cape Suckling from 15 to 80 NM,-142.9001,59.2246,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ710,058710,Cape Suckling to Gravel Point out to 15 NM,-145.0073,60.0367,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ711,058711,Gravel Point to Cape Cleare out to 15 NM,-146.7999,59.9597,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ712,058712,Cape Suckling to Cape Cleare from 15 to 75 NM,-145.8688,59.2313,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ714,058714,Resurrection Bay,-149.3896,60.0601,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ715,058715,Cape Cleare to Gore Point out to 15 NM,-149.4421,59.5801,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ716,058716,Cape Cleare to Gore Point from 15 to 75 NM,-148.8349,59.0541,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ720,058720,Port of Valdez,-146.4468,61.1033,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ721,058721,Valdez Narrows,-146.6231,61.0495,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ722,058722,Valdez Arm,-146.8368,60.9159,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ723,058723,Passage Canal,-148.5742,60.8071,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ724,058724,Northwest Prince William Sound,-147.7945,60.8144,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ725,058725,Central and Eastern Prince William Sound,-146.7761,60.5758,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ726,058726,Southwest Prince William Sound,-147.8565,60.2098,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ730,058730,West of Barren Islands Including Kamishak Bay,-153.0767,59.2115,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ731,058731,Barren Islands East,-151.7655,58.7790,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ732,058732,Marmot Island to Sitkinak out to 15 NM,-152.6382,57.2710,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ733,058733,Gore Point to Marmot Island from 15 to 80 NM,-150.3872,58.3462,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ734,058734,Marmot Island To Sitkinak from 15 to 85 NM,-151.9455,56.7630,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ736,058736,Chiniak Bay,-152.3391,57.7030,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ737,058737,Marmot Bay,-152.5326,58.0060,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ738,058738,Shelikof Strait,-154.0675,58.0326,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ740,058740,Cook Inlet North Kalgin Island,-150.8681,60.9274,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ741,058741,Kachemak Bay,-151.5740,59.5799,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ742,058742,Cook Inlet Kalgin Island to Point Bede,-152.2090,59.9695,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ750,058750,Sitkinak to Castle Cape out to 15 NM,-155.9481,56.7104,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ751,058751,Sitkinak to Castle Cape from 15 to 100 NM,-155.6852,55.4850,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ752,058752,Castle Cape to Cape Sarichef out to 15 NM,-159.6199,55.6095,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ753,058753,Castle Cape to Cape Tolstoi from 15 to 100 NM,-158.9058,54.6690,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ754,058754,Cape Tolstoi to Cape Sarichef out to 15 NM,-162.9128,54.7565,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ755,058755,Cape Tolstoi to Cape Sarichef from 15 to 100 NM,-161.9391,53.9891,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ756,058756,Port Heiden to Nelson Lagoon out to 15 NM,-160.5117,56.3411,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ757,058757,Port Heiden to Nelson Lagoon from 15 to 60 NM,-161.0073,56.8554,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ758,058758,Nelson Lagoon to Cape Sarichef out to 15 NM,-163.4308,55.3139,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ759,058759,Nelson Lagoon to Cape Sarichef from 15 to 70 NM,-164.0072,55.8200,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ760,058760,Bristol Bay greater than 15 NM,-159.4368,57.8934,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ761,058761,Bristol Bay from Port Heiden to Cape Chichagof out to 15 NM,-158.2624,57.5552,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ762,058762,Bristol Bay from Cape Chichagof to Cape Pierce out to 15 NM,-159.4542,58.5754,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ763,058763,Kuskokwim Delta and Etolin Strait out to 15 NM,-163.7315,59.7326,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ764,058764,Kuskokwim Delta from 15 to 80 NM,-164.0095,58.5958,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ765,058765,North and West of Nunivak Island,-167.8796,60.4338,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ766,058766,Pribilof Islands Nearshore Waters,-169.9591,56.8940,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ767,058767,Saint Matthew Island Waters,-153.8547,60.3760,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ770,058770,Cape Sarichef to Nikoski Bering Side out to 15 NM,-167.1695,53.8595,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ771,058771,Unalaska Bay,-166.5259,53.9484,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ772,058772,Cape Sarichef to Nikoski Bering Side from 15 to 85 NM,-167.5902,54.5387,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ773,058773,Cape Sarichef to Nikoski Pacific Side out to 15 NM,-166.6848,53.4792,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ774,058774,Cape Sarichef to Nikoski Pacific Side from 15 to 85 NM,-165.8417,52.9616,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ775,058775,Nikolski to Seguam Bering Side from 15 to 100 NM,-170.7938,52.7983,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ776,058776,Nikolski to Seguam Bering Side from 15 to 85 NM,-171.4574,53.3605,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ777,058777,Nikolski to Seguam Pacfic Side out to 15 NM,-170.6717,52.4683,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ778,058778,Nikolski to Seguam Pacific Side from 15 to 75 NM,-170.2822,51.8628,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ780,058780,Seguam to Adak Bering Side out to 15 NM,-174.9748,52.2408,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ781,058781,Seguam to Adak Bering Side from 15 to 85 NM,-175.2672,52.9027,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ782,058782,Seguam to Adak Pacific Side out to 15 NM,-174.6944,51.8455,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ783,058783,Seguam to Adak Pacific Side from 15 to 75 NM,-174.4417,51.2178,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ784,058784,Adak to Kiska Bering Side,-3.1078,52.5340,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ785,058785,Adak to Kiska Pacific Side,-20.3013,51.1697,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ786,058786,Kiska to Attu Bering Side,174.5959,53.2310,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ787,058787,Kiska to Attu Pacific Side,174.3456,51.8362,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ801,058801,Etolin Strait to Dall Point out to 15 NM,-165.8808,61.1716,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ802,058802,Dall Point to Kwikpak Pass out to 15 NM,-165.6567,62.3845,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ803,058803,Kwikpak Pass to Cape Stephens out to 15 NM,-163.4639,63.3660,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ804,058804,Cape Stephens to Moses Point out to 15 NM,-161.4778,64.1145,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ805,058805,Moses Point to Sledge Island out to 15 NM,-163.9582,64.3762,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ806,058806,Sledge Island to Wales out to 15 NM,-167.1889,65.0819,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ807,058807,Wales to Cape Espenberg out to 15 NM,-166.3407,66.2580,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ808,058808,Cape Espenberg to Motherwood Point out to 10 NM,-163.3143,66.3206,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ809,058809,Motherwood Point to Cape Krusenstem out to 10 NM,-161.7544,66.5955,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ810,058810,Cape Krusenstern to Cape Thompson out to 15 NM,-165.0031,67.6738,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ811,058811,Cape Thompson to Cape Beaufort out to 15 NM,-166.1358,68.7138,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ812,058812,Cape Beaufort to Point Franklin out to 15 NM,-161.8485,70.2281,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ813,058813,Point Franklin to Cape Halkett out to 15 NM,-155.7284,71.1589,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ814,058814,Cape Halkett to Flaxman Island out to 15 NM,-149.4996,70.5675,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ815,058815,Flaxman Island to Demarcation Point out to 15 NM,-143.4950,70.1232,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ816,058816,South Side of Saint Lawrence Island out to 15 NM,-170.4020,63.1231,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ817,058817,North Side of Saint Lawrence Island out to 15 NM,-170.3113,63.6515,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ850,058850,Etolin Strait to Kwemeluk Pass from 15 to 90 NM,-167.4468,62.1330,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ851,058851,Southwest of Saint Lawrence Island from 15 to 100 NM,-172.6391,62.5699,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ852,058852,Norton Sound greater than 15 NM,-163.8229,63.8989,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ853,058853,Kwemeluk Pass to Kwikpak Pass from 15 to 90 NM,-166.4532,63.4188,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ854,058854,Sledge Island to Wales greater than 15 NM,-169.0602,64.4065,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ855,058855,Kotzebue Sound greater than 10 NM,-162.9465,66.5322,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ856,058856,Wales to Cape Thompson greater than 15 NM,-167.1140,67.0876,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ857,058857,Cape Thompson to Cape Beaufort from 15 to 85 NM,-167.7780,69.0814,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ858,058858,Cape Beaufort to Point Franklin from 15 to 85 NM,-163.4072,70.6345,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ859,058859,Point Franklin to Cape Halkett from 15 to 75 NM,-156.1493,71.8462,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ860,058860,Cape Halkett to Flaxman Island from 15 to 80 NM,-148.9615,71.2232,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PK,PKZ861,058861,Flaxman Island to Demarcation Point from 15 to 75 NM,-143.5043,70.8140,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ110,059110,Kauai Northwest Waters,-160.0355,22.4471,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ111,059111,Kauai Windward Waters,-159.1018,22.4233,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ112,059112,Kauai Leeward Waters,-160.2314,21.6641,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ113,059113,Kauai Channel,-158.9724,21.6169,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ114,059114,Oahu Windward Waters,-157.8657,21.9203,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ115,059115,Oahu Leeward Waters,-158.2171,21.042,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ116,059116,Kaiwi Channel,-157.4794,21.2192,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ117,059117,Maui County Windward Waters,-156.3536,21.3144,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ118,059118,Maui County Leeward Waters,-157.2134,20.6685,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ119,059119,Maalaea Bay,-156.5228,20.742,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ120,059120,Pailolo Channel,-156.8911,21.0191,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ121,059121,Alenuihaha Channel,-156.4291,20.3018,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ122,059122,Big Island Windward Waters,-154.9096,19.911,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ123,059123,Big Island Leeward Waters,-156.2321,19.3174,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ124,059124,Big Island Southeast Waters,-155.3363,18.7058,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PH,PHZ180,059180,Hawaiian Offshore Waters,-157.475,20.7203,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PS,PSZ152,061152,Coastal waters of Swain's Island,-171.0456,-11.0848,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PS,PSZ154,061154,Pago Pago Harbor,-170.676,-14.2797,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PS,PSZ155,061155,Northern Coastal waters of Tutuila and Aunuu,-170.7768,-13.9776,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PS,PSZ156,061156,Southern Coastal waters of Tutuila and Aunuu,-170.7405,-14.6168,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PS,PSZ157,061157,Northern Coastal waters of Manua,-169.5059,-13.8927,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PS,PSZ158,061158,Southern Coastal waters of Manua,-169.4535,-14.5274,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PS,PSZ159,061159,Coastal waters of Rose Atoll,-168.161,-14.5384,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ009,065009,Mexico Border S to 29N to 60 NM offshore,-116.6176,30.6223,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ011,065011,Mexico S of 29N to Punta Eugenia to 250 NM offshore,-117.4212,28.226,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ013,065013,Punta Eugenia to Cabo San Lazaro to 250 NM offshore,-115.6987,25.4873,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ014,065014,Cabo San Lazaro to Cabo San Lucas to 250 nm offshore of 20N,-112.8454,22.0056,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ016,065016,"From 17N to 20N between 110W and 115W, including the Revillagigedo Islands",-112.8016,21.7796,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ017,065017,Northern Gulf of California,-113.5047,30.0547,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ019,065019,Central Gulf of California,-111.0721,27.0202,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ021,065021,Southern Gulf of California,-109.3566,24.7385,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ022,065022,N of 20N and E of 110W including Entrance to the Gulf of California,-107.7657,21.7796,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ024,065024,Colima and Jalisco out 300 nm offshore S of 20N and E of 110W,-107.3736,18.1853,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ025,065025,Mexico - Michoachan and Guerrero to 250 NM offshore,-102.9289,15.8382,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ026,065026,Oaxaca W of Puerto Angel out 250 nm,-99.3282,14.1577,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ028,065028,Oaxaca E of Puerto Angel out 300 nm including the Gulf of Tehuantepec,-96.3014,13.3696,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ029,065029,Offshore Chiapas E of 94W,-93.4013,14.5108,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ111,065111,Guatemala and El Salvador to 250 NM offshore,-92.1288,11.9042,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ113,065113,El Salvador to North Costa Rica Including the Gulfs of Fonseca and Papagayo,-88.5968,10.0954,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ115,065115,North Costa Rica to West Panama to 250 NM offshore,-84.4744,6.6618,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ117,065117,East Panama and Colombia Including Gulf of Panama,-79.6597,4.6695,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ119,065119,Ecuador Including Gulf of Guayaquil to 250 NM offshore,-82.2093,-0.9455,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ121,065121,Ecuador between 250 and 500 NM Offshore,-86.3025,-0.8815,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ123,065123,Offshore Galapagos Islands,-90.4254,-0.892,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ151,065151,Guam Coastal Waters,144.6897,13.3177,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ152,065152,Rota Coastal Waters,145.2354,14.1773,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ153,065153,Tinian Coastal Waters,145.5273,14.837,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ154,065154,Saipan Coastal Waters,145.898,15.4113,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ161,065161,Koror Palau Coastal Waters,134.4803,7.3322,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ171,065171,Yap Coastal Waters,138.0822,9.4804,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ172,065172,Chuuk Coastal Waters,151.8347,7.4456,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ173,065173,Pohnpei Coastal Waters,158.224,6.9718,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ174,065174,Kosrae Coastal Waters,162.9498,5.3502,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ181,065181,Majuro Coastal Waters,171.3802,7.08,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+PM,PMZ191,065191,Waters out to 40 Nautical Miles,166.6382,19.3014,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ050,073050,"Coastal Waters from Eastport, ME to Schoodic Point, ME out 25 NM",-67.5746,44.3552,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ051,073051,"Coastal Waters from Schoodic Point, ME to Stonington, ME out 25 NM",-68.24,43.9899,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ052,073052,"Intra Coastal Waters from Schoodic Point, ME to Stonington, ME",-68.3834,44.2663,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ070,073070,"Waters from Eastport ME to Schoodic Point, ME from 25 to 40 nm",-67.6127,43.8921,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ071,073071,"Waters from Schoodic Point, ME to Stonington ME from 25 to 40 nm",-68.1856,43.687,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ150,073150,"Coastal Waters from Stonington, ME to Port Clyde, ME out 25 NM",-68.9019,43.8291,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ151,073151,Penobscot Bay,-68.8524,44.2241,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ152,073152,"Coastal Waters from Port Clyde, ME to Cape Elizabeth, ME out 25 NM",-69.5669,43.6224,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ153,073153,Casco Bay,-70.0597,43.718,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ154,073154,"Coastal Waters from Cape Elizabeth, ME to Merrimack River, MA out 25 NM",-70.2998,43.1523,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ170,073170,Waters from Stonington ME to Port Clyde ME from 25 to 40 nm,-68.7402,43.5176,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ172,073172,Waters from Port Clyde ME to Cape Elizabeth ME from 25 to 40 nm,-69.2959,43.3046,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ174,073174,Waters from Cape Elizabeth ME to Merrimack River MA from 25 to 40 nm,-69.7926,43.0551,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ230,073230,Boston Harbor,-70.9337,42.3446,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ231,073231,Cape Cod Bay,-70.2911,41.8922,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ232,073232,Nantucket Sound,-70.2452,41.4832,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ233,073233,Vineyard Sound,-70.7652,41.43,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ234,073234,Buzzards Bay,-70.8072,41.566,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ235,073235,Rhode Island Sound,-71.1599,41.3386,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ236,073236,Narragansett Bay,-71.3224,41.5812,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ237,073237,Block Island Sound,-71.6381,41.2285,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ250,073250,Coastal waters east of Ipswich Bay and the Stellwagen Bank National Marine Sanctuary,-70.2106,42.4207,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ251,073251,Massachusetts Bay and Ipswich Bay,-70.6696,42.4231,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ254,073254,Coastal waters from Provincetown MA to Chatham MA to Nantucket MA out 20 nm,-69.7327,41.6352,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ255,073255,Coastal Waters extending out to 25 nm South of Marthas Vineyard and Nantucket,-70.2635,41.1134,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ256,073256,Coastal Waters from Montauk NY to Marthas Vineyard extending out to 20 nm South of Block Island,-71.21,41.0273,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ270,073270,Ocean Waters from the Merrimack River to Plymouth from 40 to 60 NM offshore,-69.7225,42.5478,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ271,073271,Ocean Waters from Provincetown to Nantucket from 20 to 35 NM offshore,-69.3363,41.5616,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ272,073272,Ocean Waters from Marthas Vineyard to Nantucket from 25 to 45 NM offshore,-70.0034,40.7706,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ273,073273,Ocean Waters from Montauk NY to Marthas Vineyard from 25 to 40 NM offshore,-71.0166,40.7124,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ331,073331,Long Island Sound East of New Haven CT/Port Jefferson NY to the Mouth of the Connecticut River,-72.6793,41.1272,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ332,073332,Long Island Sound East of the Mouth of the Connecticut River,-72.0533,41.2062,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ335,073335,Long Island Sound West of New Haven CT/Port Jefferson NY,-73.3206,41.0171,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ338,073338,New York Harbor,-74.0787,40.524,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ340,073340,Peconic and Gardiners Bays,-72.3134,41.0336,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ345,073345,South Shore Bays from Jones Inlet through Shinnecock Bay,-73.0702,40.7084,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ350,073350,Moriches Inlet NY to Montauk Point NY out 20 nm,-72.2066,40.7494,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ353,073353,Fire Island Inlet NY to Moriches Inlet NY out 20 nm,-72.9638,40.5168,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ355,073355,Sandy Hook NJ to Fire Island Inlet NY out 20 nm,-73.5746,40.4464,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ370,073370,Waters from Moriches Inlet NY to Montauk Point NY from 20 to 40 NM,-72.0065,40.4509,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ373,073373,Waters from Fire Island Inlet NY to Moriches Inlet NY from 20 to 40 NM,-72.8053,40.2058,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ375,073375,Waters from Sandy Hook NJ to Fire Island Inlet out 20 to 40 nm,-73.3044,40.1112,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ430,073430,Delaware Bay waters north of East Point NJ to Slaughter Beach DE,-75.3419,39.2424,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ431,073431,Delaware Bay waters south of East Point NJ to Slaughter Beach DE,-75.0839,39.0014,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ450,073450,Coastal waters from Sandy Hook to Manasquan Inlet NJ out 20 nm,-73.8451,40.2028,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ451,073451,Coastal waters from Manasquan Inlet to Little Egg Inlet NJ out 20 nm,-73.997,39.7277,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ452,073452,Coastal waters from Little Egg Inlet to Great Egg Inlet NJ out 20 nm,-74.257,39.3207,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ453,073453,Coastal waters from Great Egg Inlet to Cape May NJ out 20 nm,-74.5448,39.0498,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ454,073454,Coastal waters from Cape May NJ to Cape Henlopen DE out 20 nm,-74.8115,38.7936,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ455,073455,Coastal waters from Cape Henlopen to Fenwick Island DE out 20 nm,-74.9103,38.5718,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ470,073470,Waters from Sandy Hook NJ to Manasquan Inlet NJ out 20 to 40 nm,-73.5601,40.0489,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ471,073471,Waters from Manasquan Inlet NJ to Little Egg Inlet NJ out 20 to 40 nm,-73.5842,39.6158,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ472,073472,Waters from Little Egg Inlet NJ to Great Egg Inlet NJ out 20 to 40 nm from 20 to 40 NM,-73.8296,39.1921,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ473,073473,Waters from Great Egg Inlet NJ to Cape May NJ out 20 to 40 nm,-74.1311,38.9156,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ475,073475,Waters from Cape May NJ to Fenwick Island DE out 20 to 40 nm,-74.4566,38.5248,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ530,073530,Chesapeake Bay north of Pooles Island MD,-76.124,39.4136,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ531,073531,Chesapeake Bay from Pooles Island to Sandy Point MD,-76.3446,39.1806,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ532,073532,Chesapeake Bay from Sandy Point to North Beach MD,-76.4244,38.8506,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ533,073533,Chesapeake Bay from North Beach to Drum Point MD,-76.4061,38.5411,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ534,073534,Chesapeake Bay from Drum Point MD to Smith Point VA,-76.211,38.1039,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ535,073535,Tidal Potomac from Key Bridge to Indian Head MD,-77.0712,38.7406,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ536,073536,Tidal Potomac from Indian Head to Cobb Island MD,-77.1038,38.3931,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ537,073537,Tidal Potomac from Cobb Island MD to Smith Point VA,-76.5387,38.1024,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ538,073538,Patapsco River including Baltimore Harbor,-76.5275,39.2175,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ539,073539,Chester River to Queenstown MD,-76.2538,39.0433,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ540,073540,Eastern Bay,-76.273,38.8694,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ541,073541,Choptank River to Cambridge MD and the Little Choptank River,-76.2539,38.6262,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ542,073542,Patuxent River to Broomes Island MD,-76.4853,38.349,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ543,073543,Tangier Sound and the inland waters surrounding Bloodsworth Island,-75.9857,38.1393,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ630,073630,Chesapeake Bay from Smith Point to Windmill Point VA,-76.0145,37.7762,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ631,073631,Chesapeake Bay from Windmill Point to New Point Comfort VA,-76.1188,37.4761,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ632,073632,Chesapeake Bay from New Point Comfort to Little Creek VA,-76.1946,37.166,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ633,073633,Currituck Sound,-75.8972,36.4027,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ634,073634,Chesapeake Bay from Little Creek VA to Cape Henry VA including the Chesapeake Bay Bridge Tunnel,-76.0423,36.9944,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ635,073635,Rappahannock River from Urbanna to Windmill Point,-76.4456,37.6308,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ636,073636,York River,-76.5272,37.28,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ637,073637,James River from Jamestown to the James River Bridge,-76.6134,37.0976,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ638,073638,James River from James River Bridge to Hampton Roads Bridge-Tunnel,-76.4015,36.9562,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ650,073650,Coastal waters from Fenwick Island DE to Chincoteague VA out 20 nm,-75.0049,38.1864,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ652,073652,Coastal waters from Chincoteague to Parramore Island VA out 20 nm,-75.2921,37.7672,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ654,073654,Coastal waters from Parramore Island to Cape Charles Light VA out 20 nm,-75.6189,37.3045,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ656,073656,Coastal Waters from Cape Charles Light to Virginia-North Carolina border out to 20 nm,-75.7649,36.8189,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ658,073658,Coastal waters from NC VA border to Currituck Beach Light NC out 20 nm,-75.6477,36.3841,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ670,073670,Waters from Fenwick Island DE to Chintoteague VA from 20 to 40 nm,-74.6362,38.0858,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ672,073672,Waters from Chincoteague VA to Parramore Island VA from 20 to 40 nm,-74.9137,37.6513,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ674,073674,Waters from Parramore Island VA to Cape Charles Light VA from 20 to 40 nm,-75.2147,37.238,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ676,073676,Waters from Cape Charles Light to Virginia - North Carolina Border from 20 to 40 nm,-75.4012,36.7918,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ678,073678,Waters from NC VA border to Currituck Beach Light NC from 20 to 40 nm,-75.2854,36.3848,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ800,073800,Gulf of Maine to the Hague Line,-68.6052,42.982,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ805,073805,Georges Bank between Cape Cod and 68W north of 1000 FM,-68.7159,41.1859,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ810,073810,South of New England between the Great South Channel and Montauk Point to 1000 FM,-70.2034,40.3176,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ815,073815,South of Long Island between Montauk Point and Sandy Hook to 1000 FM,-72.128,40.0222,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ820,073820,Hudson Canyon to Baltimore Canyon to 1000 FM,-73.4587,38.9878,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ825,073825,Baltimore Canyon to Cape Charles Light to 100 NM offshore,-74.4471,37.4948,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ828,073828,Cape Charles Light to Currituck Beach Light to 100 NM offshore,-74.6706,36.3981,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ830,073830,Currituck Beach Light to Cape Hatteras to 100 NM offshore,-74.5409,35.3738,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ833,073833,Cape Hatteras to Cape Fear to 100 NM Offshore.,-75.4821,34.2108,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ835,073835,Cape Fear to 31N to 1000 FM,-78.0203,32.3567,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ900,073900,Georges Bank between 68W and the Hague Line,-67.2767,41.1965,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ905,073905,East of 69W to the Hague Line between 1000 FM and 39N,-66.9319,39.7202,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ910,073910,East of 69W and south of 39N to 250 NM offshore,-67.796,38.2676,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ915,073915,Between 1000FM and 38.5 N west of 69 W,-70.6412,39.0449,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ920,073920,Baltimore Canyon to 69W east of 1000 FM and south of 38.5N to 250 NM offshore,-70.9018,37.7611,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ925,073925,Baltimore Canyon to Hatteras Canyon between 100 NM and 250 NM offshore,-72.0569,35.9585,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ930,073930,Hatteras Canyon to Cape Fear between 100 NM and 250 NM offshore,-72.9443,33.6481,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ935,073935,Cape Fear to 31N east of 1000 FM to 250 NM offshore,-74.936,31.9686,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ040,075040,Caribbean N of 18N W of 85W including Yucatan Basin,19.8353,-86.0853,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ041,075041,Caribbean N of 20N E of 85W,20.8555,-81.7064,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ042,075042,Caribbean from 18N-20N between 80W-85W including Cayman Basin,18.9974,-82.504,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ043,075043,Caribbean from 18N-20N between 76W-80W,19.0145,-78.1419,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ044,075044,Caribbean approaches to the Windward Passage,19.0297,-74.8135,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ045,075045,Gulf of Honduras,16.9893,-86.5072,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ046,075046,Caribbean from 15N to 18N between 80W and 85W,16.6224,-82.2981,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ047,075047,Caribbean from 15N to 18N between 76W and 80W,16.4782,-78.0182,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ048,075048,Caribbean from 15N to 18N between 72W and 76W,16.4924,-74.002,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ049,075049,Caribbean N of 15N between 68W and 72W,16.4894,-69.95,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ050,075050,Caribbean N of 15N between 64W and 68W,16,-66,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ051,075051,Offshore Waters Leeward Islands,17.0118,-62.0058,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ052,075052,Tropical N Atlantic from 15N to 19N between 55W and 60W,17,-57.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ053,075053,W Central Caribbean from 11N to 15N W of 80W,12.9334,-81.6506,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ054,075054,Caribbean from 11N to 15N between 76W and 80W including Colombia Basin,12.9935,-77.9996,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ055,075055,Caribbean from 11N to 15N between 72W and 76W,13.2295,-74.134,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ056,075056,Caribbean S of 15N between 68W and 72W,13.3941,-69.8959,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ057,075057,Caribbean S of 15N between 64W and 68W including Venezuela Basin,12.8439,-66.007,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ058,075058,Offshore Waters Windward Islands including Trinidad and Tobago,12.4431,-61.8169,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ059,075059,Tropical N Atlantic from 11N and 15N between 55W and 60W,12.9997,-57.4961,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ060,075060,SW Caribbean S of 11N W of 80W,10.1827,-81.4672,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ061,075061,SW Caribbean S of 11N E of 80W including the approaches to the Panama Canal,10.1618,-77.7061,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ062,075062,Tropical N Atlantic from 7N and 11N between 55W and 60W,9.1228,-57.3391,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ063,075063,Atlantic from 29N to 31N W of 77W,30.0387,-78.5925,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ064,075064,Atlantic from 29N to 31N between 74W and 77W,30.0037,-75.4999,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ065,075065,Atlantic from 29N to 31N between 70W and 74W,30.002,-72.0013,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ066,075066,Atlantic from 29N to 31N between 65W and 70W,30,-67.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ067,075067,Atlantic from 29N to 31N between 60W and 65W,30,-62.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ068,075068,Atlantic from 29N to 31N between 55W and 60W,30,-57.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ069,075069,Atlantic from 27N to 29N W of 77W,28.0441,-78.198,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ070,075070,Atlantic from 27N to 29N between 74W and 77W,28,-75.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ071,075071,Atlantic from 27N to 29N between 70W and 74W,28,-72,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ072,075072,Atlantic from 27N to 29N between 65W and 70W,28,-67.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ073,075073,Atlantic from 27N to 29N between 60W and 65W,28,-62.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ074,075074,Atlantic from 27N to 29N between 55W and 60W,28,-57.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ075,075075,Northern Bahamas from 24N to 27N,25.2522,-77.3003,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ076,075076,Atlantic from 22N to 27N E of Bahamas to 70W,26.0556,-73.0278,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ077,075077,Atlantic from 22N to 27N between 65W and 70W,26,-67.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ078,075078,Atlantic from 25N to 27N between 60W and 65W,26,-62.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ079,075079,Atlantic from 25N to 27N between 55W and 60W,26,-57.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ080,075080,Central Bahamas including Cay Sal Bank,23.052,-76.2734,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ081,075081,Atlantic from 22N to 25N E of Bahamas to 70W,23.7111,-71.8665,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ082,075082,Atlantic from 22N to 25N between 65W and 70W,23.5,-67.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ083,075083,Atlantic from 22N to 25N between 60W and 65W,23.5,-62.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ084,075084,Atlantic from 22N to 25N between 55W and 60W,23.5,-57.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ085,075085,Atlantic S of 22N W of 70W including approaches to the Windward Passage,21.1413,-72.7941,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ086,075086,Atlantic S of 22N between 65W and 70W including Puerto Rico Trench,20.6675,-67.5217,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ087,075087,Atlantic from 19N to 22N between 60W and 65W,20.5428,-62.4311,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ088,075088,Atlantic from 19N to 22N between 55W and 60W,20.5,-57.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ131,075131,Alligator River,-76.008,35.8324,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ135,075135,Pamlico Sound,-75.9574,35.332,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ136,075136,Pamlico and Pungo Rivers,-76.6707,35.421,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ137,075137,Neuse and Bay Rivers,-76.6806,35.0472,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ150,075150,S of Currituck Beach Light NC to Oregon Inlet NC out to 20 nm,-75.4596,36.0001,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ152,075152,S of Oregon Inlet NC to Cape Hatteras NC out to 20 nm,-75.3163,35.4786,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ154,075154,S of Cape Hatteras NC to Ocracoke Inlet NC out to 20 nm,-75.5899,35.0528,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ156,075156,S of Ocracoke Inlet NC to Cape Lookout NC out to 20 nm,-76.1689,34.7607,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ158,075158,S of Cape Lookout NC to Surf City NC out to 20 nm,-76.8861,34.477,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ170,075170,Waters from Currituck Beach Light to Oregon Inlet NC from 20 to 40 nm,-75.0889,36.0131,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ172,075172,Waters from Oregon Inlet to Cape Hatteras NC from 20 to 40 nm,-74.9841,35.4428,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ174,075174,Waters from Cape Hatteras to Ocracoke Inlet NC from 20 to 40 nm,-75.2401,34.8575,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ176,075176,Waters fromOcracoke Inlet to Cape Lookout NC from 20 to 40 nm,-75.8504,34.5446,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ178,075178,Waters from Cape Lookout to Surf City NC from 20 to 40 nm,-76.6041,34.1394,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ230,075230,Albemarle Sound,-76.18,36.0352,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ231,075231,Croatan and Roanoke Sounds,-75.6909,35.8968,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ250,075250,Coastal waters from Surf City to Cape Fear NC out 20 nm,-77.6492,34.0617,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ252,075252,Coastal waters from Cape Fear NC to Little River Inlet SC out 20 nm,-78.1022,33.717,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ254,075254,Coastal waters from Little River Inlet to Murrells Inlet SC out 20 nm,-78.6524,33.614,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ256,075256,Coastal waters from Murrells Inlet to South Santee River SC out 20 nm,-78.9884,33.2507,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ270,075270,Waters from Surf City to Cape Fear NC from 20 to 40 nm,-77.3782,33.8424,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ272,075272,Waters from Cape Fear NC to Little River Inlet SC from 20 to 40 nm,-77.761,33.4112,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ274,075274,Waters from Little River Inlet to Murrells Inlet SC from 20 to 40 nm,-78.2427,33.3595,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ276,075276,Waters from Murrells Inlet NC to South Santee River SC from 20 to 40 nm,-78.6653,33.1002,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ330,075330,Charleston Harbor,-79.9025,32.7736,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ350,075350,Coastal waters from South Santee River to Edisto Beach SC out 20 nm,-79.6024,32.7005,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ352,075352,Coastal waters from Edisto Beach SC to Savannah GA out 20 nm,-80.4171,32.1842,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ354,075354,Coastal waters from Savannah GA to Altamaha Sound GA out 20 nm ...including Grays Reef National Marine Sanctuary,-80.9421,31.6166,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ370,075370,Waters from South Santee River SC to Edisto Beach SC extending from 20 nm to 40 nm,-79.231,32.5297,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ372,075372,Waters from Edisto Beach SC to Savannah GA extending from 20 nm to 40 nm,-80.0287,32.0116,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ374,075374,Waters from Savannah GA to Altamaha Sound GA extending from 20 nm to 60 nm,-80.4295,31.4712,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ450,075450,Coastal waters from Altamaha Sound to Fernandina Beach FL out 20 NM,-81.2437,30.9763,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ452,075452,Coastal waters from Fernandina Beach to St. Augustine FL out 20 NM,-81.2117,30.2882,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ454,075454,Coastal waters from St. Augustine to Flagler Beach FL out 20 NM,-81.0346,29.6863,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ470,075470,Waters from Altamaha Sound GA to Fernandina Beach FL from 20 to 60 NM,-80.7054,30.8938,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ472,075472,Waters from Fernandina Beach to St. Augustine FL from 20 to 60 NM,-80.6826,30.2498,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ474,075474,Waters from St. Augustine to Flagler Beach FL from 20 to 60 NM,-80.477,29.687,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ550,075550,Flagler Beach to Volusia-Brevard County Line 0-20 nm,-80.7638,29.1472,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ552,075552,Volusia-Brevard County Line to Sebastian Inlet 0-20 nm,-80.4425,28.3687,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ555,075555,Sebastian Inlet to Jupiter Inlet 0-20 nm,-80.0924,27.4201,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ570,075570,Flagler Beach to Volusia-Brevard County Line 20-60 nm,-80.1957,29.1848,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ572,075572,Volusia-Brevard County Line to Sebastian Inlet 20-60 nm,-79.8804,28.4186,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ575,075575,Sebastian Inlet to Jupiter Inlet 20-60 nm,-79.5572,27.4643,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ610,075610,Lake Okeechobee,-80.8345,26.9426,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ630,075630,Biscayne Bay,-80.2415,25.5564,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ650,075650,Coastal waters from Jupiter Inlet to Deerfield Beach FL out 20 NM,-79.8822,26.6319,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ651,075651,Coastal waters from Deerfield Beach to Ocean Reef FL out 20 NM,-79.9815,25.7516,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ670,075670,Waters from Jupiter Inlet to Deerfield Beach FL from 20 to 60 NM,-79.3734,26.5888,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ671,075671,Waters from Deerfield Beach to Ocean Reef FL from 20 to 60 NM excluding the territorial waters of Bahamas,-79.5098,25.515,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ711,075711,Atlantic Waters of Puerto Rico and the U.S. Virgin Islands from 10 NM to 17N,-66.0232,19.0481,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ712,075712,Coastal Waters of Northern Puerto Rico out 10 NM,-66.4421,18.5531,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ716,075716,Coastal Waters from Cabo San Juan to the waters between Anegada Island and Virgin Gorda and north 10 nm,-64.9498,18.4775,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ723,075723,Anegada Passage east of Virgin Gorda and Saint Croix south to 17N,-64.2892,17.71,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ726,075726,"Coastal waters east of Puerto Rico, around Vieques, and around and just north of Culebra and Saint John",-65.1448,18.1811,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ733,075733,"Caribbean waters of Puerto Rico from 10 NM to 17 N, including the coastal waters of Saint Croix",-65.893,17.4584,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ735,075735,Coastal Waters of Southern Puerto Rico out 10 NM,-66.5527,17.8689,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ741,075741,Mona Passage Southward to 17N,-67.6909,17.7404,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ742,075742,Coastal Waters OF Northwestern Puerto Rico out 10 NM,-67.3023,18.3412,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AM,AMZ745,075745,Coastal Waters OF Southwestern Puerto Rico out 10 NM,-67.2841,18.0643,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ031,077031,"Florida Bay including Barnes Sound, Blackwater Sound, and Buttonwood Sound",-80.6871,25.0749,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ032,077032,Bayside and Gulfside from Craig Key to West End of Seven Mile Bridge,-81.1341,24.9209,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ033,077033,Gulf of America from East Cape Sable to Chokoloskee 20 to 60 NM out and beyond 5 fathoms,-82.0302,25.1139,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ034,077034,Gulf of America including Dry Tortugas and Rebecca Shoal Channel,-82.8485,24.7271,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ035,077035,Gulf of America from West End of Seven Mile Bridge to Halfmoon Shoal out to 5 Fathoms,-81.7214,24.7152,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ040,077040,NW Gulf of America including Stetson Bank,26.9942,-94.9385,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ041,077041,SW Louisiana Offshore Waters including Flower Garden Bank Marine Sanctuary,27.2459,-92.5713,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ042,077042,Hawk Channel from Ocean Reef to Craig Key out to the reef,-80.429,25.0562,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ043,077043,Hawk Channel from Craig Key to west end of Seven Mile Bridge out to the reef,-80.9805,24.7134,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ044,077044,Hawk Channel from west end of Seven Mile Bridge to Halfmoon Shoal out to the reef,-81.874,24.5358,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ045,077045,W Central Gulf of America from 22N to 26N between 91W and 94W,24,-92.5,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ046,077046,Central Gulf of America from 22N to 26N between 87W and 91W,24,-89,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ047,077047,SE Gulf of America from 22N to 26N E of 87W including Straits of Florida,24.1581,-84.9564,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ048,077048,SW Gulf of America S of 22N W of 94W,20.4548,-95.4306,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ049,077049,Central Bay of Campeche,20.2412,-93.0234,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ050,077050,E Bay of Campeche including Campeche Bank,20.8272,-90.5815,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ052,077052,Straits of Florida from Ocean Reef to Craig Key out 20 NM,-80.3251,24.9023,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ053,077053,Straits of Florida from Craig Key to west end of Seven Mile Bridge out 20 NM,-80.898,24.5543,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ054,077054,Straits of Florida from west end of Seven Mile Bridge to south of Halfmoon Shoal out 20 NM,-81.8196,24.358,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ055,077055,Straits of Florida from Halfmoon Shoal to 20 NM west of Dry Tortugas out 20 NM,-82.8899,24.326,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ056,077056,N Central Gulf of America Offshore Waters,27.2456,-88.7861,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ057,077057,NE Gulf of America N of 26N E of 87W,27.3821,-85.3184,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ058,077058,W Central Gulf of America from 22N to 26N W of 94W,23.9352,-95.8107,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ072,077072,Straits of Florida from Ocean Reef to Craig Key 20 to 60 NM out,-80.0469,24.5243,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ073,077073,Straits of Florida from Craig Key to west end of Seven Mile Bridge 20 to 60 NM out,-80.75,24.0869,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ074,077074,Straits of Florida from west end of Seven Mile Bridge to south of Halfmoon Shoal 20 to 60 NM out,-81.7798,23.8953,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ075,077075,Straits of Florida from Halfmoon Shoal to 20 NM west of Dry Tortugas 20 to 60 NM out,-82.8482,23.9093,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ130,077130,Laguna Madre From the Port Of Brownsville to the Arroyo Colorado,-97.2567,26.2359,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ132,077132,Laguna Madre From The Arroyo Colorado To 5 NM North Of Port Mansfield TX,-97.3493,26.4924,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ135,077135,Laguna Madre From 5 nm North Of Port Mansfield To Baffin Bay TX,-97.4342,26.8773,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ150,077150,Coastal waters from Port Mansfield TX to the Rio Grande River out 20 NM,-97.0005,26.278,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ155,077155,Coastal waters from Baffin Bay to Port Mansfield TX out 20 NM,-97.1579,26.9068,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ170,077170,Waters from Port Mansfield TX to the Rio Grande River from 20 to 60 NM,-96.4135,26.2742,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ175,077175,Waters from Baffin Bay to Port Mansfield TX from 20 to 60 NM,-96.5756,26.8639,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ231,077231,Baffin Bay and Upper Laguna Madre,-97.4766,27.3557,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ232,077232,Corpus Christi and Nueces Bays,-97.2759,27.7758,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ236,077236,"Copano, Aransas, and Redfish Bays",-97.0437,28.0506,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ237,077237,"San Antonio, Mesquite, and Espiritu Santo Bays",-96.6757,28.304,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ250,077250,Coastal waters from Baffin Bay to Port Aransas out 20 NM,-97.0483,27.4999,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ255,077255,Coastal waters from Port Aransas to Matagorda Ship Channel out 20 NM,-96.579,28.0267,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ270,077270,Waters from Baffin Bay to Port Aransas from 20 to 60 NM,-96.5212,27.3393,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ275,077275,Waters from Port Aransas to Matagorda Ship Channel from 20 to 60 NM,-96.1165,27.7184,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ330,077330,Matagorda Bay,-96.2752,28.5978,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ335,077335,Galveston Bay,-94.859,29.4906,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ350,077350,Coastal waters from Freeport to Matagorda Ship Channel TX out 20 NM,-95.7344,28.5222,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ355,077355,Coastal waters from High Island to Freeport TX out 20 NM,-94.7826,29.0957,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ370,077370,Waters from Freeport to Matagorda Ship Channel TX from 20 to 60 NM,-95.3941,28.12,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ375,077375,Waters from High Island to Freeport TX from 20 to 60 NM,-94.5463,28.6213,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ430,077430,Sabine Lake,-93.8494,29.8774,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ432,077432,Calcasieu Lake,-93.3138,29.9138,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ435,077435,Vermilion and West Cote Blanche Bay,-91.8965,29.6969,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ436,077436,Atchafalaya and East Cote Blanche,-91.4697,29.4748,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ450,077450,Coastal waters from Cameron LA to High Island TX out 20 NM,-93.8353,29.5254,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ452,077452,Coastal waters from Intracoastal City to Cameron LA out 20 NM,-92.7446,29.4677,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ455,077455,Coastal waters from Lower Atchafalaya River to Intracoastal City LA out 20 NM,-91.669,29.2898,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ470,077470,Waters from Cameron LA to High Island TX from 20 to 60 NM,-93.7511,29.0293,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ472,077472,Waters from Intracoastal City to Cameron LA from 20 to 60 NM,-92.7477,28.9422,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ475,077475,Waters from Lower Atchafalaya River to Intracoastal City LA from 20 to 60 NM,-91.7011,28.6577,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ530,077530,Lake Pontchartrain and Lake Maurepas,-90.1731,30.1924,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ532,077532,Mississippi Sound,-88.9966,30.2571,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ534,077534,Lake Borgne,-89.6555,30.019,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ536,077536,Chandeleur Sound,-89.0805,29.929,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ538,077538,Breton Sound,-89.3914,29.579,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ550,077550,Coastal Waters from Port Fourchon LA to Lower Atchafalaya River LA out 20 nm,-90.7078,28.9745,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ552,077552,Coastal waters from the Southwest Pass of the Mississippi River to Port Fourchon Louisiana out 20 NM,-89.7238,29.0066,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ555,077555,Coastal Waters from Boothville LA to Southwest Pass of the Mississippi River out 20 nm,-88.9907,29.09,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ557,077557,Coastal waters from Pascagoula Mississippi to Stake Island out 20 NM,-88.6479,29.8477,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ570,077570,Coastal waters from Port Fourchon Louisiana to Lower Atchafalaya River LA from 20 to 60 NM,-90.6892,28.3837,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ572,077572,Coastal waters from Southwest Pass of the Mississippi River to Port Fourchon Louisiana from 20 to 60 NM,-89.6368,28.3369,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ575,077575,Coastal Waters from Stake Island LA to Southwest Pass of the Mississippi River from 20 to 60 nm,-88.6801,28.4941,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ577,077577,Coastal waters from Pascagoula Mississippi to Stake Island Louisiana out 20 to 60 NM,-88.2723,29.2288,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ630,077630,North Mobile Bay,-87.995,30.5986,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ631,077631,South Mobile Bay,-87.9632,30.3382,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ632,077632,Mississippi Sound,-88.28,30.3077,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ633,077633,Perdido Bay Area,-87.4785,30.3472,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ634,077634,Pensacola Bay Area including Santa Rosa Sound,-87.0807,30.4299,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ635,077635,Western Choctawhatchee Bay,-86.4883,30.4368,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ636,077636,Eastern Choctawhatchee Bay,-86.2572,30.4308,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ650,077650,Coastal waters from Pensacola FL to Pascagoula MS out 20 NM,-87.7804,30.0849,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ655,077655,Coastal waters from Okaloosa-Walton County Line to Pensacola FL out 20 NM,-86.7986,30.2046,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ656,077656,Coastal waters from Chokoloskee to Bonita Beach FL out 20 NM,-81.8725,25.9537,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ657,077657,Coastal waters from East Cape Sable to Chokoloskee FL out 20 NM,-81.3895,25.4537,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ670,077670,Waters from Pensacola FL to Pascagoula MS from 20 to 60 NM,-87.649,29.6053,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ675,077675,Waters from Okaloosa-Walton County Line to Pensacola FL from 20 to 60 NM,-86.7724,29.6996,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ676,077676,Waters from Chokoloskee to Bonita Beach FL from 20 to 60 NM,-82.4195,25.814,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ730,077730,Apalachee Bay or Coastal Waters From Keaton Beach to Ochlockonee River Fl out to 20 Nm,-84.0258,29.924,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ750,077750,Coastal waters from Okaloosa-Walton County Line to Mexico Beach out 20 NM,-85.8786,29.992,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ752,077752,Coastal Waters from Mexico Beach to Apalachicola out 20 NM,-85.2672,29.5259,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ755,077755,Coastal Waters From Ochlockonee River to Apalachicola FL out to 20 Nm,-84.5921,29.6249,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ765,077765,Coastal waters from Suwannee River to Keaton Beach out 20 NM,-83.5692,29.511,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ770,077770,Waters from Okaloosa-Walton County Line to Mexico Beach from 20 to 60 NM,-86.0728,29.4457,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ772,077772,Waters from Mexico Beach to Apalachicola FL from 20 to 60 NM,-85.3908,28.9776,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ775,077775,Waters from Suwannee River to Apalachicola FL from 20 to 60 NM,-84.3301,29.1409,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ830,077830,Tampa Bay waters,-82.5957,27.7549,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ836,077836,Charlotte Harbor and Pine Island Sound,-82.1377,26.7015,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ850,077850,Coastal waters from Tarpon Springs to Suwannee River FL out 20 NM,-82.9871,28.7523,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ853,077853,Coastal waters from Englewood to Tarpon Springs FL out 20 NM,-82.8412,27.5196,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ856,077856,Coastal waters from Bonita Beach to Englewood FL out 20 NM,-82.3273,26.5365,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ870,077870,Waters from Tarpon Springs to Suwannee River FL out 20 to 60 NM,-83.5014,28.6012,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ873,077873,Waters from Englewood to Tarpon Springs FL out 20 to 60 NM,-83.3173,27.4363,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+GM,GMZ876,077876,Waters from Bonita Beach to Englewood FL out 20 to 60 NM,-82.8243,26.4245,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ121,091121,Chequamegon Bay-Bayfield to Oak Point WI,-90.8344,46.6872,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ140,091140,Grand Portage to Grand Marais MN,-89.8617,47.8383,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ141,091141,Grand Marais to Taconite Harbor MN,-90.6125,47.6181,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ142,091142,Taconite Harbor to Silver Bay Harbor MN,-91.0666,47.3801,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ143,091143,Silver Bay Harbor to Two Harbors MN,-91.4217,47.123,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ144,091144,Two Harbors to Duluth MN,-91.8212,46.8869,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ145,091145,Duluth MN to Port Wing WI,-91.7728,46.7595,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ146,091146,Port Wing to Sand Island WI,-91.1889,46.9057,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ147,091147,Sand Island to Bayfield WI,-90.8,46.9382,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ148,091148,Oak Point to Saxon Harbor WI,-90.6027,46.6695,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ150,091150,Outer Apostle Islands Beyond 5 NM from Mainland,-90.5438,46.9901,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ162,091162,Lake Superior west of a line from Saxon Harbor WI to Grand Portage MN beyond 5NM,-90.5878,47.2964,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ240,091240,Saxon Harbor WI to Black River MI,-90.2524,46.6625,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ241,091241,Black River To Ontonagon MI,-89.7116,46.8413,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ242,091242,Ontonagon to Upper Entrance of Portage Canal MI,-88.9811,47.0902,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ243,091243,Upper Entrance of Portage Canal to Eagle River MI,-88.4734,47.37,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ244,091244,Eagle River to Manitou Island MI,-87.9459,47.4976,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ245,091245,Manitou Island to Point Isabelle MI,-87.7645,47.3576,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ246,091246,Point Isabelle to Lower Entrance of Portage Canal MI,-88.198,47.1424,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ247,091247,Portage Lake to Huron Island MI to Lower Entrance of Portage Canal To Huron Islands MI Including Keweenaw and Huron Bays,-88.232,46.9392,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ248,091248,Huron Islands to Marquette MI,-87.6253,46.8053,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ249,091249,Marquette to Munising MI,-86.9599,46.5385,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ250,091250,Munising to Grand Marais MI,-86.3405,46.6304,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ251,091251,Grand Marais to Whitefish Point MI,-85.4411,46.7575,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ263,091263,Lake Superior from Saxon Harbor WI to Upper Entrance to Portage Canal MI 5NM off shore to the US/Canadian border including Isle Royal National Park,-89.3538,47.4406,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ264,091264,Lake Superior from Upper Entrance to Portage Canal to Manitou Island MI 5NM off shore to the US/Canadian Border,-88.142,47.8327,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ265,091265,Lake Superior West of Line from Manitou Island to Marquette MI Beyond 5NM from shore,-87.6975,47.0699,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ266,091266,Lake Superior East of a line from Manitou Island to Marquette MI and West of a line from Grand Marais MI to the US/Canadian Border Beyond 5NM from shore,-86.8386,47.1877,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ267,091267,Lake Superior from Grand Marais MI to Whitefish Point MI 5NM off shore to the US/Canadian border,-85.5868,46.9822,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ321,091321,Whitefish Bay (U.S. Portion)/Whitefish Point to Point Iroquois MI,-84.8696,46.6002,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LS,LSZ322,091322,St. Marys River Point Iroquois to E. Potagannissing Bay,-84.0149,46.1912,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ043,092043,New Buffalo MI to St Joseph MI,-86.6372,41.9625,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ046,092046,Michigan City IN to New Buffalo MI,-86.8551,41.7936,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ080,092080,Lake Michigan Michigan City IN to St. Joseph MI 5 NM offshore to mid-line of lake.,-86.8137,41.9991,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ221,092221,Green Bay North of line from Cedar River MI to Rock Island Passage,-86.9414,45.6083,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ248,092248,Seul Choix Point to Point Detour MI,-86.2816,45.8093,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ250,092250,5NM East of a line from Fairport MI to Rock Island Passage,-86.6709,45.4935,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ261,092261,Lake Michigan from Seul Choix Point to Rock Island Passage 5NM offshore to Mid Lake,-86.29,45.5912,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ323,092323,Grand Traverse Bay south of a line Grand Traverse Light to Norwood MI,-85.5039,45.0026,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ341,092341,Seul Choix Point to 5NM West of Mackinac Bridge,-85.3832,45.9713,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ342,092342,Norwood MI to 5NM West of Mackinac Bridge including Little Traverse Bay,-85.1479,45.5401,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ344,092344,Sleeping Bear Point to Grand Traverse Light MI,-85.7888,45.084,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ345,092345,Point Betsie to Sleeping Bear Point MI,-86.1283,44.8405,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ346,092346,Manistee to Point Betsie MI,-86.296,44.519,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ362,092362,Lake Michigan South of a line from Seul Choix Point to the Mackinac Bridge and North of a line from Charlevoix MI to South Fox Island 5NM offshore,-85.6119,45.6191,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ364,092364,Lake Michigan from Charlevoix to Point Betsie MI 5NM Offshore to mid lake,-86.2386,45.0391,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ366,092366,Lake Michigan from Point Betsie to Manistee MI 5NM offshore to Mid Lake,-86.6126,44.4722,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ521,092521,Green Bay south of line from Cedar River to Rock Island Passage and north of a line from Oconto WI to Little Sturgeon Bay WI,-87.3849,45.1417,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ522,092522,Green Bay south of line from Oconto WI to Little Sturgeon Bay WI,-87.8374,44.7263,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ541,092541,Rock Island Passage to Sturgeon Bay WI,-87.0044,45.1096,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ542,092542,Sturgeon Bay to Two Rivers WI,-87.4156,44.478,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ543,092543,Two Rivers to Sheboygan WI,-87.6041,44.0385,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ563,092563,Lake Michigan from Rock Island Passage to Sturgeon Bay WI 5NM offshore to mid lake,-86.7506,45.0499,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ565,092565,Lake Michigan from Sturgeon Bay to Two Rivers WI 5NM offshore to Mid Lake,-87.125,44.4666,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ567,092567,Lake Michigan from Two Rivers to Sheboygan WI 5NM offshore to Mid Lake,-87.2805,44.0158,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ643,092643,Sheboygan to Port Washington WI,-87.7158,43.6269,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ644,092644,Port Washington to North Point Light WI,-87.846,43.2113,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ645,092645,North Point Light to Wind Point WI,-87.7898,42.9159,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ646,092646,Wind Point WI to Winthrop Harbor IL,-87.7504,42.6346,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ669,092669,Lake Michigan from Sheboygan to Port Washington WI 5NM offshore to Mid Lake,-87.4084,43.6121,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ671,092671,Lake Michigan from Port Washington to North Point Light WI 5NM offshore to Mid Lake,-87.4569,43.2115,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ673,092673,Lake Michigan from North Point Light to Wind Point WI 5NM offshore to Mid Lake,-87.408,42.922,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ675,092675,Lake Michigan from Wind Point WI to Winthrop Harbor IL 5NM offshore to Mid Lake,-87.3717,42.6209,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ740,092740,Winthrop Harbor to Wilmette Harbor IL,-87.7446,42.2706,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ741,092741,Wilmette Harbor to Northerly Island IL,-87.5985,41.9775,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ742,092742,Northerly Island to Calumet Harbor IL,-87.5267,41.8035,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ743,092743,Calumet Harbor IL to Gary IN,-87.4154,41.7002,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ744,092744,Gary to Burns Harbor IN,-87.2505,41.6639,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ745,092745,Burns Harbor to Michigan City IN,-87.0489,41.7142,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ777,092777,Lake Michigan from Winthrop Harbor to Wilmette Harbor IL 5NM offshore to Mid Lake,-87.3547,42.2925,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ779,092779,Lake Michigan from Wilmette Harbor to Michigan City in 5NM offshore to Mid Lake,-87.249,41.9344,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ844,092844,St Joseph to South Haven MI,-86.4131,42.2652,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ845,092845,South Haven to Holland MI,-86.2738,42.5936,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ846,092846,Holland to Grand Haven MI,-86.2624,42.915,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ847,092847,Grand Haven to Whitehall MI,-86.3898,43.2337,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ848,092848,Whitehall to Pentwater MI,-86.5387,43.6026,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ849,092849,Pentwater to Manistee MI,-86.4861,44.0376,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ868,092868,Lake Michigan from Pentwater to Manistee MI 5NM offshore to Mid Lake,-86.7735,44.0176,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ870,092870,Lake Michigan from Whitehall to Pentwater MI 5NM offshore to Mid Lake,-86.8637,43.5947,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ872,092872,Lake Michigan from Grand Haven to Whitehall MI 5NM offshore to Mid Lake,-86.7736,43.2209,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ874,092874,Lake Michigan from Holland to Grand Haven MI 5NM offshore to Mid Lake,-86.6898,42.9157,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ876,092876,Lake Michigan from South Haven to Holland MI 5NM offshore to Mid lake,-86.6751,42.6143,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LM,LMZ878,092878,Lake Michigan from St Joseph to South Haven MI 5NM offshore to Mid Lake,-86.7191,42.303,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ345,093345,Straits of Mackinac within 5 nm of Mackinac Bridge including Mackinac Island,-84.7074,45.8143,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ346,093346,St Ignace to False Detour Channel,-84.1598,45.9258,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ347,093347,5NM East of Mackinac Bridge to Presque Isle Light MI including Bois Blanc Island,-84.0121,45.5605,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ348,093348,Presque Isle Light to Sturgeon Pt MI Including Thunder Bay National Marine Sanctuary,-83.2967,45.0534,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ349,093349,Sturgeon Pt to Alabaster MI,-83.3287,44.4073,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ361,093361,Lake Huron from 5NM east of Mackinac Bridge to Presque Isle Lt to the US/Canadian border beyond 5 NM from shore,-83.7873,45.6855,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ362,093362,Lake Huron from Presque Isle Lt. to Sturgeon Point MI 5NM off shore to US/Canadian border,-82.8753,45.1132,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ363,093363,Lake Huron from Sturgeon Point to Alabaster MI 5NM off shore to US/Canadian border,-82.7824,44.434,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ421,093421,Outer Saginaw Bay SW of Alabaster to Port Austin MI to Inner Saginaw Bay,-83.3371,44.0553,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ422,093422,Inner Saginaw Bay SW of Point Au Gres to Bay Port MI,-83.6984,43.8041,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ441,093441,Port Austin to Harbor Beach MI,-82.768,44.021,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ442,093442,Harbor Beach to Port Sanilac MI,-82.5522,43.6371,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ443,093443,Port Sanilac to Port Huron MI,-82.4642,43.2303,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ462,093462,Lake Huron from Port Austin to Harbor Beach 5NM Off Shore to the US/Canadian border,-82.4741,44.0317,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ463,093463,Lake Huron from Harbor Beach to Port Sanilac 5NM Off Shore to US/Canadian border,-82.3326,43.6476,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LH,LHZ464,093464,Lake Huron from Port Sanilac to Port Huron 5NM Off Shore to US/Canadian border,-82.3525,43.3144,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LC,LCZ422,094422,St. Clair River,-82.5095,42.7301,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LC,LCZ423,094423,Detroit River,-83.1305,42.1443,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LC,LCZ460,094460,Lake St. Clair Open Lake (U.S. Portion),-82.7663,42.5353,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ020,096020,Upper Niagara River and Buffalo Harbor,-78.9539,43.0288,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ040,096040,Ripley to Dunkirk NY,-79.5711,42.4063,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ041,096041,Dunkirk to Buffalo NY,-79.1221,42.6725,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ061,096061,Ripley to Buffalo NY extending from 5NM off shoreline to US-Canadian border,-79.5574,42.5298,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ142,096142,Maumee Bay to Reno Beach OH,-83.3176,41.7312,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ143,096143,Reno Beach to The Islands OH,-82.9436,41.6136,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ144,096144,The Islands to Vermilion OH,-82.6305,41.467,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ145,096145,Vermilion to Avon Point OH,-82.1865,41.5098,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ146,096146,Avon Point to Willowick OH,-81.7379,41.5731,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ147,096147,Willowick to Geneva-on-the Lake OH,-81.2272,41.8144,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ148,096148,Geneva-on-the-Lake to Conneaut OH,-80.7579,41.9555,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ149,096149,Conneaut OH to Ripley NY,-80.1656,42.1572,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ162,096162,Detroit River Lt. to Maumee Bay OH to Reno Beach OH beyond 5NM offshoreline to US-Canadian border,-83.1794,41.8442,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ163,096163,Reno Beach to The Islands OH beyond 5NM off shoreline to US-Canadian border,-82.9375,41.7277,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ164,096164,The Islands to Vermilion OH beyond 5 nm off shoreline to US-Canadian border,-82.4806,41.5902,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ165,096165,Vermilion to Avon Point OH beyond 5 nm off shoreline to US-Canadian border,-82.1741,41.6673,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ166,096166,Avon Point to Willowick OH beyond 5 nm off shoreline to US-Canadian border,-81.7482,41.7924,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ167,096167,Willowick to Geneva-on-the-Lake OH beyond 5NM off shoreline to US-Canadian border,-81.2345,42.0246,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ168,096168,Geneva-on-the-Lake to Conneaut OH beyond 5 nm off shoreline to US-Canadian border,-80.7617,42.1411,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ169,096169,Conneaut OH to Ripley NY beyond 5 nm off shoreline to US-Canadian border,-80.2503,42.2713,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LE,LEZ444,096444,Michigan Waters of Lake Erie from Detroit River to North Cape MI,-83.292,41.875,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LO,LOZ030,097030,Lower Niagara River,-79.0546,43.1912,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LO,LOZ042,097042,Niagara River to Hamlin Beach NY,-78.5269,43.3878,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LO,LOZ043,097043,Hamlin Beach to Sodus Bay NY,-77.4664,43.3341,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LO,LOZ044,097044,Sodus Bay to Mexico Bay NY,-76.6432,43.4436,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LO,LOZ045,097045,Mexico Bay NY to the St. Lawrence River,-76.2753,43.8754,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LO,LOZ062,097062,Niagara River to Hamlin Beach NY beyond 5NM off shoreline to US-Canadian border,-78.549,43.5143,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LO,LOZ063,097063,Hamlin Beach to Sodus Bay NY beyond 5NM off shoreline to US-Canadian border,-77.4356,43.5021,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LO,LOZ064,097064,Sodus Bay to Mexico Bay NY beyond 5NM off shoreline to US-Canadian border,-76.6767,43.6075,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+LO,LOZ065,097065,Mexico Bay NY to the St. Lawrence River beyond 5NM off shoreline to US-Canadian border,-76.4315,43.8535,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+SL,SLZ022,098022,St. Lawrence River above Ogdensburg NY,-75.9347,44.3695,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+SL,SLZ024,098024,St. Lawrence River from Ogdensburg to St. Regis NY,-75.1281,44.892,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt

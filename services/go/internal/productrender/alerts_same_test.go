@@ -548,6 +548,21 @@ GA|033|FFC|North Fulton|GA033|Fulton|13121|E|nc|33.9350|-84.3557
 	}
 }
 
+func TestSameLocationCodesForCAPUsesNWSMarineZones(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "managed", "csv", "NWS_MARINE_ZONES.csv"), `region,zone_ugc,same_code,name,lon,lat,operational,source_url
+AN,ANZ531,073531,Chesapeake Bay from Pooles Island to Sandy Point MD,-76.3446,39.1806,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+`)
+	db := loadAlertGeoDB(dir)
+
+	if got := sameLocationCodesForAlertCode(db, "ANZ531"); strings.Join(got, ",") != "073531" {
+		t.Fatalf("marine same codes = %#v, want 073531", got)
+	}
+	if got := alertRegionName(db, "073531", "en-CA"); got != "Chesapeake Bay from Pooles Island to Sandy Point MD" {
+		t.Fatalf("marine region name = %q", got)
+	}
+}
+
 func TestSameLocationsForCAPTranslatesSGCToNearestCLC(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "managed", "csv", "CAP-CP_Geocodes.csv"), `NAME,NOM,CAPCPGCODE,LAT_DD,LON_DD,CGNDBKEY,PROVINCE_C,COUNTRY_C

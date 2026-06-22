@@ -115,6 +115,30 @@ AL|003|MOB|Baldwin|ALC003|Baldwin|001003|C|se|30.6592|-87.7461
 	}
 }
 
+func TestResolveAreaNamesUsesNWSMarineNames(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "managed", "csv", "NWS_MARINE_ZONES.csv"), `region,zone_ugc,same_code,name,lon,lat,operational,source_url
+AN,ANZ531,073531,Chesapeake Bay from Pooles Island to Sandy Point MD,-76.3446,39.1806,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ532,073532,Chesapeake Bay from Sandy Point to North Beach MD,-76.4244,38.8506,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ539,073539,Chester River to Queenstown MD,-76.2538,39.0433,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ540,073540,Eastern Bay,-76.273,38.8694,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+AN,ANZ541,073541,Choptank River to Cambridge MD and the Little Choptank River,-76.2539,38.6262,true,https://www.weather.gov/source/gis/Shapefiles/WSOM/mareas20fe25.txt
+`)
+	configPath := filepath.Join(dir, "config.yaml")
+
+	areas := ResolveAreaNames(configPath, []string{"Unknown Location (073531)"}, []string{"073531", "073532", "073539", "073540", "073541"})
+	want := []string{
+		"Chesapeake Bay from Pooles Island to Sandy Point MD",
+		"Chesapeake Bay from Sandy Point to North Beach MD",
+		"Chester River to Queenstown MD",
+		"Eastern Bay",
+		"Choptank River to Cambridge MD and the Little Choptank River",
+	}
+	if strings.Join(areas, "|") != strings.Join(want, "|") {
+		t.Fatalf("areas = %#v, want %#v", areas, want)
+	}
+}
+
 func TestBuildCAPAlertTextUsesSharedWeatherSpeech(t *testing.T) {
 	now := time.Date(2026, 6, 17, 3, 0, 0, 0, time.UTC)
 	alert := capingest.Alert{
