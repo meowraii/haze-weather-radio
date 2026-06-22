@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
 )
 
 type feedsXML struct {
@@ -813,14 +815,43 @@ func feedLocationCount(feed feedXML) int {
 }
 
 func loadForecastRegionNames(path string) map[string]string {
+	if snap, ok := loadLocationSnapshotFromCSVPath(path); ok {
+		out := map[string]string{}
+		for _, place := range snap.PlacesBySource("forecast") {
+			out[place.Code] = place.Name
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
 	return loadCSVNames(path, 0, 1)
 }
 
 func loadCLCNames(path string) map[string]string {
+	if snap, ok := loadLocationSnapshotFromCSVPath(path); ok {
+		out := map[string]string{}
+		for _, place := range snap.PlacesBySource("clc") {
+			out[place.Code] = place.Name
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
 	return loadCSVNames(path, 0, 2)
 }
 
 func loadNWSFIPSNames(path string) map[string]string {
+	if snap, ok := loadLocationSnapshotFromCSVPath(path); ok {
+		out := map[string]string{}
+		for _, source := range []string{"nws_same", "nws_zone", "nws_marine_same", "nws_marine_zone"} {
+			for _, place := range snap.PlacesBySource(source) {
+				out[place.Code] = place.Name
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
 	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return map[string]string{}
@@ -854,6 +885,17 @@ func loadNWSFIPSNames(path string) map[string]string {
 }
 
 func loadNWSMarineNames(path string) map[string]string {
+	if snap, ok := loadLocationSnapshotFromCSVPath(path); ok {
+		out := map[string]string{}
+		for _, source := range []string{"nws_marine_same", "nws_marine_zone"} {
+			for _, place := range snap.PlacesBySource(source) {
+				out[place.Code] = place.Name
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
 	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return map[string]string{}
@@ -892,6 +934,15 @@ func loadNWSMarineNames(path string) map[string]string {
 		}
 	}
 	return out
+}
+
+func loadLocationSnapshotFromCSVPath(path string) (locationdb.Snapshot, bool) {
+	path = filepath.Clean(path)
+	baseDir := filepath.Dir(filepath.Dir(filepath.Dir(path)))
+	if strings.TrimSpace(baseDir) == "." || strings.TrimSpace(baseDir) == "" {
+		return locationdb.Snapshot{}, false
+	}
+	return locationdb.Load(baseDir)
 }
 
 func csvHeaderIndex(header map[string]int, keys ...string) int {
@@ -1171,6 +1222,13 @@ func loadSAMEMapping(configPath string) (map[string]any, error) {
 
 func loadLocationNames(configPath string) (map[string]any, error) {
 	names := map[string]any{}
+	if snap, ok := locationdb.Load(filepath.Dir(filepath.Clean(configPath))); ok {
+		for code, name := range snap.Labels() {
+			names[code] = name
+		}
+		names["000000"] = "All areas"
+		return names, nil
+	}
 	for code, name := range loadForecastRegionNames(resolveConfigPath(configPath, "managed/csv/FORECAST_LOCATIONS.csv")) {
 		names[code] = name
 	}

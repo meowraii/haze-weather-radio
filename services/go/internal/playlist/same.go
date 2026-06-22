@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
 )
 
 type sameGenerateRequest struct {
@@ -179,7 +181,7 @@ func expandWildcardSAMELocations(baseDir string, locations []string) []string {
 		}
 	}
 	if len(wildcards) > 0 {
-		for _, child := range clcWildcardChildren(filepath.Join(baseDir, "managed", "csv", "CLC_Base_Zone.csv"), wildcards) {
+		for _, child := range clcWildcardChildrenForBase(baseDir, wildcards) {
 			add(child)
 		}
 	}
@@ -187,6 +189,28 @@ func expandWildcardSAMELocations(baseDir string, locations []string) []string {
 		out = out[:31]
 	}
 	return out
+}
+
+func clcWildcardChildrenForBase(baseDir string, wildcards []string) []string {
+	if snap, ok := locationdb.Load(baseDir); ok {
+		children := []string{}
+		for _, place := range snap.PlacesBySource("clc") {
+			code := sameLocationCode(place.Code)
+			if code == "" || strings.HasSuffix(code, "00") {
+				continue
+			}
+			for _, wildcard := range wildcards {
+				if strings.HasPrefix(code, wildcard[:4]) {
+					children = append(children, code)
+					break
+				}
+			}
+		}
+		if len(children) > 0 {
+			return children
+		}
+	}
+	return clcWildcardChildren(filepath.Join(baseDir, "managed", "csv", "CLC_Base_Zone.csv"), wildcards)
 }
 
 func clcWildcardChildren(path string, wildcards []string) []string {

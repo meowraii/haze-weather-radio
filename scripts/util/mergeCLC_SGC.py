@@ -274,7 +274,8 @@ def main() -> int:
 
     sqlite_path = output_dir / args.sqlite_name
     write_sqlite(sqlite_path, all_places, links, postal_links, station_links)
-    write_csvs(output_dir, all_places, links, postal_links, station_links, low_confidence)
+    if not args.no_derived_csv:
+        write_csvs(output_dir, all_places, links, postal_links, station_links, low_confidence)
     if args.xml:
         write_xml(output_dir / args.xml_name, all_places, links, postal_links, station_links)
 
@@ -294,6 +295,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-dir", type=Path, help="Directory containing base CSV files.")
     parser.add_argument("--output-dir", type=Path, help="Directory for SQLite/CSV/XML outputs.")
     parser.add_argument("--sqlite-name", default="alert_location_map.sqlite")
+    parser.add_argument("--no-derived-csv", action="store_true", help="Only emit SQLite; skip derived CSV exports.")
     parser.add_argument("--xml", action="store_true", help="Also emit XML export.")
     parser.add_argument("--xml-name", default="alert_location_map.xml")
     parser.add_argument("--neural", action="store_true", help="Use sentence-transformers to rerank top fuzzy/spatial candidates.")

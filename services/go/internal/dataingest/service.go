@@ -20,6 +20,7 @@ import (
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
 	"gopkg.in/yaml.v3"
 )
 
@@ -273,9 +274,32 @@ func loadConfig(configPath string) (loadedConfig, error) {
 	return loadedConfig{
 		Root:          root,
 		Feeds:         feeds.Feeds,
-		ForecastNames: loadForecastRegionNames(resolvePath(baseDir, "managed/csv/FORECAST_LOCATIONS.csv")),
+		ForecastNames: loadForecastRegionNamesForBase(baseDir),
 		BaseDir:       baseDir,
 	}, nil
+}
+
+func loadForecastRegionNamesForBase(baseDir string) map[string]forecastRegionName {
+	names := loadForecastRegionNamesFromSQLite(baseDir)
+	if len(names) > 0 {
+		return names
+	}
+	return loadForecastRegionNames(resolvePath(baseDir, "managed/csv/FORECAST_LOCATIONS.csv"))
+}
+
+func loadForecastRegionNamesFromSQLite(baseDir string) map[string]forecastRegionName {
+	snap, ok := locationdb.Load(baseDir)
+	if !ok {
+		return map[string]forecastRegionName{}
+	}
+	out := map[string]forecastRegionName{}
+	for _, place := range snap.PlacesBySource("forecast") {
+		if strings.TrimSpace(place.Code) == "" {
+			continue
+		}
+		out[place.Code] = forecastRegionName{English: place.Name, French: place.NameFR}
+	}
+	return out
 }
 
 func (cfg loadedConfig) enabledFeeds() []feedXML {

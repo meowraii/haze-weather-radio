@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
 	ttspkg "github.com/meowraii/haze-weather-radio/services/go/internal/tts"
 	"gopkg.in/yaml.v3"
 )
@@ -243,10 +244,10 @@ func loadConfig(path string, overrides Options) (loadedConfig, error) {
 		BaseDir:           baseDir,
 		PromptsPath:       promptsPath,
 		Feeds:             feeds,
-		ForecastLocations: loadForecastLocations(resolvePath(baseDir, "managed/csv/FORECAST_LOCATIONS.csv")),
-		CLCs:              loadCommaCSV(resolvePath(baseDir, "managed/csv/CLC_Base_Zone.csv"), "CLC", "NAME", "PROVINCE_C", "clc"),
-		Geocodes:          loadCommaCSV(resolvePath(baseDir, "managed/csv/CAP-CP_Geocodes.csv"), "CAPCPGCODE", "NAME", "PROVINCE_C", "capcp_geocode"),
-		NWS:               loadPipeCSV(resolvePath(baseDir, "managed/csv/NWS_ZONE_COUNTY_CORRELATION.csv")),
+		ForecastLocations: loadForecastLocationsForBase(baseDir),
+		CLCs:              loadCLCsForBase(baseDir),
+		Geocodes:          loadGeocodesForBase(baseDir),
+		NWS:               loadNWSForBase(baseDir),
 		Prompts:           prompts,
 	}, nil
 }
@@ -429,6 +430,95 @@ func loadForecastLocations(path string) map[string]locationRecord {
 		}
 	}
 	return out
+}
+
+func loadForecastLocationsForBase(baseDir string) map[string]locationRecord {
+	if snap, ok := locationdb.Load(baseDir); ok {
+		out := map[string]locationRecord{}
+		for _, place := range snap.PlacesBySource("forecast") {
+			out[place.Code] = locationRecord{
+				Code:      place.Code,
+				Source:    "eccc_forecast",
+				Name:      place.Name,
+				Province:  place.Region,
+				Latitude:  floatText(place.Lat),
+				Longitude: floatText(place.Lon),
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return loadForecastLocations(resolvePath(baseDir, "managed/csv/FORECAST_LOCATIONS.csv"))
+}
+
+func loadCLCsForBase(baseDir string) map[string]locationRecord {
+	if snap, ok := locationdb.Load(baseDir); ok {
+		out := map[string]locationRecord{}
+		for _, place := range snap.PlacesBySource("clc") {
+			out[place.Code] = locationRecord{
+				Code:      place.Code,
+				Source:    "clc",
+				Name:      place.Name,
+				Province:  place.Region,
+				Latitude:  floatText(place.Lat),
+				Longitude: floatText(place.Lon),
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return loadCommaCSV(resolvePath(baseDir, "managed/csv/CLC_Base_Zone.csv"), "CLC", "NAME", "PROVINCE_C", "clc")
+}
+
+func loadGeocodesForBase(baseDir string) map[string]locationRecord {
+	if snap, ok := locationdb.Load(baseDir); ok {
+		out := map[string]locationRecord{}
+		for _, place := range snap.PlacesBySource("sgc") {
+			out[place.Code] = locationRecord{
+				Code:      place.Code,
+				Source:    "capcp_geocode",
+				Name:      place.Name,
+				Province:  place.Region,
+				Latitude:  floatText(place.Lat),
+				Longitude: floatText(place.Lon),
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return loadCommaCSV(resolvePath(baseDir, "managed/csv/CAP-CP_Geocodes.csv"), "CAPCPGCODE", "NAME", "PROVINCE_C", "capcp_geocode")
+}
+
+func loadNWSForBase(baseDir string) map[string]locationRecord {
+	if snap, ok := locationdb.Load(baseDir); ok {
+		out := map[string]locationRecord{}
+		for _, place := range snap.PlacesBySource("nws_zone") {
+			out[place.Code] = locationRecord{Code: place.Code, Source: "nws_zone", Name: place.Name, Province: place.Region, Forecast: place.Code}
+		}
+		for _, place := range snap.PlacesBySource("nws_same") {
+			out[place.Code] = locationRecord{Code: place.Code, Source: "nws_same", Name: place.Name, Province: place.Region}
+		}
+		for _, place := range snap.PlacesBySource("nws_marine_zone") {
+			out[place.Code] = locationRecord{Code: place.Code, Source: "nws_marine_zone", Name: place.Name, Province: place.Region, Forecast: place.Code}
+		}
+		for _, place := range snap.PlacesBySource("nws_marine_same") {
+			out[place.Code] = locationRecord{Code: place.Code, Source: "nws_marine_same", Name: place.Name, Province: place.Region}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return loadPipeCSV(resolvePath(baseDir, "managed/csv/NWS_ZONE_COUNTY_CORRELATION.csv"))
+}
+
+func floatText(value float64) string {
+	if value == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%.8f", value)
 }
 
 func loadCommaCSV(path string, codeHeader string, nameHeader string, provinceHeader string, source string) map[string]locationRecord {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
 )
 
 var compactSpaceRE = regexp.MustCompile(`\s+`)
@@ -533,6 +534,14 @@ func LoadEventLabels(configPath string) map[string]string {
 // LoadLocationLabels loads forecast, CLC, CAP-CP, and NWS location labels when available.
 func LoadLocationLabels(configPath string) map[string]string {
 	labels := map[string]string{}
+	if snap, ok := locationdb.Load(filepath.Dir(filepath.Clean(configPath))); ok {
+		for code, name := range snap.Labels() {
+			if strings.TrimSpace(code) != "" && strings.TrimSpace(name) != "" {
+				labels[code] = name
+			}
+		}
+		return labels
+	}
 	loadCSVNames(resolveConfigPath(configPath, "managed/csv/FORECAST_LOCATIONS.csv"), labels, []string{"CODE"}, []string{"NAME", "NOM"})
 	loadCSVNames(resolveConfigPath(configPath, "managed/csv/CLC_Base_Zone.csv"), labels, []string{"CLC", "CODE", "Geocode", "geocode"}, []string{"NAME", "Name", "English", "EN", "name_en"})
 	loadCSVNames(resolveConfigPath(configPath, "managed/csv/CAP-CP_Geocodes.csv"), labels, []string{"CODE", "Geocode", "geocode", "value"}, []string{"NAME", "Name", "English", "EN", "name_en"})

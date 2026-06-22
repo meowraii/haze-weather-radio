@@ -19,6 +19,7 @@ import (
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
 )
 
 const alertRegistryGrace = 10 * time.Minute
@@ -301,6 +302,9 @@ func sameLocationCodesForAlertCode(db alertGeoDB, raw string) []string {
 	code := normalizeNWSCode(raw)
 	if code == "" {
 		return nil
+	}
+	if codes := db.NWSZoneSAME[code]; len(codes) > 0 {
+		return append([]string(nil), codes...)
 	}
 	if item, ok := db.NWS[code]; ok {
 		if clean := sameLocationCode(item.FIPS); clean != "" {
@@ -1425,11 +1429,12 @@ type coverageRegion struct {
 }
 
 type alertGeoDB struct {
-	CLC    map[string]clcBaseZone
-	CAPCP  map[string]capCPGeocode
-	NWS    map[string]nwsZone
-	FIPS   map[string]nwsZone
-	Marine map[string]nwsZone
+	CLC         map[string]clcBaseZone
+	CAPCP       map[string]capCPGeocode
+	NWS         map[string]nwsZone
+	FIPS        map[string]nwsZone
+	Marine      map[string]nwsZone
+	NWSZoneSAME map[string][]string
 }
 
 type clcBaseZone struct {
@@ -1543,17 +1548,93 @@ func loadAlertGeoDB(baseDir string) alertGeoDB {
 	}
 	alertGeoCache.Unlock()
 
-	db := alertGeoDB{
-		CLC:    loadCLCBaseZones(filepath.Join(baseDir, "managed", "csv", "CLC_Base_Zone.csv")),
-		CAPCP:  loadCAPCPGeocodes(filepath.Join(baseDir, "managed", "csv", "CAP-CP_Geocodes.csv")),
-		NWS:    loadNWSZones(filepath.Join(baseDir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv")),
-		FIPS:   loadNWSFIPS(filepath.Join(baseDir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv")),
-		Marine: loadNWSMarineZones(filepath.Join(baseDir, "managed", "csv", "NWS_MARINE_ZONES.csv")),
+	db, ok := loadAlertGeoDBFromSQLite(baseDir)
+	if !ok {
+		db = alertGeoDB{
+			CLC:    loadCLCBaseZones(filepath.Join(baseDir, "managed", "csv", "CLC_Base_Zone.csv")),
+			CAPCP:  loadCAPCPGeocodes(filepath.Join(baseDir, "managed", "csv", "CAP-CP_Geocodes.csv")),
+			NWS:    loadNWSZones(filepath.Join(baseDir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv")),
+			FIPS:   loadNWSFIPS(filepath.Join(baseDir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv")),
+			Marine: loadNWSMarineZones(filepath.Join(baseDir, "managed", "csv", "NWS_MARINE_ZONES.csv")),
+		}
 	}
 	alertGeoCache.Lock()
 	alertGeoCache.byBase[key] = db
 	alertGeoCache.Unlock()
 	return db
+}
+
+func loadAlertGeoDBFromSQLite(baseDir string) (alertGeoDB, bool) {
+	snap, ok := locationdb.Load(baseDir)
+	if !ok {
+		return alertGeoDB{}, false
+	}
+	db := alertGeoDB{
+		CLC:         map[string]clcBaseZone{},
+		CAPCP:       map[string]capCPGeocode{},
+		NWS:         map[string]nwsZone{},
+		FIPS:        map[string]nwsZone{},
+		Marine:      map[string]nwsZone{},
+		NWSZoneSAME: map[string][]string{},
+	}
+	for _, place := range snap.PlacesBySource("clc") {
+		db.CLC[place.Code] = clcBaseZone{Code: place.Code, En: place.Name, Fr: place.NameFR, Lat: place.Lat, Lon: place.Lon, Province: place.Region}
+	}
+	for _, place := range snap.PlacesBySource("sgc") {
+		db.CAPCP[place.Code] = capCPGeocode{Code: place.Code, En: place.Name, Fr: place.NameFR, Lat: place.Lat, Lon: place.Lon, Province: place.Region}
+	}
+	for _, place := range snap.PlacesBySource("nws_same") {
+		item := nwsZone{Code: place.Code, Name: place.Name, CountyName: place.Name, FIPS: place.Code}
+		db.FIPS[place.Code] = item
+	}
+	for _, place := range snap.PlacesBySource("nws_zone") {
+		item := nwsZone{Code: place.Code, Name: place.Name}
+		db.NWS[normalizeNWSCode(place.Code)] = item
+		db.NWS[place.Code] = item
+	}
+	for _, place := range snap.PlacesBySource("nws_marine_same") {
+		item := nwsZone{Code: place.Code, Name: place.Name, FIPS: place.Code}
+		db.Marine[place.Code] = item
+		db.FIPS[place.Code] = item
+	}
+	for _, place := range snap.PlacesBySource("nws_marine_zone") {
+		item := nwsZone{Code: place.Code, Name: place.Name}
+		db.Marine[place.Code] = item
+		db.Marine[normalizeNWSCode(place.Code)] = item
+	}
+	for _, link := range snap.Links {
+		switch link.Type {
+		case "nws_same_to_zone":
+			same := sameLocationCode(link.FromCode)
+			zone := normalizeNWSCode(link.ToCode)
+			if same == "" || zone == "" {
+				continue
+			}
+			db.NWSZoneSAME[zone] = append(db.NWSZoneSAME[zone], same)
+			if item, ok := db.NWS[zone]; ok && strings.TrimSpace(item.FIPS) == "" {
+				item.FIPS = same
+				db.NWS[zone] = item
+				db.NWS[link.ToCode] = item
+			}
+		case "nws_marine_same_to_zone":
+			same := sameLocationCode(link.FromCode)
+			zone := normalizeNWSCode(link.ToCode)
+			if same == "" || zone == "" {
+				continue
+			}
+			db.NWSZoneSAME[zone] = append(db.NWSZoneSAME[zone], same)
+			if item, ok := db.Marine[zone]; ok {
+				item.FIPS = same
+				db.Marine[zone] = item
+				db.Marine[link.ToCode] = item
+				db.Marine[same] = item
+			}
+		}
+	}
+	for zone, codes := range db.NWSZoneSAME {
+		db.NWSZoneSAME[zone] = uniqueStrings(codes)
+	}
+	return db, true
 }
 
 func loadCLCBaseZones(path string) map[string]clcBaseZone {
@@ -1772,6 +1853,9 @@ func expandNWSRegion(db alertGeoDB, regionID string) []string {
 	}
 	if item, ok := db.Marine[code]; ok {
 		return uniqueStrings([]string{item.Code, item.FIPS, sameLocationCode(item.FIPS)})
+	}
+	if codes := db.NWSZoneSAME[code]; len(codes) > 0 {
+		return append([]string(nil), codes...)
 	}
 	return nil
 }
