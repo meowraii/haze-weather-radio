@@ -517,6 +517,19 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 			storeCAPArchiveRecord(s.cfg.Store, "rejected", record)
 			continue
 		}
+		if !feedAllowsRoutineOnlyCAPAlert(feed, alert) {
+			record := capArchiveRecord{
+				ID:        alert.Identifier,
+				FeedID:    feed.ID,
+				Status:    "rejected",
+				Reason:    "below feed alert threshold",
+				UpdatedAt: now,
+				Alert:     alert,
+				RawXML:    alert.RawXML,
+			}
+			storeCAPArchiveRecord(s.cfg.Store, "rejected", record)
+			continue
+		}
 		if !alertMatchesFeed(alert, feed, s.cfg.BaseDir) {
 			record := capArchiveRecord{
 				ID:        alert.Identifier,
@@ -1227,6 +1240,13 @@ func feedAcceptsCAPSource(feed feedXML, alert capingest.Alert) bool {
 func feedAllowsCAPAlert(feed feedXML, alert capingest.Alert) bool {
 	_, sourceConfig := feedCAPSourceConfig(feed, alert)
 	return alertFilterAllows(sourceConfig.Filter, alert, feedLanguage(feed))
+}
+
+func feedAllowsRoutineOnlyCAPAlert(feed feedXML, alert capingest.Alert) bool {
+	if xmlBool(feed.Playout.Routine, true) {
+		return true
+	}
+	return feedAllowsCAPAlert(feed, alert)
 }
 
 func feedUsesAlertCoverage(feed feedXML, alert capingest.Alert) bool {

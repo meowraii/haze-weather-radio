@@ -956,6 +956,56 @@ func TestMinorCAPAlertBypassesSAMEFilterForRoutinePackage(t *testing.T) {
 	}
 }
 
+func TestNonRoutineCatchallRejectsMinorAndUnknownCAPAlerts(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	var feed feedXML
+	feed.ID = "CAP-IT-ALL"
+	feed.EnabledRaw = "true"
+	feed.Playout.Routine = "false"
+	feed.Alerts.CapCP.EnabledRaw = "true"
+	feed.Alerts.CapCP.Filter.UseFeedLocations = "false"
+	feed.Alerts.CapCP.Filter.Allowlist.Severities = []string{"Moderate", "Severe", "Extreme"}
+	cfg.Feeds = []feedXML{feed}
+	service := &Service{cfg: cfg}
+
+	for _, severity := range []string{"Minor", "Unknown"} {
+		raw := strings.Replace(testCAP("urn:test:catchall:"+strings.ToLower(severity), "Alert", "active", "2099-06-15T21:30:00-06:00", false), "<severity>Moderate</severity>", "<severity>"+severity+"</severity>", 1)
+		alert, err := capingest.ParseCAP([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		updates, err := service.recordCAPAlert(alert, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(updates) != 0 {
+			t.Fatalf("%s alert should not publish catchall update: %#v", severity, updates)
+		}
+	}
+
+	accepted, err := cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accepted) != 0 {
+		t.Fatalf("minor/unknown catchall alerts entered accepted archive: %#v", accepted)
+	}
+	rejected, err := cfg.Store.ListCAPArchives(context.Background(), "rejected", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rejected) != 2 {
+		t.Fatalf("rejected rows = %#v", rejected)
+	}
+	for _, row := range rejected {
+		if row.FeedID != "CAP-IT-ALL" || row.Reason != "below feed alert threshold" {
+			t.Fatalf("unexpected rejected row: %#v", row)
+		}
+	}
+}
+
 func TestTestCAPAlertDoesNotEnterRoutinePackage(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
