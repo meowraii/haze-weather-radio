@@ -1244,6 +1244,43 @@ func testCAP(identifier string, msgType string, locationStatus string, expires s
 </alert>`
 }
 
+func testNWSCAP(identifier string, msgType string, sent string, expires string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>` + identifier + `</identifier>
+  <sender>w-nws.webmaster@noaa.gov</sender>
+  <sent>` + sent + `</sent>
+  <status>Actual</status>
+  <msgType>` + msgType + `</msgType>
+  <scope>Public</scope>
+  <code>IPAWSv1.0</code>
+  <info>
+    <language>en-US</language>
+    <category>Met</category>
+    <event>Severe Thunderstorm Warning</event>
+    <responseType>Shelter</responseType>
+    <urgency>Immediate</urgency>
+    <severity>Severe</severity>
+    <certainty>Observed</certainty>
+    <eventCode><valueName>SAME</valueName><value>SVR</value></eventCode>
+    <eventCode><valueName>NationalWeatherService</valueName><value>SVW</value></eventCode>
+    <effective>` + sent + `</effective>
+    <onset>` + sent + `</onset>
+    <expires>` + expires + `</expires>
+    <senderName>NWS Jackson MS</senderName>
+    <headline>Severe Thunderstorm Warning issued June 22 at 12:13PM CDT until June 22 at 12:45PM CDT by NWS Jackson MS</headline>
+    <description>At 1212 PM CDT, a severe thunderstorm was located near Fannin.</description>
+    <instruction>For your protection move to an interior room on the lowest floor of a building.</instruction>
+    <parameter><valueName>EAS-ORG</valueName><value>WXR</value></parameter>
+    <area>
+      <areaDesc>Rankin, MS</areaDesc>
+      <geocode><valueName>SAME</valueName><value>028121</value></geocode>
+      <geocode><valueName>UGC</valueName><value>MSC121</value></geocode>
+    </area>
+  </info>
+</alert>`
+}
+
 func capWithReferences(raw string, references string) string {
 	return strings.Replace(raw, "<references/>", "<references>"+references+"</references>", 1)
 }

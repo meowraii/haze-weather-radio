@@ -304,6 +304,19 @@ func firstValue(message map[string]any, data map[string]any, keys ...string) any
 	return nil
 }
 
+func boolAny(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "1", "true", "yes", "y", "on", "broadcast immediate":
+			return true
+		}
+	}
+	return false
+}
+
 func stringListAny(value any) []string {
 	switch typed := value.(type) {
 	case []any:

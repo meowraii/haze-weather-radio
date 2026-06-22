@@ -232,6 +232,22 @@ func TestBannerPayloadUsesBannerTextAndWarningColorForManualAlert(t *testing.T) 
 	}
 }
 
+func TestBannerPayloadUsesBroadcastImmediateFlagForRedColor(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	hub := NewBannerHub(configPath, "")
+	hub.handleEvent([]byte(`{"type":"cap.alert.audio.ready","feed_ids":["CAP-IT-ALL"],"queue_id":"broadcast-immediate-1","data":{"alert_id":"broadcast-immediate","event":"civilEmerg","title":"Broadcast Immediate","broadcast_immediate":true,"banner_text":"Broadcast immediate message."}}`), time.Now().UTC())
+
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
+
+	if !payload.Active || len(payload.Alerts) != 1 {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.PrimaryColor != "#931102" || payload.Alerts[0].BackgroundColor != "#931102" {
+		t.Fatalf("colors = primary %q alert %q, want red", payload.PrimaryColor, payload.Alerts[0].BackgroundColor)
+	}
+}
+
 func TestBannerHubFallsBackToOnAirMetadataWithoutArchive(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)

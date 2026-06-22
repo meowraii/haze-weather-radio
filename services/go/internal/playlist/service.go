@@ -258,28 +258,29 @@ type playlistItem struct {
 }
 
 type priorityAlertManifest struct {
-	ID               string   `json:"id"`
-	AlertID          string   `json:"alert_id,omitempty"`
-	Type             string   `json:"type"`
-	Status           string   `json:"status"`
-	CreatedAt        string   `json:"created_at"`
-	FeedIDs          []string `json:"feed_ids"`
-	Header           string   `json:"header"`
-	Event            string   `json:"event"`
-	AlertText        string   `json:"alert_text,omitempty"`
-	BannerText       string   `json:"banner_text,omitempty"`
-	AlertSentAt      string   `json:"alert_sent_at,omitempty"`
-	AlertExpiresAt   string   `json:"alert_expires_at,omitempty"`
-	MessageType      string   `json:"message_type,omitempty"`
-	AudioPath        string   `json:"audio_path"`
-	Format           string   `json:"format"`
-	SampleRate       int      `json:"sample_rate"`
-	Channels         int      `json:"channels"`
-	AudioBytes       int      `json:"audio_bytes"`
-	Source           string   `json:"source"`
-	Priority         string   `json:"priority"`
-	AuthoritativeURL string   `json:"authoritative_url,omitempty"`
-	LastError        string   `json:"last_error,omitempty"`
+	ID                 string   `json:"id"`
+	AlertID            string   `json:"alert_id,omitempty"`
+	Type               string   `json:"type"`
+	Status             string   `json:"status"`
+	CreatedAt          string   `json:"created_at"`
+	FeedIDs            []string `json:"feed_ids"`
+	Header             string   `json:"header"`
+	Event              string   `json:"event"`
+	AlertText          string   `json:"alert_text,omitempty"`
+	BannerText         string   `json:"banner_text,omitempty"`
+	AlertSentAt        string   `json:"alert_sent_at,omitempty"`
+	AlertExpiresAt     string   `json:"alert_expires_at,omitempty"`
+	MessageType        string   `json:"message_type,omitempty"`
+	BroadcastImmediate bool     `json:"broadcast_immediate,omitempty"`
+	AudioPath          string   `json:"audio_path"`
+	Format             string   `json:"format"`
+	SampleRate         int      `json:"sample_rate"`
+	Channels           int      `json:"channels"`
+	AudioBytes         int      `json:"audio_bytes"`
+	Source             string   `json:"source"`
+	Priority           string   `json:"priority"`
+	AuthoritativeURL   string   `json:"authoritative_url,omitempty"`
+	LastError          string   `json:"last_error,omitempty"`
 }
 
 type fixedEvent struct {
@@ -974,27 +975,28 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		return
 	}
 	manifest := priorityAlertManifest{
-		ID:               queueID,
-		AlertID:          alertID,
-		Type:             "cap_alert",
-		Status:           "pending",
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
-		FeedIDs:          []string{p.feed.ID},
-		Header:           title,
-		Event:            eventName,
-		AlertText:        strings.TrimSpace(alertText),
-		BannerText:       strings.TrimSpace(bannerText),
-		AlertSentAt:      firstText(nil, data, "alert_sent_at", "sent"),
-		AlertExpiresAt:   firstText(nil, data, "alert_expires_at", "expires"),
-		MessageType:      firstText(nil, data, "message_type", "msg_type"),
-		AudioPath:        audioRel,
-		Format:           "pcm_s16le",
-		SampleRate:       info.SampleRate,
-		Channels:         info.Channels,
-		AudioBytes:       int(info.Bytes),
-		Source:           source,
-		Priority:         "cap",
-		AuthoritativeURL: authoritativeURL,
+		ID:                 queueID,
+		AlertID:            alertID,
+		Type:               "cap_alert",
+		Status:             "pending",
+		CreatedAt:          time.Now().UTC().Format(time.RFC3339Nano),
+		FeedIDs:            []string{p.feed.ID},
+		Header:             title,
+		Event:              eventName,
+		AlertText:          strings.TrimSpace(alertText),
+		BannerText:         strings.TrimSpace(bannerText),
+		AlertSentAt:        firstText(nil, data, "alert_sent_at", "sent"),
+		AlertExpiresAt:     firstText(nil, data, "alert_expires_at", "expires"),
+		MessageType:        firstText(nil, data, "message_type", "msg_type"),
+		BroadcastImmediate: boolAny(firstValue(nil, data, "broadcast_immediate")),
+		AudioPath:          audioRel,
+		Format:             "pcm_s16le",
+		SampleRate:         info.SampleRate,
+		Channels:           info.Channels,
+		AudioBytes:         int(info.Bytes),
+		Source:             source,
+		Priority:           "cap",
+		AuthoritativeURL:   authoritativeURL,
 	}
 	if includeSame {
 		manifest.Type = "same_alert"
@@ -1017,37 +1019,38 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 
 func (p *feedPlanner) publishAlertAudioReady(manifest priorityAlertManifest, data map[string]any, alertText string, sameHeader string) {
 	payload := map[string]any{
-		"feed_id":           p.feed.ID,
-		"alert_id":          manifest.AlertID,
-		"queue_id":          manifest.ID,
-		"manifest_id":       manifest.ID,
-		"audio_path":        manifest.AudioPath,
-		"audio_format":      manifest.Format,
-		"sample_rate":       manifest.SampleRate,
-		"channels":          manifest.Channels,
-		"audio_bytes":       manifest.AudioBytes,
-		"source":            manifest.Source,
-		"priority":          manifest.Priority,
-		"message_type":      manifest.MessageType,
-		"alert_sent_at":     manifest.AlertSentAt,
-		"alert_expires_at":  manifest.AlertExpiresAt,
-		"authoritative_url": manifest.AuthoritativeURL,
-		"title":             fallbackText(firstText(nil, data, "headline", "title", "header"), manifest.Header),
-		"header":            manifest.Header,
-		"event":             fallbackText(firstText(nil, data, "same_event", "event"), manifest.Event),
-		"alert_text":        fallbackText(alertText, firstText(nil, data, "alert_text", "tts_text", "text", "message")),
-		"banner_text":       fallbackText(manifest.BannerText, firstText(nil, data, "banner_text")),
-		"description":       firstText(nil, data, "description"),
-		"instruction":       firstText(nil, data, "instruction"),
-		"severity":          firstText(nil, data, "severity"),
-		"urgency":           firstText(nil, data, "urgency"),
-		"certainty":         firstText(nil, data, "certainty"),
-		"same_event":        firstText(nil, data, "same_event"),
-		"same_originator":   firstText(nil, data, "same_originator"),
-		"same_duration":     firstText(nil, data, "same_duration"),
-		"same_tone":         firstText(nil, data, "same_tone"),
-		"same_header":       sameHeader,
-		"background_color":  firstText(nil, data, "background_color"),
+		"feed_id":             p.feed.ID,
+		"alert_id":            manifest.AlertID,
+		"queue_id":            manifest.ID,
+		"manifest_id":         manifest.ID,
+		"audio_path":          manifest.AudioPath,
+		"audio_format":        manifest.Format,
+		"sample_rate":         manifest.SampleRate,
+		"channels":            manifest.Channels,
+		"audio_bytes":         manifest.AudioBytes,
+		"source":              manifest.Source,
+		"priority":            manifest.Priority,
+		"message_type":        manifest.MessageType,
+		"alert_sent_at":       manifest.AlertSentAt,
+		"alert_expires_at":    manifest.AlertExpiresAt,
+		"broadcast_immediate": manifest.BroadcastImmediate,
+		"authoritative_url":   manifest.AuthoritativeURL,
+		"title":               fallbackText(firstText(nil, data, "headline", "title", "header"), manifest.Header),
+		"header":              manifest.Header,
+		"event":               fallbackText(firstText(nil, data, "same_event", "event"), manifest.Event),
+		"alert_text":          fallbackText(alertText, firstText(nil, data, "alert_text", "tts_text", "text", "message")),
+		"banner_text":         fallbackText(manifest.BannerText, firstText(nil, data, "banner_text")),
+		"description":         firstText(nil, data, "description"),
+		"instruction":         firstText(nil, data, "instruction"),
+		"severity":            firstText(nil, data, "severity"),
+		"urgency":             firstText(nil, data, "urgency"),
+		"certainty":           firstText(nil, data, "certainty"),
+		"same_event":          firstText(nil, data, "same_event"),
+		"same_originator":     firstText(nil, data, "same_originator"),
+		"same_duration":       firstText(nil, data, "same_duration"),
+		"same_tone":           firstText(nil, data, "same_tone"),
+		"same_header":         sameHeader,
+		"background_color":    firstText(nil, data, "background_color"),
 	}
 	if locations := stringListAny(firstValue(nil, data, "same_locations", "locations")); len(locations) > 0 {
 		payload["same_locations"] = locations

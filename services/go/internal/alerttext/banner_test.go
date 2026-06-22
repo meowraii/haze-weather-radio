@@ -137,6 +137,18 @@ func TestPickBannerGradientUsesWarningWatchAdvisoryWords(t *testing.T) {
 	}
 }
 
+func TestPickBannerGradientForcesBroadcastImmediateRed(t *testing.T) {
+	got := PickBannerColor([]AlertVisualInput{{
+		Severity:           "Minor",
+		Event:              "civilEmerg",
+		BroadcastImmediate: true,
+	}})
+
+	if got != "#931102" {
+		t.Fatalf("color = %q, want red broadcast-immediate color", got)
+	}
+}
+
 func TestSerializeCAPAlertUsesHeadlineForBackgroundColor(t *testing.T) {
 	alert := capingest.Alert{
 		Identifier:  "cap-yellow-warning",

@@ -5,9 +5,11 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -108,6 +110,9 @@ func (s *Service) handleCAPAlert(event map[string]any) {
 			if item.BackgroundColor != "" {
 				data["background_color"] = item.BackgroundColor
 			}
+			if item.BroadcastImmediate {
+				data["broadcast_immediate"] = true
+			}
 			if expires := alertExpiresAt(alert); !expires.IsZero() {
 				data["alert_expires_at"] = expires.Format(time.RFC3339Nano)
 			}
@@ -159,15 +164,11 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 	}
 	event := sameEventForCAP(alert, *info, baseDir)
 	locations := sameLocationsForCAP(*info, feed, baseDir)
-	if event == "" || len(locations) == 0 {
-		payload["include_same"] = false
-		payload["same_suppressed_reason"] = "missing SAME event or locations"
-		return payload
+	if event == "" {
+		event = "ADR"
 	}
-	if !isBroadcastImmediateInfo(*info) && !sameAlertFreshForTone(alert, *info, event, now) {
-		payload["include_same"] = false
-		payload["same_suppressed_reason"] = "alert too old for SAME tones"
-		return payload
+	if len(locations) == 0 {
+		locations = []string{"000000"}
 	}
 	payload["same_event"] = event
 	originator := sameOriginatorForCAP(alert, *info)
@@ -278,8 +279,8 @@ func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string)
 	coverage := feedCoverageModel(baseDir, feed, nil)
 	alertCodes := alertInfoCoverageCodes(info)
 	out := []string{}
-	addCode := func(code string) {
-		for _, clean := range sameLocationCodesForAlertCode(db, code) {
+	addCodes := func(codes []string) {
+		for _, clean := range codes {
 			if clean != "" {
 				out = append(out, clean)
 			}
@@ -289,22 +290,26 @@ func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string)
 	if len(coverage.Codes) == 0 {
 		out = append(out, "000000")
 		for code := range alertCodes {
-			addCode(code)
+			addCodes(sameLocationCodesForAlertCode(db, code))
 		}
 	} else {
 		for code := range alertCodes {
-			if coverageCodeMatches(coverage.Codes, code) {
-				addCode(code)
+			locations := sameLocationCodesForAlertCode(db, code)
+			if coverageMatchesAlertCode(db, coverage.Codes, code) {
+				addCodes(locations)
 			}
 		}
 	}
 	if len(out) == 0 && len(coverage.Codes) > 0 {
 		for code := range coverage.Codes {
-			addCode(code)
+			addCodes(sameLocationCodesForAlertCode(db, code))
 		}
 	}
 	out = uniqueStrings(out)
 	sort.Strings(out)
+	if len(out) == 0 {
+		out = []string{"000000"}
+	}
 	if len(out) > 31 {
 		out = out[:31]
 	}
@@ -313,6 +318,9 @@ func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string)
 
 func sameLocationCodesForAlertCode(db alertGeoDB, raw string) []string {
 	if clean := sameLocationCode(raw); clean != "" {
+		return []string{clean}
+	}
+	if clean := capCPToCLC(db, raw); clean != "" {
 		return []string{clean}
 	}
 	code := normalizeNWSCode(raw)
@@ -333,13 +341,7 @@ func sameLocationCodesForAlertCode(db alertGeoDB, raw string) []string {
 }
 
 func sameLocationCode(raw string) string {
-	digits := strings.Builder{}
-	for _, ch := range raw {
-		if ch >= '0' && ch <= '9' {
-			digits.WriteRune(ch)
-		}
-	}
-	value := digits.String()
+	value := digitsOnly(raw)
 	if len(value) == 5 {
 		return "0" + value
 	}
@@ -347,6 +349,66 @@ func sameLocationCode(raw string) string {
 		return ""
 	}
 	return value
+}
+
+func capCPToCLC(db alertGeoDB, raw string) string {
+	for _, code := range uniqueStrings([]string{strings.TrimSpace(raw), digitsOnly(raw)}) {
+		item, ok := db.CAPCP[code]
+		if !ok || !validGeoPoint(item.Lat, item.Lon) {
+			continue
+		}
+		if nearest := nearestCLCForCAPCP(db, item, true); nearest != "" {
+			return nearest
+		}
+		if nearest := nearestCLCForCAPCP(db, item, false); nearest != "" {
+			return nearest
+		}
+	}
+	return ""
+}
+
+func nearestCLCForCAPCP(db alertGeoDB, item capCPGeocode, sameProvinceOnly bool) string {
+	province := strings.ToUpper(strings.TrimSpace(item.Province))
+	bestCode := ""
+	bestDistance := math.MaxFloat64
+	for _, zone := range db.CLC {
+		if !validGeoPoint(zone.Lat, zone.Lon) {
+			continue
+		}
+		if sameProvinceOnly && province != "" && strings.ToUpper(strings.TrimSpace(zone.Province)) != province {
+			continue
+		}
+		distance := geoDistanceKM(item.Lat, item.Lon, zone.Lat, zone.Lon)
+		if distance < bestDistance {
+			bestDistance = distance
+			bestCode = zone.Code
+		}
+	}
+	return sameLocationCode(bestCode)
+}
+
+func geoDistanceKM(lat1 float64, lon1 float64, lat2 float64, lon2 float64) float64 {
+	const earthRadiusKM = 6371.0
+	rad := func(value float64) float64 { return value * math.Pi / 180 }
+	dLat := rad(lat2 - lat1)
+	dLon := rad(lon2 - lon1)
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(rad(lat1))*math.Cos(rad(lat2))*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return earthRadiusKM * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+func validGeoPoint(lat float64, lon float64) bool {
+	return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 && (lat != 0 || lon != 0)
+}
+
+func digitsOnly(raw string) string {
+	digits := strings.Builder{}
+	for _, ch := range raw {
+		if ch >= '0' && ch <= '9' {
+			digits.WriteRune(ch)
+		}
+	}
+	return digits.String()
 }
 
 func uniqueStrings(values []string) []string {
@@ -426,26 +488,27 @@ func sameToneForCAP(info capingest.AlertInfo, feed feedXML) string {
 }
 
 type capRegistryUpdate struct {
-	FeedID           string
-	Path             string
-	Renderable       bool
-	Broadcast        bool
-	Cancelled        bool
-	CancelledIDs     []string
-	AlertText        string
-	Headline         string
-	Event            string
-	Severity         string
-	Urgency          string
-	Certainty        string
-	Description      string
-	Instruction      string
-	BackgroundColor  string
-	AudioURL         string
-	AudioMimeType    string
-	AudioLanguage    string
-	AudioDescription string
-	SAME             map[string]any
+	FeedID             string
+	Path               string
+	Renderable         bool
+	Broadcast          bool
+	Cancelled          bool
+	CancelledIDs       []string
+	BroadcastImmediate bool
+	AlertText          string
+	Headline           string
+	Event              string
+	Severity           string
+	Urgency            string
+	Certainty          string
+	Description        string
+	Instruction        string
+	BackgroundColor    string
+	AudioURL           string
+	AudioMimeType      string
+	AudioLanguage      string
+	AudioDescription   string
+	SAME               map[string]any
 }
 
 func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capRegistryUpdate, error) {
@@ -577,31 +640,34 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 			description = info.Description
 			instruction = info.Instruction
 			backgroundColor = alerttext.PickBannerColor([]alerttext.AlertVisualInput{{
-				Severity: info.Severity,
-				Event:    strings.Join([]string{sameEventForCAP(alert, *info, s.cfg.BaseDir), alertSubject(*info), info.Event, info.Headline}, " "),
+				Severity:           info.Severity,
+				Event:              strings.Join([]string{sameEventForCAP(alert, *info, s.cfg.BaseDir), alertSubject(*info), info.Event, info.Headline}, " "),
+				BroadcastImmediate: isBroadcastImmediateInfo(*info),
 			}})
 		}
 		audio := alertBroadcastAudio(alert, feedLanguage(feed))
+		broadcastImmediate := info != nil && isBroadcastImmediateInfo(*info)
 		updates = append(updates, capRegistryUpdate{
-			FeedID:           feed.ID,
-			Renderable:       hasRenderableCAPEntries(entries, now),
-			Broadcast:        capPriorityBroadcastAllowed(alert, feed, s.cfg.BaseDir, now),
-			Cancelled:        isCAPEnded(alert, now),
-			CancelledIDs:     cancelledAlertIDs(alert),
-			AlertText:        alertText,
-			Headline:         headline,
-			Event:            eventName,
-			Severity:         severity,
-			Urgency:          urgency,
-			Certainty:        certainty,
-			Description:      description,
-			Instruction:      instruction,
-			BackgroundColor:  backgroundColor,
-			AudioURL:         audio.URL,
-			AudioMimeType:    audio.MimeType,
-			AudioLanguage:    audio.Language,
-			AudioDescription: audio.Description,
-			SAME:             capSAMEPayload(alert, feed, s.cfg.BaseDir, now),
+			FeedID:             feed.ID,
+			Renderable:         hasRenderableCAPEntries(entries, now),
+			Broadcast:          capPriorityBroadcastAllowed(alert, feed, s.cfg.BaseDir, now),
+			Cancelled:          isCAPEnded(alert, now),
+			CancelledIDs:       cancelledAlertIDs(alert),
+			BroadcastImmediate: broadcastImmediate,
+			AlertText:          alertText,
+			Headline:           headline,
+			Event:              eventName,
+			Severity:           severity,
+			Urgency:            urgency,
+			Certainty:          certainty,
+			Description:        description,
+			Instruction:        instruction,
+			BackgroundColor:    backgroundColor,
+			AudioURL:           audio.URL,
+			AudioMimeType:      audio.MimeType,
+			AudioLanguage:      audio.Language,
+			AudioDescription:   audio.Description,
+			SAME:               capSAMEPayload(alert, feed, s.cfg.BaseDir, now),
 		})
 	}
 	return updates, nil
@@ -685,15 +751,7 @@ func isAudioResource(resource capingest.Resource) bool {
 }
 
 func isBroadcastImmediateInfo(info capingest.AlertInfo) bool {
-	for _, param := range info.Parameters {
-		name := strings.ToLower(strings.TrimSpace(param.Name))
-		if !strings.Contains(name, "broadcast_immediately") && !strings.Contains(name, "wirelessimmediate") {
-			continue
-		}
-		value := strings.ToLower(strings.TrimSpace(param.Value))
-		return value == "yes" || value == "true" || value == "1" || value == "broadcast immediate"
-	}
-	return false
+	return alerttext.IsBroadcastImmediateInfo(info)
 }
 
 func preferredCAPInfos(infos []capingest.AlertInfo, language string) []capingest.AlertInfo {
@@ -1207,15 +1265,21 @@ type alertGeoDB struct {
 }
 
 type clcBaseZone struct {
-	Code string
-	En   string
-	Fr   string
+	Code     string
+	En       string
+	Fr       string
+	Lat      float64
+	Lon      float64
+	Province string
 }
 
 type capCPGeocode struct {
-	Code string
-	En   string
-	Fr   string
+	Code     string
+	En       string
+	Fr       string
+	Lat      float64
+	Lon      float64
+	Province string
 }
 
 type nwsZone struct {
@@ -1238,8 +1302,9 @@ func alertMatchesFeed(alert capingest.Alert, feed feedXML, baseDir string) bool 
 	if len(coverage.Codes) == 0 {
 		return true
 	}
+	db := loadAlertGeoDB(baseDir)
 	for _, code := range alertCoverageCodes(alert) {
-		if coverageCodeMatches(coverage.Codes, code) {
+		if coverageMatchesAlertCode(db, coverage.Codes, code) {
 			return true
 		}
 	}
@@ -1334,9 +1399,12 @@ func loadCLCBaseZones(path string) map[string]clcBaseZone {
 			continue
 		}
 		out[code] = clcBaseZone{
-			Code: code,
-			En:   strings.TrimSpace(row[2]),
-			Fr:   strings.TrimSpace(row[3]),
+			Code:     code,
+			En:       strings.TrimSpace(row[2]),
+			Fr:       strings.TrimSpace(row[3]),
+			Lat:      csvFloat(row, 6),
+			Lon:      csvFloat(row, 7),
+			Province: csvString(row, 11),
 		}
 	}
 	return out
@@ -1357,9 +1425,12 @@ func loadCAPCPGeocodes(path string) map[string]capCPGeocode {
 			continue
 		}
 		out[code] = capCPGeocode{
-			Code: code,
-			En:   strings.TrimSpace(row[0]),
-			Fr:   strings.TrimSpace(row[1]),
+			Code:     code,
+			En:       strings.TrimSpace(row[0]),
+			Fr:       strings.TrimSpace(row[1]),
+			Lat:      csvFloat(row, 3),
+			Lon:      csvFloat(row, 4),
+			Province: csvString(row, 6),
 		}
 	}
 	return out
@@ -1433,6 +1504,25 @@ func readCSVRows(path string, comma rune) [][]string {
 		return nil
 	}
 	return rows
+}
+
+func csvString(row []string, index int) string {
+	if index < 0 || index >= len(row) {
+		return ""
+	}
+	return strings.TrimSpace(row[index])
+}
+
+func csvFloat(row []string, index int) float64 {
+	value := csvString(row, index)
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func expandAlertRegion(db alertGeoDB, regionID string, source string) []string {
@@ -1571,6 +1661,18 @@ func coverageCodeMatches(coverage map[string]struct{}, raw string) bool {
 	return false
 }
 
+func coverageMatchesAlertCode(db alertGeoDB, coverage map[string]struct{}, raw string) bool {
+	if coverageCodeMatches(coverage, raw) {
+		return true
+	}
+	for _, code := range sameLocationCodesForAlertCode(db, raw) {
+		if coverageCodeMatches(coverage, code) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r renderer) alertsProduct(base Product, feed feedXML) (Product, error) {
 	now := time.Now().UTC()
 	entries := loadActiveCAPEntries(r.cfg.Store, feed.ID, now)
@@ -1690,19 +1792,19 @@ func stripAlertHeadlineState(headline string) string {
 
 func alertAreas(info capingest.AlertInfo, feed feedXML, baseDir string, forecastNames map[string]forecastRegionName) string {
 	coverage := feedCoverageModel(baseDir, feed, forecastNames)
+	db := loadAlertGeoDB(baseDir)
 	if useBroadAlertRegions(info) {
-		if broad := broadAlertAreaPhrase(info, coverage); broad != "" {
+		if broad := broadAlertAreaPhrase(info, coverage, db); broad != "" {
 			return broad
 		}
 	}
-	db := loadAlertGeoDB(baseDir)
 	areas := []string{}
 	seen := map[string]struct{}{}
 	for _, area := range info.Areas {
 		if len(coverage.Codes) > 0 {
 			matched := false
 			for _, geocode := range area.Geocodes {
-				if coverageCodeMatches(coverage.Codes, geocode.Value) {
+				if coverageMatchesAlertCode(db, coverage.Codes, geocode.Value) {
 					matched = true
 					break
 				}
@@ -1762,7 +1864,7 @@ func useBroadAlertRegions(info capingest.AlertInfo) bool {
 	return false
 }
 
-func broadAlertAreaPhrase(info capingest.AlertInfo, coverage coverageModel) string {
+func broadAlertAreaPhrase(info capingest.AlertInfo, coverage coverageModel, db alertGeoDB) string {
 	if len(coverage.Regions) == 0 {
 		return ""
 	}
@@ -1773,7 +1875,7 @@ func broadAlertAreaPhrase(info capingest.AlertInfo, coverage coverageModel) stri
 	names := []string{}
 	seen := map[string]struct{}{}
 	for _, region := range coverage.Regions {
-		if !coverageRegionMatchesAlert(region, alertCodes) {
+		if !coverageRegionMatchesAlert(region, alertCodes, db) {
 			continue
 		}
 		name := broadRegionDisplayName(region.Name)
@@ -1816,9 +1918,9 @@ func alertInfoCoverageCodes(info capingest.AlertInfo) map[string]struct{} {
 	return codes
 }
 
-func coverageRegionMatchesAlert(region coverageRegion, alertCodes map[string]struct{}) bool {
+func coverageRegionMatchesAlert(region coverageRegion, alertCodes map[string]struct{}, db alertGeoDB) bool {
 	for code := range alertCodes {
-		if coverageCodeMatches(region.Subregions, code) {
+		if coverageMatchesAlertCode(db, region.Subregions, code) {
 			return true
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -44,6 +45,7 @@ func (p *Poller) FetchArchive(ctx context.Context, source SourceConfig) (int, er
 	for _, entry := range entries {
 		alert, err := p.fetchFirstCAP(ctx, source, entry.Links)
 		if err != nil {
+			log.Printf("[%s] CAP fetch skipped %s: %v", source.ID, entry.ID, err)
 			continue
 		}
 		if err := p.publishAlert(source, alert); err != nil {
@@ -71,6 +73,7 @@ func (p *Poller) PollAtom(ctx context.Context, source SourceConfig) error {
 				}
 				alert, err := p.fetchFirstCAP(ctx, source, entry.Links)
 				if err != nil {
+					log.Printf("[%s] CAP fetch skipped %s: %v", source.ID, entry.ID, err)
 					continue
 				}
 				if err := p.publishAlert(source, alert); err != nil {
@@ -78,6 +81,8 @@ func (p *Poller) PollAtom(ctx context.Context, source SourceConfig) error {
 				}
 				seen[entry.ID] = entry.Updated
 			}
+		} else {
+			log.Printf("[%s] CAP atom poll failed: %v", source.ID, err)
 		}
 
 		select {

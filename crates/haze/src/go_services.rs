@@ -813,13 +813,17 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                         .unwrap_or_else(|| {
                             "https://api.weather.gov/alerts/active.atom".to_string()
                         });
-                    let url = append_query_params(
-                        &url,
-                        source
-                            .and_then(|source| source.queries.as_ref())
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[]),
-                    );
+                    let url = if url.to_ascii_lowercase().contains(".atom") {
+                        url
+                    } else {
+                        append_query_params(
+                            &url,
+                            source
+                                .and_then(|source| source.queries.as_ref())
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]),
+                        )
+                    };
                     let source_id = source
                         .and_then(|source| source.id.as_ref())
                         .filter(|value| !value.trim().is_empty())
@@ -1857,6 +1861,47 @@ services:
         assert_eq!(specs[0].id, "svc:playout");
         assert_eq!(specs[0].binary, executable_name("haze-playout-rs"));
         assert!(specs[0].args.contains(&"250ms".to_string()));
+    }
+
+    #[test]
+    fn nws_cap_atom_source_does_not_append_query_filters() {
+        let root: RootConfig = serde_yaml::from_str(
+            r#"
+services:
+  go:
+    enabled: true
+    cap_ingest:
+      enabled: true
+      interval: 30s
+      timeout: 15s
+cap:
+  nws_cap:
+    enabled: true
+    sources:
+      - id: nws_api
+        url: https://api.weather.gov/alerts/active.atom
+        queries:
+          - severity=extreme,severe,moderate
+"#,
+        )
+        .expect("config");
+
+        let specs = service_specs(&root, &test_host());
+        let nws = specs
+            .iter()
+            .find(|spec| spec.id == "go:nws_cap_ingest")
+            .expect("nws cap spec");
+
+        let url_index = nws
+            .args
+            .iter()
+            .position(|arg| arg == "--url")
+            .expect("url arg")
+            + 1;
+        assert_eq!(
+            nws.args[url_index],
+            "https://api.weather.gov/alerts/active.atom"
+        );
     }
 
     #[test]

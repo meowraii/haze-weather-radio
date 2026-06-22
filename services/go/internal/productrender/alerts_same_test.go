@@ -95,6 +95,70 @@ func TestCAPSAMEPayloadConvertsBroadcastImmediateCAPToSAMEWithNPAS(t *testing.T)
 	}
 }
 
+func TestNWSCAPWarningGeneratesPrioritySAMEForCatchall(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"eas":{"SVR":"Severe Thunderstorm Warning"}}`)
+	var feed feedXML
+	feed.ID = "CAP-IT-ALL"
+	feed.Playout.SAME = "true"
+	feed.Playout.SAMEOriginator = "EAS"
+	feed.Alerts.NWSCAP.EnabledRaw = "true"
+	feed.Alerts.NWSCAP.Filter.UseFeedLocations = "false"
+	feed.Alerts.NWSCAP.Filter.Allowlist.Severities = []string{"Moderate", "Severe", "Extreme"}
+	alert := parseTestAlert(t, testNWSCAP("urn:test:nws:svr", "Alert", "2026-06-22T12:13:00-05:00", "2026-06-22T12:45:00-05:00"))
+	now := time.Date(2026, 6, 22, 17, 20, 0, 0, time.UTC)
+
+	if !feedAcceptsCAPSource(feed, alert) {
+		t.Fatal("catchall feed should accept NWS CAP source")
+	}
+	if !feedAllowsCAPAlert(feed, alert) {
+		t.Fatal("catchall feed should allow severe NWS CAP alert")
+	}
+	if !capPriorityBroadcastAllowed(alert, feed, dir, now) {
+		t.Fatal("fresh NWS severe thunderstorm warning should priority broadcast")
+	}
+	payload := capSAMEPayload(alert, feed, dir, now)
+	if payload["include_same"] != true {
+		t.Fatalf("include_same = %#v, want true (%#v)", payload["include_same"], payload)
+	}
+	if payload["same_event"] != "SVR" {
+		t.Fatalf("same_event = %#v, want SVR", payload["same_event"])
+	}
+	if payload["same_originator"] != "WXR" {
+		t.Fatalf("same_originator = %#v, want WXR", payload["same_originator"])
+	}
+	wantLocations := []string{"000000", "028121"}
+	if got := payload["same_locations"]; !reflect.DeepEqual(got, wantLocations) {
+		t.Fatalf("same_locations = %#v, want %#v", got, wantLocations)
+	}
+}
+
+func TestCAPSAMEPayloadKeepsSAMEAfterFreshnessWindow(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, ok := cfg.feedByID("sk-0001")
+	if !ok {
+		t.Fatal("fixture feed not found")
+	}
+	alert := parseTestAlert(t, testCAP("urn:test:stale-render", "Alert", "active", "2099-06-15T21:30:00-06:00", false))
+
+	payload := capSAMEPayload(alert, feed, cfg.BaseDir, time.Date(2026, 6, 15, 23, 30, 0, 0, time.UTC))
+
+	if payload["include_same"] != true {
+		t.Fatalf("include_same = %#v, want true (%#v)", payload["include_same"], payload)
+	}
+	if payload["same_suppressed_reason"] != nil {
+		t.Fatalf("same_suppressed_reason = %#v, want none", payload["same_suppressed_reason"])
+	}
+	if payload["same_event"] == "" {
+		t.Fatalf("same_event missing in payload %#v", payload)
+	}
+}
+
 func TestSameOriginatorForCAPDerivesNWSAndCivilAuthorities(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -288,6 +352,51 @@ GA|033|FFC|North Fulton|GA033|Fulton|13121|E|nc|33.9350|-84.3557
 
 	got := sameLocationsForCAP(info, feed, dir)
 	want := []string{"000000", "013121"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("same locations = %#v, want %#v", got, want)
+	}
+}
+
+func TestSameLocationsForCAPTranslatesSGCToNearestCLC(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "managed", "csv", "CAP-CP_Geocodes.csv"), `NAME,NOM,CAPCPGCODE,LAT_DD,LON_DD,CGNDBKEY,PROVINCE_C,COUNTRY_C
+Wabamun,,4811045,53.56186389990,-114.47830913600,,AB,CA
+`)
+	mustWrite(t, filepath.Join(dir, "managed", "csv", "CLC_Base_Zone.csv"), `CLC,UUID,English,French,X1,X2,LAT_DD,LON_DD,X3,X4,X5,PROVINCE_C,COUNTRY_C
+076232,fixture,Parkland Co. near Wabamun Carvel and Keephills,Parkland, , ,53.48353858000,-114.38112697000, , , ,AB,CA
+031419,fixture,The City of Calgary,Calgary, , ,51.05000000000,-114.06666600000, , , ,AB,CA
+`)
+	info := capingest.AlertInfo{
+		Areas: []capingest.AlertArea{{
+			Geocodes: []capingest.NameValue{{Name: "profile:CAP-CP:Location:0.3", Value: "4811045"}},
+		}},
+	}
+
+	got := sameLocationsForCAP(info, feedXML{}, dir)
+	want := []string{"000000", "076232"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("same locations = %#v, want %#v", got, want)
+	}
+}
+
+func TestSameLocationsForCAPMatchesCoverageAfterSGCTranslation(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "managed", "csv", "CAP-CP_Geocodes.csv"), `NAME,NOM,CAPCPGCODE,LAT_DD,LON_DD,CGNDBKEY,PROVINCE_C,COUNTRY_C
+Wabamun,,4811045,53.56186389990,-114.47830913600,,AB,CA
+`)
+	mustWrite(t, filepath.Join(dir, "managed", "csv", "CLC_Base_Zone.csv"), `CLC,UUID,English,French,X1,X2,LAT_DD,LON_DD,X3,X4,X5,PROVINCE_C,COUNTRY_C
+076232,fixture,Parkland Co. near Wabamun Carvel and Keephills,Parkland, , ,53.48353858000,-114.38112697000, , , ,AB,CA
+`)
+	var feed feedXML
+	feed.Locations.Coverage.Regions = []coverageRegionXML{{ID: "076232", Source: "eccc"}}
+	info := capingest.AlertInfo{
+		Areas: []capingest.AlertArea{{
+			Geocodes: []capingest.NameValue{{Name: "profile:CAP-CP:Location:0.3", Value: "4811045"}},
+		}},
+	}
+
+	got := sameLocationsForCAP(info, feed, dir)
+	want := []string{"076232"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("same locations = %#v, want %#v", got, want)
 	}

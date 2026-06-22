@@ -500,7 +500,11 @@ func SerializeCAPAlert(alert capingest.Alert, info capingest.AlertInfo, feedID s
 	})
 	onset := fallbackText(info.Onset, info.Effective)
 	visualEvent := strings.Join(nonEmpty([]string{info.Event, info.Headline, AlertSubject(info), message}), " ")
-	gradient := PickBannerGradient([]AlertVisualInput{{Severity: info.Severity, Event: visualEvent}})
+	gradient := PickBannerGradient([]AlertVisualInput{{
+		Severity:           info.Severity,
+		Event:              visualEvent,
+		BroadcastImmediate: IsBroadcastImmediateInfo(info),
+	}})
 	return SerializedAlert{
 		Identifier:         CleanFragment(alert.Identifier),
 		FeedID:             CleanFragment(feedID),
@@ -530,12 +534,18 @@ func SerializeCAPAlert(alert capingest.Alert, info capingest.AlertInfo, feedID s
 
 // AlertVisualInput is the minimal shape needed to choose banner colors.
 type AlertVisualInput struct {
-	Severity string
-	Event    string
+	Severity           string
+	Event              string
+	BroadcastImmediate bool
 }
 
 // PickBannerGradient returns the EAS crawl gradient for a group of alerts.
 func PickBannerGradient(alerts []AlertVisualInput) []string {
+	for _, entry := range alerts {
+		if entry.BroadcastImmediate {
+			return append([]string{}, easCrawlColors["warning"]...)
+		}
+	}
 	for _, severity := range severityPriority {
 		for _, entry := range alerts {
 			entrySeverity := strings.Title(strings.ToLower(CleanFragment(entry.Severity)))
@@ -563,6 +573,19 @@ func PickBannerGradient(alerts []AlertVisualInput) []string {
 // PickBannerColor returns the first banner color for a group of alerts.
 func PickBannerColor(alerts []AlertVisualInput) string {
 	return PickBannerGradient(alerts)[0]
+}
+
+// IsBroadcastImmediateInfo reports whether a CAP info block requests immediate broadcast handling.
+func IsBroadcastImmediateInfo(info capingest.AlertInfo) bool {
+	for _, param := range info.Parameters {
+		name := strings.ToLower(strings.TrimSpace(param.Name))
+		if !strings.Contains(name, "broadcast_immediately") && !strings.Contains(name, "wirelessimmediate") {
+			continue
+		}
+		value := strings.ToLower(strings.TrimSpace(param.Value))
+		return value == "yes" || value == "true" || value == "1" || value == "broadcast immediate"
+	}
+	return false
 }
 
 // NormalizeHeadline mirrors the Python banner headline normalizer.

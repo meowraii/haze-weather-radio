@@ -21,15 +21,16 @@ type BannerHub struct {
 }
 
 type bannerOnAirAlert struct {
-	FeedID     string
-	AlertID    string
-	QueueID    string
-	Event      string
-	Header     string
-	AlertText  string
-	BannerText string
-	ExpiresAt  time.Time
-	UpdatedAt  time.Time
+	FeedID             string
+	AlertID            string
+	QueueID            string
+	Event              string
+	Header             string
+	AlertText          string
+	BannerText         string
+	BroadcastImmediate bool
+	ExpiresAt          time.Time
+	UpdatedAt          time.Time
 }
 
 func NewBannerHub(configPath string, addr string) *BannerHub {
@@ -80,18 +81,19 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 		Header  string   `json:"header"`
 		Event   string   `json:"event"`
 		Data    struct {
-			FeedID     string   `json:"feed_id"`
-			FeedIDs    []string `json:"feed_ids"`
-			QueueID    string   `json:"queue_id"`
-			Header     string   `json:"header"`
-			Event      string   `json:"event"`
-			AlertID    string   `json:"alert_id"`
-			Title      string   `json:"title"`
-			AlertText  string   `json:"alert_text"`
-			BannerText string   `json:"banner_text"`
-			TTSText    string   `json:"tts_text"`
-			Text       string   `json:"text"`
-			Message    string   `json:"message"`
+			FeedID             string   `json:"feed_id"`
+			FeedIDs            []string `json:"feed_ids"`
+			QueueID            string   `json:"queue_id"`
+			Header             string   `json:"header"`
+			Event              string   `json:"event"`
+			AlertID            string   `json:"alert_id"`
+			Title              string   `json:"title"`
+			AlertText          string   `json:"alert_text"`
+			BannerText         string   `json:"banner_text"`
+			BroadcastImmediate bool     `json:"broadcast_immediate"`
+			TTSText            string   `json:"tts_text"`
+			Text               string   `json:"text"`
+			Message            string   `json:"message"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
@@ -121,15 +123,16 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 				alertID = fallbackString(queueID, event.Data.Event, event.Event)
 			}
 			h.onAir[feedID] = bannerOnAirAlert{
-				FeedID:     feedID,
-				AlertID:    alertID,
-				QueueID:    queueID,
-				Event:      fallbackString(event.Data.Event, event.Event, item.Event),
-				Header:     fallbackString(event.Data.Header, event.Header, item.Header, event.Data.Title),
-				AlertText:  fallbackString(event.Data.AlertText, event.Data.TTSText, event.Data.Text, event.Data.Message, item.AlertText),
-				BannerText: fallbackString(event.Data.BannerText, item.BannerText),
-				ExpiresAt:  now.Add(30 * time.Minute),
-				UpdatedAt:  now,
+				FeedID:             feedID,
+				AlertID:            alertID,
+				QueueID:            queueID,
+				Event:              fallbackString(event.Data.Event, event.Event, item.Event),
+				Header:             fallbackString(event.Data.Header, event.Header, item.Header, event.Data.Title),
+				AlertText:          fallbackString(event.Data.AlertText, event.Data.TTSText, event.Data.Text, event.Data.Message, item.AlertText),
+				BannerText:         fallbackString(event.Data.BannerText, item.BannerText),
+				BroadcastImmediate: event.Data.BroadcastImmediate || item.BroadcastImmediate,
+				ExpiresAt:          now.Add(30 * time.Minute),
+				UpdatedAt:          now,
 			}
 		case "alert.playout.completed":
 			item := h.queueItem(queueID, feedID)

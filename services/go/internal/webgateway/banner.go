@@ -185,16 +185,19 @@ func buildBannerPayload(configPath string, feedID string, hub *BannerHub) banner
 			serialized.Message = text
 		}
 		visualEvent := bannerVisualEvent(info, record)
+		broadcastImmediate := record.BroadcastImmediate || alerttext.IsBroadcastImmediateInfo(info)
 		alertGradient := alerttext.PickBannerGradient([]alerttext.AlertVisualInput{{
-			Severity: info.Severity,
-			Event:    visualEvent,
+			Severity:           info.Severity,
+			Event:              visualEvent,
+			BroadcastImmediate: broadcastImmediate,
 		}})
 		serialized.BackgroundColor = alertGradient[0]
 		serialized.BackgroundGradient = alertGradient
 		alerts = append(alerts, serialized)
 		visuals = append(visuals, alerttext.AlertVisualInput{
-			Severity: info.Severity,
-			Event:    visualEvent,
+			Severity:           info.Severity,
+			Event:              visualEvent,
+			BroadcastImmediate: broadcastImmediate,
 		})
 	}
 	gradient := alerttext.PickBannerGradient(visuals)
@@ -412,12 +415,13 @@ func bannerRecordFromOnAirAlert(item bannerOnAirAlert, now time.Time) archiveCAP
 	bannerText := strings.TrimSpace(fallbackString(item.BannerText, alertText))
 	sent := updated.UTC().Format(time.RFC3339Nano)
 	return archiveCAPRecord{
-		ID:         alertID,
-		FeedID:     item.FeedID,
-		Status:     "on_air",
-		UpdatedAt:  updated,
-		AlertText:  alertText,
-		BannerText: bannerText,
+		ID:                 alertID,
+		FeedID:             item.FeedID,
+		Status:             "on_air",
+		UpdatedAt:          updated,
+		AlertText:          alertText,
+		BannerText:         bannerText,
+		BroadcastImmediate: item.BroadcastImmediate,
 		Alert: capingest.Alert{
 			Identifier:  alertID,
 			Sent:        sent,
