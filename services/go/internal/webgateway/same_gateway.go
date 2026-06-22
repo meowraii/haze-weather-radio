@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 )
 
 const alertQueueDir = "runtime/queues/alerts"
@@ -152,6 +154,7 @@ type sameGenerateRequest struct {
 type sameQueueItem struct {
 	ID                 string             `json:"id"`
 	AlertID            string             `json:"alert_id,omitempty"`
+	AlertPacket        *alertmodel.Packet `json:"alert_packet,omitempty"`
 	Type               string             `json:"type"`
 	Status             string             `json:"status"`
 	CreatedAt          time.Time          `json:"created_at"`
@@ -553,7 +556,36 @@ func persistSameQueueItemWithID(configPath string, forcedID string, request same
 		return sameQueueItem{}, err
 	}
 	item := sameQueueItem{
-		ID:           id,
+		ID: id,
+		AlertPacket: &alertmodel.Packet{
+			ID:      id,
+			Source:  "webpanel",
+			FeedIDs: feedIDs,
+			Content: alertmodel.Content{
+				Event: request.Event,
+			},
+			SAME: &alertmodel.SAME{
+				Include:    true,
+				Event:      request.Event,
+				Originator: request.Originator,
+				Locations:  request.Locations,
+				Duration:   request.Duration,
+				Callsign:   request.Callsign,
+				Tone:       request.Tone,
+				Header:     header,
+			},
+			Audio: &alertmodel.Audio{
+				Path:       audioRel,
+				Format:     stringPayload(result, "format", "raw"),
+				SampleRate: intPayload(result, "sample_rate", 48000),
+				Channels:   intPayload(result, "channels", 1),
+				Bytes:      len(audio),
+				Source:     "webpanel",
+			},
+			Presentation: alertmodel.Presentation{
+				BannerText: strings.TrimSpace(bannerText),
+			},
+		},
 		Type:         "same_alert",
 		Status:       "pending",
 		CreatedAt:    time.Now().UTC(),

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
@@ -262,29 +263,30 @@ type playlistItem struct {
 }
 
 type priorityAlertManifest struct {
-	ID                 string   `json:"id"`
-	AlertID            string   `json:"alert_id,omitempty"`
-	Type               string   `json:"type"`
-	Status             string   `json:"status"`
-	CreatedAt          string   `json:"created_at"`
-	FeedIDs            []string `json:"feed_ids"`
-	Header             string   `json:"header"`
-	Event              string   `json:"event"`
-	AlertText          string   `json:"alert_text,omitempty"`
-	BannerText         string   `json:"banner_text,omitempty"`
-	AlertSentAt        string   `json:"alert_sent_at,omitempty"`
-	AlertExpiresAt     string   `json:"alert_expires_at,omitempty"`
-	MessageType        string   `json:"message_type,omitempty"`
-	BroadcastImmediate bool     `json:"broadcast_immediate,omitempty"`
-	AudioPath          string   `json:"audio_path"`
-	Format             string   `json:"format"`
-	SampleRate         int      `json:"sample_rate"`
-	Channels           int      `json:"channels"`
-	AudioBytes         int      `json:"audio_bytes"`
-	Source             string   `json:"source"`
-	Priority           string   `json:"priority"`
-	AuthoritativeURL   string   `json:"authoritative_url,omitempty"`
-	LastError          string   `json:"last_error,omitempty"`
+	ID                 string             `json:"id"`
+	AlertID            string             `json:"alert_id,omitempty"`
+	AlertPacket        *alertmodel.Packet `json:"alert_packet,omitempty"`
+	Type               string             `json:"type"`
+	Status             string             `json:"status"`
+	CreatedAt          string             `json:"created_at"`
+	FeedIDs            []string           `json:"feed_ids"`
+	Header             string             `json:"header"`
+	Event              string             `json:"event"`
+	AlertText          string             `json:"alert_text,omitempty"`
+	BannerText         string             `json:"banner_text,omitempty"`
+	AlertSentAt        string             `json:"alert_sent_at,omitempty"`
+	AlertExpiresAt     string             `json:"alert_expires_at,omitempty"`
+	MessageType        string             `json:"message_type,omitempty"`
+	BroadcastImmediate bool               `json:"broadcast_immediate,omitempty"`
+	AudioPath          string             `json:"audio_path"`
+	Format             string             `json:"format"`
+	SampleRate         int                `json:"sample_rate"`
+	Channels           int                `json:"channels"`
+	AudioBytes         int                `json:"audio_bytes"`
+	Source             string             `json:"source"`
+	Priority           string             `json:"priority"`
+	AuthoritativeURL   string             `json:"authoritative_url,omitempty"`
+	LastError          string             `json:"last_error,omitempty"`
 }
 
 type fixedEvent struct {
@@ -957,6 +959,7 @@ func (p *feedPlanner) insert(ctx context.Context, data map[string]any) {
 }
 
 func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]any) {
+	data = alertmodel.MergePacketFields(data)
 	alertID := firstText(nil, data, "alert_id", "id", "subject")
 	if alertID == "" {
 		alertID = fmt.Sprintf("cap-%d", time.Now().UnixNano())
@@ -1125,6 +1128,8 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 	if lastErr != nil && source != "cap-broadcast-audio" {
 		manifest.LastError = "broadcast audio fallback: " + lastErr.Error()
 	}
+	packet := p.alertPacketForManifest(data, manifest, alertText, sameHeader.Header)
+	manifest.AlertPacket = &packet
 	cleanupSupersededAlertQueueParts(p.cfg.BaseDir, p.feed.ID, alertID, queueID)
 	if err := writePriorityAlertManifest(filepath.Join(p.cfg.BaseDir, "runtime", "queues", "alerts", queueID+".json"), manifest); err != nil {
 		p.lastError = err.Error()
@@ -1137,7 +1142,8 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 }
 
 func (p *feedPlanner) publishAlertAudioReady(manifest priorityAlertManifest, data map[string]any, alertText string, sameHeader string) {
-	payload := map[string]any{
+	packet := p.alertPacketForManifest(data, manifest, alertText, sameHeader)
+	base := map[string]any{
 		"feed_id":              p.feed.ID,
 		"alert_id":             manifest.AlertID,
 		"queue_id":             manifest.ID,
@@ -1177,6 +1183,7 @@ func (p *feedPlanner) publishAlertAudioReady(manifest priorityAlertManifest, dat
 		"same_header":          sameHeader,
 		"background_color":     firstText(nil, data, "background_color"),
 	}
+	payload := alertmodel.WithLegacyFields(packet, base)
 	if locations := stringListAny(firstValue(nil, data, "same_locations", "locations")); len(locations) > 0 {
 		payload["same_locations"] = locations
 	}
@@ -1263,6 +1270,12 @@ func alertTextFromData(data map[string]any) string {
 }
 
 func (p *feedPlanner) alertTextFromData(data map[string]any) string {
+	if packet, ok := packetFromData(data); ok {
+		compatData := alertmodel.WithLegacyFields(packet, data)
+		if text := p.alertTextFromPacket(packet, compatData); text != "" {
+			return text
+		}
+	}
 	capSource := firstText(nil, data, "cap_source")
 	if strings.EqualFold(capSource, "nws") {
 		if intro := p.sameSpeechIntroFromData(data); intro != "" {
@@ -1280,6 +1293,12 @@ func (p *feedPlanner) alertTextFromData(data map[string]any) string {
 }
 
 func (p *feedPlanner) bannerTextFromData(data map[string]any, alertText string) string {
+	if packet, ok := packetFromData(data); ok {
+		compatData := alertmodel.WithLegacyFields(packet, data)
+		if text := p.bannerTextFromPacket(packet, compatData, alertText); text != "" {
+			return text
+		}
+	}
 	if text := strings.TrimSpace(firstText(nil, data, "banner_text")); text != "" {
 		return text
 	}
@@ -1305,11 +1324,113 @@ func (p *feedPlanner) bannerTextFromData(data map[string]any, alertText string) 
 	return strings.TrimSpace(strings.Join(nonEmptyStrings(parts), " "))
 }
 
+func packetFromData(data map[string]any) (alertmodel.Packet, bool) {
+	if _, ok := data["alert_packet"]; !ok {
+		return alertmodel.Packet{}, false
+	}
+	return alertmodel.FromMap(data)
+}
+
+func (p *feedPlanner) alertTextFromPacket(packet alertmodel.Packet, data map[string]any) string {
+	capSource := fallbackText(packet.Source, firstText(nil, data, "cap_source"))
+	if strings.EqualFold(capSource, "nws") {
+		parts := []string{}
+		if intro := p.sameSpeechIntroFromData(data); intro != "" {
+			parts = append(parts, intro)
+		}
+		parts = append(parts, cleanPacketBodyParts(capSource, packet)...)
+		return strings.TrimSpace(strings.Join(nonEmptyStrings(parts), " "))
+	}
+	if text := strings.TrimSpace(packet.Presentation.SpeechText); text != "" {
+		return text
+	}
+	parts := []string{}
+	if packet.Options.PrependSAMETranslation {
+		if intro := p.sameSpeechIntroFromData(data); intro != "" {
+			parts = append(parts, intro)
+		}
+	}
+	parts = append(parts, cleanPacketBodyParts(capSource, packet)...)
+	return strings.TrimSpace(strings.Join(nonEmptyStrings(parts), " "))
+}
+
+func (p *feedPlanner) bannerTextFromPacket(packet alertmodel.Packet, data map[string]any, alertText string) string {
+	if text := strings.TrimSpace(packet.Presentation.BannerText); text != "" {
+		return text
+	}
+	capSource := fallbackText(packet.Source, firstText(nil, data, "cap_source"))
+	parts := []string{}
+	if intro := p.sameIntroFromData(data); intro != "" {
+		parts = append(parts, intro)
+	}
+	parts = append(parts, cleanPacketBodyParts(capSource, packet)...)
+	if len(parts) <= 1 {
+		if custom := customAlertTextFromData(data); custom != "" && !sameText(parts, custom) {
+			parts = append(parts, custom)
+		}
+	}
+	if len(parts) == 0 {
+		return strings.TrimSpace(alertText)
+	}
+	return strings.TrimSpace(strings.Join(nonEmptyStrings(parts), " "))
+}
+
+func cleanPacketBodyParts(capSource string, packet alertmodel.Packet) []string {
+	if text := strings.TrimSpace(packet.Content.CustomText); text != "" {
+		return []string{cleanAlertBodyText(capSource, text)}
+	}
+	parts := []string{}
+	if description := strings.TrimSpace(packet.Content.Description); description != "" {
+		parts = append(parts, cleanAlertBodyText(capSource, description))
+	}
+	if instruction := strings.TrimSpace(packet.Content.Instruction); instruction != "" {
+		parts = append(parts, cleanAlertBodyText(capSource, instruction))
+	}
+	return parts
+}
+
 func cleanAlertBodyText(capSource string, raw string) string {
 	if strings.EqualFold(capSource, "nws") {
 		return alerttext.CleanNWSAlertText(raw)
 	}
 	return alerttext.CleanAlertText(raw)
+}
+
+func (p *feedPlanner) alertPacketForManifest(data map[string]any, manifest priorityAlertManifest, alertText string, sameHeader string) alertmodel.Packet {
+	packet, ok := alertmodel.FromMap(data)
+	if !ok {
+		packet = alertmodel.LegacyFromMap(data)
+	}
+	packet.ID = fallbackText(packet.ID, manifest.AlertID)
+	packet.FeedID = p.feed.ID
+	packet.FeedIDs = []string{p.feed.ID}
+	packet.MessageType = fallbackText(packet.MessageType, manifest.MessageType)
+	packet.Content.Title = fallbackText(packet.Content.Title, manifest.Header)
+	packet.Content.Event = fallbackText(packet.Content.Event, manifest.Event)
+	packet.Timing.SentAt = fallbackText(packet.Timing.SentAt, manifest.AlertSentAt)
+	packet.Timing.ExpiresAt = fallbackText(packet.Timing.ExpiresAt, manifest.AlertExpiresAt)
+	packet.Options.BroadcastImmediate = packet.Options.BroadcastImmediate || manifest.BroadcastImmediate
+	packet.Presentation.SpeechText = strings.TrimSpace(alertText)
+	packet.Presentation.BannerText = strings.TrimSpace(manifest.BannerText)
+	if packet.SAME == nil && manifest.Priority == "same" {
+		packet.SAME = &alertmodel.SAME{Include: true}
+	}
+	if packet.SAME != nil {
+		packet.SAME.Header = fallbackText(packet.SAME.Header, sameHeader)
+		packet.SAME.Event = fallbackText(packet.SAME.Event, manifest.Event)
+	}
+	if packet.Audio == nil {
+		packet.Audio = &alertmodel.Audio{}
+	}
+	packet.Audio.Path = manifest.AudioPath
+	packet.Audio.Format = manifest.Format
+	packet.Audio.SampleRate = manifest.SampleRate
+	packet.Audio.Channels = manifest.Channels
+	packet.Audio.Bytes = manifest.AudioBytes
+	packet.Audio.Source = manifest.Source
+	packet.Audio.URL = fallbackText(packet.Audio.URL, manifest.AuthoritativeURL)
+	packet.Audio.Authoritative = packet.Audio.Authoritative || manifest.AuthoritativeURL != ""
+	return packet.Normalize()
 }
 
 func (p *feedPlanner) sameIntroFromData(data map[string]any) string {

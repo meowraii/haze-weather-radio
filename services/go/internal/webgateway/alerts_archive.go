@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
@@ -287,6 +288,19 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 	}
 	info := chooseArchiveInfo(record.Alert)
 	areas := archiveAreaNames(info)
+	data["event"] = info.Event
+	data["headline"] = info.Headline
+	data["severity"] = info.Severity
+	data["urgency"] = info.Urgency
+	data["certainty"] = info.Certainty
+	data["description"] = info.Description
+	data["instruction"] = info.Instruction
+	if record.Alert.Sent != "" {
+		data["alert_sent_at"] = record.Alert.Sent
+	}
+	if info.Expires != "" {
+		data["alert_expires_at"] = info.Expires
+	}
 	data["alert_text"] = alerttext.BuildCAPAlertText(alerttext.CAPMessageRequest{
 		Alert:     record.Alert,
 		Info:      info,
@@ -299,6 +313,8 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 		data["audio_mime_type"] = audio.MimeType
 		data["audio_authoritative"] = true
 	}
+	packet, _ := alertmodel.FromMap(data)
+	data = alertmodel.WithLegacyFields(packet, data)
 	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
 	if bridgeAddr == "" {
 		return nil, fmt.Errorf("event bridge is not available")

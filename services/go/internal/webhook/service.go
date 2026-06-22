@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 )
 
@@ -192,17 +193,36 @@ type discordFooter struct {
 }
 
 func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[string]any, listenBaseURL string) discordPayload {
+	packet, hasPacket := alertmodel.FromMap(data)
 	title := firstNonBlank(firstText(nil, data, "headline"), firstText(nil, data, "title", "header"), sameEvent)
 	description := firstText(nil, data, "description")
+	instruction := firstText(nil, data, "instruction")
 	generated := firstText(nil, data, "alert_text", "same_message", "message")
+	backgroundColor := firstText(nil, data, "background_color")
+	severity := firstText(nil, data, "severity")
+	eventName := firstNonBlank(firstText(nil, data, "event"), sameEvent)
+	expiresAt := firstText(nil, data, "expires", "alert_expires_at")
+	if hasPacket {
+		title = firstNonBlank(packet.Content.Headline, packet.Content.Title, title)
+		description = firstNonBlank(packet.Content.Description, description)
+		instruction = firstNonBlank(packet.Content.Instruction, instruction)
+		generated = firstNonBlank(packet.Presentation.SpeechText, generated)
+		backgroundColor = firstNonBlank(packet.Content.BackgroundColor, backgroundColor)
+		severity = firstNonBlank(packet.Content.Severity, severity)
+		eventName = firstNonBlank(packet.Content.Event, packet.Content.EventName, eventName)
+		expiresAt = firstNonBlank(packet.Timing.ExpiresAt, expiresAt)
+		if packet.SAME != nil {
+			eventName = firstNonBlank(packet.SAME.Event, eventName)
+		}
+	}
 	if description == "" || len(description) > 4096 {
 		description = generated
 	}
 	color := colorInt(firstNonBlank(
-		firstText(nil, data, "background_color"),
+		backgroundColor,
 		alerttext.PickBannerColor([]alerttext.AlertVisualInput{{
-			Severity: firstText(nil, data, "severity"),
-			Event:    firstNonBlank(firstText(nil, data, "event"), title, sameEvent),
+			Severity: severity,
+			Event:    firstNonBlank(eventName, title, sameEvent),
 		}}),
 	))
 	embed := discordEmbed{
@@ -213,13 +233,13 @@ func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[s
 	}
 	embed.Fields = append(embed.Fields,
 		discordEmbedField{Name: "Feed", Value: clipText(feedID, 1024), Inline: true},
-		discordEmbedField{Name: "Event", Value: clipText(firstNonBlank(firstText(nil, data, "event"), sameEvent), 1024), Inline: true},
-		discordEmbedField{Name: "Severity", Value: clipText(firstNonBlank(firstText(nil, data, "severity"), "Unknown"), 1024), Inline: true},
+		discordEmbedField{Name: "Event", Value: clipText(eventName, 1024), Inline: true},
+		discordEmbedField{Name: "Severity", Value: clipText(firstNonBlank(severity, "Unknown"), 1024), Inline: true},
 	)
-	if expires := firstText(nil, data, "expires", "alert_expires_at"); expires != "" {
-		embed.Fields = append(embed.Fields, discordEmbedField{Name: "Expires", Value: clipText(expires, 1024), Inline: true})
+	if expiresAt != "" {
+		embed.Fields = append(embed.Fields, discordEmbedField{Name: "Expires", Value: clipText(expiresAt, 1024), Inline: true})
 	}
-	if instruction := firstText(nil, data, "instruction"); instruction != "" {
+	if instruction != "" {
 		embed.Fields = append(embed.Fields, discordEmbedField{Name: "Instruction", Value: clipText(instruction, 1024), Inline: false})
 	}
 	if header := codeBlockText(firstText(nil, data, "same_header"), 1024); header != "" {

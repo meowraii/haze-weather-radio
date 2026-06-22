@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
@@ -316,16 +317,21 @@ func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []
 					expires = now.Add(15 * time.Second)
 				}
 			}
+			packetFields := map[string]any{}
+			if item.AlertPacket != nil {
+				packetFields = alertmodel.LegacyFields(item.AlertPacket.Normalize())
+			}
 			out = append(out, bannerOnAirAlert{
-				FeedID:     targetFeedID,
-				AlertID:    item.AlertID,
-				QueueID:    item.ID,
-				Event:      item.Event,
-				Header:     item.Header,
-				AlertText:  item.AlertText,
-				BannerText: item.BannerText,
-				ExpiresAt:  expires,
-				UpdatedAt:  now,
+				FeedID:             targetFeedID,
+				AlertID:            fallbackString(packetField(packetFields, "alert_id"), item.AlertID),
+				QueueID:            item.ID,
+				Event:              fallbackString(packetField(packetFields, "same_event"), packetField(packetFields, "event"), item.Event),
+				Header:             fallbackString(packetField(packetFields, "headline"), packetField(packetFields, "title"), item.Header),
+				AlertText:          fallbackString(packetField(packetFields, "alert_text"), item.AlertText),
+				BannerText:         fallbackString(packetField(packetFields, "banner_text"), item.BannerText),
+				BroadcastImmediate: packetBool(packetFields, "broadcast_immediate") || item.BroadcastImmediate,
+				ExpiresAt:          expires,
+				UpdatedAt:          now,
 			})
 		}
 	}

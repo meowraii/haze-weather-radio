@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
@@ -78,59 +79,14 @@ func (s *Service) handleCAPAlert(event map[string]any) {
 			})
 		}
 		if item.Broadcast {
-			data := map[string]any{
-				"feed_id":       item.FeedID,
-				"alert_id":      alert.Identifier,
-				"alert_sent_at": alert.Sent,
-				"message_type":  alert.MessageType,
-				"path":          item.Path,
-				"package_id":    "alerts",
-				"title":         alertBroadcastTitle(alert),
-			}
-			if item.Headline != "" {
-				data["headline"] = item.Headline
-				data["title"] = item.Headline
-			}
-			if item.Event != "" {
-				data["event"] = item.Event
-			}
-			if item.Severity != "" {
-				data["severity"] = item.Severity
-			}
-			if item.Urgency != "" {
-				data["urgency"] = item.Urgency
-			}
-			if item.Certainty != "" {
-				data["certainty"] = item.Certainty
-			}
-			if item.Description != "" {
-				data["description"] = item.Description
-			}
-			if item.Instruction != "" {
-				data["instruction"] = item.Instruction
-			}
-			if item.BackgroundColor != "" {
-				data["background_color"] = item.BackgroundColor
-			}
-			if item.BroadcastImmediate {
-				data["broadcast_immediate"] = true
-			}
-			if expires := alertExpiresAt(alert); !expires.IsZero() {
-				data["alert_expires_at"] = expires.Format(time.RFC3339Nano)
+			extra := map[string]any{
+				"path":       item.Path,
+				"package_id": "alerts",
 			}
 			if item.AlertText != "" {
-				data["alert_text"] = item.AlertText
+				extra["alert_text"] = item.AlertText
 			}
-			for key, value := range item.SAME {
-				data[key] = value
-			}
-			if item.AudioURL != "" {
-				data["audio_url"] = item.AudioURL
-				data["audio_mime_type"] = item.AudioMimeType
-				data["audio_language"] = item.AudioLanguage
-				data["audio_description"] = item.AudioDescription
-				data["audio_authoritative"] = true
-			}
+			data := alertmodel.WithLegacyFields(item.AlertPacket, extra)
 			_ = s.bridge.Publish(map[string]any{
 				"type":    "cap.alert.broadcast.requested",
 				"source":  serviceID,
@@ -505,6 +461,7 @@ type capRegistryUpdate struct {
 	AudioLanguage      string
 	AudioDescription   string
 	SAME               map[string]any
+	AlertPacket        alertmodel.Packet
 }
 
 func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capRegistryUpdate, error) {
@@ -664,6 +621,8 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 		if broadcast && !s.claimCAPPriorityBroadcast(feed.ID, alert.Identifier) {
 			broadcast = false
 		}
+		samePayload := capSAMEPayload(alert, feed, s.cfg.BaseDir, now)
+		packet := capAlertPacket(alert, feed, headline, eventName, severity, urgency, certainty, description, instruction, backgroundColor, broadcastImmediate, alertText, audio, samePayload)
 		updates = append(updates, capRegistryUpdate{
 			FeedID:             feed.ID,
 			Renderable:         hasRenderableCAPEntries(entries, now),
@@ -684,10 +643,46 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 			AudioMimeType:      audio.MimeType,
 			AudioLanguage:      audio.Language,
 			AudioDescription:   audio.Description,
-			SAME:               capSAMEPayload(alert, feed, s.cfg.BaseDir, now),
+			SAME:               samePayload,
+			AlertPacket:        packet,
 		})
 	}
 	return updates, nil
+}
+
+func capAlertPacket(alert capingest.Alert, feed feedXML, headline string, eventName string, severity string, urgency string, certainty string, description string, instruction string, backgroundColor string, broadcastImmediate bool, alertText string, audio capBroadcastAudio, samePayload map[string]any) alertmodel.Packet {
+	data := map[string]any{
+		"feed_id":             feed.ID,
+		"alert_id":            alert.Identifier,
+		"alert_sent_at":       alert.Sent,
+		"message_type":        alert.MessageType,
+		"title":               firstNonBlank(headline, alertBroadcastTitle(alert)),
+		"headline":            headline,
+		"event":               eventName,
+		"severity":            severity,
+		"urgency":             urgency,
+		"certainty":           certainty,
+		"description":         description,
+		"instruction":         instruction,
+		"background_color":    backgroundColor,
+		"broadcast_immediate": broadcastImmediate,
+	}
+	if expires := alertExpiresAt(alert); !expires.IsZero() {
+		data["alert_expires_at"] = expires.Format(time.RFC3339Nano)
+	}
+	for key, value := range samePayload {
+		data[key] = value
+	}
+	if audio.URL != "" {
+		data["audio_url"] = audio.URL
+		data["audio_mime_type"] = audio.MimeType
+		data["audio_language"] = audio.Language
+		data["audio_description"] = audio.Description
+		data["audio_authoritative"] = true
+	}
+	packet, _ := alertmodel.FromMap(data)
+	packet.Presentation.SpeechText = strings.TrimSpace(alertText)
+	return packet
 }
 
 func (s *Service) claimCAPPriorityBroadcast(feedID string, alertID string) bool {

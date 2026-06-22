@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
 )
 
@@ -108,7 +109,8 @@ func (s *wsSession) broadcastAlertData(payload map[string]any, targets []string,
 	if scheduleAt := parseOptionalTime(stringPayload(payload, "schedule_at", "")); !scheduleAt.IsZero() {
 		data["scheduled_for"] = scheduleAt.UTC().Format(time.RFC3339Nano)
 	}
-	return data
+	packet, _ := alertmodel.FromMap(data)
+	return alertmodel.WithLegacyFields(packet, data)
 }
 
 func manualAlertSpeechText(customText string, description string, instruction string, fallbackValues ...string) string {

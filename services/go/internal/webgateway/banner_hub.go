@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 )
 
 const bannerBridgeReconnectDelay = 750 * time.Millisecond
@@ -81,19 +84,20 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 		Header  string   `json:"header"`
 		Event   string   `json:"event"`
 		Data    struct {
-			FeedID             string   `json:"feed_id"`
-			FeedIDs            []string `json:"feed_ids"`
-			QueueID            string   `json:"queue_id"`
-			Header             string   `json:"header"`
-			Event              string   `json:"event"`
-			AlertID            string   `json:"alert_id"`
-			Title              string   `json:"title"`
-			AlertText          string   `json:"alert_text"`
-			BannerText         string   `json:"banner_text"`
-			BroadcastImmediate bool     `json:"broadcast_immediate"`
-			TTSText            string   `json:"tts_text"`
-			Text               string   `json:"text"`
-			Message            string   `json:"message"`
+			FeedID             string             `json:"feed_id"`
+			FeedIDs            []string           `json:"feed_ids"`
+			QueueID            string             `json:"queue_id"`
+			Header             string             `json:"header"`
+			Event              string             `json:"event"`
+			AlertID            string             `json:"alert_id"`
+			Title              string             `json:"title"`
+			AlertText          string             `json:"alert_text"`
+			BannerText         string             `json:"banner_text"`
+			BroadcastImmediate bool               `json:"broadcast_immediate"`
+			AlertPacket        *alertmodel.Packet `json:"alert_packet"`
+			TTSText            string             `json:"tts_text"`
+			Text               string             `json:"text"`
+			Message            string             `json:"message"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
@@ -118,7 +122,19 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 		switch eventType {
 		case "alert.playout.started", "cap.alert.audio.ready":
 			item := h.queueItem(queueID, feedID)
+			packet := event.Data.AlertPacket
+			if packet == nil {
+				packet = item.AlertPacket
+			}
+			packetFields := map[string]any{}
+			if packet != nil {
+				packetCopy := packet.Normalize()
+				packetFields = alertmodel.LegacyFields(packetCopy)
+			}
 			alertID := fallbackString(event.Data.AlertID, item.AlertID, alertIDFromQueueID(queueID, feedID))
+			if alertID == "" {
+				alertID = packetField(packetFields, "alert_id")
+			}
 			if alertID == "" {
 				alertID = fallbackString(queueID, event.Data.Event, event.Event)
 			}
@@ -126,11 +142,11 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 				FeedID:             feedID,
 				AlertID:            alertID,
 				QueueID:            queueID,
-				Event:              fallbackString(event.Data.Event, event.Event, item.Event),
-				Header:             fallbackString(event.Data.Header, event.Header, item.Header, event.Data.Title),
-				AlertText:          fallbackString(event.Data.AlertText, event.Data.TTSText, event.Data.Text, event.Data.Message, item.AlertText),
-				BannerText:         fallbackString(event.Data.BannerText, item.BannerText),
-				BroadcastImmediate: event.Data.BroadcastImmediate || item.BroadcastImmediate,
+				Event:              fallbackString(packetField(packetFields, "same_event"), packetField(packetFields, "event"), event.Data.Event, event.Event, item.Event),
+				Header:             fallbackString(packetField(packetFields, "headline"), packetField(packetFields, "title"), event.Data.Header, event.Header, item.Header, event.Data.Title),
+				AlertText:          fallbackString(packetField(packetFields, "alert_text"), event.Data.AlertText, event.Data.TTSText, event.Data.Text, event.Data.Message, item.AlertText),
+				BannerText:         fallbackString(packetField(packetFields, "banner_text"), event.Data.BannerText, item.BannerText),
+				BroadcastImmediate: packetBool(packetFields, "broadcast_immediate") || event.Data.BroadcastImmediate || item.BroadcastImmediate,
 				ExpiresAt:          now.Add(30 * time.Minute),
 				UpdatedAt:          now,
 			}
@@ -187,6 +203,38 @@ func (h *BannerHub) Active(feedID string, now time.Time) []bannerOnAirAlert {
 		out = append(out, active)
 	}
 	return out
+}
+
+func packetField(fields map[string]any, key string) string {
+	if fields == nil {
+		return ""
+	}
+	value, ok := fields[key]
+	if !ok {
+		return ""
+	}
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "<nil>" {
+		return ""
+	}
+	return text
+}
+
+func packetBool(fields map[string]any, key string) bool {
+	value, ok := fields[key]
+	if !ok {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "1", "yes", "on":
+			return true
+		}
+	}
+	return false
 }
 
 func eventFeedIDs(values ...any) []string {

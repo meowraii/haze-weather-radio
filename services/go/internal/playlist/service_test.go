@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
@@ -841,6 +842,67 @@ func TestNWSAlertTextUsesSameTranslationWithCAPProse(t *testing.T) {
 	bannerText := planner.bannerTextFromData(data, text)
 	if !strings.Contains(bannerText, "(CAP-IT-ALL).") {
 		t.Fatalf("banner text omitted source label: %q", bannerText)
+	}
+}
+
+func TestNWSAlertPacketUsesCanonicalBodyInsteadOfGeneratedText(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "managed", "csv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "managed", "sameMapping.json"), []byte(`{"eas":{"SVR":"Severe Thunderstorm Warning"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv"), []byte("STATE|ZONE_CODE|CWA_ID|ZONE_NAME|STATE+ZONE|COUNTY_NAME|FIPS/SAME|TIMEZONE|FE_AREA|LAT|LON\nCO|075|BOU|Logan|COC075|Logan|008075|M|nw|40.72|-103.09\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planner := &feedPlanner{cfg: loadedConfig{BaseDir: dir}, feed: feedXML{ID: "CAP-IT-ALL"}}
+	packet := alertmodel.Packet{
+		ID:          "urn:test:nws",
+		Source:      "nws",
+		FeedID:      "CAP-IT-ALL",
+		MessageType: "Alert",
+		Content: alertmodel.Content{
+			Headline:    "Severe Thunderstorm Warning",
+			Event:       "Severe Thunderstorm Warning",
+			Severity:    "Severe",
+			Description: "At 400 PM MDT, a severe thunderstorm was located east of Sterling.\n\nHAZARD...Two inch hail.",
+			Instruction: "Anyone outdoors should move to shelter inside a well-built structure.",
+		},
+		Timing: alertmodel.Timing{
+			SentAt:    "2026-06-22T22:00:00Z",
+			ExpiresAt: "2026-06-22T22:30:00Z",
+		},
+		SAME: &alertmodel.SAME{
+			Include:        true,
+			Event:          "SVR",
+			EventName:      "Severe Thunderstorm Warning",
+			Originator:     "WXR",
+			WeatherService: "The National Weather Service",
+			Locations:      []string{"008075"},
+			BeginsAt:       "2026-06-22T22:00:00Z",
+			ExpiresAt:      "2026-06-22T22:30:00Z",
+			Callsign:       "CAP-IT-ALL",
+		},
+		Presentation: alertmodel.Presentation{
+			SpeechText: "SVSBOU The National Weather Service in Denver has issued a generated wrapper that should not be spoken.",
+		},
+	}
+	text := planner.alertTextFromData(map[string]any{"alert_packet": packet})
+
+	if strings.Contains(text, "SVSBOU") || strings.Contains(text, "generated wrapper") {
+		t.Fatalf("NWS alert packet used generated text instead of canonical body: %q", text)
+	}
+	for _, wanted := range []string{
+		"The National Weather Service has issued a Severe Thunderstorm Warning",
+		"Logan, CO",
+		"At 400 PM MDT, a severe thunderstorm was located east of Sterling.",
+		"HAZARD. Two inch hail.",
+		"Anyone outdoors should move to shelter",
+	} {
+		if !strings.Contains(text, wanted) {
+			t.Fatalf("NWS alert packet text missing %q: %q", wanted, text)
+		}
 	}
 }
 
