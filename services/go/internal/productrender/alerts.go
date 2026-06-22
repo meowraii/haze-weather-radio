@@ -141,7 +141,10 @@ func (s *Service) handleCAPAlert(event map[string]any) {
 }
 
 func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now time.Time) map[string]any {
-	payload := map[string]any{"include_same": xmlBool(feed.Playout.SAME, true)}
+	payload := map[string]any{
+		"include_same": xmlBool(feed.Playout.SAME, true),
+		"cap_source":   detectCAPSource(alert),
+	}
 	if !xmlBool(feed.Playout.SAME, true) {
 		payload["same_suppressed_reason"] = "feed SAME disabled"
 		return payload
@@ -180,6 +183,15 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 	}
 	payload["same_locations"] = locations
 	payload["same_duration"] = sameDurationForCAP(alert, *info)
+	if sent := firstCAPTime(alert.Sent, []capingest.AlertInfo{*info}); !sent.IsZero() {
+		payload["same_sent_at"] = sent.Format(time.RFC3339Nano)
+	}
+	if begins := sameBeginsForCAP(alert, *info); !begins.IsZero() {
+		payload["same_begins_at"] = begins.Format(time.RFC3339Nano)
+	}
+	if expires := parseCAPTime(info.Expires); !expires.IsZero() {
+		payload["same_expires_at"] = expires.Format(time.RFC3339Nano)
+	}
 	payload["same_tone"] = sameToneForCAP(*info, feed)
 	return payload
 }
@@ -452,10 +464,22 @@ func sameWeatherServiceForCAP(alert capingest.Alert) string {
 }
 
 func sameOriginatorNameForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
+	if detectCAPSource(alert) == "nws" {
+		return ""
+	}
 	if name := strings.TrimSpace(info.SenderName); name != "" {
 		return name
 	}
 	return sameWeatherServiceForCAP(alert)
+}
+
+func sameBeginsForCAP(alert capingest.Alert, info capingest.AlertInfo) time.Time {
+	for _, raw := range []string{info.Onset, info.Effective, alert.Sent} {
+		if parsed := parseCAPTime(raw); !parsed.IsZero() {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func sameDurationForCAP(alert capingest.Alert, info capingest.AlertInfo) string {

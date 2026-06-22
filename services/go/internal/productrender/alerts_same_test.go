@@ -127,9 +127,21 @@ func TestNWSCAPWarningGeneratesPrioritySAMEForCatchall(t *testing.T) {
 	if payload["same_originator"] != "WXR" {
 		t.Fatalf("same_originator = %#v, want WXR", payload["same_originator"])
 	}
+	if payload["same_originator_name"] != "" {
+		t.Fatalf("same_originator_name = %#v, want empty so NWS uses weather service label", payload["same_originator_name"])
+	}
+	if payload["same_weather_service"] != "The National Weather Service" {
+		t.Fatalf("same_weather_service = %#v, want The National Weather Service", payload["same_weather_service"])
+	}
+	if payload["cap_source"] != "nws" {
+		t.Fatalf("cap_source = %#v, want nws", payload["cap_source"])
+	}
 	wantLocations := []string{"000000", "028121"}
 	if got := payload["same_locations"]; !reflect.DeepEqual(got, wantLocations) {
 		t.Fatalf("same_locations = %#v, want %#v", got, wantLocations)
+	}
+	if payload["same_begins_at"] == "" || payload["same_expires_at"] == "" || payload["same_sent_at"] == "" {
+		t.Fatalf("same timing fields missing in payload %#v", payload)
 	}
 }
 

@@ -1041,7 +1041,7 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 	}
 	title := fallbackText(firstText(nil, data, "title", "header"), "Weather Alert")
 	eventName := fallbackText(firstText(nil, data, "event"), "CAP")
-	alertText := alertTextFromData(data)
+	alertText := p.alertTextFromData(data)
 	bannerText := p.bannerTextFromData(data, alertText)
 	source := "cap-tts"
 	authoritativeURL := strings.TrimSpace(firstText(nil, data, "audio_url", "authoritative_url"))
@@ -1138,38 +1138,44 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 
 func (p *feedPlanner) publishAlertAudioReady(manifest priorityAlertManifest, data map[string]any, alertText string, sameHeader string) {
 	payload := map[string]any{
-		"feed_id":             p.feed.ID,
-		"alert_id":            manifest.AlertID,
-		"queue_id":            manifest.ID,
-		"manifest_id":         manifest.ID,
-		"audio_path":          manifest.AudioPath,
-		"audio_format":        manifest.Format,
-		"sample_rate":         manifest.SampleRate,
-		"channels":            manifest.Channels,
-		"audio_bytes":         manifest.AudioBytes,
-		"source":              manifest.Source,
-		"priority":            manifest.Priority,
-		"message_type":        manifest.MessageType,
-		"alert_sent_at":       manifest.AlertSentAt,
-		"alert_expires_at":    manifest.AlertExpiresAt,
-		"broadcast_immediate": manifest.BroadcastImmediate,
-		"authoritative_url":   manifest.AuthoritativeURL,
-		"title":               fallbackText(firstText(nil, data, "headline", "title", "header"), manifest.Header),
-		"header":              manifest.Header,
-		"event":               fallbackText(firstText(nil, data, "same_event", "event"), manifest.Event),
-		"alert_text":          fallbackText(alertText, firstText(nil, data, "alert_text", "tts_text", "text", "message")),
-		"banner_text":         fallbackText(manifest.BannerText, firstText(nil, data, "banner_text")),
-		"description":         firstText(nil, data, "description"),
-		"instruction":         firstText(nil, data, "instruction"),
-		"severity":            firstText(nil, data, "severity"),
-		"urgency":             firstText(nil, data, "urgency"),
-		"certainty":           firstText(nil, data, "certainty"),
-		"same_event":          firstText(nil, data, "same_event"),
-		"same_originator":     firstText(nil, data, "same_originator"),
-		"same_duration":       firstText(nil, data, "same_duration"),
-		"same_tone":           firstText(nil, data, "same_tone"),
-		"same_header":         sameHeader,
-		"background_color":    firstText(nil, data, "background_color"),
+		"feed_id":              p.feed.ID,
+		"alert_id":             manifest.AlertID,
+		"queue_id":             manifest.ID,
+		"manifest_id":          manifest.ID,
+		"audio_path":           manifest.AudioPath,
+		"audio_format":         manifest.Format,
+		"sample_rate":          manifest.SampleRate,
+		"channels":             manifest.Channels,
+		"audio_bytes":          manifest.AudioBytes,
+		"source":               manifest.Source,
+		"priority":             manifest.Priority,
+		"message_type":         manifest.MessageType,
+		"alert_sent_at":        manifest.AlertSentAt,
+		"alert_expires_at":     manifest.AlertExpiresAt,
+		"broadcast_immediate":  manifest.BroadcastImmediate,
+		"authoritative_url":    manifest.AuthoritativeURL,
+		"title":                fallbackText(firstText(nil, data, "headline", "title", "header"), manifest.Header),
+		"header":               manifest.Header,
+		"event":                fallbackText(firstText(nil, data, "same_event", "event"), manifest.Event),
+		"alert_text":           fallbackText(alertText, firstText(nil, data, "alert_text", "tts_text", "text", "message")),
+		"banner_text":          fallbackText(manifest.BannerText, firstText(nil, data, "banner_text")),
+		"description":          firstText(nil, data, "description"),
+		"instruction":          firstText(nil, data, "instruction"),
+		"severity":             firstText(nil, data, "severity"),
+		"urgency":              firstText(nil, data, "urgency"),
+		"certainty":            firstText(nil, data, "certainty"),
+		"same_event":           firstText(nil, data, "same_event"),
+		"same_event_name":      firstText(nil, data, "same_event_name"),
+		"same_originator":      firstText(nil, data, "same_originator"),
+		"same_originator_name": firstText(nil, data, "same_originator_name"),
+		"same_weather_service": firstText(nil, data, "same_weather_service"),
+		"same_duration":        firstText(nil, data, "same_duration"),
+		"same_sent_at":         firstText(nil, data, "same_sent_at"),
+		"same_begins_at":       firstText(nil, data, "same_begins_at"),
+		"same_expires_at":      firstText(nil, data, "same_expires_at"),
+		"same_tone":            firstText(nil, data, "same_tone"),
+		"same_header":          sameHeader,
+		"background_color":     firstText(nil, data, "background_color"),
 	}
 	if locations := stringListAny(firstValue(nil, data, "same_locations", "locations")); len(locations) > 0 {
 		payload["same_locations"] = locations
@@ -1256,6 +1262,15 @@ func alertTextFromData(data map[string]any) string {
 	return alerttext.SpeechFromData(data)
 }
 
+func (p *feedPlanner) alertTextFromData(data map[string]any) string {
+	if strings.EqualFold(firstText(nil, data, "cap_source"), "nws") {
+		if intro := p.sameIntroFromData(data); intro != "" {
+			return intro
+		}
+	}
+	return alertTextFromData(data)
+}
+
 func (p *feedPlanner) bannerTextFromData(data map[string]any, alertText string) string {
 	if text := strings.TrimSpace(firstText(nil, data, "banner_text")); text != "" {
 		return text
@@ -1292,7 +1307,15 @@ func (p *feedPlanner) sameIntroFromData(data map[string]any) string {
 	}
 	configPath := filepath.Join(p.cfg.BaseDir, "config.yaml")
 	duration := normalizeSAMEDuration(fallbackText(firstText(nil, data, "same_duration", "duration"), "0015"))
-	now := time.Now()
+	beginsAt := dataTimeValue(data, "same_begins_at", "alert_begins_at", "onset", "effective", "same_sent_at", "alert_sent_at", "sent")
+	sentAt := dataTimeValue(data, "same_sent_at", "alert_sent_at", "sent")
+	expiresAt := dataTimeValue(data, "same_expires_at", "alert_expires_at", "expires")
+	if expiresAt.IsZero() && !beginsAt.IsZero() {
+		expiresAt = beginsAt.Add(sameDurationToDuration(duration))
+	}
+	if beginsAt.IsZero() && !sentAt.IsZero() {
+		beginsAt = sentAt
+	}
 	return alerttext.BuildSAMETranslation(alerttext.SAMERequest{
 		Originator:     fallbackText(firstText(nil, data, "same_originator", "originator"), "WXR"),
 		OriginatorName: strings.TrimSpace(firstText(nil, data, "same_originator_name", "originator_name", "sender_name")),
@@ -1302,10 +1325,29 @@ func (p *feedPlanner) sameIntroFromData(data map[string]any) string {
 		AreaNames:      alerttext.ResolveAreaNames(configPath, stringListAny(firstValue(nil, data, "area_names")), locations),
 		Callsign:       fallbackText(firstText(nil, data, "same_callsign", "callsign"), feedCallsign(p.feed)),
 		WeatherService: strings.TrimSpace(firstText(nil, data, "same_weather_service", "weather_service")),
-		SentAt:         now,
-		ExpiresAt:      now.Add(sameDurationToDuration(duration)),
+		SentAt:         sentAt,
+		BeginsAt:       beginsAt,
+		ExpiresAt:      expiresAt,
 		MimicENDEC:     fallbackText(firstText(nil, data, "mimic_endec"), "SAGE"),
 	})
+}
+
+func dataTimeValue(data map[string]any, keys ...string) time.Time {
+	for _, key := range keys {
+		raw := strings.TrimSpace(firstText(nil, data, key))
+		if raw == "" {
+			continue
+		}
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
+			if parsed, err := time.Parse(layout, raw); err == nil {
+				return parsed
+			}
+		}
+		if parsed := alerttext.ParseCAPTime(raw); !parsed.IsZero() {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func customAlertTextFromData(data map[string]any) string {

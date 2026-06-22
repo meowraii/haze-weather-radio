@@ -22,7 +22,7 @@ func TestBuildSAMETranslationMatchesBannerStyleLead(t *testing.T) {
 		MimicENDEC: "SAGE",
 	})
 
-	if !strings.Contains(text, "Environment Canada has issued a Required Weekly Test for Saskatoon") {
+	if !strings.Contains(text, "Environment Canada has issued a Required Weekly Test for the following areas: Saskatoon") {
 		t.Fatalf("text = %q", text)
 	}
 	if !strings.Contains(text, "(XLF322)") {
@@ -45,6 +45,25 @@ func TestBuildSAMETranslationUsesWeatherServiceForWXR(t *testing.T) {
 
 	if !strings.Contains(text, "The National Weather Service has issued a Severe Thunderstorm Warning") {
 		t.Fatalf("text = %q", text)
+	}
+}
+
+func TestBuildSAMETranslationUsesNaturalAreaAndTimingLead(t *testing.T) {
+	text := BuildSAMETranslation(SAMERequest{
+		Originator:     "WXR",
+		Event:          "SVR",
+		EventName:      "Severe Thunderstorm Warning",
+		AreaNames:      []string{"Escambia, AL", "Elmore, AL", "DeKalb, AL", "Dallas, AL"},
+		Callsign:       "meowraii",
+		WeatherService: "The National Weather Service",
+		BeginsAt:       time.Date(2026, 6, 22, 12, 38, 0, 0, time.UTC),
+		ExpiresAt:      time.Date(2026, 6, 22, 12, 39, 0, 0, time.UTC),
+		MimicENDEC:     "SAGE",
+	})
+
+	want := "The National Weather Service has issued a Severe Thunderstorm Warning for the following areas: Escambia, AL; Elmore, AL; DeKalb, AL; and Dallas, AL. Beginning at 12:38 PM and ending at 12:39 PM on June 22nd, 2026. (meowraii)."
+	if text != want {
+		t.Fatalf("text = %q, want %q", text, want)
 	}
 }
 

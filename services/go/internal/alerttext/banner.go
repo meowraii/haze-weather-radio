@@ -218,19 +218,26 @@ func BuildSAMETranslation(request SAMERequest) string {
 
 	switch mode {
 	case "SAGE EAS", "SAGE DIGITAL":
-		lead := fmt.Sprintf("%s %s issued %s", subject, sameVerb(request, mode), eventPhrase)
-		if areas != "" {
-			lead += " for " + areas
+		beginsAt := request.BeginsAt
+		if beginsAt.IsZero() {
+			beginsAt = request.SentAt
 		}
-		if begins != "" && expires != "" {
-			lead += fmt.Sprintf(" beginning at %s and ending at %s", begins, expires)
-		} else if expires != "" {
-			lead += " ending at " + expires
+		leadAreas := formatSAMELeadAreas(request.AreaNames)
+		if leadAreas == "" {
+			leadAreas = areas
+		}
+		lead := fmt.Sprintf("%s %s issued %s", subject, sameVerb(request, mode), eventPhrase)
+		if leadAreas != "" {
+			lead += " for the following areas: " + leadAreas
+		}
+		parts := []string{CleanSentence(lead)}
+		if timing := sameLeadTimingSentence(beginsAt, request.ExpiresAt); timing != "" {
+			parts = append(parts, timing)
 		}
 		if sourceLabel != "" {
-			lead += fmt.Sprintf(" (%s)", sourceLabel)
+			parts = append(parts, fmt.Sprintf("(%s).", sourceLabel))
 		}
-		return CleanSentence(lead)
+		return CleanFragment(strings.Join(parts, " "))
 	case "TRILITHIC":
 		areaClause := "for"
 		if areas != "" {
@@ -1047,6 +1054,57 @@ func joinSemicolonParts(parts []string) string {
 	return strings.Join(cleaned, "; ") + ";"
 }
 
+func formatSAMELeadAreas(areaNames []string) string {
+	cleaned := uniqueClean(areaNames)
+	switch len(cleaned) {
+	case 0:
+		return ""
+	case 1:
+		return cleaned[0]
+	case 2:
+		return cleaned[0] + "; and " + cleaned[1]
+	default:
+		return strings.Join(cleaned[:len(cleaned)-1], "; ") + "; and " + cleaned[len(cleaned)-1]
+	}
+}
+
+func sameLeadTimingSentence(begins time.Time, expires time.Time) string {
+	if begins.IsZero() && expires.IsZero() {
+		return ""
+	}
+	switch {
+	case !begins.IsZero() && !expires.IsZero():
+		if sameLocalDate(begins, expires) {
+			return fmt.Sprintf(
+				"Beginning at %s and ending at %s on %s.",
+				formatSAMELeadClock(begins),
+				formatSAMELeadClock(expires),
+				formatSAMELeadDate(expires),
+			)
+		}
+		return fmt.Sprintf(
+			"Beginning at %s on %s and ending at %s on %s.",
+			formatSAMELeadClock(begins),
+			formatSAMELeadDate(begins),
+			formatSAMELeadClock(expires),
+			formatSAMELeadDate(expires),
+		)
+	case !begins.IsZero():
+		return fmt.Sprintf("Beginning at %s on %s.", formatSAMELeadClock(begins), formatSAMELeadDate(begins))
+	default:
+		return fmt.Sprintf("Ending at %s on %s.", formatSAMELeadClock(expires), formatSAMELeadDate(expires))
+	}
+}
+
+func formatSAMELeadClock(value time.Time) string {
+	return strings.TrimLeft(value.Format("3:04 PM"), "0")
+}
+
+func formatSAMELeadDate(value time.Time) string {
+	day := value.Day()
+	return fmt.Sprintf("%s %d%s, %d", value.Format("January"), day, ordinalSuffix(day), value.Year())
+}
+
 func uniqueClean(values []string) []string {
 	out := []string{}
 	seen := map[string]struct{}{}
@@ -1128,7 +1186,11 @@ func loadCSVNames(path string, labels map[string]string, codeColumns []string, n
 		return
 	}
 	defer file.Close()
+	probe := make([]byte, 4096)
+	n, _ := file.Read(probe)
+	_, _ = file.Seek(0, 0)
 	reader := csv.NewReader(file)
+	reader.Comma = detectCSVDelimiter(string(probe[:n]))
 	reader.FieldsPerRecord = -1
 	rows, err := reader.ReadAll()
 	if err != nil || len(rows) == 0 {
@@ -1158,6 +1220,20 @@ func loadCSVNames(path string, labels map[string]string, codeColumns []string, n
 			}
 		}
 	}
+}
+
+func detectCSVDelimiter(sample string) rune {
+	for _, line := range strings.Split(sample, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Count(line, "|") > strings.Count(line, ",") {
+			return '|'
+		}
+		return ','
+	}
+	return ','
 }
 
 func firstHeaderIndex(header map[string]int, candidates []string) int {

@@ -797,6 +797,43 @@ func TestAlertTextFromDataFallsBackToDescriptionAndInstruction(t *testing.T) {
 	}
 }
 
+func TestNWSAlertTextUsesOnlySameTranslation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "managed", "csv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "managed", "sameMapping.json"), []byte(`{"eas":{"SVR":"Severe Thunderstorm Warning"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv"), []byte("FIPS|COUNTYNAME\n001053|Escambia, AL\n001051|Elmore, AL\n001049|DeKalb, AL\n001047|Dallas, AL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planner := &feedPlanner{cfg: loadedConfig{BaseDir: dir}, feed: feedXML{ID: "CAP-IT-ALL"}}
+	text := planner.alertTextFromData(map[string]any{
+		"cap_source":           "nws",
+		"same_event":           "SVR",
+		"same_event_name":      "Severe Thunderstorm Warning",
+		"same_originator":      "WXR",
+		"same_weather_service": "The National Weather Service",
+		"same_locations":       []any{"001053", "001051", "001049", "001047"},
+		"same_callsign":        "meowraii",
+		"same_begins_at":       "2026-06-22T12:38:00-05:00",
+		"same_expires_at":      "2026-06-22T12:39:00-05:00",
+		"alert_text":           "CAP text that should not be spoken.",
+		"description":          "Large hail and wind are included in the CAP description.",
+		"instruction":          "Take shelter now.",
+		"mimic_endec":          "SAGE",
+	})
+
+	want := "The National Weather Service has issued a Severe Thunderstorm Warning for the following areas: Escambia, AL; Elmore, AL; DeKalb, AL; and Dallas, AL. Beginning at 12:38 PM and ending at 12:39 PM on June 22nd, 2026. (meowraii)."
+	if text != want {
+		t.Fatalf("alert text = %q, want %q", text, want)
+	}
+	if strings.Contains(text, "CAP text") || strings.Contains(text, "Large hail") || strings.Contains(text, "Take shelter") {
+		t.Fatalf("NWS alert text included CAP prose: %q", text)
+	}
+}
+
 func TestBannerTextFromDataUsesSameIntroEvenWhenSameAudioDisabled(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "managed", "csv"), 0o755); err != nil {
