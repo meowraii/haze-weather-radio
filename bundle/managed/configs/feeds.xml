@@ -110,18 +110,22 @@
       <cap_cp enabled="true">
         <filter use_feed_locations="false">
           <allowlist>
-            <severity>Moderate</severity>
             <severity>Severe</severity>
             <severity>Extreme</severity>
+            <urgency>Immediate</urgency>
+            <certainty>Observed</certainty>
+            <certainty>Likely</certainty>
           </allowlist>
         </filter>
       </cap_cp>
       <nws_cap enabled="true">
         <filter use_feed_locations="false">
           <allowlist>
-            <severity>Moderate</severity>
             <severity>Severe</severity>
             <severity>Extreme</severity>
+            <urgency>Immediate</urgency>
+            <certainty>Observed</certainty>
+            <certainty>Likely</certainty>
           </allowlist>
         </filter>
       </nws_cap>

@@ -809,7 +809,7 @@ func TestNWSAlertTextUsesSameTranslationWithCAPProse(t *testing.T) {
 		t.Fatal(err)
 	}
 	planner := &feedPlanner{cfg: loadedConfig{BaseDir: dir}, feed: feedXML{ID: "CAP-IT-ALL"}}
-	text := planner.alertTextFromData(map[string]any{
+	data := map[string]any{
 		"cap_source":           "nws",
 		"same_event":           "SPS",
 		"same_event_name":      "Special Weather Statement",
@@ -823,14 +823,23 @@ func TestNWSAlertTextUsesSameTranslationWithCAPProse(t *testing.T) {
 		"description":          "At 500 PM EDT, National Weather Service meteorologists were tracking a strong thunderstorm.",
 		"instruction":          "Seek shelter in a safe building until the storm passes.",
 		"mimic_endec":          "SAGE",
-	})
+	}
+	text := planner.alertTextFromData(data)
 
-	want := "The National Weather Service has issued a Special Weather Statement for the following areas: Autauga, AL; Baldwin, AL; Barbour, AL; and Bibb, AL. Beginning at 3:01 PM and ending at 4:01 PM on June 22nd, 2026. (CAP-IT-ALL). At 500 PM EDT, National Weather Service meteorologists were tracking a strong thunderstorm. Seek shelter in a safe building until the storm passes."
+	want := "The National Weather Service has issued a Special Weather Statement for the following areas: Autauga, AL; Baldwin, AL; Barbour, AL; and Bibb, AL. Beginning at 3:01 PM and ending at 4:01 PM on June 22nd, 2026. At 500 PM EDT, National Weather Service meteorologists were tracking a strong thunderstorm. Seek shelter in a safe building until the storm passes."
 	if text != want {
 		t.Fatalf("alert text = %q, want %q", text, want)
 	}
 	if strings.Contains(text, "CAP text") {
 		t.Fatalf("NWS alert text included raw CAP fallback text: %q", text)
+	}
+	if strings.Contains(text, "CAP-IT-ALL") {
+		t.Fatalf("speech alert text included source label: %q", text)
+	}
+
+	bannerText := planner.bannerTextFromData(data, text)
+	if !strings.Contains(bannerText, "(CAP-IT-ALL).") {
+		t.Fatalf("banner text omitted source label: %q", bannerText)
 	}
 }
 

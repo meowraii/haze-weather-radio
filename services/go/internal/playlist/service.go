@@ -1264,7 +1264,7 @@ func alertTextFromData(data map[string]any) string {
 
 func (p *feedPlanner) alertTextFromData(data map[string]any) string {
 	if strings.EqualFold(firstText(nil, data, "cap_source"), "nws") {
-		if intro := p.sameIntroFromData(data); intro != "" {
+		if intro := p.sameSpeechIntroFromData(data); intro != "" {
 			parts := []string{intro}
 			if description := strings.TrimSpace(firstText(nil, data, "description")); description != "" {
 				parts = append(parts, alerttext.CleanAlertText(description))
@@ -1304,7 +1304,18 @@ func (p *feedPlanner) bannerTextFromData(data map[string]any, alertText string) 
 }
 
 func (p *feedPlanner) sameIntroFromData(data map[string]any) string {
+	return p.sameIntroFromDataWithOptions(data, true)
+}
+
+func (p *feedPlanner) sameSpeechIntroFromData(data map[string]any) string {
+	return p.sameIntroFromDataWithOptions(data, false)
+}
+
+func (p *feedPlanner) sameIntroFromDataWithOptions(data map[string]any, includeSourceLabel bool) string {
 	if intro := strings.TrimSpace(firstText(nil, data, "same_translation", "same_intro")); intro != "" {
+		if !includeSourceLabel {
+			return stripTrailingSourceLabel(intro)
+		}
 		return intro
 	}
 	event := strings.TrimSpace(firstText(nil, data, "same_event", "event"))
@@ -1330,13 +1341,40 @@ func (p *feedPlanner) sameIntroFromData(data map[string]any) string {
 		EventName:      fallbackText(firstText(nil, data, "same_event_name", "event_name"), alerttext.EventName(configPath, event)),
 		Locations:      locations,
 		AreaNames:      alerttext.ResolveAreaNames(configPath, stringListAny(firstValue(nil, data, "area_names")), locations),
-		Callsign:       fallbackText(firstText(nil, data, "same_callsign", "callsign"), feedCallsign(p.feed)),
+		Callsign:       sameIntroCallsign(data, p.feed, includeSourceLabel),
 		WeatherService: strings.TrimSpace(firstText(nil, data, "same_weather_service", "weather_service")),
 		SentAt:         sentAt,
 		BeginsAt:       beginsAt,
 		ExpiresAt:      expiresAt,
 		MimicENDEC:     fallbackText(firstText(nil, data, "mimic_endec"), "SAGE"),
 	})
+}
+
+func sameIntroCallsign(data map[string]any, feed feedXML, includeSourceLabel bool) string {
+	if !includeSourceLabel {
+		return ""
+	}
+	return fallbackText(firstText(nil, data, "same_callsign", "callsign"), feedCallsign(feed))
+}
+
+func stripTrailingSourceLabel(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || !strings.HasSuffix(trimmed, ")") && !strings.HasSuffix(trimmed, ").") {
+		return trimmed
+	}
+	withoutFinalPeriod := strings.TrimSpace(strings.TrimSuffix(trimmed, "."))
+	if !strings.HasSuffix(withoutFinalPeriod, ")") {
+		return trimmed
+	}
+	open := strings.LastIndex(withoutFinalPeriod, "(")
+	if open < 0 || open == 0 || strings.TrimSpace(withoutFinalPeriod[open+1:len(withoutFinalPeriod)-1]) == "" {
+		return trimmed
+	}
+	prefix := strings.TrimSpace(withoutFinalPeriod[:open])
+	if prefix == "" {
+		return trimmed
+	}
+	return alerttext.CleanFragment(prefix)
 }
 
 func dataTimeValue(data map[string]any, keys ...string) time.Time {

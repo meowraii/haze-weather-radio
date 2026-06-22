@@ -482,6 +482,42 @@ func TestCAPFeedFilterAllowsModerateAndUp(t *testing.T) {
 	}
 }
 
+func TestCAPFeedFilterRequiresStrictCatchallImpact(t *testing.T) {
+	var feed feedXML
+	feed.Alerts.CapCP.EnabledRaw = "true"
+	feed.Alerts.CapCP.Filter.Allowlist.Severities = []string{"Severe", "Extreme"}
+	feed.Alerts.CapCP.Filter.Allowlist.Urgencies = []string{"Immediate"}
+	feed.Alerts.CapCP.Filter.Allowlist.Certainties = []string{"Observed", "Likely"}
+	alert := parseTestAlert(t, testCAP("urn:test:filter-strict-catchall", "Alert", "active", "2099-06-15T21:30:00-06:00", false))
+	alert.Infos[0].Severity = "Severe"
+	alert.Infos[0].Urgency = "Immediate"
+	alert.Infos[0].Certainty = "Likely"
+
+	if !feedAllowsCAPAlert(feed, alert) {
+		t.Fatal("severe immediate likely alert should pass strict catchall feed filter")
+	}
+
+	for _, tc := range []struct {
+		name      string
+		severity  string
+		urgency   string
+		certainty string
+	}{
+		{name: "moderate", severity: "Moderate", urgency: "Immediate", certainty: "Likely"},
+		{name: "expected", severity: "Severe", urgency: "Expected", certainty: "Likely"},
+		{name: "possible", severity: "Severe", urgency: "Immediate", certainty: "Possible"},
+	} {
+		filtered := alert
+		filtered.Infos = append([]capingest.AlertInfo(nil), alert.Infos...)
+		filtered.Infos[0].Severity = tc.severity
+		filtered.Infos[0].Urgency = tc.urgency
+		filtered.Infos[0].Certainty = tc.certainty
+		if feedAllowsCAPAlert(feed, filtered) {
+			t.Fatalf("%s alert should be rejected by strict catchall feed filter", tc.name)
+		}
+	}
+}
+
 func TestCAPFeedFilterCanDisableCoverageMatching(t *testing.T) {
 	var feed feedXML
 	feed.Alerts.CapCP.EnabledRaw = "true"
