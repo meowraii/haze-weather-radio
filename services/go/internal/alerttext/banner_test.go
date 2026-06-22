@@ -170,6 +170,43 @@ func TestSerializeCAPAlertUsesHeadlineForBackgroundColor(t *testing.T) {
 	}
 }
 
+func TestSpeechFromDataRespectsDisabledSameIntro(t *testing.T) {
+	intro := "Environment Canada has issued a Practice/demo Warning for Saskatoon."
+	cases := []struct {
+		name string
+		data map[string]any
+		want string
+	}{
+		{
+			name: "strips stored intro from alert text",
+			data: map[string]any{
+				"prepend_same_translation": false,
+				"same_translation":         intro,
+				"alert_text":               intro + " Custom text.",
+			},
+			want: "Custom text.",
+		},
+		{
+			name: "falls back without same translation",
+			data: map[string]any{
+				"prepend_same_translation": false,
+				"same_translation":         intro,
+				"title":                    "Practice/demo Warning",
+				"description":              "Custom text.",
+			},
+			want: "Practice/demo Warning Custom text.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SpeechFromData(tc.data); got != tc.want {
+				t.Fatalf("speech = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func mustWrite(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

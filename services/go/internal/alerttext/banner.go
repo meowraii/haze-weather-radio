@@ -395,16 +395,56 @@ func BuildCAPAlertText(request CAPMessageRequest) string {
 
 // SpeechFromData returns alert speech from an event data map.
 func SpeechFromData(data map[string]any) string {
+	prependSame, prependSameSet := mapBoolValue(data, "prepend_same_translation")
 	if text := firstMapText(data, "alert_text", "tts_text", "text", "message"); text != "" {
+		if prependSameSet && !prependSame {
+			if stripped := stripLeadingSameTranslation(data, text); stripped != "" {
+				return stripped
+			}
+			if sameTranslationOnly(data, text) {
+				return fallbackSpeechFromData(data, false)
+			}
+		}
 		return text
 	}
+	return fallbackSpeechFromData(data, !prependSameSet || prependSame)
+}
+
+func fallbackSpeechFromData(data map[string]any, includeSameTranslation bool) string {
 	parts := []string{}
-	for _, key := range []string{"same_translation", "same_intro", "title", "header", "description", "instruction"} {
+	keys := []string{"title", "header", "description", "instruction"}
+	if includeSameTranslation {
+		keys = append([]string{"same_translation", "same_intro"}, keys...)
+	}
+	for _, key := range keys {
 		if value := firstMapText(data, key); value != "" {
 			parts = append(parts, value)
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+func stripLeadingSameTranslation(data map[string]any, text string) string {
+	for _, key := range []string{"same_translation", "same_intro"} {
+		intro := firstMapText(data, key)
+		if intro == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(text), strings.ToLower(intro)) {
+			return CleanFragment(strings.TrimLeft(strings.TrimSpace(text[len(intro):]), ".:-; "))
+		}
+	}
+	return text
+}
+
+func sameTranslationOnly(data map[string]any, text string) bool {
+	cleanText := strings.ToLower(CleanFragment(text))
+	for _, key := range []string{"same_translation", "same_intro"} {
+		if intro := firstMapText(data, key); intro != "" && cleanText == strings.ToLower(CleanFragment(intro)) {
+			return true
+		}
+	}
+	return false
 }
 
 // EventName resolves a SAME/EAS event code into a spoken event label.
@@ -1141,6 +1181,36 @@ func firstMapText(data map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func mapBoolValue(data map[string]any, key string) (bool, bool) {
+	if data == nil {
+		return false, false
+	}
+	value, ok := data[key]
+	if !ok {
+		return false, false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "1", "yes", "on", "enabled":
+			return true, true
+		case "false", "0", "no", "off", "disabled":
+			return false, true
+		default:
+			return false, true
+		}
+	case float64:
+		return typed != 0, true
+	case int:
+		return typed != 0, true
+	default:
+		text := strings.ToLower(strings.TrimSpace(fmt.Sprint(value)))
+		return text == "true" || text == "1" || text == "yes" || text == "on" || text == "enabled", true
+	}
 }
 
 func fallbackText(values ...string) string {

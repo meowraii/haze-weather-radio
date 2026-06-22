@@ -1024,6 +1024,37 @@ func TestBroadcastAlertDataDoesNotPrependSameTranslationWhenDisabled(t *testing.
 	}
 }
 
+func TestBroadcastAlertDataDoesNotUseSameIntroFallbackWhenSameEnabled(t *testing.T) {
+	dir := t.TempDir()
+	writePanelFixture(t, dir)
+	session := wsSession{configPath: filepath.Join(dir, "config.yaml")}
+	data := session.broadcastAlertData(map[string]any{
+		"originator":               "WXR",
+		"event":                    "RWT",
+		"locations":                []any{"065522"},
+		"include_same":             true,
+		"prepend_same_translation": false,
+		"description":              "This is only a drill.",
+		"instruction":              "No action is required.",
+		"duration_hours":           float64(0),
+		"duration_minutes":         float64(15),
+	}, []string{"sk-0001"}, "manual-test", true)
+
+	text, _ := data["alert_text"].(string)
+	if strings.Contains(text, "has issued") {
+		t.Fatalf("alert_text should not include SAME intro when prepend is disabled: %q", text)
+	}
+	for _, wanted := range []string{"This is only a drill.", "No action is required."} {
+		if !strings.Contains(text, wanted) {
+			t.Fatalf("alert_text missing %q in %q", wanted, text)
+		}
+	}
+	bannerText, _ := data["banner_text"].(string)
+	if !strings.Contains(bannerText, "Environment Canada has issued") {
+		t.Fatalf("banner_text should still include SAME intro: %q", bannerText)
+	}
+}
+
 func TestPersistSameQueueItemCreatesManifestAndStateDepth(t *testing.T) {
 	dir := t.TempDir()
 	writePanelFixture(t, dir)
