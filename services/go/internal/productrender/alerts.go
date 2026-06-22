@@ -533,6 +533,10 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 		entries := loadActiveCAPEntries(s.cfg.Store, feed.ID, now)
 		archiveExpiredCAPEntries("", feed.ID, entries, now, s.cfg.Store)
 		entries = pruneCAPEntries(entries, now)
+		priorEntries := append([]capRegistryEntry(nil), entries...)
+		if capAcceptedArchiveContains(s.cfg.Store, feed.ID, alert.Identifier) && !capEntryExists(priorEntries, alert.Identifier) {
+			priorEntries = append(priorEntries, capRegistryEntry{ID: alert.Identifier})
+		}
 		entries = removeCAPReferences(entries, alert.References)
 		deleteCAPReferences(s.cfg.Store, feed.ID, parseCAPReferences(alert.References))
 
@@ -616,10 +620,14 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 		}
 		audio := alertBroadcastAudio(alert, feedLanguage(feed))
 		broadcastImmediate := info != nil && isBroadcastImmediateInfo(*info)
+		broadcast := capPriorityBroadcastAllowedWithPrior(alert, feed, s.cfg.BaseDir, now, priorEntries)
+		if broadcast && !s.claimCAPPriorityBroadcast(feed.ID, alert.Identifier) {
+			broadcast = false
+		}
 		updates = append(updates, capRegistryUpdate{
 			FeedID:             feed.ID,
 			Renderable:         hasRenderableCAPEntries(entries, now),
-			Broadcast:          capPriorityBroadcastAllowed(alert, feed, s.cfg.BaseDir, now),
+			Broadcast:          broadcast,
 			Cancelled:          isCAPEnded(alert, now),
 			CancelledIDs:       cancelledAlertIDs(alert),
 			BroadcastImmediate: broadcastImmediate,
@@ -640,6 +648,25 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 		})
 	}
 	return updates, nil
+}
+
+func (s *Service) claimCAPPriorityBroadcast(feedID string, alertID string) bool {
+	feedID = strings.TrimSpace(feedID)
+	alertID = strings.TrimSpace(alertID)
+	if feedID == "" || alertID == "" {
+		return true
+	}
+	key := feedID + "\x00" + alertID
+	s.tonedMu.Lock()
+	defer s.tonedMu.Unlock()
+	if s.tonedCAP == nil {
+		s.tonedCAP = map[string]struct{}{}
+	}
+	if _, exists := s.tonedCAP[key]; exists {
+		return false
+	}
+	s.tonedCAP[key] = struct{}{}
+	return true
 }
 
 func routineCAPAlertAllowed(alert capingest.Alert) bool {
@@ -671,6 +698,10 @@ func routineCAPAlertAllowed(alert capingest.Alert) bool {
 }
 
 func capPriorityBroadcastAllowed(alert capingest.Alert, feed feedXML, baseDir string, now time.Time) bool {
+	return capPriorityBroadcastAllowedWithPrior(alert, feed, baseDir, now, nil)
+}
+
+func capPriorityBroadcastAllowedWithPrior(alert capingest.Alert, feed feedXML, baseDir string, now time.Time, priorEntries []capRegistryEntry) bool {
 	if isCAPEnded(alert, now) {
 		return false
 	}
@@ -684,10 +715,80 @@ func capPriorityBroadcastAllowed(alert capingest.Alert, feed feedXML, baseDir st
 	if !alertMatchesFeed(alert, feed, baseDir) {
 		return false
 	}
+	if capEntryExists(priorEntries, alert.Identifier) {
+		return false
+	}
 	if isBroadcastImmediateInfo(*info) {
 		return true
 	}
+	if capMessageTypeIsUpdate(alert) && !capUpdateAddsFeedLocations(alert, *info, feed, baseDir) {
+		return false
+	}
 	return sameAlertFreshForTone(alert, *info, sameEventForCAP(alert, *info, baseDir), now)
+}
+
+func capEntryExists(entries []capRegistryEntry, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.ID == id || entry.Alert.Identifier == id {
+			return true
+		}
+	}
+	return false
+}
+
+func capMessageTypeIsUpdate(alert capingest.Alert) bool {
+	return strings.EqualFold(strings.TrimSpace(alert.MessageType), "Update")
+}
+
+func capUpdateAddsFeedLocations(alert capingest.Alert, info capingest.AlertInfo, feed feedXML, baseDir string) bool {
+	newCodes := capNewlyActiveCodes(info)
+	if len(newCodes) == 0 {
+		return false
+	}
+	if !feedUsesAlertCoverage(feed, alert) {
+		return true
+	}
+	coverage := feedCoverageModel(baseDir, feed, nil)
+	if len(coverage.Codes) == 0 {
+		return true
+	}
+	db := loadAlertGeoDB(baseDir)
+	for _, code := range newCodes {
+		if coverageMatchesAlertCode(db, coverage.Codes, code) {
+			return true
+		}
+	}
+	return false
+}
+
+func capNewlyActiveCodes(info capingest.AlertInfo) []string {
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		for _, part := range strings.FieldsFunc(raw, func(ch rune) bool {
+			return ch == ',' || ch == ';' || ch == '|' || ch == '\n' || ch == '\r' || ch == '\t'
+		}) {
+			value := strings.TrimSpace(part)
+			if value != "" {
+				seen[value] = struct{}{}
+			}
+		}
+	}
+	for _, param := range info.Parameters {
+		name := strings.ToLower(strings.TrimSpace(param.Name))
+		if strings.Contains(name, "newly_active_areas") || strings.Contains(name, "newly active") {
+			add(param.Value)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 type capBroadcastAudio struct {
@@ -864,6 +965,31 @@ func loadActiveCAPEntries(store datastore.Store, feedID string, now time.Time) [
 		return entries[i].UpdatedAt.Before(entries[j].UpdatedAt)
 	})
 	return entries
+}
+
+func capAcceptedArchiveContains(store datastore.Store, feedID string, alertID string) bool {
+	if store == nil {
+		return false
+	}
+	alertID = strings.TrimSpace(alertID)
+	if alertID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rows, err := store.ListCAPArchives(ctx, "accepted", time.Time{})
+	if err != nil {
+		return false
+	}
+	for _, row := range rows {
+		if strings.TrimSpace(feedID) != "" && row.FeedID != feedID {
+			continue
+		}
+		if row.AlertID == alertID {
+			return true
+		}
+	}
+	return false
 }
 
 func storedCAPArchiveAlert(row datastore.StoredCAPArchive) (capingest.Alert, bool) {

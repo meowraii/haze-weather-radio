@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -312,6 +313,56 @@ func TestCAPPriorityBroadcastUsesFreshnessWindow(t *testing.T) {
 	}
 }
 
+func TestCAPUpdateBroadcastRequiresFeedRelevantNewlyActiveArea(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.feedByID("sk-0001"); !ok {
+		t.Fatal("fixture feed not found")
+	}
+	cfg.Feeds[0].Locations.Coverage.Regions = []coverageRegionXML{{ID: "065522", Source: "eccc"}}
+	service := &Service{cfg: cfg}
+
+	alert := parseTestAlert(t, capAsUpdate(testWatchCAP("urn:test:update-new-feed-area", "065522")))
+	updates, err := service.recordCAPAlert(alert, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || !updates[0].Broadcast {
+		t.Fatalf("feed-relevant newly active update should priority broadcast once: %#v", updates)
+	}
+
+	repeatUpdates, err := service.recordCAPAlert(alert, time.Date(2026, 6, 15, 22, 12, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeatUpdates) != 1 || repeatUpdates[0].Broadcast {
+		t.Fatalf("same CAP update identifier should not rebroadcast SAME: %#v", repeatUpdates)
+	}
+
+	offFeedAlert := parseTestAlert(t, capAsUpdate(testWatchCAP("urn:test:update-off-feed-area", "065514")))
+	offFeedUpdates, err := service.recordCAPAlert(offFeedAlert, time.Date(2026, 6, 15, 22, 14, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offFeedUpdates) != 0 {
+		t.Fatalf("off-feed newly active update should not produce feed update: %#v", offFeedUpdates)
+	}
+
+	noNewAreaRaw := strings.Replace(testWatchCAP("urn:test:update-no-new-area", "065522"), "<parameter><valueName>layer:EC-MSC-SMC:1.1:Newly_Active_Areas</valueName><value>065522</value></parameter>", "", 1)
+	noNewAreaAlert := parseTestAlert(t, capAsUpdate(noNewAreaRaw))
+	noNewAreaUpdates, err := service.recordCAPAlert(noNewAreaAlert, time.Date(2026, 6, 15, 22, 16, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(noNewAreaUpdates) != 1 || noNewAreaUpdates[0].Broadcast {
+		t.Fatalf("CAP update without newly active areas should stay routine-only: %#v", noNewAreaUpdates)
+	}
+}
+
 func TestCAPPriorityBroadcastSuppressesEndedAlerts(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
@@ -528,4 +579,8 @@ func testECCCWatchCAP(identifier string, eventCodes string) string {
     </area>
   </info>
 </alert>`
+}
+
+func capAsUpdate(raw string) string {
+	return strings.Replace(raw, "<msgType>Alert</msgType>", "<msgType>Update</msgType>", 1)
 }

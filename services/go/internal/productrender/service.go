@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
@@ -76,6 +77,8 @@ type Service struct {
 	bridge     *bridgeClient
 	options    Options
 	lastLoaded time.Time
+	tonedMu    sync.Mutex
+	tonedCAP   map[string]struct{}
 }
 
 func (s *Service) runConnected(ctx context.Context) error {
