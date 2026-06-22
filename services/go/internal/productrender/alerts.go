@@ -157,14 +157,14 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 		payload["same_suppressed_reason"] = "ended"
 		return payload
 	}
-	event := sameEventForCAP(alert, *info)
+	event := sameEventForCAP(alert, *info, baseDir)
 	locations := sameLocationsForCAP(*info, feed, baseDir)
 	if event == "" || len(locations) == 0 {
 		payload["include_same"] = false
 		payload["same_suppressed_reason"] = "missing SAME event or locations"
 		return payload
 	}
-	if !sameAlertFreshForTone(alert, *info, event, now) {
+	if !isBroadcastImmediateInfo(*info) && !sameAlertFreshForTone(alert, *info, event, now) {
 		payload["include_same"] = false
 		payload["same_suppressed_reason"] = "alert too old for SAME tones"
 		return payload
@@ -196,12 +196,16 @@ func sameAlertFreshForTone(alert capingest.Alert, info capingest.AlertInfo, even
 	return now.Sub(anchor) <= limit
 }
 
-func sameEventForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
+func sameEventForCAP(alert capingest.Alert, info capingest.AlertInfo, baseDir string) string {
+	mapping := loadNAADSToEASMapping(baseDir)
 	for _, code := range info.EventCodes {
 		name := strings.ToLower(strings.TrimSpace(code.Name))
 		value := strings.ToUpper(strings.TrimSpace(code.Value))
 		if strings.Contains(name, "same") && len(value) == 3 {
 			return value
+		}
+		if mapped := mapping[normalizeNAADSEventKey(code.Value)]; mapped != "" {
+			return mapped
 		}
 	}
 	for _, param := range info.Parameters {
@@ -212,6 +216,9 @@ func sameEventForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
 				return value
 			}
 		}
+	}
+	if mapped := mapping[normalizeNAADSEventKey(info.Event)]; mapped != "" {
+		return mapped
 	}
 	haystack := strings.ToLower(strings.Join([]string{info.Event, info.Headline, alert.MessageType}, " "))
 	switch {
@@ -234,6 +241,38 @@ func sameEventForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
 	}
 }
 
+func loadNAADSToEASMapping(baseDir string) map[string]string {
+	path := filepath.Join(baseDir, "managed", "sameMapping.json")
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil
+	}
+	var payload struct {
+		NAADSToEAS map[string]string `json:"naadsToEas"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(payload.NAADSToEAS))
+	for key, value := range payload.NAADSToEAS {
+		value = strings.ToUpper(strings.TrimSpace(value))
+		if len(value) == 3 {
+			out[normalizeNAADSEventKey(key)] = value
+		}
+	}
+	return out
+}
+
+func normalizeNAADSEventKey(raw string) string {
+	var builder strings.Builder
+	for _, ch := range strings.ToLower(strings.TrimSpace(raw)) {
+		if ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' {
+			builder.WriteRune(ch)
+		}
+	}
+	return builder.String()
+}
+
 func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string) []string {
 	db := loadAlertGeoDB(baseDir)
 	coverage := feedCoverageModel(baseDir, feed, nil)
@@ -248,6 +287,7 @@ func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string)
 	}
 
 	if len(coverage.Codes) == 0 {
+		out = append(out, "000000")
 		for code := range alertCodes {
 			addCode(code)
 		}
@@ -376,11 +416,11 @@ func sameDurationForCAP(alert capingest.Alert, info capingest.AlertInfo) string 
 }
 
 func sameToneForCAP(info capingest.AlertInfo, feed feedXML) string {
-	if tone := strings.ToUpper(strings.TrimSpace(feed.Playout.SAMEAttentionTone)); tone != "" {
-		return tone
-	}
 	if isBroadcastImmediateInfo(info) {
 		return "NPAS"
+	}
+	if tone := strings.ToUpper(strings.TrimSpace(feed.Playout.SAMEAttentionTone)); tone != "" {
+		return tone
 	}
 	return "WXR"
 }
@@ -538,7 +578,7 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 			instruction = info.Instruction
 			backgroundColor = alerttext.PickBannerColor([]alerttext.AlertVisualInput{{
 				Severity: info.Severity,
-				Event:    strings.Join([]string{sameEventForCAP(alert, *info), alertSubject(*info), info.Event, info.Headline}, " "),
+				Event:    strings.Join([]string{sameEventForCAP(alert, *info, s.cfg.BaseDir), alertSubject(*info), info.Event, info.Headline}, " "),
 			}})
 		}
 		audio := alertBroadcastAudio(alert, feedLanguage(feed))
@@ -581,7 +621,10 @@ func capPriorityBroadcastAllowed(alert capingest.Alert, feed feedXML, baseDir st
 	if !alertMatchesFeed(alert, feed, baseDir) {
 		return false
 	}
-	return sameAlertFreshForTone(alert, *info, sameEventForCAP(alert, *info), now)
+	if isBroadcastImmediateInfo(*info) {
+		return true
+	}
+	return sameAlertFreshForTone(alert, *info, sameEventForCAP(alert, *info, baseDir), now)
 }
 
 type capBroadcastAudio struct {

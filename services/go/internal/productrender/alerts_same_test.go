@@ -1,6 +1,7 @@
 package productrender
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -59,6 +60,38 @@ func TestCAPSAMEPayloadDerivesWeatherOriginatorBeforeFeedDefault(t *testing.T) {
 	}
 	if payload["same_event_name"] != "Yellow Warning - Severe Thunderstorm" {
 		t.Fatalf("same_event_name = %#v, want Yellow Warning - Severe Thunderstorm", payload["same_event_name"])
+	}
+}
+
+func TestCAPSAMEPayloadConvertsBroadcastImmediateCAPToSAMEWithNPAS(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"eas":{"CEM":"Civil Emergency Message"},"naadsToEas":{"civilEmerg":"CEM"}}`)
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "cap", "example_civilEmerg_AlertReady_2026_04_10T19_08_12_03_00IA99FB9E1_6FB6_4951_B234_863F1341C4C1.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alert := parseTestAlert(t, string(raw))
+	var feed feedXML
+	feed.Playout.SAME = "true"
+	feed.Playout.SAMEAttentionTone = "EAS"
+
+	payload := capSAMEPayload(alert, feed, dir, time.Date(2026, 4, 11, 0, 30, 0, 0, time.UTC))
+
+	if payload["include_same"] != true {
+		t.Fatalf("include_same = %#v, want true (%#v)", payload["include_same"], payload)
+	}
+	if payload["same_event"] != "CEM" {
+		t.Fatalf("same_event = %#v, want CEM", payload["same_event"])
+	}
+	if payload["same_originator"] != "CIV" {
+		t.Fatalf("same_originator = %#v, want CIV", payload["same_originator"])
+	}
+	if payload["same_tone"] != "NPAS" {
+		t.Fatalf("same_tone = %#v, want NPAS", payload["same_tone"])
+	}
+	locations, ok := payload["same_locations"].([]string)
+	if !ok || len(locations) == 0 || locations[0] != "000000" {
+		t.Fatalf("same_locations = %#v, want national code first", payload["same_locations"])
 	}
 }
 
@@ -254,7 +287,7 @@ GA|033|FFC|North Fulton|GA033|Fulton|13121|E|nc|33.9350|-84.3557
 	}
 
 	got := sameLocationsForCAP(info, feed, dir)
-	want := []string{"013121"}
+	want := []string{"000000", "013121"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("same locations = %#v, want %#v", got, want)
 	}

@@ -137,6 +137,27 @@ func TestPickBannerGradientUsesWarningWatchAdvisoryWords(t *testing.T) {
 	}
 }
 
+func TestSerializeCAPAlertUsesHeadlineForBackgroundColor(t *testing.T) {
+	alert := capingest.Alert{
+		Identifier:  "cap-yellow-warning",
+		Sender:      "cap-pac@canada.ca",
+		Sent:        "2026-06-17T02:30:00Z",
+		MessageType: "Alert",
+		Infos: []capingest.AlertInfo{{
+			Event:      "thunderstorm",
+			Headline:   "yellow warning - severe thunderstorm - in effect",
+			SenderName: "Environment Canada",
+			Severity:   "Moderate",
+		}},
+	}
+
+	serialized := SerializeCAPAlert(alert, alert.Infos[0], "sk-0001", []string{"City of Saskatoon"}, "America/Regina", "cap", time.Now().UTC())
+
+	if serialized.BackgroundColor != "#931102" {
+		t.Fatalf("background color = %q", serialized.BackgroundColor)
+	}
+}
+
 func mustWrite(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

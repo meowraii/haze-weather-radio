@@ -199,7 +199,7 @@ func archiveRecordPayload(record archiveCAPRecord, bucket string) map[string]any
 	})
 	visual := alerttext.PickBannerGradient([]alerttext.AlertVisualInput{{
 		Severity: info.Severity,
-		Event:    fallbackString(info.Event, info.Headline),
+		Event:    strings.Join([]string{info.Event, info.Headline, alerttext.AlertSubject(info), message}, " "),
 	}})
 	return map[string]any{
 		"id":                     fallbackString(record.ID, record.Alert.Identifier),

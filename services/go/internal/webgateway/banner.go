@@ -184,10 +184,17 @@ func buildBannerPayload(configPath string, feedID string, hub *BannerHub) banner
 		if text := strings.TrimSpace(fallbackString(record.BannerText, record.AlertText)); text != "" {
 			serialized.Message = text
 		}
+		visualEvent := bannerVisualEvent(info, record)
+		alertGradient := alerttext.PickBannerGradient([]alerttext.AlertVisualInput{{
+			Severity: info.Severity,
+			Event:    visualEvent,
+		}})
+		serialized.BackgroundColor = alertGradient[0]
+		serialized.BackgroundGradient = alertGradient
 		alerts = append(alerts, serialized)
 		visuals = append(visuals, alerttext.AlertVisualInput{
 			Severity: info.Severity,
-			Event:    bannerVisualEvent(info, record),
+			Event:    visualEvent,
 		})
 	}
 	gradient := alerttext.PickBannerGradient(visuals)
@@ -208,7 +215,7 @@ func buildBannerPayload(configPath string, feedID string, hub *BannerHub) banner
 }
 
 func bannerVisualEvent(info capingest.AlertInfo, record archiveCAPRecord) string {
-	parts := []string{info.Event, info.Headline, record.BannerText, record.AlertText}
+	parts := []string{info.Event, info.Headline, alerttext.AlertSubject(info), record.BannerText, record.AlertText}
 	out := parts[:0]
 	for _, part := range parts {
 		if trimmed := strings.TrimSpace(part); trimmed != "" {

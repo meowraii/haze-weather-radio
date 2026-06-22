@@ -224,6 +224,9 @@ func TestBannerPayloadUsesBannerTextAndWarningColorForManualAlert(t *testing.T) 
 	if payload.PrimaryColor != "#931102" {
 		t.Fatalf("primary color = %q", payload.PrimaryColor)
 	}
+	if payload.Alerts[0].BackgroundColor != "#931102" {
+		t.Fatalf("alert background color = %q", payload.Alerts[0].BackgroundColor)
+	}
 	if payload.Alerts[0].Message != bannerText {
 		t.Fatalf("message = %q, want %q", payload.Alerts[0].Message, bannerText)
 	}

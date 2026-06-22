@@ -499,7 +499,8 @@ func SerializeCAPAlert(alert capingest.Alert, info capingest.AlertInfo, feedID s
 		EventName: AlertSubject(info),
 	})
 	onset := fallbackText(info.Onset, info.Effective)
-	gradient := PickBannerGradient([]AlertVisualInput{{Severity: info.Severity, Event: fallbackText(info.Event, info.Headline)}})
+	visualEvent := strings.Join(nonEmpty([]string{info.Event, info.Headline, AlertSubject(info), message}), " ")
+	gradient := PickBannerGradient([]AlertVisualInput{{Severity: info.Severity, Event: visualEvent}})
 	return SerializedAlert{
 		Identifier:         CleanFragment(alert.Identifier),
 		FeedID:             CleanFragment(feedID),
@@ -1126,6 +1127,16 @@ func fallbackText(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func nonEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if text := CleanFragment(value); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 func unique(values []string) []string {
