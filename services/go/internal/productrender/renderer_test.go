@@ -1162,6 +1162,77 @@ func TestBroadAlertsUseConfiguredCoverageRegionNames(t *testing.T) {
 	}
 }
 
+func TestWatchAlertsUseForecastRegionNamesWhenComplete(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	cfg.Feeds[0].Locations.Coverage.Regions = []coverageRegionXML{{
+		ID:     "065500",
+		Source: "eccc",
+		Name:   "Outlook - Watrous - Hanley - Imperial and Dinsmore region",
+		Subregions: []coverageSubregionXML{
+			{ID: "065514"},
+			{ID: "065522"},
+		},
+	}}
+	alert, err := capingest.ParseCAP([]byte(testWatchCAP("urn:test:watch:complete", "065514,065522")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: cfg}
+	if _, err := service.recordCAPAlert(alert, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "alerts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wanted := "for areas within the Outlook, Watrous, Hanley, Imperial, and Dinsmore region"
+	if !strings.Contains(product.Text, wanted) {
+		t.Fatalf("watch alert region text missing %q:\n%s", wanted, product.Text)
+	}
+	if strings.Contains(product.Text, "R.M. of Fertile Valley") || strings.Contains(product.Text, "R.M. of Rudy") {
+		t.Fatalf("complete watch should not list subregion area names:\n%s", product.Text)
+	}
+}
+
+func TestWatchAlertsKeepSubregionsWhenForecastRegionIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	cfg.Feeds[0].Locations.Coverage.Regions = []coverageRegionXML{{
+		ID:     "065500",
+		Source: "eccc",
+		Name:   "Outlook - Watrous - Hanley - Imperial and Dinsmore region",
+		Subregions: []coverageSubregionXML{
+			{ID: "065514"},
+			{ID: "065522"},
+		},
+	}}
+	alert, err := capingest.ParseCAP([]byte(testWatchCAP("urn:test:watch:partial", "065522")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: cfg}
+	if _, err := service.recordCAPAlert(alert, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "alerts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(product.Text, "areas within the Outlook, Watrous, Hanley, Imperial, and Dinsmore region") {
+		t.Fatalf("partial watch should not compact to the full forecast region:\n%s", product.Text)
+	}
+	if !strings.Contains(product.Text, "R.M. of Rudy including Outlook and Glenside") {
+		t.Fatalf("partial watch should list the covered CLC area:\n%s", product.Text)
+	}
+}
+
 func TestCAPAlertMatchesExpandedCoverageRegion(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
@@ -1381,7 +1452,7 @@ func testBroadCAP() string {
     <description>Snowfall with total amounts of 15 to 25 centimetres is expected.</description>
     <parameter><valueName>layer:EC-MSC-SMC:1.0:Alert_Location_Status</valueName><value>active</value></parameter>
     <parameter><valueName>layer:EC-MSC-SMC:1.0:Alert_Name</valueName><value>yellow warning - snowfall</value></parameter>
-    <parameter><valueName>layer:EC-MSC-SMC:1.1:Newly_Active_Areas</valueName><value>065435,065522</value></parameter>
+    <parameter><valueName>layer:EC-MSC-SMC:1.1:Newly_Active_Areas</valueName><value>065435,065514,065522</value></parameter>
     <parameter><valueName>layer:EC-MSC-SMC:1.1:MSC_Impact</valueName><value>moderate</value></parameter>
     <parameter><valueName>layer:EC-MSC-SMC:1.1:MSC_Confidence</valueName><value>high</value></parameter>
     <area>
@@ -1389,9 +1460,62 @@ func testBroadCAP() string {
       <geocode><valueName>layer:EC-MSC-SMC:1.0:CLC</valueName><value>065435</value></geocode>
     </area>
     <area>
+      <areaDesc>R.M. of Fertile Valley including Conquest Macrorie and Bounty</areaDesc>
+      <geocode><valueName>layer:EC-MSC-SMC:1.0:CLC</valueName><value>065514</value></geocode>
+    </area>
+    <area>
       <areaDesc>R.M. of Rudy including Outlook and Glenside</areaDesc>
       <geocode><valueName>layer:EC-MSC-SMC:1.0:CLC</valueName><value>065522</value></geocode>
     </area>
+  </info>
+</alert>`
+}
+
+func testWatchCAP(identifier string, newlyActiveAreas string) string {
+	areas := map[string]string{
+		"065514": "R.M. of Fertile Valley including Conquest Macrorie and Bounty",
+		"065522": "R.M. of Rudy including Outlook and Glenside",
+	}
+	areaXML := strings.Builder{}
+	for _, code := range strings.Split(newlyActiveAreas, ",") {
+		code = strings.TrimSpace(code)
+		if code == "" {
+			continue
+		}
+		areaXML.WriteString(`
+    <area>
+      <areaDesc>` + areas[code] + `</areaDesc>
+      <geocode><valueName>layer:EC-MSC-SMC:1.0:CLC</valueName><value>` + code + `</value></geocode>
+    </area>`)
+	}
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>` + identifier + `</identifier>
+  <sender>cap-pac@canada.ca</sender>
+  <sent>2026-06-15T15:58:00-06:00</sent>
+  <status>Actual</status>
+  <msgType>Alert</msgType>
+  <scope>Public</scope>
+  <references/>
+  <info>
+    <language>en-CA</language>
+    <category>Met</category>
+    <event>thunderstorm</event>
+    <responseType>Monitor</responseType>
+    <urgency>Future</urgency>
+    <severity>Moderate</severity>
+    <certainty>Likely</certainty>
+    <effective>2026-06-15T15:58:00-06:00</effective>
+    <onset>2026-06-15T16:00:00-06:00</onset>
+    <expires>2099-06-15T21:30:00-06:00</expires>
+    <senderName>Environment Canada</senderName>
+    <headline>yellow watch - severe thunderstorm - in effect</headline>
+    <description>Conditions are favourable for severe thunderstorms.</description>
+    <parameter><valueName>layer:EC-MSC-SMC:1.0:Alert_Location_Status</valueName><value>active</value></parameter>
+    <parameter><valueName>layer:EC-MSC-SMC:1.0:Alert_Name</valueName><value>yellow watch - severe thunderstorm</value></parameter>
+    <parameter><valueName>layer:EC-MSC-SMC:1.1:Newly_Active_Areas</valueName><value>` + newlyActiveAreas + `</value></parameter>
+    <parameter><valueName>layer:EC-MSC-SMC:1.1:MSC_Impact</valueName><value>moderate</value></parameter>
+    <parameter><valueName>layer:EC-MSC-SMC:1.1:MSC_Confidence</valueName><value>high</value></parameter>` + areaXML.String() + `
   </info>
 </alert>`
 }

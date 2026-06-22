@@ -1303,10 +1303,11 @@ type coverageModel struct {
 }
 
 type coverageRegion struct {
-	ID         string
-	Source     string
-	Name       string
-	Subregions map[string]struct{}
+	ID                 string
+	Source             string
+	Name               string
+	Subregions         map[string]struct{}
+	RequiredSubregions map[string]struct{}
 }
 
 type alertGeoDB struct {
@@ -1373,20 +1374,23 @@ func feedCoverageModel(baseDir string, feed feedXML, forecastNames map[string]fo
 		}
 		source := strings.ToLower(strings.TrimSpace(region.Source))
 		item := coverageRegion{
-			ID:         regionID,
-			Source:     source,
-			Name:       coverageRegionDisplayName(region, forecastNames, feedLanguage(feed), fallbackText(region.Name, alertRegionName(db, regionID, feedLanguage(feed)))),
-			Subregions: map[string]struct{}{},
+			ID:                 regionID,
+			Source:             source,
+			Name:               coverageRegionDisplayName(region, forecastNames, feedLanguage(feed), fallbackText(region.Name, alertRegionName(db, regionID, feedLanguage(feed)))),
+			Subregions:         map[string]struct{}{},
+			RequiredSubregions: map[string]struct{}{},
 		}
 		addCoverageCode(model.Codes, regionID)
 		addCoverageCode(item.Subregions, regionID)
 		for _, subregion := range expandAlertRegion(db, regionID, source) {
 			addCoverageCode(model.Codes, subregion)
 			addCoverageCode(item.Subregions, subregion)
+			addCoverageCode(item.RequiredSubregions, subregion)
 		}
 		for _, subregion := range region.Subregions {
 			addCoverageCode(model.Codes, subregion.ID)
 			addCoverageCode(item.Subregions, subregion.ID)
+			addCoverageCode(item.RequiredSubregions, subregion.ID)
 		}
 		if strings.HasSuffix(regionID, "00") && len(regionID) >= 4 {
 			addCoverageCode(model.Codes, regionID[:4]+"*")
@@ -1888,13 +1892,15 @@ func useBroadAlertRegions(info capingest.AlertInfo) bool {
 		info.Headline,
 		alertParam(info, "layer:EC-MSC-SMC:1.0:Alert_Type"),
 	}, " "))
+	if strings.Contains(haystack, "watch") {
+		return true
+	}
 	for _, hyperlocal := range []string{"tornado", "severe thunderstorm"} {
 		if strings.Contains(haystack, hyperlocal) {
 			return false
 		}
 	}
 	for _, broad := range []string{
-		"watch",
 		"advisory",
 		"statement",
 		"snowfall",
@@ -1971,8 +1977,33 @@ func alertInfoCoverageCodes(info capingest.AlertInfo) map[string]struct{} {
 }
 
 func coverageRegionMatchesAlert(region coverageRegion, alertCodes map[string]struct{}, db alertGeoDB) bool {
+	if len(alertCodes) == 0 {
+		return false
+	}
+	parent := map[string]struct{}{}
+	addCoverageCode(parent, region.ID)
 	for code := range alertCodes {
-		if coverageMatchesAlertCode(db, region.Subregions, code) {
+		if coverageMatchesAlertCode(db, parent, code) {
+			return true
+		}
+	}
+	required := region.RequiredSubregions
+	if len(required) == 0 {
+		return false
+	}
+	for requiredCode := range required {
+		if !alertCodesCoverRegionCode(alertCodes, requiredCode, db) {
+			return false
+		}
+	}
+	return true
+}
+
+func alertCodesCoverRegionCode(alertCodes map[string]struct{}, regionCode string, db alertGeoDB) bool {
+	required := map[string]struct{}{}
+	addCoverageCode(required, regionCode)
+	for code := range alertCodes {
+		if coverageMatchesAlertCode(db, required, code) {
 			return true
 		}
 	}
