@@ -782,14 +782,29 @@ func (c *sipCall) collectLocationNumber(language string, province string) (Resol
 func (c *sipCall) locationMenu(location ResolvedLocation) {
 	menu, _ := c.service.cfg.Prompts.Menu("location_menu")
 	for c.ctx.Err() == nil {
-		lineKey := c.service.locationMenuMainLine(location)
-		digit, ok := c.promptAndWaitDigit("location_menu", lineKey, c.service.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID}), menu.Timeout)
+		alerts := c.service.activeIVRAlerts(c.ctx, location)
+		var digit string
+		var ok bool
+		if len(alerts) > 0 {
+			digit, ok = c.promptTextAndWaitDigit("location_menu_"+firstNonBlank(location.FeedID, location.Code, "default"), c.service.locationMenuAlertText(location, len(alerts)), menu.Timeout)
+		} else {
+			lineKey := c.service.locationMenuMainLine(location)
+			digit, ok = c.promptAndWaitDigit("location_menu", lineKey, c.service.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID}), menu.Timeout)
+		}
 		if !ok {
 			c.playPrompt("error", "timeout", nil)
 			return
 		}
 		if digit == "#" {
 			return
+		}
+		if digit == "*" {
+			if len(alerts) > 0 {
+				c.alertMenu(location)
+				continue
+			}
+			c.playPrompt("error", "invalid_code", nil)
+			continue
 		}
 		option, ok := c.service.cfg.Prompts.Option("location_menu", digit)
 		if !ok {
@@ -816,6 +831,31 @@ func (c *sipCall) locationMenu(location ResolvedLocation) {
 		default:
 			c.playPrompt("error", "invalid_code", nil)
 		}
+	}
+}
+
+func (c *sipCall) alertMenu(location ResolvedLocation) {
+	menu, _ := c.service.cfg.Prompts.Menu("location_menu")
+	for c.ctx.Err() == nil {
+		alerts := c.service.activeIVRAlerts(c.ctx, location)
+		if len(alerts) == 0 {
+			c.playTextPrompt("alert_unavailable", fmt.Sprintf("%s has no active alerts in effect.", spokenLocationName(location)))
+			return
+		}
+		digit, ok := c.promptTextAndWaitDigit("alert_menu_"+firstNonBlank(location.FeedID, location.Code, "default"), c.service.alertMenuText(location, alerts), menu.Timeout)
+		if !ok {
+			c.playPrompt("error", "timeout", nil)
+			return
+		}
+		if digit == "#" {
+			return
+		}
+		alert, ok := ivrAlertByDigit(alerts, digit)
+		if !ok {
+			c.playPrompt("error", "invalid_code", nil)
+			continue
+		}
+		c.playTextPrompt("alert_readout_"+firstNonBlank(alert.ID, digit), c.service.alertReadoutText(location, alert))
 	}
 }
 
@@ -867,8 +907,19 @@ func (c *sipCall) playPrompt(menuID string, lineKey string, values map[string]st
 	_, _ = c.playPromptAudio(menuID, lineKey, values, false)
 }
 
+func (c *sipCall) playTextPrompt(lineKey string, text string) {
+	_, _ = c.playTextPromptAudio(lineKey, text, false)
+}
+
 func (c *sipCall) promptAndWaitDigit(menuID string, lineKey string, values map[string]string, timeout time.Duration) (string, bool) {
 	if digit, ok := c.playPromptForDigit(menuID, lineKey, values); ok {
+		return digit, true
+	}
+	return c.waitDigit(timeout)
+}
+
+func (c *sipCall) promptTextAndWaitDigit(lineKey string, text string, timeout time.Duration) (string, bool) {
+	if digit, ok := c.playTextPromptAudio(lineKey, text, true); ok {
 		return digit, true
 	}
 	return c.waitDigit(timeout)
@@ -888,6 +939,18 @@ func (c *sipCall) playPromptAudio(menuID string, lineKey string, values map[stri
 			log.Printf("IVR SIP prompt %s/%s failed: %v", menuID, lineKey, err)
 			return "", false
 		}
+	}
+	if interruptible {
+		return c.playAudioFile(c.cachedAudioPath(audio), digitInterruptAny)
+	}
+	return c.playAudioFile(c.cachedAudioPath(audio), digitInterruptNone)
+}
+
+func (c *sipCall) playTextPromptAudio(lineKey string, text string, interruptible bool) (string, bool) {
+	audio, err := c.service.textPromptAudio(c.ctx, lineKey, text)
+	if err != nil {
+		log.Printf("IVR SIP dynamic prompt %s failed: %v", lineKey, err)
+		return "", false
 	}
 	if interruptible {
 		return c.playAudioFile(c.cachedAudioPath(audio), digitInterruptAny)

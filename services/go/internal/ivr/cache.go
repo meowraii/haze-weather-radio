@@ -206,6 +206,14 @@ func (c *ProductCache) GetPromptWithPolicy(ctx context.Context, menuID string, l
 	return c.getPromptAudio(ctx, menuID, lineKey, text, policy, force)
 }
 
+func (c *ProductCache) GetTextPromptWithPolicy(ctx context.Context, menuID string, lineKey string, text string, policy TTSProfile, force bool) (CachedAudio, error) {
+	text = cleanPromptText(text)
+	if text == "" {
+		return CachedAudio{}, fmt.Errorf("IVR prompt %s/%s has no text", menuID, lineKey)
+	}
+	return c.getPromptAudio(ctx, menuID, lineKey, text, policy, force)
+}
+
 func (c *ProductCache) getPromptAudio(ctx context.Context, menuID string, lineKey string, text string, policy TTSProfile, force bool) (CachedAudio, error) {
 	key := promptCacheKey(menuID, lineKey, text, policy, c.cfg.ttsReaderFingerprint(policy.ReaderID, policy.Language, ""))
 	if !force {

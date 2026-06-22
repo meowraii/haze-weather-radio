@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
 const serviceID = "haze-ivr"
@@ -48,6 +50,7 @@ type Service struct {
 	bridge      *bridgeClient
 	mediaBridge *bridgeClient
 	broadcast   *broadcastHub
+	store       datastore.Store
 	metrics     metrics
 }
 
@@ -74,6 +77,17 @@ func Run(ctx context.Context, options Options) error {
 	if err := os.MkdirAll(cfg.cacheDir(), 0o755); err != nil {
 		return err
 	}
+	var store datastore.Store
+	storeCtx, cancelStoreOpen := context.WithTimeout(ctx, 5*time.Second)
+	if opened, openErr := datastore.Open(storeCtx, cfg.Root.Storage, cfg.BaseDir); openErr == nil {
+		store = opened
+	} else if !errors.Is(openErr, datastore.ErrNotConfigured) {
+		log.Printf("IVR alert archive unavailable; active alert menu disabled until restart: %v", openErr)
+	}
+	cancelStoreOpen()
+	if store != nil {
+		defer store.Close()
+	}
 	for ctx.Err() == nil {
 		bridge, err := connectBridge(ctx, options.BridgeAddr)
 		if err != nil {
@@ -94,6 +108,7 @@ func Run(ctx context.Context, options Options) error {
 			resolver:    NewResolver(cfg),
 			bridge:      bridge,
 			mediaBridge: mediaBridge,
+			store:       store,
 		}
 		service.cache = NewProductCache(cfg, bridge)
 		err = service.runConnected(ctx)
@@ -218,6 +233,7 @@ func (s *Service) routes() http.Handler {
 	mux.HandleFunc("/ivr/v1/lookup", s.handleLookup)
 	mux.HandleFunc("/ivr/v1/prompt", s.handlePrompt)
 	mux.HandleFunc("/ivr/v1/audio", s.handleAudio)
+	mux.HandleFunc("/ivr/v1/alert_audio", s.handleAlertAudio)
 	mux.HandleFunc("/ivr/v1/twiml", s.handleTwiML)
 	mux.HandleFunc("/ivr/v1/cache/prewarm", s.handlePrewarm)
 	mux.HandleFunc("/ivr/v1/metrics", s.handleMetrics)
@@ -291,6 +307,40 @@ func (s *Service) handleAudio(writer http.ResponseWriter, request *http.Request)
 	http.ServeFile(writer, request, product.WAVPath)
 }
 
+func (s *Service) handleAlertAudio(writer http.ResponseWriter, request *http.Request) {
+	format := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("format")))
+	location, err := s.locationFromRequest(request)
+	if err != nil {
+		s.servePromptAudio(writer, request, "error", "invalid_code", nil, http.StatusNotFound)
+		return
+	}
+	alerts := s.activeIVRAlerts(request.Context(), location)
+	kind := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("kind")))
+	text := ""
+	lineKey := ""
+	switch kind {
+	case "menu":
+		text = s.alertMenuText(location, alerts)
+		lineKey = "alert_menu_" + firstNonBlank(location.FeedID, location.Code, "default")
+	case "location_menu":
+		if len(alerts) == 0 {
+			text = s.cfg.Prompts.MenuLine("location_menu", s.locationMenuMainLine(location), s.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID}))
+		} else {
+			text = s.locationMenuAlertText(location, len(alerts))
+		}
+		lineKey = "location_menu_" + firstNonBlank(location.FeedID, location.Code, "default")
+	default:
+		alert, ok := ivrAlertByDigit(alerts, request.URL.Query().Get("index"))
+		if !ok {
+			s.serveTextPromptAudio(writer, request, "alert_unavailable", "That alert is no longer active.", http.StatusOK)
+			return
+		}
+		text = s.alertReadoutText(location, alert)
+		lineKey = "alert_readout_" + firstNonBlank(alert.ID, fmt.Sprint(time.Now().UnixNano()))
+	}
+	s.serveTextPromptAudioWithFormat(writer, request, lineKey, text, format, http.StatusOK)
+}
+
 func (s *Service) handleTwiML(writer http.ResponseWriter, request *http.Request) {
 	state := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("state")))
 	switch state {
@@ -308,6 +358,10 @@ func (s *Service) handleTwiML(writer http.ResponseWriter, request *http.Request)
 		s.writeLocationMenuTwiML(writer, request)
 	case "location_option":
 		s.handleLocationOptionTwiML(writer, request)
+	case "alert_menu":
+		s.writeAlertMenuTwiML(writer, request)
+	case "alert_option":
+		s.handleAlertOptionTwiML(writer, request)
 	case "ivr_menu":
 		s.writeConfiguredMenuTwiML(writer, request)
 	case "ivr_menu_option":
@@ -490,14 +544,18 @@ func (s *Service) writeLocationMenuTwiML(writer http.ResponseWriter, request *ht
 
 func (s *Service) writeLocationMenu(writer http.ResponseWriter, request *http.Request, location ResolvedLocation) {
 	menu, _ := s.cfg.Prompts.Menu("location_menu")
-	lineKey := s.locationMenuMainLine(location)
-	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{
-		"state": "location_option",
-		"code":  location.Code,
-		"lang":  location.Language,
-	}), "1", "", menu.Timeout, []string{
-		promptURL(request, "location_menu", lineKey, s.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID})),
-	}, []string{
+	params := locationTwiMLParams(location)
+	params["state"] = "location_option"
+	plays := []string{}
+	if alerts := s.activeIVRAlerts(request.Context(), location); len(alerts) > 0 {
+		audioParams := locationTwiMLParams(location)
+		audioParams["kind"] = "location_menu"
+		plays = append(plays, twimlURL(request, "/ivr/v1/alert_audio", audioParams))
+	} else {
+		lineKey := s.locationMenuMainLine(location)
+		plays = append(plays, promptURL(request, "location_menu", lineKey, s.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID})))
+	}
+	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", params), "1", "", menu.Timeout, plays, []string{
 		twimlPlay(promptURL(request, "error", "timeout", s.promptValues(nil))),
 	})
 	writeTwiML(writer, body)
@@ -512,6 +570,14 @@ func (s *Service) handleLocationOptionTwiML(writer http.ResponseWriter, request 
 	digit := strings.TrimSpace(request.FormValue("Digits"))
 	if digit == "#" {
 		s.writeEntryTwiML(writer, request)
+		return
+	}
+	if digit == "*" {
+		if len(s.activeIVRAlerts(request.Context(), location)) > 0 {
+			s.writeAlertMenuTwiML(writer, request)
+			return
+		}
+		s.writeLocationMenu(writer, request, location)
 		return
 	}
 	option, ok := s.cfg.Prompts.Option("location_menu", digit)
@@ -541,6 +607,55 @@ func (s *Service) handleLocationOptionTwiML(writer http.ResponseWriter, request 
 	default:
 		s.writeLocationMenu(writer, request, location)
 	}
+}
+
+func (s *Service) writeAlertMenuTwiML(writer http.ResponseWriter, request *http.Request) {
+	location, err := s.locationFromRequest(request)
+	if err != nil {
+		s.writeEntryErrorTwiML(writer, request)
+		return
+	}
+	alerts := s.activeIVRAlerts(request.Context(), location)
+	if len(alerts) == 0 {
+		s.writeLocationMenu(writer, request, location)
+		return
+	}
+	params := locationTwiMLParams(location)
+	params["state"] = "alert_option"
+	audioParams := locationTwiMLParams(location)
+	audioParams["kind"] = "menu"
+	menu, _ := s.cfg.Prompts.Menu("location_menu")
+	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", params), "1", "", menu.Timeout, []string{
+		twimlURL(request, "/ivr/v1/alert_audio", audioParams),
+	}, []string{
+		twimlPlay(promptURL(request, "error", "timeout", s.promptValues(nil))),
+	})
+	writeTwiML(writer, body)
+}
+
+func (s *Service) handleAlertOptionTwiML(writer http.ResponseWriter, request *http.Request) {
+	location, err := s.locationFromRequest(request)
+	if err != nil {
+		s.writeEntryErrorTwiML(writer, request)
+		return
+	}
+	digit := strings.TrimSpace(request.FormValue("Digits"))
+	if digit == "#" {
+		s.writeLocationMenu(writer, request, location)
+		return
+	}
+	alerts := s.activeIVRAlerts(request.Context(), location)
+	if _, ok := ivrAlertByDigit(alerts, digit); !ok {
+		s.writeAlertMenuTwiML(writer, request)
+		return
+	}
+	audioParams := locationTwiMLParams(location)
+	audioParams["index"] = digit
+	afterParams := locationTwiMLParams(location)
+	afterParams["state"] = "alert_menu"
+	body := twimlPlay(twimlURL(request, "/ivr/v1/alert_audio", audioParams)) +
+		twimlRedirect(twimlURL(request, "/ivr/v1/twiml", afterParams))
+	writeTwiML(writer, body)
 }
 
 func (s *Service) writeConfiguredMenuTwiML(writer http.ResponseWriter, request *http.Request) {
@@ -892,6 +1007,20 @@ func (s *Service) servePromptAudio(writer http.ResponseWriter, request *http.Req
 	audio, err := s.cache.GetPromptWithPolicy(request.Context(), menuID, lineKey, promptValues, s.staticPromptPolicy(), false)
 	if err != nil {
 		http.Error(writer, err.Error(), status)
+		return
+	}
+	s.serveCachedAudio(writer, request, audio, format, status)
+}
+
+func (s *Service) serveTextPromptAudio(writer http.ResponseWriter, request *http.Request, lineKey string, text string, status int) {
+	format := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("format")))
+	s.serveTextPromptAudioWithFormat(writer, request, lineKey, text, format, status)
+}
+
+func (s *Service) serveTextPromptAudioWithFormat(writer http.ResponseWriter, request *http.Request, lineKey string, text string, format string, status int) {
+	audio, err := s.textPromptAudio(request.Context(), lineKey, text)
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusBadGateway)
 		return
 	}
 	s.serveCachedAudio(writer, request, audio, format, status)

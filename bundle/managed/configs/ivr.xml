@@ -38,6 +38,8 @@
   <menu id="location_menu" timeout="8s" retries="2">
     <line key="main">You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for specialty products, or 0 to listen to a corresponding, 10 minute {radio_service_name} broadcast.</line>
     <line key="main_no_broadcast">You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, or 6 for specialty products.</line>
+    <line key="main_alerts">{location} has {alert_count_phrase} in effect. Please press the asterisk key, or 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for specialty products, or 0 to listen to a corresponding, 10 minute {radio_service_name} broadcast.</line>
+    <line key="main_no_broadcast_alerts">{location} has {alert_count_phrase} in effect. Please press the asterisk key, or 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, or 6 for specialty products.</line>
     <option digit="1" action="product" packages="current_conditions"/>
     <option digit="2" action="product" packages="forecast"/>
     <option digit="3" action="product" packages="air_quality"/>

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 	ttspkg "github.com/meowraii/haze-weather-radio/services/go/internal/tts"
 	"gopkg.in/yaml.v3"
 )
@@ -24,7 +25,8 @@ type Options struct {
 }
 
 type rootConfig struct {
-	FeedsFile string `yaml:"feeds_file"`
+	FeedsFile string                  `yaml:"feeds_file"`
+	Storage   datastore.StorageConfig `yaml:"storage"`
 	Operator  struct {
 		OnAirName     any `yaml:"on_air_name"`
 		TelephoneName any `yaml:"telephone_name"`

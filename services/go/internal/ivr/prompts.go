@@ -214,6 +214,8 @@ func defaultPromptConfig() PromptConfig {
 			{ID: "location_menu", Lines: []promptLine{
 				{Key: "main", Text: "You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for specialty products, or 0 to listen to a corresponding, 10 minute {radio_service_name} broadcast."},
 				{Key: "main_no_broadcast", Text: "You have reached {location}. 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, or 6 for specialty products."},
+				{Key: "main_alerts", Text: "{location} has {alert_count_phrase} in effect. Please press the asterisk key, or 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, 6 for specialty products, or 0 to listen to a corresponding, 10 minute {radio_service_name} broadcast."},
+				{Key: "main_no_broadcast_alerts", Text: "{location} has {alert_count_phrase} in effect. Please press the asterisk key, or 1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, or 6 for specialty products."},
 			}, Options: []menuOption{
 				{Digit: "1", Action: "product", Packages: "current_conditions"},
 				{Digit: "2", Action: "product", Packages: "forecast"},
@@ -363,7 +365,7 @@ func (cfg PromptConfig) StaticPromptLines() []staticPromptLine {
 }
 
 func promptLineGeneratesOnDemand(text string) bool {
-	return strings.Contains(text, "{location}") || strings.Contains(text, "{province}")
+	return strings.Contains(text, "{location}") || strings.Contains(text, "{province}") || strings.Contains(text, "{alert_count")
 }
 
 func renderPromptText(text string, values map[string]string) string {

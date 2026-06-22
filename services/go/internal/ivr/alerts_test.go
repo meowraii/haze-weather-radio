@@ -1,0 +1,200 @@
+package ivr
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
+)
+
+func TestLocationMenuUsesAlertGreetingAndStarOptionWhenAlertsAreActive(t *testing.T) {
+	service, closeStore := ivrAlertTestService(t)
+	defer closeStore()
+	storeIVRTestCAP(t, service.store, "urn:test:ivr:tor", "sk-0001", "Tornado Warning", "Tornado Warning", "Extreme", "Immediate", "Observed", "high")
+
+	request := httptest.NewRequest(http.MethodGet, "http://ivr.test/ivr/v1/twiml", nil)
+	response := httptest.NewRecorder()
+	service.writeLocationMenu(response, request, ivrTestLocation())
+
+	body := response.Body.String()
+	if !strings.Contains(body, "/ivr/v1/alert_audio") || !strings.Contains(body, "kind=location_menu") {
+		t.Fatalf("location menu did not use alert-aware greeting audio: %s", body)
+	}
+	if strings.Contains(body, "line=main") {
+		t.Fatalf("alert-aware location menu should not use the ordinary reached-location prompt: %s", body)
+	}
+
+	request = formRequest("http://ivr.test/ivr/v1/twiml?state=location_option&feed_id=sk-0001&lang=en-CA", url.Values{"Digits": {"*"}})
+	response = httptest.NewRecorder()
+	service.handleLocationOptionTwiML(response, request)
+
+	body = response.Body.String()
+	if !strings.Contains(body, "state=alert_option") || !strings.Contains(body, "kind=menu") {
+		t.Fatalf("star did not enter alert submenu while alerts are active: %s", body)
+	}
+}
+
+func TestLocationMenuStarIsUnavailableWithoutActiveAlerts(t *testing.T) {
+	service, closeStore := ivrAlertTestService(t)
+	defer closeStore()
+
+	request := formRequest("http://ivr.test/ivr/v1/twiml?state=location_option&feed_id=sk-0001&lang=en-CA", url.Values{"Digits": {"*"}})
+	response := httptest.NewRecorder()
+	service.handleLocationOptionTwiML(response, request)
+
+	body := response.Body.String()
+	if strings.Contains(body, "state=alert_option") || strings.Contains(body, "/ivr/v1/alert_audio") {
+		t.Fatalf("star should not expose alert submenu when no alerts are active: %s", body)
+	}
+}
+
+func TestIVRAlertMenuSortsMostCriticalAlertsFirst(t *testing.T) {
+	now := time.Now().UTC()
+	alerts := []ivrActiveAlert{
+		{
+			ID:    "statement",
+			Title: "Special Weather Statement",
+			Alert: capingest.Alert{Identifier: "statement"},
+			Info: capingest.AlertInfo{
+				Event:     "Special Weather Statement",
+				Headline:  "Special Weather Statement",
+				Severity:  "Minor",
+				Urgency:   "Future",
+				Certainty: "Possible",
+			},
+			Score: ivrAlertPriority(capingest.Alert{}, capingest.AlertInfo{Event: "Special Weather Statement", Headline: "Special Weather Statement", Severity: "Minor", Urgency: "Future", Certainty: "Possible"}, now.Add(-2*time.Minute)),
+		},
+		{
+			ID:    "watch",
+			Title: "Severe Thunderstorm Watch",
+			Alert: capingest.Alert{Identifier: "watch"},
+			Info: capingest.AlertInfo{
+				Event:     "Severe Thunderstorm Watch",
+				Headline:  "Severe Thunderstorm Watch",
+				Severity:  "Moderate",
+				Urgency:   "Expected",
+				Certainty: "Likely",
+			},
+			Score: ivrAlertPriority(capingest.Alert{}, capingest.AlertInfo{Event: "Severe Thunderstorm Watch", Headline: "Severe Thunderstorm Watch", Severity: "Moderate", Urgency: "Expected", Certainty: "Likely"}, now.Add(-time.Minute)),
+		},
+		{
+			ID:    "tornado",
+			Title: "Tornado Warning",
+			Alert: capingest.Alert{Identifier: "tornado"},
+			Info: capingest.AlertInfo{
+				Event:     "Tornado Warning",
+				Headline:  "Tornado Warning",
+				Severity:  "Extreme",
+				Urgency:   "Immediate",
+				Certainty: "Observed",
+			},
+			Score: ivrAlertPriority(capingest.Alert{}, capingest.AlertInfo{Event: "Tornado Warning", Headline: "Tornado Warning", Severity: "Extreme", Urgency: "Immediate", Certainty: "Observed"}, now.Add(-3*time.Minute)),
+		},
+	}
+
+	sortIVRAlerts(alerts)
+
+	if alerts[0].ID != "tornado" || alerts[1].ID != "watch" || alerts[2].ID != "statement" {
+		t.Fatalf("alerts sorted in wrong criticality order: %#v", []string{alerts[0].ID, alerts[1].ID, alerts[2].ID})
+	}
+}
+
+func ivrAlertTestService(t *testing.T) (*Service, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := datastore.OpenSQLite(context.Background(), datastore.SQLiteConfig{Path: "haze.db"}, dir)
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	cfg := loadedConfig{
+		BaseDir: dir,
+		IVR: Config{
+			DefaultLanguage: "en-CA",
+		},
+		Feeds:   []feedXML{{ID: "sk-0001", EnabledRaw: "true", Timezone: "America/Regina"}},
+		Prompts: defaultPromptConfig(),
+	}
+	service := &Service{
+		cfg:       cfg,
+		cache:     NewProductCache(cfg, nil),
+		broadcast: recentBroadcastHub("sk-0001"),
+		resolver:  NewResolver(cfg),
+		store:     store,
+	}
+	return service, store.Close
+}
+
+func ivrTestLocation() ResolvedLocation {
+	return ResolvedLocation{
+		Code:     "06040",
+		Source:   "hello_weather",
+		Name:     "Saskatoon",
+		Province: "SK",
+		FeedID:   "sk-0001",
+		Language: "en-CA",
+		Timezone: "America/Regina",
+		Covered:  true,
+	}
+}
+
+func storeIVRTestCAP(t *testing.T, store datastore.Store, id string, feedID string, event string, headline string, severity string, urgency string, certainty string, impact string) {
+	t.Helper()
+	raw := ivrTestCAPXML(id, event, headline, severity, urgency, certainty, impact)
+	if err := store.StoreCAPArchive(context.Background(), datastore.CAPArchiveRecord{
+		AlertID:      id,
+		FeedID:       feedID,
+		Bucket:       "accepted",
+		Status:       "accepted",
+		Event:        event,
+		Headline:     headline,
+		SentAtRaw:    "2026-06-22T12:00:00-06:00",
+		UpdatedAtRaw: "2026-06-22T12:05:00-06:00",
+		ExpiresAtRaw: "2099-06-22T13:00:00-06:00",
+		RawXML:       raw,
+	}); err != nil {
+		t.Fatalf("StoreCAPArchive: %v", err)
+	}
+}
+
+func ivrTestCAPXML(id string, event string, headline string, severity string, urgency string, certainty string, impact string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>` + id + `</identifier>
+  <sender>cap-pac@canada.ca</sender>
+  <sent>2026-06-22T12:00:00-06:00</sent>
+  <status>Actual</status>
+  <msgType>Alert</msgType>
+  <scope>Public</scope>
+  <info>
+    <language>en-CA</language>
+    <category>Met</category>
+    <event>` + event + `</event>
+    <urgency>` + urgency + `</urgency>
+    <severity>` + severity + `</severity>
+    <certainty>` + certainty + `</certainty>
+    <effective>2026-06-22T12:00:00-06:00</effective>
+    <expires>2099-06-22T13:00:00-06:00</expires>
+    <senderName>Environment Canada</senderName>
+    <headline>` + headline + `</headline>
+    <description>Test alert description.</description>
+    <instruction>Take shelter if threatening weather approaches.</instruction>
+    <parameter>
+      <valueName>layer:EC-MSC-SMC:1.1:MSC_Impact</valueName>
+      <value>` + impact + `</value>
+    </parameter>
+    <area>
+      <areaDesc>City of Saskatoon</areaDesc>
+      <geocode>
+        <valueName>profile:CAP-CP:Location:0.4</valueName>
+        <value>470602</value>
+      </geocode>
+    </area>
+  </info>
+</alert>`
+}
