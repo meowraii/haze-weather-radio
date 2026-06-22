@@ -173,6 +173,42 @@ func TestBuildCAPAlertTextUsesSharedWeatherSpeech(t *testing.T) {
 	}
 }
 
+func TestCleanNWSAlertTextStripsProductPreambleBulletsAndEllipses(t *testing.T) {
+	raw := `SVRAKQ The National Weather Service in Wakefield has issued a
+
+* Severe Thunderstorm Warning for...
+Hanover County in central Virginia...
+
+* Until 645 PM EDT.
+
+* At 557 PM EDT, a severe thunderstorm was located near Gum Spring,
+moving east at 40 mph.
+
+HAZARD...60 mph wind gusts.
+
+SOURCE...Radar indicated.
+
+IMPACT...Expect damage to trees and powerlines.
+
+* Locations impacted include...
+Montpelier and Ashland.
+
+Please report severe weather by calling 757-899-2415.`
+
+	text := CleanNWSAlertText(raw)
+
+	for _, forbidden := range []string{"SVRAKQ", "has issued", "*", "...", "Please report severe weather"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("cleaned NWS text still contains %q: %q", forbidden, text)
+		}
+	}
+	for _, wanted := range []string{"At 557 PM EDT", "HAZARD. 60 mph wind gusts.", "SOURCE. Radar indicated.", "IMPACT. Expect damage", "Locations impacted include. Montpelier"} {
+		if !strings.Contains(text, wanted) {
+			t.Fatalf("cleaned NWS text missing %q: %q", wanted, text)
+		}
+	}
+}
+
 func TestPickBannerGradientUsesWarningWatchAdvisoryWords(t *testing.T) {
 	cases := []struct {
 		name  string

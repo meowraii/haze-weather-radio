@@ -844,6 +844,69 @@ func TestNWSAlertTextUsesSameTranslationWithCAPProse(t *testing.T) {
 	}
 }
 
+func TestNWSAlertTextStripsDuplicatedProductPreamble(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "managed", "csv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "managed", "sameMapping.json"), []byte(`{"eas":{"SVR":"Severe Thunderstorm Warning"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "managed", "csv", "NWS_ZONE_COUNTY_CORRELATION.csv"), []byte("STATE|ZONE_CODE|CWA_ID|ZONE_NAME|STATE+ZONE|COUNTY_NAME|FIPS/SAME|TIMEZONE|FE_AREA|LAT|LON\nVA|085|AKQ|Hanover|VAC085|Hanover|051085|E|se|37.7600|-77.4900\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planner := &feedPlanner{cfg: loadedConfig{BaseDir: dir}, feed: feedXML{ID: "CAP-IT-ALL"}}
+	text := planner.alertTextFromData(map[string]any{
+		"cap_source":           "nws",
+		"same_event":           "SVR",
+		"same_event_name":      "Severe Thunderstorm Warning",
+		"same_originator":      "WXR",
+		"same_weather_service": "The National Weather Service",
+		"same_locations":       []any{"051085"},
+		"same_callsign":        "CAP-IT-ALL",
+		"same_begins_at":       "2026-06-22T21:58:00Z",
+		"same_expires_at":      "2026-06-22T22:45:00Z",
+		"description": `SVRAKQ The National Weather Service in Wakefield has issued a
+
+* Severe Thunderstorm Warning for...
+Hanover County in central Virginia...
+
+* Until 645 PM EDT.
+
+* At 557 PM EDT, a severe thunderstorm was located near Gum Spring, moving east at 40 mph.
+
+HAZARD...60 mph wind gusts.
+
+SOURCE...Radar indicated.
+
+IMPACT...Expect damage to trees and powerlines.
+
+* Locations impacted include...
+Montpelier and Ashland.`,
+		"instruction": "For your protection move to an interior room on the lowest floor of a building. Please report severe weather by calling 757-899-2415.",
+		"mimic_endec": "SAGE",
+	})
+
+	for _, forbidden := range []string{"SVRAKQ", "has issued a * Severe Thunderstorm Warning", "*", "...", "Please report severe weather", "CAP-IT-ALL"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("NWS alert text still contains %q: %q", forbidden, text)
+		}
+	}
+	for _, wanted := range []string{
+		"The National Weather Service has issued a Severe Thunderstorm Warning for the following areas: Hanover, VA.",
+		"At 557 PM EDT, a severe thunderstorm was located near Gum Spring",
+		"HAZARD. 60 mph wind gusts.",
+		"SOURCE. Radar indicated.",
+		"IMPACT. Expect damage to trees and powerlines.",
+		"Locations impacted include. Montpelier and Ashland.",
+		"For your protection move to an interior room",
+	} {
+		if !strings.Contains(text, wanted) {
+			t.Fatalf("NWS alert text missing %q: %q", wanted, text)
+		}
+	}
+}
+
 func TestBannerTextFromDataUsesSameIntroEvenWhenSameAudioDisabled(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "managed", "csv"), 0o755); err != nil {

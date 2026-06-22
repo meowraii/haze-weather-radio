@@ -1263,14 +1263,15 @@ func alertTextFromData(data map[string]any) string {
 }
 
 func (p *feedPlanner) alertTextFromData(data map[string]any) string {
-	if strings.EqualFold(firstText(nil, data, "cap_source"), "nws") {
+	capSource := firstText(nil, data, "cap_source")
+	if strings.EqualFold(capSource, "nws") {
 		if intro := p.sameSpeechIntroFromData(data); intro != "" {
 			parts := []string{intro}
 			if description := strings.TrimSpace(firstText(nil, data, "description")); description != "" {
-				parts = append(parts, alerttext.CleanAlertText(description))
+				parts = append(parts, cleanAlertBodyText(capSource, description))
 			}
 			if instruction := strings.TrimSpace(firstText(nil, data, "instruction")); instruction != "" {
-				parts = append(parts, alerttext.CleanAlertText(instruction))
+				parts = append(parts, cleanAlertBodyText(capSource, instruction))
 			}
 			return strings.TrimSpace(strings.Join(nonEmptyStrings(parts), " "))
 		}
@@ -1286,11 +1287,12 @@ func (p *feedPlanner) bannerTextFromData(data map[string]any, alertText string) 
 	if intro := p.sameIntroFromData(data); intro != "" {
 		parts = append(parts, intro)
 	}
+	capSource := firstText(nil, data, "cap_source")
 	if description := strings.TrimSpace(firstText(nil, data, "description")); description != "" {
-		parts = append(parts, alerttext.CleanAlertText(description))
+		parts = append(parts, cleanAlertBodyText(capSource, description))
 	}
 	if instruction := strings.TrimSpace(firstText(nil, data, "instruction")); instruction != "" {
-		parts = append(parts, alerttext.CleanAlertText(instruction))
+		parts = append(parts, cleanAlertBodyText(capSource, instruction))
 	}
 	if len(parts) <= 1 {
 		if custom := customAlertTextFromData(data); custom != "" && !sameText(parts, custom) {
@@ -1301,6 +1303,13 @@ func (p *feedPlanner) bannerTextFromData(data map[string]any, alertText string) 
 		return strings.TrimSpace(alertText)
 	}
 	return strings.TrimSpace(strings.Join(nonEmptyStrings(parts), " "))
+}
+
+func cleanAlertBodyText(capSource string, raw string) string {
+	if strings.EqualFold(capSource, "nws") {
+		return alerttext.CleanNWSAlertText(raw)
+	}
+	return alerttext.CleanAlertText(raw)
 }
 
 func (p *feedPlanner) sameIntroFromData(data map[string]any) string {

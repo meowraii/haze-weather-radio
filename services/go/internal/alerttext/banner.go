@@ -18,6 +18,14 @@ import (
 
 var compactSpaceRE = regexp.MustCompile(`\s+`)
 var headlineTrailRE = regexp.MustCompile(`(?i)\s*-\s*(in effect|ended|updated|cancelled|canceled|statement)\s*$`)
+var nwsBodyStartRE = regexp.MustCompile(`(?im)(^|[\n*]\s*)At\s+\d{3,4}\s+[AP]M\b`)
+var ellipsisRE = regexp.MustCompile(`\.{3,}`)
+
+var alertBoilerplateMarkers = []string{
+	"Please continue to monitor alerts and forecasts issued by Environment Canada.",
+	"To report severe weather",
+	"Please report severe weather",
+}
 
 var severityPriority = []string{"Extreme", "Severe", "Moderate", "Minor", "Unknown"}
 
@@ -685,17 +693,20 @@ func AlertSubject(info capingest.AlertInfo) string {
 
 // CleanAlertText trims CAP description/instruction boilerplate for speech.
 func CleanAlertText(raw string) string {
-	value := strings.TrimSpace(raw)
+	return cleanAlertSpeech(raw)
+}
+
+// CleanNWSAlertText trims leaked NWS product headers while preserving CAP description/instruction body text.
+func CleanNWSAlertText(raw string) string {
+	return cleanAlertSpeech(stripNWSProductPreamble(raw))
+}
+
+func cleanAlertSpeech(raw string) string {
+	value := normalizeAlertSpeech(raw)
 	if value == "" {
 		return ""
 	}
-	value = strings.ReplaceAll(value, "\r\n", "\n")
-	value = strings.ReplaceAll(value, "\r", "\n")
-	value = strings.ReplaceAll(value, "###", " ")
-	for _, marker := range []string{
-		"Please continue to monitor alerts and forecasts issued by Environment Canada.",
-		"To report severe weather",
-	} {
+	for _, marker := range alertBoilerplateMarkers {
 		if idx := strings.Index(value, marker); idx >= 0 {
 			value = strings.TrimSpace(value[:idx])
 		}
@@ -705,6 +716,48 @@ func CleanAlertText(raw string) string {
 		fields = fields[:120]
 	}
 	return CleanSentence(strings.Join(fields, " "))
+}
+
+func normalizeAlertSpeech(raw string) string {
+	value := strings.TrimSpace(raw)
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	value = strings.ReplaceAll(value, "###", " ")
+	value = strings.ReplaceAll(value, "*", " ")
+	value = ellipsisRE.ReplaceAllString(value, ". ")
+	return strings.TrimSpace(value)
+}
+
+func stripNWSProductPreamble(raw string) string {
+	value := strings.TrimSpace(raw)
+	if !startsWithAWIPSID(value) || !strings.Contains(strings.ToLower(value), "the national weather service") {
+		return value
+	}
+	loc := nwsBodyStartRE.FindStringIndex(value)
+	if loc == nil {
+		return value
+	}
+	return strings.TrimLeft(value[loc[0]:], " \t\r\n*")
+}
+
+func startsWithAWIPSID(value string) bool {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return false
+	}
+	token := strings.Trim(fields[0], ".,:;")
+	if len(token) < 6 || len(token) > 7 {
+		return false
+	}
+	for i, r := range token {
+		if i < 3 && (r < 'A' || r > 'Z') {
+			return false
+		}
+		if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 // CAPParam returns a CAP parameter by case-insensitive name.
