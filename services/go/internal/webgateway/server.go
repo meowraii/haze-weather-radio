@@ -447,9 +447,19 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 	case "cgen.get":
 		return loadCgenPayload(s.configPath)
 	case "cgen.save":
-		return saveCgenPayload(s.configPath, payload)
+		result, err := saveCgenPayload(s.configPath, payload)
+		if err != nil {
+			return nil, err
+		}
+		_ = s.publishCgenConfigUpdated(result)
+		return result, nil
 	case "cgen.action":
-		return cgenActionPayload(s.configPath, payload)
+		result, err := cgenActionPayload(s.configPath, payload)
+		if err != nil {
+			return nil, err
+		}
+		_ = s.publishCgenConfigUpdated(result)
+		return result, nil
 	case "state":
 		return s.panelState()
 	case "wx.packages":
@@ -542,6 +552,20 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 	default:
 		return nil, fmt.Errorf("command %q is not implemented by the Go gateway yet", command)
 	}
+}
+
+func (s *wsSession) publishCgenConfigUpdated(payload map[string]any) error {
+	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
+	if bridgeAddr == "" {
+		return nil
+	}
+	publisher := events.NewHostBridgePublisher(bridgeAddr)
+	defer publisher.Close()
+	return publisher.Publish(events.Event{
+		Type:   "cgen.config.updated",
+		Source: "haze-web",
+		Data:   payload,
+	})
 }
 
 func (s *wsSession) publishPlaylistCommand(eventType string, payload map[string]any) (any, error) {

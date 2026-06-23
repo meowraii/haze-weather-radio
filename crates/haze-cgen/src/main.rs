@@ -117,6 +117,9 @@ async fn run_event_loop(
                 };
                 if runtime.apply_event(&event) {
                     let _ = state_tx.send(runtime.clone());
+                } else if event.get("type").and_then(serde_json::Value::as_str) == Some("cgen.config.updated") {
+                    info!("cgen config update received; exiting for daemon restart");
+                    return Ok(());
                 }
             }
             result = tokio::signal::ctrl_c() => {

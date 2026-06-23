@@ -12,7 +12,7 @@ path = "src/main.rs"
 [features]
 default = []
 ffmpeg-rsmpeg = ["haze-media/ffmpeg-rsmpeg", "dep:rsmpeg", "rsmpeg/link_system_ffmpeg"]
-gpu-wgpu = ["dep:wgpu"]
+gpu-wgpu = ["dep:pollster", "dep:wgpu"]
 
 [dependencies]
 anyhow = "1"
@@ -26,6 +26,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+pollster = { version = "0.4", optional = true }
 wgpu = { version = "26", optional = true }
 rsmpeg = { version = "0.18.0", default-features = false, features = ["ffmpeg8"], optional = true }
 
