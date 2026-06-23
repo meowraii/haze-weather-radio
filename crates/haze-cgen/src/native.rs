@@ -142,7 +142,7 @@ fn encode_once(
         );
         None
     };
-    let stream_map = create_output_streams(
+    let mut stream_map = create_output_streams(
         &mut output,
         &input_specs,
         video_input_index,
@@ -163,6 +163,7 @@ fn encode_once(
     output
         .write_header(&mut header_options)
         .context("failed to write native cgen output header")?;
+    refresh_output_time_bases(&output, &mut stream_map);
     let mut output_clock = CorrectedWallClock::default();
     while let Some(mut packet) = input
         .read_packet()
@@ -276,6 +277,18 @@ fn create_output_streams(
     Ok(out)
 }
 
+fn refresh_output_time_bases(output: &AVFormatContextOutput, stream_map: &mut [StreamSpec]) {
+    for spec in stream_map {
+        if let Some(stream) = output
+            .streams()
+            .iter()
+            .find(|stream| stream.index == spec.output_index)
+        {
+            spec.output_time_base = stream.time_base;
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct CorrectedWallClock {
     started_at: Option<Instant>,
@@ -377,7 +390,16 @@ impl VideoProcessor {
     }
 
     fn output_codecpar(&self) -> AVCodecParameters {
-        self.encoder.extract_codecpar()
+        let mut codecpar = self.encoder.extract_codecpar();
+        // SAFETY: `extract_codecpar` returns an owned AVCodecParameters for
+        // this output stream. We only normalize plain stream metadata before
+        // passing ownership to libavformat.
+        unsafe {
+            let raw = codecpar.as_mut_ptr();
+            (*raw).codec_type = ffi::AVMEDIA_TYPE_VIDEO;
+            (*raw).codec_tag = 0;
+        }
+        codecpar
     }
 
     fn output_time_base(&self) -> AVRational {
@@ -561,7 +583,23 @@ impl AudioProcessor {
     }
 
     fn output_codecpar(&self) -> AVCodecParameters {
-        self.encoder.extract_codecpar()
+        let mut codecpar = self.encoder.extract_codecpar();
+        // SAFETY: `extract_codecpar` returns an owned AVCodecParameters for
+        // this output stream. These fields are plain AC-3 stream metadata
+        // needed by MPEG-TS readers before we give the parameters to the muxer.
+        unsafe {
+            let raw = codecpar.as_mut_ptr();
+            (*raw).codec_type = ffi::AVMEDIA_TYPE_AUDIO;
+            (*raw).codec_id = ffi::AV_CODEC_ID_AC3;
+            (*raw).codec_tag = 0;
+            (*raw).format = ffi::AV_SAMPLE_FMT_FLTP;
+            (*raw).sample_rate = ALERT_SAMPLE_RATE as i32;
+            (*raw).ch_layout =
+                AVChannelLayout::from_nb_channels(ALERT_CHANNELS.into()).into_inner();
+            (*raw).bit_rate = DEFAULT_AC3_BITRATE;
+            (*raw).frame_size = AC3_FRAME_SAMPLES as i32;
+        }
+        codecpar
     }
 
     fn process_packet(
