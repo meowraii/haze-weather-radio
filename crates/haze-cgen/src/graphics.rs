@@ -222,6 +222,23 @@ impl NativeGraphicsRenderer {
         );
         let text_y = box_y + ((h - glyph_height_px(scale)) / 2).max(0);
 
+        if self.feed.video.interlaced {
+            if self.feed.banner.background_enabled {
+                fill_rect_yuv_gradient(frame, x, box_y, w, h, gradient, (y, u, v));
+            }
+            self.render_interlaced_ticker_text(
+                frame,
+                relative_frame,
+                text,
+                &font_family,
+                font_size,
+                scale,
+                text_width,
+                text_y,
+            );
+            return;
+        }
+
         #[cfg(feature = "gpu-wgpu")]
         if let Some(gpu) = self.gpu.as_mut() {
             let text_rgb = rgb_from_hex(non_empty_ref(&self.feed.text.color).unwrap_or("#ffffff"));
@@ -273,6 +290,70 @@ impl NativeGraphicsRenderer {
         }
         draw_text_yuv(frame, text, text_x + 3, text_y + 4, scale, 16, 128, 128);
         draw_text_yuv(frame, text, text_x, text_y, scale, 235, 128, 128);
+    }
+
+    #[cfg(feature = "ffmpeg-rsmpeg")]
+    fn render_interlaced_ticker_text(
+        &mut self,
+        frame: &mut AVFrame,
+        relative_frame: u64,
+        text: &str,
+        font_family: &str,
+        font_size: u32,
+        scale: i32,
+        text_width: i32,
+        text_y: i32,
+    ) {
+        let parities = field_parities(&self.feed);
+        let (text_luma, _, _) =
+            yuv_from_hex(non_empty_ref(&self.feed.text.color).unwrap_or("#ffffff"));
+        #[cfg(feature = "gpu-wgpu")]
+        if let Some((width, height, pixels)) = self
+            .cpu_fonts
+            .resolve(font_family)
+            .and_then(|font| raster_text_rgba_system(&font, text, font_size))
+        {
+            let shadow = tint_rgba_overlay(&pixels, [0, 0, 0], 220);
+            for (field_index, parity) in parities.into_iter().enumerate() {
+                let text_x = ticker_text_x_field(
+                    frame.width,
+                    text_width,
+                    relative_frame
+                        .saturating_mul(2)
+                        .saturating_add(field_index as u64),
+                    self.feed.banner.scroll_speed,
+                );
+                blend_rgba_luma_overlay_field(
+                    frame, &shadow, width, height, text_x, text_y, 16, parity,
+                );
+                blend_rgba_luma_overlay_field(
+                    frame,
+                    &shadow,
+                    width,
+                    height,
+                    text_x + 3,
+                    text_y + 4,
+                    16,
+                    parity,
+                );
+                blend_rgba_luma_overlay_field(
+                    frame, &pixels, width, height, text_x, text_y, text_luma, parity,
+                );
+            }
+            return;
+        }
+        for (field_index, parity) in parities.into_iter().enumerate() {
+            let text_x = ticker_text_x_field(
+                frame.width,
+                text_width,
+                relative_frame
+                    .saturating_mul(2)
+                    .saturating_add(field_index as u64),
+                self.feed.banner.scroll_speed,
+            );
+            draw_text_yuv_field(frame, text, text_x + 3, text_y + 4, scale, 16, parity);
+            draw_text_yuv_field(frame, text, text_x, text_y, scale, text_luma, parity);
+        }
     }
 
     #[cfg(feature = "ffmpeg-rsmpeg")]
@@ -1295,6 +1376,19 @@ fn ticker_text_x(frame_width: i32, _text_width: i32, frame_index: u64, scroll_sp
     i64::from(start_x).saturating_sub(scroll) as i32
 }
 
+fn ticker_text_x_field(
+    frame_width: i32,
+    text_width: i32,
+    field_index: u64,
+    scroll_speed: u32,
+) -> i32 {
+    let start_x = i128::from(frame_width.saturating_add(1).max(1));
+    let scroll = i128::from(field_index).saturating_mul(i128::from(scroll_speed.max(1))) / 2;
+    let min_x = -i128::from(text_width.max(1));
+    let value = start_x.saturating_sub(scroll).max(min_x);
+    i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
+}
+
 fn ticker_scroll_frames(frame_width: i32, text_width: i32, scroll_speed: u32) -> u64 {
     let start_x = frame_width.saturating_add(1).max(1);
     let travel = start_x.saturating_add(text_width.max(1)).saturating_add(1);
@@ -1355,6 +1449,17 @@ fn ticker_color<'a>(
                 .and_then(non_empty_ref)
         })
         .map(ToString::to_string)
+}
+
+fn field_parities(feed: &FeedConfig) -> [i32; 2] {
+    if feed.video.field_order.eq_ignore_ascii_case("bff")
+        || feed.video.field_order.eq_ignore_ascii_case("bottom")
+        || feed.video.field_order.eq_ignore_ascii_case("bottom_first")
+    {
+        [1, 0]
+    } else {
+        [0, 1]
+    }
 }
 
 fn banner_gradient_colors(banner: Option<&BannerPayload>) -> Option<TickerGradient> {
@@ -1571,6 +1676,88 @@ fn draw_text_yuv(
     }
 }
 
+#[cfg(feature = "ffmpeg-rsmpeg")]
+fn draw_text_yuv_field(
+    frame: &mut AVFrame,
+    text: &str,
+    x: i32,
+    y: i32,
+    scale: i32,
+    yy: u8,
+    field_parity: i32,
+) {
+    let mut cursor = x;
+    for ch in text.chars() {
+        if ch == ' ' {
+            cursor = cursor.saturating_add(4 * scale);
+            continue;
+        }
+        if let Some(glyph) = glyph_rows(ch) {
+            for (row, bits) in glyph.iter().enumerate() {
+                for col in 0..5 {
+                    if bits & (1 << (4 - col)) != 0 {
+                        fill_luma_rect_field(
+                            frame,
+                            cursor + col * scale,
+                            y + row as i32 * scale,
+                            scale,
+                            scale,
+                            yy,
+                            field_parity,
+                        );
+                    }
+                }
+            }
+        }
+        cursor = cursor.saturating_add(6 * scale);
+        if cursor > frame.width {
+            break;
+        }
+    }
+}
+
+#[cfg(feature = "ffmpeg-rsmpeg")]
+fn fill_luma_rect_field(
+    frame: &mut AVFrame,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    value: u8,
+    field_parity: i32,
+) {
+    let x0 = x.clamp(0, frame.width);
+    let y0 = y.clamp(0, frame.height);
+    let x1 = x.saturating_add(w).clamp(0, frame.width);
+    let y1 = y.saturating_add(h).clamp(0, frame.height);
+    if x1 <= x0 || y1 <= y0 || frame.data[0].is_null() {
+        return;
+    }
+    let Ok(stride) = usize::try_from(frame.linesize[0]) else {
+        return;
+    };
+    let Ok(start) = usize::try_from(x0) else {
+        return;
+    };
+    let Ok(len) = usize::try_from(x1 - x0) else {
+        return;
+    };
+    let parity = field_parity.rem_euclid(2);
+    for row in y0..y1 {
+        if row.rem_euclid(2) != parity {
+            continue;
+        }
+        let Ok(row) = usize::try_from(row) else {
+            continue;
+        };
+        // SAFETY: x/y bounds are clamped to the active luma plane and the
+        // frame owns a positive stride for this writable AVFrame.
+        unsafe {
+            std::ptr::write_bytes(frame.data[0].add(row * stride + start), value, len);
+        }
+    }
+}
+
 fn text_width_px(text: &str, scale: i32) -> i32 {
     text.chars()
         .map(|ch| if ch == ' ' { 4 * scale } else { 6 * scale })
@@ -1736,6 +1923,57 @@ fn blend_rgba_overlay(
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "ffmpeg-rsmpeg", feature = "gpu-wgpu"))]
+fn blend_rgba_luma_overlay_field(
+    frame: &mut AVFrame,
+    pixels: &[u8],
+    overlay_width: u32,
+    overlay_height: u32,
+    dst_x: i32,
+    dst_y: i32,
+    luma: u8,
+    field_parity: i32,
+) {
+    if pixels.is_empty() || overlay_width == 0 || overlay_height == 0 || frame.data[0].is_null() {
+        return;
+    }
+    let Ok(y_stride) = usize::try_from(frame.linesize[0]) else {
+        return;
+    };
+    let width = frame.width.max(0);
+    let height = frame.height.max(0);
+    let parity = field_parity.rem_euclid(2);
+    for oy in 0..overlay_height as i32 {
+        let fy = dst_y + oy;
+        if fy < 0 || fy >= height || fy.rem_euclid(2) != parity {
+            continue;
+        }
+        for ox in 0..overlay_width as i32 {
+            let fx = dst_x + ox;
+            if fx < 0 || fx >= width {
+                continue;
+            }
+            let offset = ((oy as u32 * overlay_width + ox as u32) * 4) as usize;
+            let alpha = pixels.get(offset + 3).copied().unwrap_or_default();
+            if alpha == 0 {
+                continue;
+            }
+            let Ok(fy_usize) = usize::try_from(fy) else {
+                continue;
+            };
+            let Ok(fx_usize) = usize::try_from(fx) else {
+                continue;
+            };
+            // SAFETY: luma coordinates are clamped to the active frame and
+            // the destination row is within the validated positive stride.
+            unsafe {
+                let y_ptr = frame.data[0].add(fy_usize * y_stride + fx_usize);
+                *y_ptr = blend_u8(*y_ptr, luma, alpha);
             }
         }
     }
@@ -1921,6 +2159,23 @@ mod tests {
         assert_eq!(ticker_text_x(1920, 320, 0, 4), 1921);
         let exit_frame = (1921 + 320) / 4;
         assert!(ticker_text_x(1920, 320, exit_frame as u64, 4) <= -319);
+    }
+
+    #[test]
+    fn ticker_scroll_fields_advance_half_a_frame_apart() {
+        assert_eq!(ticker_text_x_field(1920, 320, 0, 8), 1921);
+        assert_eq!(ticker_text_x_field(1920, 320, 1, 8), 1917);
+        assert_eq!(ticker_text_x_field(1920, 320, 2, 8), 1913);
+    }
+
+    #[test]
+    fn interlaced_field_parities_follow_field_order() {
+        let mut feed = test_feed();
+        feed.video.interlaced = true;
+        feed.video.field_order = "tff".to_string();
+        assert_eq!(field_parities(&feed), [0, 1]);
+        feed.video.field_order = "bff".to_string();
+        assert_eq!(field_parities(&feed), [1, 0]);
     }
 
     #[test]
