@@ -444,6 +444,12 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 		return exportBulletinsPayload(s.configPath, payload)
 	case "bulletins.upload_audio":
 		return uploadBulletinAudio(s.configPath, payload)
+	case "cgen.get":
+		return loadCgenPayload(s.configPath)
+	case "cgen.save":
+		return saveCgenPayload(s.configPath, payload)
+	case "cgen.action":
+		return cgenActionPayload(s.configPath, payload)
 	case "state":
 		return s.panelState()
 	case "wx.packages":

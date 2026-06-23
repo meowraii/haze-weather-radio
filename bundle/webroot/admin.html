@@ -119,6 +119,21 @@
         .bulletin-wide { grid-column: 1 / -1; }
         .bulletin-enabled-row { align-self: end; min-height: 32px; }
         .bulletin-editor-grid textarea { resize: vertical; }
+        .cgen-page { padding: 10px 14px 34px; }
+        .cgen-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 380px); gap: 10px; align-items: start; }
+        .cgen-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+        .cgen-side { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 76px; }
+        .cgen-instance-bar { display: grid; grid-template-columns: minmax(180px, 280px) auto auto minmax(0, 1fr); gap: 8px; align-items: end; }
+        .cgen-editor-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        .cgen-wide { grid-column: 1 / -1; }
+        .cgen-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+        .cgen-actions button { min-height: 30px; justify-content: center; }
+        .cgen-preview-wrap { padding: 8px; border: 1px solid var(--border-deep); border-radius: var(--radius-sm); background: #050505; box-shadow: var(--bevel-sunken); }
+        .cgen-preview { display: block; width: 100%; aspect-ratio: 16 / 9; border: 1px solid rgba(255,255,255,.18); background: #000; }
+        .cgen-meta-list { display: grid; gap: 6px; }
+        .cgen-meta-list div { min-width: 0; padding: 7px 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg) 38%, transparent); box-shadow: var(--bevel-sunken); }
+        .cgen-meta-list dt { color: var(--muted); font-size: 11px; line-height: 1.2; }
+        .cgen-meta-list dd { margin: 2px 0 0; color: var(--text); font-family: var(--mono-font); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
         @media (min-width: 900px) {
             .daemon-page { padding: 12px 14px 32px; }
@@ -155,8 +170,12 @@
         @media (max-width: 920px) {
             .breakin-grid,
             .breakin-form-grid,
-            .bulletin-editor-grid { grid-template-columns: 1fr; }
-            .breakin-side { position: static; }
+            .bulletin-editor-grid,
+            .cgen-layout,
+            .cgen-editor-grid,
+            .cgen-instance-bar { grid-template-columns: 1fr; }
+            .breakin-side,
+            .cgen-side { position: static; }
         }
 
         .alert-archive-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -220,6 +239,10 @@
                 <a class="sidebar-link" href="#/breakin" data-view="breakin">
                     <i data-lucide="mic-vocal" width="15" height="15"></i>
                     Operator Break-in
+                </a>
+                <a class="sidebar-link" href="#/cgen" data-view="cgen">
+                    <i data-lucide="scan-line" width="15" height="15"></i>
+                    CGEN Control
                 </a>
                 <a class="sidebar-link" href="#/bulletins" data-view="bulletins">
                     <i data-lucide="newspaper" width="15" height="15"></i>
@@ -623,6 +646,278 @@
                                             <div><dt>GET</dt><dd id="readersPath">Resolving...</dd></div>
                                         </dl>
                                     </details>
+                                </div>
+                            </section>
+                        </aside>
+                    </div>
+                </main>
+            </div>
+
+            <div class="view" data-view="cgen">
+                <header class="topbar">
+                    <div class="topbar-inner">
+                        <div class="topbar-title">
+                            <p class="topbar-eyebrow">Character Generator</p>
+                            <h1>CGEN Control</h1>
+                            <p>Manage broadcast video overlay instances backed by managed/configs/cgen.xml.</p>
+                        </div>
+                        <div class="metric-strip">
+                            <article class="metric-card">
+                                <p>Instances</p>
+                                <strong id="cgenCountMetric">0</strong>
+                            </article>
+                            <article class="metric-card">
+                                <p>Mode</p>
+                                <strong id="cgenModeMetric">release</strong>
+                            </article>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="dashboard cgen-page">
+                    <p id="cgenStatusBanner" class="status-banner">Loading CGEN instances...</p>
+
+                    <section class="section-block">
+                        <div class="section-hd">
+                            <span>Instance</span>
+                            <span class="section-hd-sub" id="cgenPathLabel">managed/configs/cgen.xml</span>
+                        </div>
+                        <div class="section-body cgen-instance-bar">
+                            <label class="daemon-field">
+                                <span>Selected</span>
+                                <select id="cgenInstanceSelect"></select>
+                            </label>
+                            <button id="cgenAddButton" class="btn-action" type="button">
+                                <i data-lucide="plus" width="13" height="13"></i>
+                                New
+                            </button>
+                            <button id="cgenSaveButton" class="btn-primary" type="button">Save XML</button>
+                            <label class="ba-switch">
+                                <input id="cgenGlobalEnabled" type="checkbox">
+                                <span>CGEN service config enabled</span>
+                            </label>
+                        </div>
+                    </section>
+
+                    <div class="cgen-layout">
+                        <div class="cgen-main">
+                            <section class="section-block">
+                                <div class="section-hd"><span>Program Routing</span></div>
+                                <div class="section-body cgen-editor-grid">
+                                    <label class="daemon-field">
+                                        <span>ID</span>
+                                        <input id="cgenID" type="text" placeholder="CAP-IT-ALL">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Name</span>
+                                        <input id="cgenName" type="text" placeholder="CAP-IT-ALL CGEN">
+                                    </label>
+                                    <label class="ba-switch bulletin-enabled-row">
+                                        <input id="cgenEnabled" type="checkbox">
+                                        <span>Enabled</span>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Mode</span>
+                                        <select id="cgenMode">
+                                            <option value="release">Release / passthrough</option>
+                                            <option value="overlay">Overlay active</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field cgen-wide">
+                                        <span>Program input</span>
+                                        <input id="cgenProgramInput" type="text" placeholder="udp://239.0.0.1:9000">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Program input format</span>
+                                        <input id="cgenProgramInputFormat" type="text" value="mpegts">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Priority feed input</span>
+                                        <input id="cgenPriorityFeed" type="text" placeholder="CAP-IT-ALL">
+                                    </label>
+                                    <label class="daemon-field cgen-wide">
+                                        <span>Priority input URL</span>
+                                        <input id="cgenPriorityInput" type="text" placeholder="blank = Haze priority alert events/audio">
+                                    </label>
+                                    <label class="daemon-field cgen-wide">
+                                        <span>Program output</span>
+                                        <input id="cgenProgramOutput" type="text" placeholder="udp://239.0.0.2:9001?pkt_size=1316">
+                                    </label>
+                                    <label class="daemon-field cgen-wide">
+                                        <span>Alert + program output</span>
+                                        <input id="cgenAlertOutput" type="text" placeholder="udp://239.0.0.2:9001?pkt_size=1316">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Output format</span>
+                                        <input id="cgenOutputFormat" type="text" value="mpegts">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Video codec</span>
+                                        <input id="cgenVCodec" type="text" value="libx264">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Audio codec</span>
+                                        <input id="cgenACodec" type="text" value="aac">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Duck dB</span>
+                                        <input id="cgenDuckDB" type="number" step="1" value="-18">
+                                    </label>
+                                </div>
+                            </section>
+
+                            <section class="section-block">
+                                <div class="section-hd"><span>Graphics</span></div>
+                                <div class="section-body cgen-editor-grid">
+                                    <label class="daemon-field">
+                                        <span>Width</span>
+                                        <select id="cgenWidth">
+                                            <option value="720">720</option>
+                                            <option value="1280">1280</option>
+                                            <option value="1920">1920</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Height</span>
+                                        <select id="cgenHeight">
+                                            <option value="480">480</option>
+                                            <option value="576">576</option>
+                                            <option value="720">720</option>
+                                            <option value="1080">1080</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>FPS</span>
+                                        <input id="cgenFPS" type="text" value="source">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Background</span>
+                                        <input id="cgenBackgroundColor" type="color" value="#000000">
+                                    </label>
+                                    <label class="daemon-field cgen-wide">
+                                        <span>Font</span>
+                                        <input id="cgenFont" type="text" value="Zalando Sans SemiExpanded">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Font size</span>
+                                        <input id="cgenFontSize" type="number" min="8" max="220" value="26">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Text X</span>
+                                        <input id="cgenTextX" type="number" value="48">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Text Y</span>
+                                        <input id="cgenTextY" type="number" value="96">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Text color</span>
+                                        <input id="cgenTextColor" type="color" value="#ffffff">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Banner X</span>
+                                        <input id="cgenBannerX" type="number" value="0">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Banner Y</span>
+                                        <input id="cgenBannerY" type="number" value="0">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Banner width</span>
+                                        <input id="cgenBannerWidth" type="number" value="1280">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Banner height</span>
+                                        <input id="cgenBannerHeight" type="number" value="96">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Banner color</span>
+                                        <input id="cgenBannerColor" type="color" value="#b45309">
+                                    </label>
+                                    <label class="ba-switch bulletin-enabled-row">
+                                        <input id="cgenBannerBackgroundEnabled" type="checkbox">
+                                        <span>Banner background</span>
+                                    </label>
+                                </div>
+                            </section>
+
+                            <section class="section-block">
+                                <div class="section-hd"><span>Text and Clock</span></div>
+                                <div class="section-body cgen-editor-grid">
+                                    <label class="daemon-field cgen-wide">
+                                        <span>Inserted text</span>
+                                        <textarea id="cgenText" rows="4" placeholder="Operator text overlay"></textarea>
+                                    </label>
+                                    <label class="ba-switch bulletin-enabled-row">
+                                        <input id="cgenTextEnabled" type="checkbox">
+                                        <span>Show inserted text</span>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Inserted text size</span>
+                                        <input id="cgenTextFontSize" type="number" min="8" max="220" value="32">
+                                    </label>
+                                    <label class="ba-switch bulletin-enabled-row">
+                                        <input id="cgenClockEnabled" type="checkbox">
+                                        <span>Show clock</span>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Clock format</span>
+                                        <input id="cgenClockFormat" type="text" value="Jan 02 15:04:05">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Clock X</span>
+                                        <input id="cgenClockX" type="number" value="48">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Clock Y</span>
+                                        <input id="cgenClockY" type="number" value="48">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Clock size</span>
+                                        <input id="cgenClockFontSize" type="number" value="30">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Clock color</span>
+                                        <input id="cgenClockColor" type="color" value="#ffffff">
+                                    </label>
+                                    <label class="ba-switch bulletin-enabled-row">
+                                        <input id="cgenSmpteBars" type="checkbox">
+                                        <span>SMPTE color bars</span>
+                                    </label>
+                                </div>
+                            </section>
+                        </div>
+
+                        <aside class="cgen-side">
+                            <section class="section-block" style="margin-top:0">
+                                <div class="section-hd"><span>Preview</span></div>
+                                <div class="section-body">
+                                    <div class="cgen-preview-wrap">
+                                        <canvas id="cgenPreview" class="cgen-preview" width="640" height="360"></canvas>
+                                    </div>
+                                </div>
+                            </section>
+                            <section class="section-block">
+                                <div class="section-hd"><span>Quick Actions</span></div>
+                                <div class="section-body cgen-actions">
+                                    <button id="cgenReleaseButton" class="btn-action" type="button">Release CGEN</button>
+                                    <button id="cgenOverlayButton" class="btn-action" type="button">Overlay</button>
+                                    <button id="cgenBarsButton" class="btn-action" type="button">SMPTE Bars</button>
+                                    <button id="cgenClockButton" class="btn-action" type="button">Toggle Clock</button>
+                                    <button id="cgenInsertTextButton" class="btn-action" type="button">Insert Text</button>
+                                    <button id="cgenClearTextButton" class="btn-action" type="button">Clear Text</button>
+                                    <button id="cgenInsertBannerButton" class="btn-action" type="button">Insert Banner Background</button>
+                                    <button id="cgenClearBannerButton" class="btn-action" type="button">Clear Banner Background</button>
+                                </div>
+                            </section>
+                            <section class="section-block">
+                                <div class="section-hd"><span>Current Links</span></div>
+                                <div class="section-body">
+                                    <dl class="cgen-meta-list">
+                                        <div><dt>Program Input</dt><dd id="cgenProgramInputMeta">-</dd></div>
+                                        <div><dt>Priority Source</dt><dd id="cgenPriorityMeta">-</dd></div>
+                                        <div><dt>UDP Output</dt><dd id="cgenOutputMeta">-</dd></div>
+                                    </dl>
                                 </div>
                             </section>
                         </aside>

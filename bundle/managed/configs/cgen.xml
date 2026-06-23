@@ -4,11 +4,17 @@
     Disabled example feed. Set enabled="true" after choosing real input/output URLs.
     feed id="*" follows station-wide priority alerts for any feed.
   -->
-  <feed id="*" enabled="false">
-    <input url="udp://127.0.0.1:5000?overrun_nonfatal=1" format="mpegts"/>
-    <output url="udp://127.0.0.1:5001" format="mpegts" vcodec="libx264" acodec="aac" video_bitrate_kbps="4500" audio_bitrate_kbps="128"/>
-    <video width="1280" height="720" fps="source"/>
-    <audio idle="source" alert_mode="replace"/>
-    <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded"/>
+  <feed id="CAP-IT-ALL" name="CAP-IT-ALL CGEN" enabled="true">
+    <programInput url="udp://239.0.0.1:9000?overrun_nonfatal=1&amp;reuse=1" format="mpegts"></programInput>
+    <priorityInput feed_id="CAP-IT-ALL" url="" format="priority-audio"></priorityInput>
+    <programOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="libx264" acodec="aac" video_bitrate_kbps="4500" audio_bitrate_kbps="128"></programOutput>
+    <alertOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="libx264" acodec="aac" video_bitrate_kbps="4500" audio_bitrate_kbps="128"></alertOutput>
+    <video width="1280" height="720" fps="source"></video>
+    <audio idle="source" alert_mode="replace" duck_db="-18"></audio>
+    <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded" font_size="26" x="0" y="0" background_color="#b45309" background_enabled="true"></banner>
+    <graphics background_color="#000000" font="Zalando Sans SemiExpanded" font_size="26" text_x="48" text_y="96" banner_x="0" banner_y="0" banner_width="1280" banner_height="96"></graphics>
+    <clock enabled="false" format="Jan 02 15:04:05" x="48" y="48" font_size="30" color="#ffffff"></clock>
+    <text enabled="false" x="48" y="96" font_size="32" color="#ffffff"></text>
+    <state mode="release" smpte_bars="false"></state>
   </feed>
 </cgen>

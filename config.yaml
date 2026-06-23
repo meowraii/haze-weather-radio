@@ -23,7 +23,7 @@ services:
       alert_poll: "500ms"
       ffmpeg: "ffmpeg"
     cgen:
-      enabled: false
+      enabled: true
       config: "managed/configs/cgen.xml"
       ffmpeg: "ffmpeg"
       graphics_backend: "auto"
@@ -324,7 +324,7 @@ cap:
         - identifier
         - sent
   nws_cap:
-    enabled: true
+    enabled: false
     sources:
       - id: nws_api
         url: https://api.weather.gov/alerts/active.atom

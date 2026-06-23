@@ -11,6 +11,7 @@ import { initAlertsArchiveView } from './alerts.js';
 import { initAutomationsView } from './automations.js';
 import { initDictionaryView } from './dictionary.js';
 import { initBulletinsView } from './bulletins.js';
+import { initCgenView } from './cgen.js';
 
 const authPill = document.getElementById('authPill');
 const healthPill = document.getElementById('healthPill');
@@ -22,7 +23,7 @@ const refreshButton = document.getElementById('refreshButton');
 
 let healthState = { auth_required: true };
 let dashboardInitialized = false;
-const viewInit = { same: false, automations: false, wx: false, daemon: false, playlist: false, breakin: false, bulletins: false, alerts: false, dictionary: false };
+const viewInit = { same: false, automations: false, wx: false, daemon: false, playlist: false, breakin: false, cgen: false, bulletins: false, alerts: false, dictionary: false };
 
 session.importUrlToken();
 initTheme(themeToggle);
@@ -139,6 +140,10 @@ function navigate(view) {
     if (view === 'breakin' && !viewInit.breakin) {
         viewInit.breakin = true;
         initBreakInView();
+    }
+    if (view === 'cgen' && !viewInit.cgen) {
+        viewInit.cgen = true;
+        initCgenView();
     }
     if (view === 'bulletins' && !viewInit.bulletins) {
         viewInit.bulletins = true;
