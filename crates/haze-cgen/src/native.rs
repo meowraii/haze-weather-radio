@@ -466,9 +466,7 @@ fn encode_once(
             .iter_mut()
             .filter(|output| output.processor.input_index == input_index)
         {
-            audio_output
-                .processor
-                .process_packet(&packet, &audio_output.spec, &mut output)?;
+            audio_output.processor.process_packet(&packet)?;
             handled_audio = true;
         }
         if handled_audio {
@@ -1241,12 +1239,7 @@ impl AudioProcessor {
         codecpar
     }
 
-    fn process_packet(
-        &mut self,
-        source_packet: &AVPacket,
-        spec: &StreamSpec,
-        output: &mut AVFormatContextOutput,
-    ) -> Result<()> {
+    fn process_packet(&mut self, source_packet: &AVPacket) -> Result<()> {
         if self.alert_active()? {
             self.source_pcm.clear();
             return Ok(());
@@ -1257,8 +1250,7 @@ impl AudioProcessor {
         loop {
             match self.decoder.receive_frame() {
                 Ok(frame) => {
-                    self.enqueue_source_frame(&frame, spec)?;
-                    self.write_available_source_audio(spec, output)?;
+                    self.enqueue_source_frame(&frame)?;
                 }
                 Err(err) if is_again(&err) => return Ok(()),
                 Err(err) => return Err(err).context("failed to decode native cgen source audio"),
@@ -1266,27 +1258,7 @@ impl AudioProcessor {
         }
     }
 
-    fn enqueue_source_frame(&mut self, source_frame: &AVFrame, spec: &StreamSpec) -> Result<()> {
-        let source_pts = self.source_frame_output_pts(source_frame, spec.output_time_base);
-        if let Some(source_pts) = source_pts {
-            if self.clock.audio_next_pts.is_none() {
-                self.clock.ensure_audio_started_at(source_pts);
-            } else if self.source_pcm.is_empty() {
-                let current = self.clock.audio_next_pts.unwrap_or(source_pts);
-                let drift_ms =
-                    pts_delta_ms(current.saturating_sub(source_pts), spec.output_time_base);
-                if drift_ms.abs() > f64::from(self.clock.sync.hard_reset_ms.max(1)) {
-                    warn!(
-                        feed_id = %self.feed_id,
-                        input_index = self.input_index,
-                        drift_ms,
-                        source_pts,
-                        "native cgen source audio clock reset after source timestamp discontinuity"
-                    );
-                    self.clock.reset_audio_to(source_pts);
-                }
-            }
-        }
+    fn enqueue_source_frame(&mut self, source_frame: &AVFrame) -> Result<()> {
         let source_pcm = match self.frame_to_output_pcm16(source_frame) {
             Ok(samples) => samples,
             Err(err) => {
@@ -1304,10 +1276,11 @@ impl AudioProcessor {
             return Ok(());
         }
         self.source_pcm.extend(source_pcm);
-        self.drop_excess_source_audio(spec.output_time_base);
+        self.drop_excess_source_audio();
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn source_frame_output_pts(
         &self,
         source_frame: &AVFrame,
@@ -1329,7 +1302,7 @@ impl AudioProcessor {
         )
     }
 
-    fn drop_excess_source_audio(&mut self, output_time_base: AVRational) {
+    fn drop_excess_source_audio(&mut self) {
         let channels = usize::from(self.output_channels.max(1));
         while self.source_pcm.len() > self.source_max_samples {
             let excess = self
@@ -1343,15 +1316,6 @@ impl AudioProcessor {
                     break;
                 }
             }
-            let duration = rescale_q(
-                sample_frames as i64,
-                AVRational {
-                    num: 1,
-                    den: ALERT_SAMPLE_RATE as i32,
-                },
-                output_time_base,
-            );
-            self.clock.advance_audio(duration.max(0));
         }
     }
 
@@ -1388,9 +1352,7 @@ impl AudioProcessor {
         spec: &StreamSpec,
         output: &mut AVFormatContextOutput,
     ) -> Result<()> {
-        if !self.alert_active()? {
-            return Ok(());
-        }
+        let alert_active = self.alert_active()?;
         let duration = audio_frame_duration(spec.output_time_base);
         if self
             .clock
@@ -1410,9 +1372,13 @@ impl AudioProcessor {
             if pts.saturating_add(duration) > target_pts {
                 break;
             }
-            let mut encoded = self
-                .encode_next_alert_frame()
-                .context("failed to encode native cgen alert audio")?;
+            let mut encoded = if alert_active {
+                self.encode_next_alert_frame()
+                    .context("failed to encode native cgen alert audio")?
+            } else {
+                self.encode_next_source_frame()
+                    .context("failed to encode native cgen source audio")?
+            };
             encoded.set_pts(pts);
             encoded.set_dts(pts);
             encoded.set_duration(duration);
@@ -1420,7 +1386,7 @@ impl AudioProcessor {
             encoded.set_pos(-1);
             output
                 .interleaved_write_frame(&mut encoded)
-                .context("native cgen write mixed audio packet failed")?;
+                .context("native cgen write clocked audio packet failed")?;
             self.clock.advance_audio(duration);
         }
         if self
@@ -1433,37 +1399,6 @@ impl AudioProcessor {
                 "native cgen dropped stale audio backlog after frame cap"
             );
             self.source_pcm.clear();
-        }
-        Ok(())
-    }
-
-    fn write_available_source_audio(
-        &mut self,
-        spec: &StreamSpec,
-        output: &mut AVFormatContextOutput,
-    ) -> Result<()> {
-        let samples_per_packet = AC3_FRAME_SAMPLES * usize::from(self.output_channels);
-        if samples_per_packet == 0 {
-            return Ok(());
-        }
-        let duration = audio_frame_duration(spec.output_time_base);
-        self.clock.ensure_audio_started_at(0);
-        let mut frames_written = 0usize;
-        while self.source_pcm.len() >= samples_per_packet && frames_written < 32 {
-            let pts = self.clock.audio_pts(0);
-            let mut encoded = self
-                .encode_next_source_frame()
-                .context("failed to encode native cgen source audio")?;
-            encoded.set_pts(pts);
-            encoded.set_dts(pts);
-            encoded.set_duration(duration);
-            encoded.set_stream_index(spec.output_index);
-            encoded.set_pos(-1);
-            output
-                .interleaved_write_frame(&mut encoded)
-                .context("native cgen write source audio packet failed")?;
-            self.clock.advance_audio(duration);
-            frames_written = frames_written.saturating_add(1);
         }
         Ok(())
     }

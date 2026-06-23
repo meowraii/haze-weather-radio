@@ -61,6 +61,9 @@ impl RuntimeState {
     }
 
     pub(crate) fn banner_for(&self, feed_id: &str) -> Option<&BannerPayload> {
+        if feed_id.trim() == "*" {
+            return self.banners.values().find(|payload| payload.active);
+        }
         self.banners
             .get(feed_id)
             .or_else(|| self.banners.get("*"))
@@ -101,19 +104,42 @@ impl RuntimeState {
         );
         let audio = PriorityAudio {
             queue_id,
-            audio_path: non_empty(text_at(data, &["audio_path"])).map(PathBuf::from),
-            duration_ms: number_at(data, &["duration_ms"]),
+            audio_path: non_empty(fallback_text(
+                &text_at(data, &["audio_path"]),
+                &text_at(event, &["audio_path"]),
+                "",
+            ))
+            .map(PathBuf::from),
+            duration_ms: number_at(data, &["duration_ms"])
+                .or_else(|| number_at(event, &["duration_ms"])),
             sample_rate: number_at(data, &["sample_rate"])
+                .or_else(|| number_at(event, &["sample_rate"]))
                 .and_then(|value| u32::try_from(value).ok())
                 .unwrap_or(48_000),
             channels: number_at(data, &["channels"])
+                .or_else(|| number_at(event, &["channels"]))
                 .and_then(|value| u16::try_from(value).ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(1),
-            alert_packet: data.get("alert_packet").cloned(),
-            banner_text: non_empty(text_at(data, &["banner_text"])),
-            background_color: non_empty(text_at(data, &["background_color"])),
-            priority: non_empty(text_at(data, &["priority"])),
+            alert_packet: data
+                .get("alert_packet")
+                .cloned()
+                .or_else(|| event.get("alert_packet").cloned()),
+            banner_text: non_empty(fallback_text(
+                &text_at(data, &["banner_text"]),
+                &text_at(event, &["banner_text"]),
+                "",
+            )),
+            background_color: non_empty(fallback_text(
+                &text_at(data, &["background_color"]),
+                &text_at(event, &["background_color"]),
+                "",
+            )),
+            priority: non_empty(fallback_text(
+                &text_at(data, &["priority"]),
+                &text_at(event, &["priority"]),
+                "",
+            )),
             started_at: Utc::now(),
         };
         let mut changed = false;
@@ -292,6 +318,50 @@ mod tests {
 
         let audio = state.priority_audio_for("*").expect("wildcard audio");
         assert_eq!(audio.queue_id, "alert-1");
+    }
+
+    #[test]
+    fn wildcard_banner_query_uses_any_active_feed() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "feed_id": "CAP-IT-ALL",
+                "signature": "wildcard-visual",
+                "alerts": [{"message": "Alert text"}]
+            }
+        })));
+
+        let banner = state.banner_for("*").expect("wildcard banner");
+        assert_eq!(banner.signature, "wildcard-visual");
+    }
+
+    #[test]
+    fn top_level_playout_started_fields_are_accepted() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "daemon-alert",
+            "audio_path": "runtime/queues/alerts/daemon.raw",
+            "sample_rate": 48000,
+            "channels": 2,
+            "duration_ms": 12000,
+            "banner_text": "daemon banner"
+        })));
+
+        let audio = state
+            .priority_audio_for("CAP-IT-ALL")
+            .expect("daemon audio");
+        assert_eq!(audio.queue_id, "daemon-alert");
+        assert_eq!(
+            audio.audio_path.as_deref(),
+            Some(std::path::Path::new("runtime/queues/alerts/daemon.raw"))
+        );
+        assert_eq!(audio.duration_ms, Some(12000));
+        assert_eq!(audio.banner_text.as_deref(), Some("daemon banner"));
     }
 
     #[test]
