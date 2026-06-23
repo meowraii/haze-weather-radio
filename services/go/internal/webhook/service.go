@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -37,6 +38,22 @@ var codecExt = map[string]string{
 
 const maxDiscordAttachmentBytes = 8 * 1024 * 1024
 
+func webhookHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          32,
+			MaxIdleConnsPerHost:   8,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ExpectContinueTimeout: time.Second,
+		},
+	}
+}
+
 func Run(ctx context.Context, options Options) error {
 	if options.Timeout <= 0 {
 		options.Timeout = 15 * time.Second
@@ -63,7 +80,7 @@ func Run(ctx context.Context, options Options) error {
 		service := &Service{
 			cfg:     cfg,
 			bridge:  bridge,
-			client:  &http.Client{Timeout: options.Timeout},
+			client:  webhookHTTPClient(options.Timeout),
 			timeout: options.Timeout,
 		}
 		err = service.runConnected(ctx)
@@ -202,7 +219,10 @@ func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[s
 	severity := firstText(nil, data, "severity")
 	eventName := firstNonBlank(firstText(nil, data, "event"), sameEvent)
 	expiresAt := firstText(nil, data, "expires", "alert_expires_at")
+	authoritativeURL := firstText(nil, data, "authoritative_url")
+	identifier := firstText(nil, data, "alert_id", "identifier")
 	if hasPacket {
+		identifier = firstNonBlank(packet.ID, identifier)
 		title = firstNonBlank(packet.Content.Headline, packet.Content.Title, title)
 		description = firstNonBlank(packet.Content.Description, description)
 		instruction = firstNonBlank(packet.Content.Instruction, instruction)
@@ -213,6 +233,9 @@ func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[s
 		expiresAt = firstNonBlank(packet.Timing.ExpiresAt, expiresAt)
 		if packet.SAME != nil {
 			eventName = firstNonBlank(packet.SAME.Event, eventName)
+		}
+		if packet.Audio != nil {
+			authoritativeURL = firstNonBlank(packet.Audio.URL, authoritativeURL)
 		}
 	}
 	if description == "" || len(description) > 4096 {
@@ -251,10 +274,10 @@ func buildPayload(cfg WebhookConfig, feedID string, sameEvent string, data map[s
 	if listenURL := integratedListenURL(listenBaseURL, feedID); listenURL != "" {
 		embed.Fields = append(embed.Fields, discordEmbedField{Name: "Listen", Value: clipText(listenURL, 1024), Inline: false})
 	}
-	if authoritative := firstText(nil, data, "authoritative_url"); authoritative != "" {
-		embed.Fields = append(embed.Fields, discordEmbedField{Name: "CAP Audio", Value: clipText(authoritative, 1024), Inline: false})
+	if authoritativeURL != "" {
+		embed.Fields = append(embed.Fields, discordEmbedField{Name: "CAP Audio", Value: clipText(authoritativeURL, 1024), Inline: false})
 	}
-	if identifier := firstText(nil, data, "alert_id", "identifier"); identifier != "" {
+	if identifier != "" {
 		embed.Footer = &discordFooter{Text: clipText(identifier, 2048)}
 	}
 	return discordPayload{
@@ -326,7 +349,10 @@ func doRequest(client *http.Client, req *http.Request) (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
+		_ = resp.Body.Close()
+	}()
 	detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return resp.StatusCode, strings.TrimSpace(string(detail)), nil
 }

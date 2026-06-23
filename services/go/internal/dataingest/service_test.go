@@ -1,9 +1,24 @@
 package dataingest
 
 import (
+	"net/http"
 	"testing"
 	"time"
 )
+
+func TestDataIngestHTTPClientUsesReusableTransport(t *testing.T) {
+	client := dataIngestHTTPClient(7 * time.Second)
+	if client.Timeout != 7*time.Second {
+		t.Fatalf("timeout = %s", client.Timeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T", client.Transport)
+	}
+	if transport.MaxIdleConns < 128 || transport.MaxIdleConnsPerHost < 16 || !transport.ForceAttemptHTTP2 {
+		t.Fatalf("transport not tuned: %#v", transport)
+	}
+}
 
 func TestBuildECCCForecastUsesForecastLocationCSVNames(t *testing.T) {
 	raw := map[string]any{

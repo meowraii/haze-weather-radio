@@ -26,7 +26,9 @@ func NewSAPI5Provider() *SAPI5Provider {
 func (p *SAPI5Provider) ID() string { return "sapi5" }
 
 func (p *SAPI5Provider) ListVoices(ctx context.Context) ([]Voice, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := ole.CoInitializeEx(0, ole.COINIT_APARTMENTTHREADED); err != nil {
@@ -69,7 +71,9 @@ func (p *SAPI5Provider) ListVoices(ctx context.Context) ([]Voice, error) {
 }
 
 func (p *SAPI5Provider) Synthesize(ctx context.Context, req Request) (Audio, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return Audio{}, err
+	}
 	if strings.TrimSpace(req.Text) == "" {
 		return Audio{}, fmt.Errorf("empty synthesis text")
 	}
@@ -97,12 +101,12 @@ func (p *SAPI5Provider) Synthesize(ctx context.Context, req Request) (Audio, err
 		}
 	}
 	if req.Rate != 0 {
-		if _, err := oleutil.PutProperty(voice, "Rate", req.Rate); err != nil {
+		if _, err := oleutil.PutProperty(voice, "Rate", sapiRate(req.Rate)); err != nil {
 			return Audio{}, err
 		}
 	}
 	if req.Volume > 0 {
-		if _, err := oleutil.PutProperty(voice, "Volume", req.Volume); err != nil {
+		if _, err := oleutil.PutProperty(voice, "Volume", sapiVolume(req.Volume)); err != nil {
 			return Audio{}, err
 		}
 	}
@@ -124,8 +128,16 @@ func (p *SAPI5Provider) Synthesize(ctx context.Context, req Request) (Audio, err
 	if _, err := oleutil.CallMethod(stream, "Open", path, sapiCreateForWrite, false); err != nil {
 		return Audio{}, err
 	}
-	defer oleutil.CallMethod(stream, "Close")
+	streamClosed := false
+	defer func() {
+		if !streamClosed {
+			_, _ = oleutil.CallMethod(stream, "Close")
+		}
+	}()
 	if _, err := oleutil.PutPropertyRef(voice, "AudioOutputStream", stream); err != nil {
+		return Audio{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return Audio{}, err
 	}
 	if _, err := oleutil.CallMethod(voice, "Speak", req.Text, 0); err != nil {
@@ -134,6 +146,7 @@ func (p *SAPI5Provider) Synthesize(ctx context.Context, req Request) (Audio, err
 	if _, err := oleutil.CallMethod(stream, "Close"); err != nil {
 		return Audio{}, err
 	}
+	streamClosed = true
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -221,6 +234,26 @@ func findSAPIVoiceToken(voice *ole.IDispatch, requested string) (*ole.IDispatch,
 	return nil, fmt.Errorf("SAPI5 voice %q not found", requested)
 }
 
+func sapiRate(rate int) int {
+	if rate < -10 {
+		return -10
+	}
+	if rate > 10 {
+		return 10
+	}
+	return rate
+}
+
+func sapiVolume(volume int) int {
+	if volume < 0 {
+		return 0
+	}
+	if volume > 100 {
+		return 100
+	}
+	return volume
+}
+
 func sapiLanguages(raw string) []string {
 	var windowsLCID = map[string]string{
 		"409":  "en-US",
@@ -238,7 +271,11 @@ func sapiLanguages(raw string) []string {
 	parts := strings.Split(raw, ";")
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
-		part = strings.TrimSpace(strings.ToLower(part))
+		part = strings.TrimPrefix(strings.TrimSpace(strings.ToLower(part)), "0x")
+		part = strings.TrimLeft(part, "0")
+		if part == "" {
+			part = "0"
+		}
 		if part != "" {
 			if mapped, ok := windowsLCID[part]; ok {
 				out = append(out, mapped)

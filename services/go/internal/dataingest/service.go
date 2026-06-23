@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -139,7 +140,7 @@ func Run(ctx context.Context, options Options) error {
 	}
 	defer store.Close()
 
-	client := &http.Client{Timeout: timeout}
+	client := dataIngestHTTPClient(timeout)
 	for {
 		if err := fetchOnce(ctx, cfg, client, publisher, store); err != nil {
 			log.Printf("data ingest cycle failed: %v", err)
@@ -154,6 +155,22 @@ func Run(ctx context.Context, options Options) error {
 			return ctx.Err()
 		case <-timer.C:
 		}
+	}
+}
+
+func dataIngestHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          128,
+			MaxIdleConnsPerHost:   16,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ExpectContinueTimeout: time.Second,
+		},
 	}
 }
 
