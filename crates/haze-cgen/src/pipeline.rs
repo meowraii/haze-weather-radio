@@ -647,9 +647,9 @@ fn video_filter(
         );
     }
     let color = hex_color(
-        audio
-            .and_then(|audio| audio.background_color.as_deref())
-            .or_else(|| banner.and_then(|banner| non_empty_ref(&banner.primary_color)))
+        banner
+            .and_then(|banner| non_empty_ref(&banner.primary_color))
+            .or_else(|| audio.and_then(|audio| audio.background_color.as_deref()))
             .or_else(|| non_empty_ref(&feed.banner.background_color))
             .unwrap_or("#b45309"),
     );
@@ -841,7 +841,7 @@ fn current_overlay_text(feed: &FeedConfig, state: &RuntimeState) -> String {
     };
     let audio = state.priority_audio_for(priority_feed);
     let banner = state.banner_for(banner_feed);
-    if audio.is_some() || banner.is_some() || feed.text.enabled {
+    if audio.is_some() {
         overlay_text(feed, banner, audio)
     } else {
         String::new()
@@ -864,7 +864,7 @@ fn ticker_y(feed: &FeedConfig) -> i32 {
     if feed.banner.y != 0 {
         return feed.banner.y;
     }
-    ((feed.video.height.max(1) as f32) * 0.05).round() as i32
+    ((feed.video.height.max(1) as f32) * 0.08).round() as i32
 }
 
 fn spawn_priority_audio_streamer(

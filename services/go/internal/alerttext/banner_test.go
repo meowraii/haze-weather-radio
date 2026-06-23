@@ -215,7 +215,7 @@ func TestPickBannerGradientUsesWarningWatchAdvisoryWords(t *testing.T) {
 		event string
 		want  string
 	}{
-		{name: "warning", event: "DMO - Practice/demo Warning", want: "#931102"},
+		{name: "same advisory code with warning title", event: "DMO - Practice/demo Warning", want: "#019310"},
 		{name: "same warning code", event: "SVR", want: "#931102"},
 		{name: "canadian yellow warning", event: "Yellow Warning - Severe Thunderstorm", want: "#931102"},
 		{name: "watch", event: "Severe Thunderstorm Watch", want: "#929301"},

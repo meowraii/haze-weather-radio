@@ -300,11 +300,11 @@ fn auto_mode() -> String {
 }
 
 fn default_ticker_height() -> u32 {
-    96
+    128
 }
 
 fn default_font_size() -> u32 {
-    26
+    58
 }
 
 fn default_scroll_speed() -> u32 {
@@ -316,7 +316,7 @@ fn default_text_x() -> i32 {
 }
 
 fn default_text_y() -> i32 {
-    96
+    128
 }
 
 fn default_clock_y() -> i32 {
@@ -328,7 +328,7 @@ fn default_clock_font_size() -> u32 {
 }
 
 fn default_insert_font_size() -> u32 {
-    32
+    58
 }
 
 fn default_field_order() -> String {
@@ -352,7 +352,7 @@ mod tests {
     <output url="udp://127.0.0.1:5001" format="mpegts" vcodec="libx264" acodec="aac"/>
     <video width="1280" height="720" fps="source" interlaced="false" field_order="tff"/>
     <audio idle="source" alert_mode="replace"/>
-    <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded"/>
+    <banner mode="auto" ticker_height="128" font="Arial"/>
   </feed>
 </cgen>"#;
         let parsed: CgenConfig = quick_xml::de::from_str(xml).expect("parse");
@@ -381,8 +381,8 @@ mod tests {
     <alertOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="libx264" acodec="aac"/>
     <video width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc"/>
     <audio idle="source" alert_mode="replace" duck_db="-18"/>
-    <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded" font_size="26" scroll_speed="5" background_gradient_color="#7f1d1d" background_enabled="true"/>
-    <graphics background_color="#000000" font="Zalando Sans SemiExpanded" font_size="26"/>
+    <banner mode="auto" ticker_height="128" font="Arial" font_size="58" scroll_speed="5" background_gradient_color="#7f1d1d" background_enabled="true"/>
+    <graphics background_color="#000000" font="Arial" font_size="58"/>
     <clock enabled="true" x="48" y="48"/>
     <text enabled="true" x="48" y="96">Hello</text>
     <state mode="overlay" smpte_bars="true"/>

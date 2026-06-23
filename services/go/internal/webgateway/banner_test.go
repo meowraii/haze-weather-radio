@@ -209,7 +209,7 @@ func TestBannerPayloadPrefersAudioReadyAlertText(t *testing.T) {
 	}
 }
 
-func TestBannerPayloadUsesBannerTextAndWarningColorForManualAlert(t *testing.T) {
+func TestBannerPayloadUsesBannerTextAndSameColorForManualAlert(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
 	bannerText := "Environment Canada has issued a Practice/demo Warning for Talladega, AL ending at 5:15 pm (meowraii). Custom text."
@@ -221,10 +221,10 @@ func TestBannerPayloadUsesBannerTextAndWarningColorForManualAlert(t *testing.T) 
 	if !payload.Active || len(payload.Alerts) != 1 {
 		t.Fatalf("payload = %#v", payload)
 	}
-	if payload.PrimaryColor != "#931102" {
+	if payload.PrimaryColor != "#019310" {
 		t.Fatalf("primary color = %q", payload.PrimaryColor)
 	}
-	if payload.Alerts[0].BackgroundColor != "#931102" {
+	if payload.Alerts[0].BackgroundColor != "#019310" {
 		t.Fatalf("alert background color = %q", payload.Alerts[0].BackgroundColor)
 	}
 	if payload.Alerts[0].Message != bannerText {

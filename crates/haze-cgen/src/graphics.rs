@@ -24,8 +24,13 @@ pub(crate) struct NativeGraphicsRenderer {
     state_rx: watch::Receiver<RuntimeState>,
     priority_feed_id: String,
     banner_feed_id: String,
+    ticker_key: String,
+    ticker_start_frame: u64,
+    ticker_visual: Option<TickerVisual>,
     #[cfg(feature = "gpu-wgpu")]
     gpu: Option<WgpuGraphicsContext>,
+    #[cfg(feature = "gpu-wgpu")]
+    cpu_fonts: SystemFontCache,
 }
 
 impl NativeGraphicsRenderer {
@@ -45,8 +50,13 @@ impl NativeGraphicsRenderer {
             state_rx,
             priority_feed_id,
             banner_feed_id,
+            ticker_key: String::new(),
+            ticker_start_frame: 0,
+            ticker_visual: None,
             #[cfg(feature = "gpu-wgpu")]
             gpu: WgpuGraphicsContext::new().ok(),
+            #[cfg(feature = "gpu-wgpu")]
+            cpu_fonts: SystemFontCache::new(),
         }
     }
 
@@ -67,14 +77,16 @@ impl NativeGraphicsRenderer {
                 state.priority_audio_for(&self.priority_feed_id).cloned(),
             )
         };
-        let has_manual_text = self.feed.text.enabled && !self.feed.text.content.trim().is_empty();
         let has_clock = self.feed.clock.enabled;
-        if audio.is_none() && banner.is_none() && !has_manual_text && !has_clock {
+        if audio.is_none() && !has_clock {
+            self.render_lingering_ticker(frame, frame_index);
             return;
         }
 
-        if audio.is_some() || banner.is_some() || has_manual_text {
+        if audio.is_some() {
             self.render_ticker(frame, frame_index, banner.as_ref(), audio.as_ref());
+        } else {
+            self.render_lingering_ticker(frame, frame_index);
         }
         if has_clock {
             self.render_clock(frame);
@@ -93,11 +105,63 @@ impl NativeGraphicsRenderer {
         if text.trim().is_empty() {
             return;
         }
-        let color = audio
-            .and_then(|audio| audio.background_color.as_deref())
-            .or_else(|| banner.and_then(|banner| non_empty_ref(&banner.primary_color)))
+        let color = banner
+            .and_then(|banner| non_empty_ref(&banner.primary_color))
+            .or_else(|| audio.and_then(|audio| audio.background_color.as_deref()))
             .or_else(|| non_empty_ref(&self.feed.banner.background_color))
-            .unwrap_or("#b45309");
+            .unwrap_or("#b45309")
+            .to_string();
+        let gradient = ticker_gradient(&self.feed, banner, audio, &color);
+        let next_key = ticker_state_key(&text, banner, audio, &color);
+        if self.ticker_key != next_key {
+            self.ticker_key = next_key;
+            self.ticker_start_frame = frame_index;
+        }
+        let relative_frame = frame_index.saturating_sub(self.ticker_start_frame);
+        self.ticker_visual = Some(TickerVisual {
+            text: text.clone(),
+            color: color.clone(),
+            gradient,
+        });
+        self.render_ticker_visual(frame, relative_frame, &text, &color, gradient);
+    }
+
+    #[cfg(feature = "ffmpeg-rsmpeg")]
+    fn render_lingering_ticker(&mut self, frame: &mut AVFrame, frame_index: u64) {
+        let Some(visual) = self.ticker_visual.clone() else {
+            self.ticker_key.clear();
+            return;
+        };
+        let font_size = self.feed.banner.font_size.max(16);
+        let font_family = ticker_font_family(&self.feed).to_string();
+        let scale = ((font_size as i32) / 8).max(2);
+        let text_width = self.ticker_text_width(&visual.text, scale, &font_family, font_size);
+        let relative_frame = frame_index.saturating_sub(self.ticker_start_frame);
+        if relative_frame
+            > ticker_scroll_frames(frame.width, text_width, self.feed.banner.scroll_speed)
+        {
+            self.ticker_key.clear();
+            self.ticker_visual = None;
+            return;
+        }
+        self.render_ticker_visual(
+            frame,
+            relative_frame,
+            &visual.text,
+            &visual.color,
+            visual.gradient,
+        );
+    }
+
+    #[cfg(feature = "ffmpeg-rsmpeg")]
+    fn render_ticker_visual(
+        &mut self,
+        frame: &mut AVFrame,
+        relative_frame: u64,
+        text: &str,
+        color: &str,
+        gradient: TickerGradient,
+    ) {
         let (y, u, v) = yuv_from_hex(color);
         let x = self.feed.banner.x.max(0);
         let box_y = ticker_y(&self.feed, frame.height).max(0);
@@ -116,21 +180,14 @@ impl NativeGraphicsRenderer {
         let font_size = self.feed.banner.font_size.max(16);
         let font_family = ticker_font_family(&self.feed).to_string();
         let scale = ((font_size as i32) / 8).max(2);
-        let mut text_width = text_width_px(&text, scale);
-        #[cfg(feature = "gpu-wgpu")]
-        if let Some(gpu) = self.gpu.as_mut() {
-            if let Some(width) = gpu.measure_text_width(&font_family, font_size, &text) {
-                text_width = width;
-            }
-        }
+        let text_width = self.ticker_text_width(text, scale, &font_family, font_size);
         let text_x = ticker_text_x(
             frame.width,
             text_width,
-            frame_index,
+            relative_frame,
             self.feed.banner.scroll_speed,
         );
         let text_y = box_y + ((h - glyph_height_px(scale)) / 2).max(0);
-        let gradient = ticker_gradient(&self.feed, banner, audio, color);
 
         #[cfg(feature = "gpu-wgpu")]
         if let Some(gpu) = self.gpu.as_mut() {
@@ -143,7 +200,7 @@ impl NativeGraphicsRenderer {
                 let overlay = gpu.render_ticker(
                     target_w as u32,
                     target_h as u32,
-                    &text,
+                    text,
                     text_x.saturating_sub(target_x),
                     &font_family,
                     font_size,
@@ -168,7 +225,36 @@ impl NativeGraphicsRenderer {
         if self.feed.banner.background_enabled {
             fill_rect_yuv_gradient(frame, x, box_y, w, h, gradient, (y, u, v));
         }
-        draw_text_yuv(frame, &text, text_x, text_y, scale, 235, 128, 128);
+        #[cfg(feature = "gpu-wgpu")]
+        if let Some((width, height, pixels)) = self
+            .cpu_fonts
+            .resolve(&font_family)
+            .and_then(|font| raster_text_rgba_system(&font, text, font_size))
+        {
+            blend_rgba_overlay(frame, &pixels, width, height, text_x, text_y);
+            return;
+        }
+        draw_text_yuv(frame, text, text_x, text_y, scale, 235, 128, 128);
+    }
+
+    #[cfg(feature = "ffmpeg-rsmpeg")]
+    fn ticker_text_width(
+        &mut self,
+        text: &str,
+        scale: i32,
+        font_family: &str,
+        font_size: u32,
+    ) -> i32 {
+        let mut text_width = text_width_px(text, scale);
+        #[cfg(feature = "gpu-wgpu")]
+        {
+            if let Some(width) =
+                measure_text_width_with_cache(&mut self.cpu_fonts, font_family, font_size, text)
+            {
+                text_width = width;
+            }
+        }
+        text_width
     }
 
     #[cfg(feature = "ffmpeg-rsmpeg")]
@@ -201,6 +287,13 @@ struct WgpuGraphicsContext {
     target: Option<WgpuTarget>,
     text_cache: Option<WgpuTextCache>,
     fonts: SystemFontCache,
+}
+
+#[derive(Clone, Debug)]
+struct TickerVisual {
+    text: String,
+    color: String,
+    gradient: TickerGradient,
 }
 
 #[cfg(feature = "gpu-wgpu")]
@@ -329,12 +422,6 @@ impl WgpuGraphicsContext {
             text_cache: None,
             fonts: SystemFontCache::new(),
         })
-    }
-
-    fn measure_text_width(&mut self, family: &str, font_size: u32, text: &str) -> Option<i32> {
-        let font = self.fonts.resolve(family)?;
-        let metrics = layout_text(&font, font_size, text)?;
-        Some(metrics.width.max(1) as i32)
     }
 
     fn render_ticker(
@@ -679,22 +766,48 @@ impl SystemFontCache {
                 families: &[fontdb::Family::SansSerif],
                 ..fontdb::Query::default()
             })
-        })?;
-        self.db
-            .with_face_data(id, |data, face_index| {
-                Font::from_bytes(
-                    data.to_vec(),
-                    FontSettings {
-                        collection_index: face_index,
-                        scale: 40.0,
-                        load_substitutions: true,
-                    },
-                )
-                .ok()
-            })
-            .flatten()
-            .map(Arc::new)
+        });
+        id.and_then(|id| {
+            self.db
+                .with_face_data(id, |data, face_index| {
+                    Font::from_bytes(
+                        data.to_vec(),
+                        FontSettings {
+                            collection_index: face_index,
+                            scale: 40.0,
+                            load_substitutions: true,
+                        },
+                    )
+                    .ok()
+                })
+                .flatten()
+                .map(Arc::new)
+        })
+        .or_else(load_platform_arial)
     }
+}
+
+#[cfg(all(feature = "gpu-wgpu", target_os = "windows"))]
+fn load_platform_arial() -> Option<Arc<Font>> {
+    std::fs::read("C:/Windows/Fonts/arial.ttf")
+        .ok()
+        .and_then(|data| {
+            Font::from_bytes(
+                data,
+                FontSettings {
+                    scale: 40.0,
+                    load_substitutions: true,
+                    ..FontSettings::default()
+                },
+            )
+            .ok()
+        })
+        .map(Arc::new)
+}
+
+#[cfg(all(feature = "gpu-wgpu", not(target_os = "windows")))]
+fn load_platform_arial() -> Option<Arc<Font>> {
+    None
 }
 
 #[cfg(feature = "gpu-wgpu")]
@@ -944,6 +1057,18 @@ fn layout_text(font: &Font, font_size: u32, text: &str) -> Option<TextLayoutMetr
 }
 
 #[cfg(feature = "gpu-wgpu")]
+fn measure_text_width_with_cache(
+    fonts: &mut SystemFontCache,
+    family: &str,
+    font_size: u32,
+    text: &str,
+) -> Option<i32> {
+    let font = fonts.resolve(family)?;
+    let metrics = layout_text(&font, font_size, text)?;
+    Some(metrics.width.max(1) as i32)
+}
+
+#[cfg(feature = "gpu-wgpu")]
 fn raster_text_rgba_system(font: &Font, text: &str, font_size: u32) -> Option<(u32, u32, Vec<u8>)> {
     let layout = layout_text(font, font_size, text)?;
     let mut pixels = vec![0; layout.width as usize * layout.height as usize * 4];
@@ -1092,16 +1217,36 @@ fn ticker_y(feed: &FeedConfig, frame_height: i32) -> i32 {
     if feed.banner.y != 0 {
         return feed.banner.y;
     }
-    ((frame_height.max(1) as f32) * 0.05).round() as i32
+    ((frame_height.max(1) as f32) * 0.08).round() as i32
 }
 
-fn ticker_text_x(frame_width: i32, text_width: i32, frame_index: u64, scroll_speed: u32) -> i32 {
+fn ticker_text_x(frame_width: i32, _text_width: i32, frame_index: u64, scroll_speed: u32) -> i32 {
     let start_x = frame_width.saturating_add(1).max(1);
-    let text_width = text_width.max(1);
-    let travel = start_x.saturating_add(text_width).saturating_add(1).max(1);
     let speed = scroll_speed.max(1) as i64;
-    let scroll = ((frame_index as i64).saturating_mul(speed) % i64::from(travel)) as i32;
-    start_x.saturating_sub(scroll)
+    let scroll = (frame_index as i64).saturating_mul(speed);
+    i64::from(start_x).saturating_sub(scroll) as i32
+}
+
+fn ticker_scroll_frames(frame_width: i32, text_width: i32, scroll_speed: u32) -> u64 {
+    let start_x = frame_width.saturating_add(1).max(1);
+    let travel = start_x.saturating_add(text_width.max(1)).saturating_add(1);
+    let speed = scroll_speed.max(1);
+    u64::from((travel as u32).div_ceil(speed))
+}
+
+fn ticker_state_key(
+    text: &str,
+    banner: Option<&BannerPayload>,
+    audio: Option<&PriorityAudio>,
+    color: &str,
+) -> String {
+    let queue_id = audio
+        .map(|audio| audio.queue_id.as_str())
+        .unwrap_or_default();
+    let banner_signature = banner
+        .map(|banner| banner.signature.as_str())
+        .unwrap_or_default();
+    format!("{queue_id}\n{banner_signature}\n{color}\n{text}")
 }
 
 fn ticker_gradient(
@@ -1110,6 +1255,9 @@ fn ticker_gradient(
     audio: Option<&PriorityAudio>,
     base_color: &str,
 ) -> TickerGradient {
+    if let Some(colors) = banner_gradient_colors(banner) {
+        return colors;
+    }
     if let Some(color) = audio
         .and_then(|audio| audio.background_color.as_deref())
         .and_then(non_empty_ref)
@@ -1120,9 +1268,6 @@ fn ticker_gradient(
             middle: rgb,
             bottom: rgb,
         };
-    }
-    if let Some(colors) = banner_gradient_colors(banner) {
-        return colors;
     }
     let middle = rgb_from_hex_loose(base_color);
     let edge = non_empty_ref(&feed.banner.background_gradient_color)
@@ -1702,10 +1847,10 @@ mod tests {
     }
 
     #[test]
-    fn default_ticker_y_is_five_percent_down() {
+    fn default_ticker_y_is_eight_percent_down() {
         let mut feed = test_feed();
         feed.banner.y = 0;
-        assert_eq!(ticker_y(&feed, 1080), 54);
+        assert_eq!(ticker_y(&feed, 1080), 86);
         feed.banner.y = 32;
         assert_eq!(ticker_y(&feed, 1080), 32);
     }

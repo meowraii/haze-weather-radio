@@ -128,9 +128,9 @@ function readEditor() {
         audio_alert_mode: 'replace',
         duck_db: value('duckDB', '-18'),
         banner_mode: value('bannerMode', 'auto'),
-        ticker_height: value('bannerHeight', '96'),
-        font: value('font', 'Zalando Sans SemiExpanded'),
-        font_size: value('fontSize', '26'),
+        ticker_height: value('bannerHeight', '128'),
+        font: value('font', 'Arial'),
+        font_size: value('fontSize', '58'),
         scroll_speed: value('scrollSpeed', '4'),
         background_color: value('backgroundColor', '#000000'),
         banner_background_color: value('bannerColor', '#b45309'),
@@ -139,12 +139,12 @@ function readEditor() {
         banner_x: value('bannerX', '0'),
         banner_y: value('bannerY', '0'),
         banner_width: value('bannerWidth', value('width', '1920')),
-        banner_height: value('bannerHeight', '96'),
+        banner_height: value('bannerHeight', '128'),
         text_enabled: value('textEnabled'),
         text: fields.text.value,
         text_x: value('textX', '48'),
-        text_y: value('textY', '96'),
-        text_font_size: value('textFontSize', '32'),
+        text_y: value('textY', '128'),
+        text_font_size: value('textFontSize', '58'),
         text_color: value('textColor', '#ffffff'),
         clock_enabled: value('clockEnabled'),
         clock_format: value('clockFormat', 'Jan 02 15:04:05'),
@@ -179,23 +179,23 @@ function writeEditor(feed) {
     setValue('fieldOrder', feed.field_order || 'tff');
     setValue('standard', feed.standard || 'atsc');
     setValue('backgroundColor', feed.background_color || '#000000');
-    setValue('font', feed.font || 'Zalando Sans SemiExpanded');
-    setValue('fontSize', feed.font_size || '26');
+    setValue('font', feed.font || 'Arial');
+    setValue('fontSize', feed.font_size || '58');
     setValue('scrollSpeed', feed.scroll_speed || '4');
     setValue('textX', feed.text_x || '48');
-    setValue('textY', feed.text_y || '96');
+    setValue('textY', feed.text_y || '128');
     setValue('textColor', feed.text_color || '#ffffff');
     setValue('bannerX', feed.banner_x || '0');
     setValue('bannerY', feed.banner_y || '0');
     setValue('bannerWidth', feed.banner_width || feed.width || '1920');
-    setValue('bannerHeight', feed.banner_height || feed.ticker_height || '96');
+    setValue('bannerHeight', feed.banner_height || feed.ticker_height || '128');
     setValue('bannerColor', feed.banner_background_color || '#b45309');
     setValue('bannerGradientColor', feed.banner_background_gradient_color || '#7f1d1d');
     setValue('bannerMode', feed.banner_mode || 'auto');
     setValue('bannerBackgroundEnabled', feed.banner_background_enabled !== false);
     setValue('text', feed.text || '');
     setValue('textEnabled', Boolean(feed.text_enabled));
-    setValue('textFontSize', feed.text_font_size || '32');
+    setValue('textFontSize', feed.text_font_size || '58');
     setValue('clockEnabled', Boolean(feed.clock_enabled));
     setValue('clockFormat', feed.clock_format || 'Jan 02 15:04:05');
     setValue('clockX', feed.clock_x || '48');
@@ -275,7 +275,7 @@ function renderPreview() {
         const bx = Number(feed.banner_x || 0) * sx;
         const by = Number(feed.banner_y || 0) * sy;
         const bw = Number(feed.banner_width || feed.width || 1280) * sx;
-        const bh = Number(feed.banner_height || 96) * sy;
+        const bh = Number(feed.banner_height || 128) * sy;
         const gradient = ctx.createLinearGradient(0, by, 0, by + bh);
         gradient.addColorStop(0, feed.banner_background_gradient_color || '#7f1d1d');
         gradient.addColorStop(0.5, feed.banner_background_color || '#b45309');
@@ -284,7 +284,7 @@ function renderPreview() {
         ctx.fillRect(bx, by, bw, bh);
     }
     ctx.fillStyle = feed.text_color || '#ffffff';
-    ctx.font = `${Math.max(8, Number(feed.text_font_size || feed.font_size || 32) * sy)}px sans-serif`;
+    ctx.font = `${Math.max(8, Number(feed.text_font_size || feed.font_size || 58) * sy)}px sans-serif`;
     if (feed.text_enabled && feed.text) {
         ctx.fillText(feed.text.slice(0, 80), Number(feed.text_x || 48) * sx, Number(feed.text_y || 96) * sy);
     }
@@ -361,12 +361,12 @@ function defaultFeed() {
         banner_x: '0',
         banner_y: '0',
         banner_width: '1920',
-        banner_height: '96',
-        font: 'Zalando Sans SemiExpanded',
-        font_size: '26',
+        banner_height: '128',
+        font: 'Arial',
+        font_size: '58',
         text_x: '48',
-        text_y: '96',
-        text_font_size: '32',
+        text_y: '128',
+        text_font_size: '58',
         text_color: '#ffffff',
         clock_x: '48',
         clock_y: '48',

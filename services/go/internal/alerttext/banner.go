@@ -1204,11 +1204,19 @@ func stripAlertHeadlineState(headline string) string {
 }
 
 func deriveSameCategory(event string) string {
-	code := strings.ToUpper(strings.TrimSpace(event))
+	raw := strings.TrimSpace(event)
+	code := strings.ToUpper(raw)
 	if category := sameEventCategory(code); category != "" {
 		return category
 	}
-	lower := strings.ToLower(strings.TrimSpace(event))
+	if fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ' ' || r == '-' || r == ':' || r == '/' || r == '\t' || r == '\n' || r == '\r'
+	}); len(fields) > 0 {
+		if category := sameEventCategory(strings.ToUpper(strings.TrimSpace(fields[0]))); category != "" {
+			return category
+		}
+	}
+	lower := strings.ToLower(raw)
 	switch {
 	case strings.Contains(lower, "warning"):
 		return "warning"
@@ -1223,7 +1231,6 @@ func deriveSameCategory(event string) string {
 			return category
 		}
 	}
-	raw := strings.TrimSpace(event)
 	if len(raw) == 3 {
 		switch strings.ToLower(raw[2:]) {
 		case "w":
