@@ -1,8 +1,15 @@
+#[cfg(feature = "gpu-wgpu")]
+use std::borrow::Cow;
+#[cfg(feature = "gpu-wgpu")]
+use std::sync::mpsc;
+
 use serde_json::Value;
 use tokio::sync::watch;
 
 #[cfg(feature = "ffmpeg-rsmpeg")]
 use rsmpeg::{avutil::AVFrame, ffi};
+#[cfg(feature = "gpu-wgpu")]
+use wgpu::util::DeviceExt;
 
 use crate::config::FeedConfig;
 use crate::state::{BannerPayload, PriorityAudio, RuntimeState, SerializedAlert};
@@ -15,7 +22,7 @@ pub(crate) struct NativeGraphicsRenderer {
     priority_feed_id: String,
     banner_feed_id: String,
     #[cfg(feature = "gpu-wgpu")]
-    _gpu: Option<WgpuGraphicsContext>,
+    gpu: Option<WgpuGraphicsContext>,
 }
 
 impl NativeGraphicsRenderer {
@@ -36,7 +43,7 @@ impl NativeGraphicsRenderer {
             priority_feed_id,
             banner_feed_id,
             #[cfg(feature = "gpu-wgpu")]
-            _gpu: WgpuGraphicsContext::new().ok(),
+            gpu: WgpuGraphicsContext::new().ok(),
         }
     }
 
@@ -50,9 +57,13 @@ impl NativeGraphicsRenderer {
             return;
         }
 
-        let state = self.state_rx.borrow();
-        let audio = state.priority_audio_for(&self.priority_feed_id);
-        let banner = state.banner_for(&self.banner_feed_id);
+        let (banner, audio) = {
+            let state = self.state_rx.borrow();
+            (
+                state.banner_for(&self.banner_feed_id).cloned(),
+                state.priority_audio_for(&self.priority_feed_id).cloned(),
+            )
+        };
         let has_manual_text = self.feed.text.enabled && !self.feed.text.content.trim().is_empty();
         let has_clock = self.feed.clock.enabled;
         if audio.is_none() && banner.is_none() && !has_manual_text && !has_clock {
@@ -60,7 +71,7 @@ impl NativeGraphicsRenderer {
         }
 
         if audio.is_some() || banner.is_some() || has_manual_text {
-            self.render_ticker(frame, frame_index, banner, audio);
+            self.render_ticker(frame, frame_index, banner.as_ref(), audio.as_ref());
         }
         if has_clock {
             self.render_clock(frame);
@@ -69,7 +80,7 @@ impl NativeGraphicsRenderer {
 
     #[cfg(feature = "ffmpeg-rsmpeg")]
     fn render_ticker(
-        &self,
+        &mut self,
         frame: &mut AVFrame,
         frame_index: u64,
         banner: Option<&BannerPayload>,
@@ -99,10 +110,6 @@ impl NativeGraphicsRenderer {
             .ticker_height
             .max(self.feed.graphics.banner_height)
             .max(48) as i32;
-        if self.feed.banner.background_enabled {
-            fill_rect_yuv(frame, x, box_y, w, h, y, u, v);
-        }
-
         let font_size = self.feed.banner.font_size.max(16) as i32;
         let scale = (font_size / 8).max(2);
         let text_width = text_width_px(&text, scale);
@@ -110,6 +117,43 @@ impl NativeGraphicsRenderer {
         let scroll = ((frame_index as i32).saturating_mul(TICKER_PIXELS_PER_FRAME_30)) % travel;
         let text_x = frame.width.saturating_sub(scroll);
         let text_y = box_y + ((h - glyph_height_px(scale)) / 2).max(0);
+
+        #[cfg(feature = "gpu-wgpu")]
+        if let Some(gpu) = self.gpu.as_mut() {
+            let text_rgb = rgb_from_hex(non_empty_ref(&self.feed.text.color).unwrap_or("#ffffff"));
+            let bg_rgb = rgb_from_hex(color);
+            let target_x = x.clamp(0, frame.width);
+            let target_y = box_y.clamp(0, frame.height);
+            let target_w = w.min(frame.width.saturating_sub(target_x)).max(1);
+            let target_h = h.min(frame.height.saturating_sub(target_y)).max(1);
+            if target_w > 0 && target_h > 0 {
+                let overlay = gpu.render_ticker(
+                    target_w as u32,
+                    target_h as u32,
+                    &text,
+                    text_x.saturating_sub(target_x),
+                    text_y.saturating_sub(target_y),
+                    scale,
+                    self.feed.banner.background_enabled.then_some(bg_rgb),
+                    text_rgb,
+                );
+                if let Ok(overlay) = overlay {
+                    blend_rgba_overlay(
+                        frame,
+                        &overlay.pixels,
+                        overlay.width,
+                        overlay.height,
+                        target_x,
+                        target_y,
+                    );
+                    return;
+                }
+            }
+        }
+
+        if self.feed.banner.background_enabled {
+            fill_rect_yuv(frame, x, box_y, w, h, y, u, v);
+        }
         draw_text_yuv(frame, &text, text_x, text_y, scale, 235, 128, 128);
     }
 
@@ -133,8 +177,15 @@ impl NativeGraphicsRenderer {
 
 #[cfg(feature = "gpu-wgpu")]
 struct WgpuGraphicsContext {
-    _device: wgpu::Device,
-    _queue: wgpu::Queue,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    _white_texture: wgpu::Texture,
+    white_view: wgpu::TextureView,
+    target: Option<WgpuTarget>,
+    text_cache: Option<WgpuTextCache>,
 }
 
 #[cfg(feature = "gpu-wgpu")]
@@ -154,11 +205,566 @@ impl WgpuGraphicsContext {
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             }))?;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("haze-cgen-ticker-shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(TICKER_SHADER)),
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("haze-cgen-overlay-bind-group-layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("haze-cgen-overlay-pipeline-layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("haze-cgen-overlay-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[GpuVertex::layout()],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("haze-cgen-overlay-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let white_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("haze-cgen-white-overlay-texture"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            white_texture.as_image_copy(),
+            &[255, 255, 255, 255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let white_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
         Ok(Self {
-            _device: device,
-            _queue: queue,
+            device,
+            queue,
+            pipeline,
+            bind_group_layout,
+            sampler,
+            _white_texture: white_texture,
+            white_view,
+            target: None,
+            text_cache: None,
         })
     }
+
+    fn render_ticker(
+        &mut self,
+        width: u32,
+        height: u32,
+        text: &str,
+        text_x: i32,
+        text_y: i32,
+        scale: i32,
+        background: Option<[f32; 3]>,
+        text_rgb: [f32; 3],
+    ) -> anyhow::Result<RgbaOverlay> {
+        self.ensure_target(width, height);
+        self.ensure_text_texture(text, scale)?;
+        let target = self.target.as_ref().expect("target was just ensured");
+        let text_cache = self
+            .text_cache
+            .as_ref()
+            .expect("text texture was just ensured");
+
+        let white_bg = self.bind_group(&self.white_view);
+        let text_bg = self.bind_group(&text_cache.view);
+        let mut draw_items = Vec::with_capacity(2);
+        if let Some(rgb) = background {
+            draw_items.push((
+                self.vertex_buffer(quad_vertices_px(
+                    0.0,
+                    0.0,
+                    width as f32,
+                    height as f32,
+                    width as f32,
+                    height as f32,
+                    [rgb[0], rgb[1], rgb[2], 0.92],
+                )),
+                white_bg,
+            ));
+        }
+        draw_items.push((
+            self.vertex_buffer(quad_vertices_px(
+                text_x as f32,
+                text_y as f32,
+                text_cache.width as f32,
+                text_cache.height as f32,
+                width as f32,
+                height as f32,
+                [text_rgb[0], text_rgb[1], text_rgb[2], 1.0],
+            )),
+            text_bg,
+        ));
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("haze-cgen-overlay-encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("haze-cgen-overlay-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            for (vertices, bind_group) in &draw_items {
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.set_vertex_buffer(0, vertices.slice(..));
+                pass.draw(0..6, 0..1);
+            }
+        }
+        encoder.copy_texture_to_buffer(
+            target.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &target.readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(target.bytes_per_row),
+                    rows_per_image: Some(target.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: target.width,
+                height: target.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = target.readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        self.device.poll(wgpu::PollType::Wait)?;
+        rx.recv()
+            .map_err(|err| anyhow::anyhow!("wgpu readback callback dropped: {err}"))??;
+        let mapped = slice.get_mapped_range();
+        let row_bytes = (target.width as usize) * 4;
+        let mut pixels = vec![0; row_bytes * target.height as usize];
+        for row in 0..target.height as usize {
+            let src_start = row * target.bytes_per_row as usize;
+            let dst_start = row * row_bytes;
+            pixels[dst_start..dst_start + row_bytes]
+                .copy_from_slice(&mapped[src_start..src_start + row_bytes]);
+        }
+        drop(mapped);
+        target.readback.unmap();
+
+        Ok(RgbaOverlay {
+            width: target.width,
+            height: target.height,
+            pixels,
+        })
+    }
+
+    fn ensure_target(&mut self, width: u32, height: u32) {
+        let needs_new = self
+            .target
+            .as_ref()
+            .is_none_or(|target| target.width != width || target.height != height);
+        if !needs_new {
+            return;
+        }
+        let bytes_per_row = align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("haze-cgen-overlay-target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("haze-cgen-overlay-readback"),
+            size: u64::from(bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        self.target = Some(WgpuTarget {
+            width,
+            height,
+            bytes_per_row,
+            texture,
+            view,
+            readback,
+        });
+    }
+
+    fn ensure_text_texture(&mut self, text: &str, scale: i32) -> anyhow::Result<()> {
+        let scale = scale.max(1);
+        let needs_new = self.text_cache.as_ref().is_none_or(|cache| {
+            cache.text != text || cache.scale != scale || cache.width == 0 || cache.height == 0
+        });
+        if !needs_new {
+            return Ok(());
+        }
+        let (width, height, pixels) = raster_text_rgba(text, scale);
+        if width == 0 || height == 0 {
+            anyhow::bail!("cannot render empty cgen ticker text texture");
+        }
+        let max_dim = self.device.limits().max_texture_dimension_2d;
+        if width > max_dim || height > max_dim {
+            anyhow::bail!("cgen ticker text texture exceeds max GPU texture size");
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("haze-cgen-ticker-texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            texture.as_image_copy(),
+            &pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.text_cache = Some(WgpuTextCache {
+            text: text.to_string(),
+            scale,
+            width,
+            height,
+            _texture: texture,
+            view,
+        });
+        Ok(())
+    }
+
+    fn bind_group(&self, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("haze-cgen-overlay-bind-group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        })
+    }
+
+    fn vertex_buffer(&self, vertices: [GpuVertex; 6]) -> wgpu::Buffer {
+        self.device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("haze-cgen-overlay-quad-vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+    }
+}
+
+#[cfg(feature = "gpu-wgpu")]
+struct WgpuTarget {
+    width: u32,
+    height: u32,
+    bytes_per_row: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    readback: wgpu::Buffer,
+}
+
+#[cfg(feature = "gpu-wgpu")]
+struct WgpuTextCache {
+    text: String,
+    scale: i32,
+    width: u32,
+    height: u32,
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+#[cfg(feature = "gpu-wgpu")]
+struct RgbaOverlay {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+#[cfg(feature = "gpu-wgpu")]
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+    color: [f32; 4],
+}
+
+#[cfg(feature = "gpu-wgpu")]
+impl GpuVertex {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GpuVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
+#[cfg(feature = "gpu-wgpu")]
+const TICKER_SHADER: &str = r#"
+struct VertexIn {
+    @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>,
+};
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(input: VertexIn) -> VertexOut {
+    var out: VertexOut;
+    out.position = vec4<f32>(input.position, 0.0, 1.0);
+    out.uv = input.uv;
+    out.color = input.color;
+    return out;
+}
+
+@group(0) @binding(0) var overlay_texture: texture_2d<f32>;
+@group(0) @binding(1) var overlay_sampler: sampler;
+
+@fragment
+fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+    let sampled = textureSample(overlay_texture, overlay_sampler, input.uv);
+    return vec4<f32>(input.color.rgb, input.color.a * sampled.a);
+}
+"#;
+
+#[cfg(feature = "gpu-wgpu")]
+fn align_to(value: u32, alignment: u32) -> u32 {
+    if alignment == 0 {
+        return value;
+    }
+    value.div_ceil(alignment) * alignment
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn quad_vertices_px(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    surface_width: f32,
+    surface_height: f32,
+    color: [f32; 4],
+) -> [GpuVertex; 6] {
+    let x0 = px_to_ndc_x(x, surface_width);
+    let x1 = px_to_ndc_x(x + width, surface_width);
+    let y0 = px_to_ndc_y(y, surface_height);
+    let y1 = px_to_ndc_y(y + height, surface_height);
+    [
+        GpuVertex {
+            position: [x0, y0],
+            uv: [0.0, 0.0],
+            color,
+        },
+        GpuVertex {
+            position: [x1, y0],
+            uv: [1.0, 0.0],
+            color,
+        },
+        GpuVertex {
+            position: [x1, y1],
+            uv: [1.0, 1.0],
+            color,
+        },
+        GpuVertex {
+            position: [x0, y0],
+            uv: [0.0, 0.0],
+            color,
+        },
+        GpuVertex {
+            position: [x1, y1],
+            uv: [1.0, 1.0],
+            color,
+        },
+        GpuVertex {
+            position: [x0, y1],
+            uv: [0.0, 1.0],
+            color,
+        },
+    ]
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn px_to_ndc_x(value: f32, width: f32) -> f32 {
+    (value / width.max(1.0)) * 2.0 - 1.0
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn px_to_ndc_y(value: f32, height: f32) -> f32 {
+    1.0 - (value / height.max(1.0)) * 2.0
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn raster_text_rgba(text: &str, scale: i32) -> (u32, u32, Vec<u8>) {
+    let scale = scale.max(1);
+    let width = text_width_px(text, scale).max(1) as u32;
+    let height = glyph_height_px(scale).max(1) as u32;
+    let mut pixels = vec![0; width as usize * height as usize * 4];
+    let mut cursor = 0i32;
+    for ch in text.chars() {
+        if ch == ' ' {
+            cursor = cursor.saturating_add(4 * scale);
+            continue;
+        }
+        if let Some(glyph) = glyph_rows(ch) {
+            for (row, bits) in glyph.iter().enumerate() {
+                for col in 0..5 {
+                    if bits & (1 << (4 - col)) == 0 {
+                        continue;
+                    }
+                    for sy in 0..scale {
+                        for sx in 0..scale {
+                            let x = cursor + col * scale + sx;
+                            let y = row as i32 * scale + sy;
+                            if x < 0 || y < 0 {
+                                continue;
+                            }
+                            let x = x as u32;
+                            let y = y as u32;
+                            if x >= width || y >= height {
+                                continue;
+                            }
+                            let offset = ((y * width + x) * 4) as usize;
+                            pixels[offset] = 255;
+                            pixels[offset + 1] = 255;
+                            pixels[offset + 2] = 255;
+                            pixels[offset + 3] = 255;
+                        }
+                    }
+                }
+            }
+        }
+        cursor = cursor.saturating_add(6 * scale);
+    }
+    (width, height, pixels)
 }
 
 fn overlay_text(
@@ -403,6 +1009,113 @@ fn fill_nv12_rect(frame: &mut AVFrame, x: i32, y: i32, w: i32, h: i32, u: u8, v:
     }
 }
 
+#[cfg(all(feature = "ffmpeg-rsmpeg", feature = "gpu-wgpu"))]
+fn blend_rgba_overlay(
+    frame: &mut AVFrame,
+    pixels: &[u8],
+    overlay_width: u32,
+    overlay_height: u32,
+    dst_x: i32,
+    dst_y: i32,
+) {
+    if pixels.is_empty() || overlay_width == 0 || overlay_height == 0 || frame.data[0].is_null() {
+        return;
+    }
+    let Ok(y_stride) = usize::try_from(frame.linesize[0]) else {
+        return;
+    };
+    let u_stride = usize::try_from(frame.linesize[1]).unwrap_or_default();
+    let v_stride = usize::try_from(frame.linesize[2]).unwrap_or_default();
+    let width = frame.width.max(0);
+    let height = frame.height.max(0);
+    for oy in 0..overlay_height as i32 {
+        let fy = dst_y + oy;
+        if fy < 0 || fy >= height {
+            continue;
+        }
+        for ox in 0..overlay_width as i32 {
+            let fx = dst_x + ox;
+            if fx < 0 || fx >= width {
+                continue;
+            }
+            let offset = ((oy as u32 * overlay_width + ox as u32) * 4) as usize;
+            let alpha = pixels.get(offset + 3).copied().unwrap_or_default();
+            if alpha == 0 {
+                continue;
+            }
+            let r = pixels[offset];
+            let g = pixels[offset + 1];
+            let b = pixels[offset + 2];
+            let (yy, u, v) = yuv_from_rgb(r, g, b);
+            let Ok(fy_usize) = usize::try_from(fy) else {
+                continue;
+            };
+            let Ok(fx_usize) = usize::try_from(fx) else {
+                continue;
+            };
+            // SAFETY: `fx`/`fy` are clamped to the frame bounds, and the
+            // destination row is within the positive stride validated above.
+            unsafe {
+                let y_ptr = frame.data[0].add(fy_usize * y_stride + fx_usize);
+                *y_ptr = blend_u8(*y_ptr, yy, alpha);
+            }
+            match frame.format {
+                ffi::AV_PIX_FMT_YUV420P => {
+                    if frame.data[1].is_null() || frame.data[2].is_null() {
+                        continue;
+                    }
+                    let cx = fx_usize / 2;
+                    let cy = fy_usize / 2;
+                    // SAFETY: chroma coordinates are subsampled from in-bounds
+                    // luma coordinates and line sizes were converted above.
+                    unsafe {
+                        let u_ptr = frame.data[1].add(cy * u_stride + cx);
+                        let v_ptr = frame.data[2].add(cy * v_stride + cx);
+                        *u_ptr = blend_u8(*u_ptr, u, alpha);
+                        *v_ptr = blend_u8(*v_ptr, v, alpha);
+                    }
+                }
+                ffi::AV_PIX_FMT_NV12 => {
+                    if frame.data[1].is_null() {
+                        continue;
+                    }
+                    let cx = (fx_usize / 2) * 2;
+                    let cy = fy_usize / 2;
+                    // SAFETY: NV12 chroma coordinates are derived from
+                    // in-bounds luma coordinates. `cx` is the UV pair offset.
+                    unsafe {
+                        let uv_ptr = frame.data[1].add(cy * u_stride + cx);
+                        *uv_ptr = blend_u8(*uv_ptr, u, alpha);
+                        *uv_ptr.add(1) = blend_u8(*uv_ptr.add(1), v, alpha);
+                    }
+                }
+                ffi::AV_PIX_FMT_YUV422P => {
+                    if frame.data[1].is_null() || frame.data[2].is_null() {
+                        continue;
+                    }
+                    let cx = fx_usize / 2;
+                    // SAFETY: 4:2:2 chroma rows match luma rows; x is
+                    // subsampled from an in-bounds luma coordinate.
+                    unsafe {
+                        let u_ptr = frame.data[1].add(fy_usize * u_stride + cx);
+                        let v_ptr = frame.data[2].add(fy_usize * v_stride + cx);
+                        *u_ptr = blend_u8(*u_ptr, u, alpha);
+                        *v_ptr = blend_u8(*v_ptr, v, alpha);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "ffmpeg-rsmpeg", feature = "gpu-wgpu"))]
+fn blend_u8(dst: u8, src: u8, alpha: u8) -> u8 {
+    let alpha = u16::from(alpha);
+    let inv = 255u16.saturating_sub(alpha);
+    ((u16::from(dst) * inv + u16::from(src) * alpha + 127) / 255) as u8
+}
+
 fn yuv_from_hex(value: &str) -> (u8, u8, u8) {
     let value = value.trim().trim_start_matches('#');
     if value.len() != 6 {
@@ -411,6 +1124,35 @@ fn yuv_from_hex(value: &str) -> (u8, u8, u8) {
     let r = u8::from_str_radix(&value[0..2], 16).unwrap_or(128) as f32;
     let g = u8::from_str_radix(&value[2..4], 16).unwrap_or(128) as f32;
     let b = u8::from_str_radix(&value[4..6], 16).unwrap_or(128) as f32;
+    let y = (0.257 * r + 0.504 * g + 0.098 * b + 16.0)
+        .round()
+        .clamp(16.0, 235.0) as u8;
+    let u = (-0.148 * r - 0.291 * g + 0.439 * b + 128.0)
+        .round()
+        .clamp(16.0, 240.0) as u8;
+    let v = (0.439 * r - 0.368 * g - 0.071 * b + 128.0)
+        .round()
+        .clamp(16.0, 240.0) as u8;
+    (y, u, v)
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn rgb_from_hex(value: &str) -> [f32; 3] {
+    let value = value.trim().trim_start_matches('#');
+    if value.len() != 6 {
+        return [0.5, 0.5, 0.5];
+    }
+    let r = u8::from_str_radix(&value[0..2], 16).unwrap_or(128) as f32 / 255.0;
+    let g = u8::from_str_radix(&value[2..4], 16).unwrap_or(128) as f32 / 255.0;
+    let b = u8::from_str_radix(&value[4..6], 16).unwrap_or(128) as f32 / 255.0;
+    [r, g, b]
+}
+
+#[cfg(all(feature = "ffmpeg-rsmpeg", feature = "gpu-wgpu"))]
+fn yuv_from_rgb(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+    let r = f32::from(r);
+    let g = f32::from(g);
+    let b = f32::from(b);
     let y = (0.257 * r + 0.504 * g + 0.098 * b + 16.0)
         .round()
         .clamp(16.0, 235.0) as u8;
@@ -530,6 +1272,25 @@ mod tests {
         let orange = yuv_from_hex("#b45309");
         assert!(white.0 > orange.0);
         assert_ne!(orange.1, 128);
+    }
+
+    #[cfg(feature = "gpu-wgpu")]
+    #[test]
+    fn raster_text_rgba_emits_alpha_glyphs() {
+        let (width, height, pixels) = raster_text_rgba("A", 2);
+        assert_eq!(height, 14);
+        assert!(width >= 12);
+        assert_eq!(pixels.len(), width as usize * height as usize * 4);
+        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 255));
+    }
+
+    #[cfg(feature = "gpu-wgpu")]
+    #[test]
+    fn quad_vertices_map_pixels_to_ndc() {
+        let vertices = quad_vertices_px(0.0, 0.0, 100.0, 50.0, 200.0, 100.0, [1.0; 4]);
+        assert_eq!(vertices[0].position, [-1.0, 1.0]);
+        assert_eq!(vertices[2].position, [0.0, 0.0]);
+        assert_eq!(vertices[2].uv, [1.0, 1.0]);
     }
 
     fn test_feed() -> FeedConfig {

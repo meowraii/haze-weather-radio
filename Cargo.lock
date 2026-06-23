@@ -798,6 +798,7 @@ name = "haze-cgen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "chrono",
  "clap",
  "haze-media",
