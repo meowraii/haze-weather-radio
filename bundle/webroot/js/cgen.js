@@ -29,7 +29,6 @@ const fields = {
     acodec: document.getElementById('cgenACodec'),
     videoBitrate: document.getElementById('cgenVideoBitrate'),
     audioBitrate: document.getElementById('cgenAudioBitrate'),
-    syncMaxSoftDrift: document.getElementById('cgenSyncMaxSoftDrift'),
     syncHardReset: document.getElementById('cgenSyncHardReset'),
     syncMaxAudioFrames: document.getElementById('cgenSyncMaxAudioFrames'),
     syncSourceBuffer: document.getElementById('cgenSyncSourceBuffer'),
@@ -42,7 +41,6 @@ const fields = {
     interlaced: document.getElementById('cgenInterlaced'),
     fieldOrder: document.getElementById('cgenFieldOrder'),
     standard: document.getElementById('cgenStandard'),
-    backgroundColor: document.getElementById('cgenBackgroundColor'),
     font: document.getElementById('cgenFont'),
     fontSize: document.getElementById('cgenFontSize'),
     textX: document.getElementById('cgenTextX'),
@@ -53,7 +51,6 @@ const fields = {
     bannerWidth: document.getElementById('cgenBannerWidth'),
     bannerHeight: document.getElementById('cgenBannerHeight'),
     bannerMode: document.getElementById('cgenBannerMode'),
-    bannerBackgroundEnabled: document.getElementById('cgenBannerBackgroundEnabled'),
     scrollSpeed: document.getElementById('cgenScrollSpeed'),
     text: document.getElementById('cgenText'),
     textEnabled: document.getElementById('cgenTextEnabled'),
@@ -138,10 +135,8 @@ function readEditor() {
         font: value('font', 'Arial'),
         font_size: value('fontSize', '58'),
         scroll_speed: value('scrollSpeed', '8'),
-        background_color: value('backgroundColor', '#000000'),
-        banner_background_color: selected()?.banner_background_color || '#b45309',
-        banner_background_gradient_color: selected()?.banner_background_gradient_color || '#7f1d1d',
-        banner_background_enabled: value('bannerBackgroundEnabled'),
+        background_color: '#000000',
+        banner_background_enabled: true,
         banner_x: value('bannerX', '0'),
         banner_y: value('bannerY', '0'),
         banner_width: value('bannerWidth', value('width', '1920')),
@@ -158,10 +153,9 @@ function readEditor() {
         clock_y: value('clockY', '48'),
         clock_font_size: value('clockFontSize', '30'),
         clock_color: value('clockColor', '#ffffff'),
-        sync_max_soft_drift_ms: value('syncMaxSoftDrift', '80'),
-        sync_hard_reset_ms: value('syncHardReset', '750'),
-        sync_max_audio_frames_per_video: value('syncMaxAudioFrames', '12'),
-        sync_source_buffer_ms: value('syncSourceBuffer', '500'),
+        sync_hard_reset_ms: value('syncHardReset', '250'),
+        sync_max_audio_frames_per_video: value('syncMaxAudioFrames', '4'),
+        sync_source_buffer_ms: value('syncSourceBuffer', '120'),
         sync_reconnect_initial_ms: value('syncReconnectInitial', '500'),
         sync_reconnect_max_ms: value('syncReconnectMax', '10000'),
         sync_status_interval_ms: value('syncStatusInterval', '1000'),
@@ -186,10 +180,9 @@ function writeEditor(feed) {
     setValue('acodec', feed.acodec || 'ac3');
     setValue('videoBitrate', feed.video_bitrate_kbps || '12000');
     setValue('audioBitrate', feed.audio_bitrate_kbps || '192');
-    setValue('syncMaxSoftDrift', feed.sync_max_soft_drift_ms || '80');
-    setValue('syncHardReset', feed.sync_hard_reset_ms || '750');
-    setValue('syncMaxAudioFrames', feed.sync_max_audio_frames_per_video || '12');
-    setValue('syncSourceBuffer', feed.sync_source_buffer_ms || '500');
+    setValue('syncHardReset', feed.sync_hard_reset_ms || '250');
+    setValue('syncMaxAudioFrames', feed.sync_max_audio_frames_per_video || '4');
+    setValue('syncSourceBuffer', feed.sync_source_buffer_ms || '120');
     setValue('syncReconnectInitial', feed.sync_reconnect_initial_ms || '500');
     setValue('syncReconnectMax', feed.sync_reconnect_max_ms || '10000');
     setValue('syncStatusInterval', feed.sync_status_interval_ms || '1000');
@@ -199,7 +192,6 @@ function writeEditor(feed) {
     setValue('interlaced', Boolean(feed.interlaced));
     setValue('fieldOrder', feed.field_order || 'tff');
     setValue('standard', feed.standard || 'atsc');
-    setValue('backgroundColor', feed.background_color || '#000000');
     setValue('font', feed.font || 'Arial');
     setValue('fontSize', feed.font_size || '58');
     setValue('scrollSpeed', feed.scroll_speed || '8');
@@ -211,7 +203,6 @@ function writeEditor(feed) {
     setValue('bannerWidth', feed.banner_width || feed.width || '1920');
     setValue('bannerHeight', feed.banner_height || feed.ticker_height || '128');
     setValue('bannerMode', feed.banner_mode || 'auto');
-    setValue('bannerBackgroundEnabled', feed.banner_background_enabled !== false);
     setValue('text', feed.text || '');
     setValue('textEnabled', Boolean(feed.text_enabled));
     setValue('textFontSize', feed.text_font_size || '58');
@@ -285,20 +276,20 @@ function renderPreview() {
     if (feed.smpte_bars) {
         drawSmpte(ctx, width, height);
     } else {
-        ctx.fillStyle = feed.background_color || '#000000';
+        ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, width, height);
     }
     const sx = width / Number(feed.width || 1280);
     const sy = height / Number(feed.height || 720);
-    if (feed.banner_background_enabled) {
+    if (feed.mode !== 'release') {
         const bx = Number(feed.banner_x || 0) * sx;
         const by = Number(feed.banner_y || 0) * sy;
         const bw = Number(feed.banner_width || feed.width || 1280) * sx;
         const bh = Number(feed.banner_height || 128) * sy;
         const gradient = ctx.createLinearGradient(0, by, 0, by + bh);
-        gradient.addColorStop(0, feed.banner_background_gradient_color || '#7f1d1d');
-        gradient.addColorStop(0.5, feed.banner_background_color || '#b45309');
-        gradient.addColorStop(1, feed.banner_background_gradient_color || '#7f1d1d');
+        gradient.addColorStop(0, '#111827');
+        gradient.addColorStop(0.5, '#374151');
+        gradient.addColorStop(1, '#111827');
         ctx.fillStyle = gradient;
         ctx.fillRect(bx, by, bw, bh);
     }
@@ -365,10 +356,9 @@ function defaultFeed() {
         acodec: 'ac3',
         video_bitrate_kbps: '12000',
         audio_bitrate_kbps: '192',
-        sync_max_soft_drift_ms: '80',
-        sync_hard_reset_ms: '750',
-        sync_max_audio_frames_per_video: '12',
-        sync_source_buffer_ms: '500',
+        sync_hard_reset_ms: '250',
+        sync_max_audio_frames_per_video: '4',
+        sync_source_buffer_ms: '120',
         sync_reconnect_initial_ms: '500',
         sync_reconnect_max_ms: '10000',
         sync_status_interval_ms: '1000',
@@ -378,11 +368,7 @@ function defaultFeed() {
         interlaced: true,
         field_order: 'tff',
         standard: 'atsc',
-        background_color: '#000000',
-        banner_background_color: '#b45309',
-        banner_background_gradient_color: '#7f1d1d',
         banner_mode: 'auto',
-        banner_background_enabled: true,
         scroll_speed: '8',
         banner_x: '0',
         banner_y: '0',
@@ -448,14 +434,6 @@ export function initCgenView() {
     document.getElementById('cgenClockButton')?.addEventListener('click', () => runAction('clock', { enabled: !fields.clockEnabled.checked }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenInsertTextButton')?.addEventListener('click', () => runAction('insert_text', { text: fields.text.value }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenClearTextButton')?.addEventListener('click', () => runAction('clear_text').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
-    document.getElementById('cgenInsertBannerButton')?.addEventListener('click', () => {
-        const feed = selected() || defaultFeed();
-        runAction('insert_banner_background', {
-            color: feed.banner_background_color || '#b45309',
-            gradient_color: feed.banner_background_gradient_color || '#7f1d1d',
-        }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err'));
-    });
-    document.getElementById('cgenClearBannerButton')?.addEventListener('click', () => runAction('clear_banner_background').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     window.setInterval(renderPreview, 1000);
     loadCgen().catch((error) => setStatus(error.message || 'Unable to load CGEN config.', 'err'));
 }

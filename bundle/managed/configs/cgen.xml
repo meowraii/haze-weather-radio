@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <cgen enabled="true">
-  <feed id="CAP-IT-ALL" name="CAP-IT-ALL CGEN" enabled="true" updated_at="2026-06-23T20:19:57Z">
+  <feed id="CAP-IT-ALL" name="CAP-IT-ALL CGEN" enabled="true" updated_at="2026-06-23T20:47:07Z">
     <input></input>
     <output></output>
     <programInput url="http://172.16.1.31:8866/live?channel_id=10798" format="mpegts"></programInput>
@@ -9,11 +9,11 @@
     <alertOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="mpeg2video" acodec="ac3" video_bitrate_kbps="12000" audio_bitrate_kbps="192"></alertOutput>
     <video width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc"></video>
     <audio idle="source" alert_mode="replace" duck_db="0"></audio>
-    <banner mode="ticker" ticker_height="72" font="Arial" font_size="58" scroll_speed="8" x="0" y="0" background_color="#b45309" background_gradient_color="#7f1d1d" background_enabled="true"></banner>
-    <graphics background_color="#000000" font="Arial" font_size="58" text_x="48" text_y="128" banner_x="0" banner_y="0" banner_width="1920" banner_height="72"></graphics>
+    <banner mode="ticker" ticker_height="72" font="Arial" font_size="54" scroll_speed="8" x="0" y="0" background_enabled="true"></banner>
+    <graphics background_color="#000000" font="Arial" font_size="54" text_x="48" text_y="128" banner_x="0" banner_y="0" banner_width="1920" banner_height="72"></graphics>
     <clock enabled="false" format="Jan 02 15:04:05" x="48" y="48" font_size="30" color="#ffffff"></clock>
     <text enabled="false" x="48" y="128" font_size="58" color="#ffffff"></text>
     <state mode="release" smpte_bars="false"></state>
-    <sync max_soft_drift_ms="80" hard_reset_ms="750" max_audio_frames_per_video="12" source_buffer_ms="500" reconnect_initial_ms="500" reconnect_max_ms="10000" status_interval_ms="1000"></sync>
+    <sync hard_reset_ms="250" max_audio_frames_per_video="4" source_buffer_ms="120" reconnect_initial_ms="500" reconnect_max_ms="10000" status_interval_ms="1000"></sync>
   </feed>
 </cgen>

@@ -141,14 +141,11 @@ impl NativeGraphicsRenderer {
         if text.trim().is_empty() {
             return;
         }
-        let color = banner
-            .and_then(|banner| non_empty_ref(&banner.primary_color))
-            .or_else(|| audio.and_then(|audio| audio.background_color.as_deref()))
-            .or_else(|| non_empty_ref(&self.feed.banner.background_color))
-            .unwrap_or("#b45309")
-            .to_string();
-        let gradient = ticker_gradient(&self.feed, banner, audio, &color);
-        let next_key = ticker_state_key(&text, banner, audio, &color);
+        let Some(color) = ticker_color(banner, audio) else {
+            return;
+        };
+        let gradient = ticker_gradient(banner, audio, &color);
+        let next_key = ticker_state_key(banner, audio);
         if self.ticker_key != next_key {
             self.ticker_key = next_key;
             self.ticker_start_frame = frame_index;
@@ -243,6 +240,7 @@ impl NativeGraphicsRenderer {
                     scale,
                     self.feed.banner.background_enabled.then_some(gradient),
                     text_rgb,
+                    true,
                 );
                 if let Ok(overlay) = overlay {
                     blend_rgba_overlay(
@@ -267,9 +265,13 @@ impl NativeGraphicsRenderer {
             .resolve(&font_family)
             .and_then(|font| raster_text_rgba_system(&font, text, font_size))
         {
+            let shadow = tint_rgba_overlay(&pixels, [0, 0, 0], 220);
+            blend_rgba_overlay(frame, &shadow, width, height, text_x, text_y);
+            blend_rgba_overlay(frame, &shadow, width, height, text_x + 3, text_y + 4);
             blend_rgba_overlay(frame, &pixels, width, height, text_x, text_y);
             return;
         }
+        draw_text_yuv(frame, text, text_x + 3, text_y + 4, scale, 16, 128, 128);
         draw_text_yuv(frame, text, text_x, text_y, scale, 235, 128, 128);
     }
 
@@ -471,6 +473,7 @@ impl WgpuGraphicsContext {
         scale: i32,
         background: Option<TickerGradient>,
         text_rgb: [f32; 3],
+        shadow: bool,
     ) -> anyhow::Result<RgbaOverlay> {
         self.ensure_target(width, height);
         self.ensure_text_texture(text, font_family, font_size, scale)?;
@@ -512,6 +515,22 @@ impl WgpuGraphicsContext {
             ));
         }
         let text_y = ((height as i32 - text_cache.height as i32) / 2).max(0);
+        if shadow {
+            for (dx, dy, alpha) in [(0.0_f32, 0.0_f32, 0.75_f32), (3.0, 4.0, 0.90)] {
+                draw_items.push((
+                    self.vertex_buffer(quad_vertices_px(
+                        text_x as f32 + dx,
+                        text_y as f32 + dy,
+                        text_cache.width as f32,
+                        text_cache.height as f32,
+                        width as f32,
+                        height as f32,
+                        [0.0, 0.0, 0.0, alpha],
+                    )),
+                    text_bg.clone(),
+                ));
+            }
+        }
         draw_items.push((
             self.vertex_buffer(quad_vertices_px(
                 text_x as f32,
@@ -1185,6 +1204,19 @@ fn raster_text_rgba_bitmap(text: &str, scale: i32) -> (u32, u32, Vec<u8>) {
     (width, height, pixels)
 }
 
+#[cfg(feature = "gpu-wgpu")]
+fn tint_rgba_overlay(pixels: &[u8], rgb: [u8; 3], alpha_scale: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pixels.len());
+    for px in pixels.chunks_exact(4) {
+        out.push(rgb[0]);
+        out.push(rgb[1]);
+        out.push(rgb[2]);
+        let alpha = (u16::from(px[3]) * u16::from(alpha_scale)) / 255;
+        out.push(alpha as u8);
+    }
+    out
+}
+
 fn overlay_text(
     feed: &FeedConfig,
     banner: Option<&BannerPayload>,
@@ -1270,23 +1302,20 @@ fn ticker_scroll_frames(frame_width: i32, text_width: i32, scroll_speed: u32) ->
     u64::from((travel as u32).div_ceil(speed))
 }
 
-fn ticker_state_key(
-    text: &str,
-    banner: Option<&BannerPayload>,
-    audio: Option<&PriorityAudio>,
-    color: &str,
-) -> String {
+fn ticker_state_key(banner: Option<&BannerPayload>, audio: Option<&PriorityAudio>) -> String {
     let queue_id = audio
         .map(|audio| audio.queue_id.as_str())
         .unwrap_or_default();
     let banner_signature = banner
         .map(|banner| banner.signature.as_str())
         .unwrap_or_default();
-    format!("{queue_id}\n{banner_signature}\n{color}\n{text}")
+    if !queue_id.is_empty() {
+        return queue_id.to_string();
+    }
+    banner_signature.to_string()
 }
 
 fn ticker_gradient(
-    feed: &FeedConfig,
     banner: Option<&BannerPayload>,
     audio: Option<&PriorityAudio>,
     base_color: &str,
@@ -1306,14 +1335,26 @@ fn ticker_gradient(
         };
     }
     let middle = rgb_from_hex_loose(base_color);
-    let edge = non_empty_ref(&feed.banner.background_gradient_color)
-        .map(rgb_from_hex_loose)
-        .unwrap_or_else(|| darken_rgb(middle, 0.62));
+    let edge = darken_rgb(middle, 0.62);
     TickerGradient {
         top: edge,
         middle,
         bottom: edge,
     }
+}
+
+fn ticker_color<'a>(
+    banner: Option<&'a BannerPayload>,
+    audio: Option<&'a PriorityAudio>,
+) -> Option<String> {
+    banner
+        .and_then(|banner| non_empty_ref(&banner.primary_color))
+        .or_else(|| {
+            audio
+                .and_then(|audio| audio.background_color.as_deref())
+                .and_then(non_empty_ref)
+        })
+        .map(ToString::to_string)
 }
 
 fn banner_gradient_colors(banner: Option<&BannerPayload>) -> Option<TickerGradient> {

@@ -66,15 +66,15 @@ impl CgenClock {
     }
 
     fn prepare_audio_target(&mut self, target_pts: i64, time_base: AVRational) -> bool {
-        let current = self.audio_next_pts.unwrap_or(target_pts);
+        let current = self.audio_next_pts.unwrap_or_default();
         self.audio_drift_ms = pts_delta_ms(current.saturating_sub(target_pts), time_base);
         if self.audio_drift_ms.abs() > f64::from(self.sync.hard_reset_ms.max(1)) {
-            self.audio_next_pts = Some(target_pts);
+            self.audio_next_pts = Some(target_pts.max(0));
             self.audio_drift_ms = 0.0;
             return true;
         }
         if self.audio_next_pts.is_none() {
-            self.audio_next_pts = Some(target_pts);
+            self.audio_next_pts = Some(0);
         }
         false
     }
@@ -99,11 +99,7 @@ impl CgenClock {
         false
     }
 
-    fn max_audio_frames_for_current_drift(&self) -> usize {
-        let soft_limit_ms = f64::from(self.sync.max_soft_drift_ms.max(1));
-        if self.audio_drift_ms >= -soft_limit_ms {
-            return 1;
-        }
+    fn max_audio_frames_per_video(&self) -> usize {
         usize::try_from(self.sync.max_audio_frames_per_video.max(1))
             .unwrap_or(12)
             .clamp(1, 64)
@@ -1093,7 +1089,11 @@ impl AudioProcessor {
         {
             Ok(samples) => Ok(samples),
             Err(_err) => {
-                self.resampler = Some(AudioResampler::for_frame(None, frame, self.output_channels)?);
+                self.resampler = Some(AudioResampler::for_frame(
+                    None,
+                    frame,
+                    self.output_channels,
+                )?);
                 self.resampler
                     .as_mut()
                     .context("native cgen audio resampler is unavailable after rebuild")?
@@ -1121,10 +1121,10 @@ impl AudioProcessor {
             );
             self.source_pcm.clear();
         }
-        let max_frames = self.clock.max_audio_frames_for_current_drift();
+        let max_frames = self.clock.max_audio_frames_per_video();
         for _ in 0..max_frames {
             let pts = self.clock.audio_pts(target_pts);
-            if pts >= target_pts {
+            if pts.saturating_add(duration) > target_pts {
                 break;
             }
             let mut encoded = if self.alert_active()? {
@@ -1731,13 +1731,12 @@ fn ac3_bitrate_for_channels(channels: u16) -> i64 {
 }
 
 fn source_buffer_samples(sync: &SyncConfig, channels: u16) -> usize {
-    let samples = (u64::from(ALERT_SAMPLE_RATE)
-        * u64::from(channels.max(1))
-        * u64::from(sync.source_buffer_ms.max(20)))
-        / 1_000;
+    let buffer_ms = sync.source_buffer_ms.clamp(32, 250);
+    let samples =
+        (u64::from(ALERT_SAMPLE_RATE) * u64::from(channels.max(1)) * u64::from(buffer_ms)) / 1_000;
     usize::try_from(samples)
-        .unwrap_or(AC3_FRAME_SAMPLES * usize::from(channels.max(1)) * 16)
-        .max(AC3_FRAME_SAMPLES * usize::from(channels.max(1)))
+        .unwrap_or(AC3_FRAME_SAMPLES * usize::from(channels.max(1)) * 4)
+        .max(AC3_FRAME_SAMPLES * usize::from(channels.max(1)) * 2)
 }
 
 fn pts_delta_ms(delta: i64, time_base: AVRational) -> f64 {

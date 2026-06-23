@@ -78,8 +78,6 @@ impl PipelineWorker {
             banner_scroll_speed = self.feed.banner.scroll_speed,
             banner_x = self.feed.banner.x,
             banner_y = self.feed.banner.y,
-            banner_background_color = %self.feed.banner.background_color,
-            banner_background_gradient_color = %self.feed.banner.background_gradient_color,
             banner_background_enabled = self.feed.banner.background_enabled,
             font = %self.feed.graphics.font,
             font_size = self.feed.graphics.font_size,
@@ -673,8 +671,7 @@ fn video_filter(
         banner
             .and_then(|banner| non_empty_ref(&banner.primary_color))
             .or_else(|| audio.and_then(|audio| audio.background_color.as_deref()))
-            .or_else(|| non_empty_ref(&feed.banner.background_color))
-            .unwrap_or("#b45309"),
+            .unwrap_or("#111827"),
     );
     let text = overlay_text(feed, banner, audio);
     let font_size = feed.banner.font_size.max(16);
@@ -732,7 +729,7 @@ fn video_filter(
 }
 
 fn video_textfile_filter(feed: &FeedConfig, text_path: &Path) -> String {
-    let color = hex_color(non_empty_ref(&feed.banner.background_color).unwrap_or("#b45309"));
+    let color = "#111827";
     let font_size = feed.banner.font_size.max(16);
     let font_option = drawtext_font_option(
         non_empty_ref(&feed.banner.font).or_else(|| non_empty_ref(&feed.graphics.font)),

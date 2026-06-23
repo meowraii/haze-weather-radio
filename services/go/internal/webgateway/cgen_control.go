@@ -70,16 +70,14 @@ type cgenAudioXML struct {
 }
 
 type cgenBannerXML struct {
-	Mode                    string `xml:"mode,attr,omitempty"`
-	TickerHeight            string `xml:"ticker_height,attr,omitempty"`
-	Font                    string `xml:"font,attr,omitempty"`
-	FontSize                string `xml:"font_size,attr,omitempty"`
-	ScrollSpeed             string `xml:"scroll_speed,attr,omitempty"`
-	X                       string `xml:"x,attr,omitempty"`
-	Y                       string `xml:"y,attr,omitempty"`
-	BackgroundColor         string `xml:"background_color,attr,omitempty"`
-	BackgroundGradientColor string `xml:"background_gradient_color,attr,omitempty"`
-	BackgroundEnabled       string `xml:"background_enabled,attr,omitempty"`
+	Mode              string `xml:"mode,attr,omitempty"`
+	TickerHeight      string `xml:"ticker_height,attr,omitempty"`
+	Font              string `xml:"font,attr,omitempty"`
+	FontSize          string `xml:"font_size,attr,omitempty"`
+	ScrollSpeed       string `xml:"scroll_speed,attr,omitempty"`
+	X                 string `xml:"x,attr,omitempty"`
+	Y                 string `xml:"y,attr,omitempty"`
+	BackgroundEnabled string `xml:"background_enabled,attr,omitempty"`
 }
 
 type cgenGraphicsXML struct {
@@ -119,7 +117,6 @@ type cgenStateXML struct {
 }
 
 type cgenSyncXML struct {
-	MaxSoftDriftMS         string `xml:"max_soft_drift_ms,attr,omitempty"`
 	HardResetMS            string `xml:"hard_reset_ms,attr,omitempty"`
 	MaxAudioFramesPerVideo string `xml:"max_audio_frames_per_video,attr,omitempty"`
 	SourceBufferMS         string `xml:"source_buffer_ms,attr,omitempty"`
@@ -201,16 +198,6 @@ func cgenActionPayload(configPath string, payload map[string]any) (map[string]an
 	case "clear_text":
 		feed.Text.Enabled = "false"
 		feed.Text.Content = ""
-	case "insert_banner_background":
-		feed.Banner.BackgroundEnabled = "true"
-		if color := strings.TrimSpace(stringValue(payload, "color")); color != "" {
-			feed.Banner.BackgroundColor = color
-		}
-		if color := strings.TrimSpace(stringValue(payload, "gradient_color")); color != "" {
-			feed.Banner.BackgroundGradientColor = color
-		}
-	case "clear_banner_background":
-		feed.Banner.BackgroundEnabled = "false"
 	default:
 		return nil, fmt.Errorf("unsupported cgen action %q", action)
 	}
@@ -316,8 +303,6 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Banner.ScrollSpeed = cleanPositive(feed.Banner.ScrollSpeed, "8")
 		feed.Banner.X = cleanNumber(feed.Banner.X, "0")
 		feed.Banner.Y = cleanNumber(feed.Banner.Y, "0")
-		feed.Banner.BackgroundColor = cleanColor(feed.Banner.BackgroundColor, "#b45309")
-		feed.Banner.BackgroundGradientColor = cleanColor(feed.Banner.BackgroundGradientColor, "#7f1d1d")
 		feed.Banner.BackgroundEnabled = boolText(xmlBool(feed.Banner.BackgroundEnabled, true))
 		feed.Graphics.BackgroundColor = cleanColor(feed.Graphics.BackgroundColor, "#000000")
 		feed.Graphics.Font = fallbackText(strings.TrimSpace(feed.Graphics.Font), feed.Banner.Font)
@@ -343,10 +328,9 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.State.Mode = normalizeCgenMode(feed.State.Mode)
 		feed.State.SMPTEBars = boolText(xmlBool(feed.State.SMPTEBars, false))
 		feed.State.UpdatedAt = strings.TrimSpace(feed.State.UpdatedAt)
-		feed.Sync.MaxSoftDriftMS = cleanPositive(feed.Sync.MaxSoftDriftMS, "80")
-		feed.Sync.HardResetMS = cleanPositive(feed.Sync.HardResetMS, "750")
-		feed.Sync.MaxAudioFramesPerVideo = cleanPositive(feed.Sync.MaxAudioFramesPerVideo, "12")
-		feed.Sync.SourceBufferMS = cleanPositive(feed.Sync.SourceBufferMS, "500")
+		feed.Sync.HardResetMS = cleanPositive(feed.Sync.HardResetMS, "250")
+		feed.Sync.MaxAudioFramesPerVideo = cleanPositive(feed.Sync.MaxAudioFramesPerVideo, "4")
+		feed.Sync.SourceBufferMS = cleanPositive(feed.Sync.SourceBufferMS, "120")
 		feed.Sync.ReconnectInitialMS = cleanPositive(feed.Sync.ReconnectInitialMS, "500")
 		feed.Sync.ReconnectMaxMS = cleanPositive(feed.Sync.ReconnectMaxMS, "10000")
 		feed.Sync.StatusIntervalMS = cleanPositive(feed.Sync.StatusIntervalMS, "1000")
@@ -404,16 +388,14 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			DuckDB:    stringFromAny(source["duck_db"]),
 		},
 		Banner: cgenBannerXML{
-			Mode:                    stringFromAny(source["banner_mode"]),
-			TickerHeight:            stringFromAny(source["ticker_height"]),
-			Font:                    stringFromAny(source["font"]),
-			FontSize:                stringFromAny(source["font_size"]),
-			ScrollSpeed:             stringFromAny(source["scroll_speed"]),
-			X:                       stringFromAny(source["banner_x"]),
-			Y:                       stringFromAny(source["banner_y"]),
-			BackgroundColor:         stringFromAny(source["banner_background_color"]),
-			BackgroundGradientColor: stringFromAny(source["banner_background_gradient_color"]),
-			BackgroundEnabled:       boolText(boolFromAny(source["banner_background_enabled"], true)),
+			Mode:              stringFromAny(source["banner_mode"]),
+			TickerHeight:      stringFromAny(source["ticker_height"]),
+			Font:              stringFromAny(source["font"]),
+			FontSize:          stringFromAny(source["font_size"]),
+			ScrollSpeed:       stringFromAny(source["scroll_speed"]),
+			X:                 stringFromAny(source["banner_x"]),
+			Y:                 stringFromAny(source["banner_y"]),
+			BackgroundEnabled: boolText(boolFromAny(source["banner_background_enabled"], true)),
 		},
 		Graphics: cgenGraphicsXML{
 			BackgroundColor: stringFromAny(source["background_color"]),
@@ -447,7 +429,6 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			SMPTEBars: boolText(boolFromAny(source["smpte_bars"], false)),
 		},
 		Sync: cgenSyncXML{
-			MaxSoftDriftMS:         stringFromAny(source["sync_max_soft_drift_ms"]),
 			HardResetMS:            stringFromAny(source["sync_hard_reset_ms"]),
 			MaxAudioFramesPerVideo: stringFromAny(source["sync_max_audio_frames_per_video"]),
 			SourceBufferMS:         stringFromAny(source["sync_source_buffer_ms"]),
@@ -468,66 +449,63 @@ func cgenPayload(path string, config cgenXML) map[string]any {
 	rows := make([]map[string]any, 0, len(config.Feeds))
 	for _, feed := range config.Feeds {
 		rows = append(rows, map[string]any{
-			"id":                               feed.ID,
-			"name":                             feed.Name,
-			"enabled":                          xmlBool(feed.Enabled, false),
-			"mode":                             feed.State.Mode,
-			"smpte_bars":                       xmlBool(feed.State.SMPTEBars, false),
-			"program_input_url":                feed.ProgramInput.URL,
-			"program_input_format":             feed.ProgramInput.Format,
-			"priority_feed_id":                 feed.PriorityInput.FeedID,
-			"priority_input_url":               feed.PriorityInput.URL,
-			"priority_input_format":            feed.PriorityInput.Format,
-			"program_output_url":               feed.ProgramOutput.URL,
-			"program_output_format":            feed.ProgramOutput.Format,
-			"alert_output_url":                 feed.AlertOutput.URL,
-			"alert_output_format":              feed.AlertOutput.Format,
-			"vcodec":                           feed.ProgramOutput.VCodec,
-			"acodec":                           feed.ProgramOutput.ACodec,
-			"video_bitrate_kbps":               feed.ProgramOutput.VideoBitrateKbps,
-			"audio_bitrate_kbps":               feed.ProgramOutput.AudioBitrateKbps,
-			"width":                            feed.Video.Width,
-			"height":                           feed.Video.Height,
-			"fps":                              feed.Video.FPS,
-			"interlaced":                       xmlBool(feed.Video.Interlaced, false),
-			"field_order":                      feed.Video.FieldOrder,
-			"standard":                         feed.Video.Standard,
-			"audio_idle":                       feed.Audio.Idle,
-			"audio_alert_mode":                 feed.Audio.AlertMode,
-			"duck_db":                          feed.Audio.DuckDB,
-			"banner_mode":                      feed.Banner.Mode,
-			"ticker_height":                    feed.Banner.TickerHeight,
-			"scroll_speed":                     feed.Banner.ScrollSpeed,
-			"font":                             feed.Graphics.Font,
-			"font_size":                        feed.Graphics.FontSize,
-			"background_color":                 feed.Graphics.BackgroundColor,
-			"banner_background_color":          feed.Banner.BackgroundColor,
-			"banner_background_gradient_color": feed.Banner.BackgroundGradientColor,
-			"banner_background_enabled":        xmlBool(feed.Banner.BackgroundEnabled, true),
-			"banner_x":                         feed.Graphics.BannerX,
-			"banner_y":                         feed.Graphics.BannerY,
-			"banner_width":                     feed.Graphics.BannerWidth,
-			"banner_height":                    feed.Graphics.BannerHeight,
-			"text_enabled":                     xmlBool(feed.Text.Enabled, false),
-			"text":                             feed.Text.Content,
-			"text_x":                           feed.Text.X,
-			"text_y":                           feed.Text.Y,
-			"text_font_size":                   feed.Text.FontSize,
-			"text_color":                       feed.Text.Color,
-			"clock_enabled":                    xmlBool(feed.Clock.Enabled, false),
-			"clock_format":                     feed.Clock.Format,
-			"clock_x":                          feed.Clock.X,
-			"clock_y":                          feed.Clock.Y,
-			"clock_font_size":                  feed.Clock.FontSize,
-			"clock_color":                      feed.Clock.Color,
-			"sync_max_soft_drift_ms":           feed.Sync.MaxSoftDriftMS,
-			"sync_hard_reset_ms":               feed.Sync.HardResetMS,
-			"sync_max_audio_frames_per_video":  feed.Sync.MaxAudioFramesPerVideo,
-			"sync_source_buffer_ms":            feed.Sync.SourceBufferMS,
-			"sync_reconnect_initial_ms":        feed.Sync.ReconnectInitialMS,
-			"sync_reconnect_max_ms":            feed.Sync.ReconnectMaxMS,
-			"sync_status_interval_ms":          feed.Sync.StatusIntervalMS,
-			"updated_at":                       fallbackText(feed.State.UpdatedAt, feed.UpdatedAt),
+			"id":                              feed.ID,
+			"name":                            feed.Name,
+			"enabled":                         xmlBool(feed.Enabled, false),
+			"mode":                            feed.State.Mode,
+			"smpte_bars":                      xmlBool(feed.State.SMPTEBars, false),
+			"program_input_url":               feed.ProgramInput.URL,
+			"program_input_format":            feed.ProgramInput.Format,
+			"priority_feed_id":                feed.PriorityInput.FeedID,
+			"priority_input_url":              feed.PriorityInput.URL,
+			"priority_input_format":           feed.PriorityInput.Format,
+			"program_output_url":              feed.ProgramOutput.URL,
+			"program_output_format":           feed.ProgramOutput.Format,
+			"alert_output_url":                feed.AlertOutput.URL,
+			"alert_output_format":             feed.AlertOutput.Format,
+			"vcodec":                          feed.ProgramOutput.VCodec,
+			"acodec":                          feed.ProgramOutput.ACodec,
+			"video_bitrate_kbps":              feed.ProgramOutput.VideoBitrateKbps,
+			"audio_bitrate_kbps":              feed.ProgramOutput.AudioBitrateKbps,
+			"width":                           feed.Video.Width,
+			"height":                          feed.Video.Height,
+			"fps":                             feed.Video.FPS,
+			"interlaced":                      xmlBool(feed.Video.Interlaced, false),
+			"field_order":                     feed.Video.FieldOrder,
+			"standard":                        feed.Video.Standard,
+			"audio_idle":                      feed.Audio.Idle,
+			"audio_alert_mode":                feed.Audio.AlertMode,
+			"duck_db":                         feed.Audio.DuckDB,
+			"banner_mode":                     feed.Banner.Mode,
+			"ticker_height":                   feed.Banner.TickerHeight,
+			"scroll_speed":                    feed.Banner.ScrollSpeed,
+			"font":                            feed.Graphics.Font,
+			"font_size":                       feed.Graphics.FontSize,
+			"background_color":                feed.Graphics.BackgroundColor,
+			"banner_background_enabled":       xmlBool(feed.Banner.BackgroundEnabled, true),
+			"banner_x":                        feed.Graphics.BannerX,
+			"banner_y":                        feed.Graphics.BannerY,
+			"banner_width":                    feed.Graphics.BannerWidth,
+			"banner_height":                   feed.Graphics.BannerHeight,
+			"text_enabled":                    xmlBool(feed.Text.Enabled, false),
+			"text":                            feed.Text.Content,
+			"text_x":                          feed.Text.X,
+			"text_y":                          feed.Text.Y,
+			"text_font_size":                  feed.Text.FontSize,
+			"text_color":                      feed.Text.Color,
+			"clock_enabled":                   xmlBool(feed.Clock.Enabled, false),
+			"clock_format":                    feed.Clock.Format,
+			"clock_x":                         feed.Clock.X,
+			"clock_y":                         feed.Clock.Y,
+			"clock_font_size":                 feed.Clock.FontSize,
+			"clock_color":                     feed.Clock.Color,
+			"sync_hard_reset_ms":              feed.Sync.HardResetMS,
+			"sync_max_audio_frames_per_video": feed.Sync.MaxAudioFramesPerVideo,
+			"sync_source_buffer_ms":           feed.Sync.SourceBufferMS,
+			"sync_reconnect_initial_ms":       feed.Sync.ReconnectInitialMS,
+			"sync_reconnect_max_ms":           feed.Sync.ReconnectMaxMS,
+			"sync_status_interval_ms":         feed.Sync.StatusIntervalMS,
+			"updated_at":                      fallbackText(feed.State.UpdatedAt, feed.UpdatedAt),
 		})
 	}
 	return map[string]any{

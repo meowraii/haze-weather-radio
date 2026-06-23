@@ -118,10 +118,6 @@ pub(crate) struct BannerConfig {
     pub(crate) x: i32,
     #[serde(rename = "@y", default)]
     pub(crate) y: i32,
-    #[serde(rename = "@background_color", default)]
-    pub(crate) background_color: String,
-    #[serde(rename = "@background_gradient_color", default)]
-    pub(crate) background_gradient_color: String,
     #[serde(rename = "@background_enabled", default = "default_true")]
     pub(crate) background_enabled: bool,
 }
@@ -192,8 +188,6 @@ pub(crate) struct StateConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SyncConfig {
-    #[serde(rename = "@max_soft_drift_ms", default = "default_max_soft_drift_ms")]
-    pub(crate) max_soft_drift_ms: u32,
     #[serde(rename = "@hard_reset_ms", default = "default_hard_reset_ms")]
     pub(crate) hard_reset_ms: u32,
     #[serde(
@@ -365,12 +359,8 @@ fn release_mode() -> String {
     "release".to_string()
 }
 
-pub(crate) fn default_max_soft_drift_ms() -> u32 {
-    80
-}
-
 pub(crate) fn default_hard_reset_ms() -> u32 {
-    750
+    250
 }
 
 pub(crate) fn default_max_audio_frames_per_video() -> u32 {
@@ -378,7 +368,7 @@ pub(crate) fn default_max_audio_frames_per_video() -> u32 {
 }
 
 pub(crate) fn default_source_buffer_ms() -> u32 {
-    500
+    120
 }
 
 pub(crate) fn default_reconnect_initial_ms() -> u32 {
@@ -435,12 +425,12 @@ mod tests {
     <alertOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="libx264" acodec="aac"/>
     <video width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc"/>
     <audio idle="source" alert_mode="replace" duck_db="-18"/>
-    <banner mode="auto" ticker_height="128" font="Arial" font_size="58" scroll_speed="5" background_gradient_color="#7f1d1d" background_enabled="true"/>
+    <banner mode="auto" ticker_height="128" font="Arial" font_size="58" scroll_speed="5" background_enabled="true"/>
     <graphics background_color="#000000" font="Arial" font_size="58"/>
     <clock enabled="true" x="48" y="48"/>
     <text enabled="true" x="48" y="96">Hello</text>
     <state mode="overlay" smpte_bars="true"/>
-    <sync max_soft_drift_ms="60" hard_reset_ms="500" max_audio_frames_per_video="10" source_buffer_ms="400" reconnect_initial_ms="250" reconnect_max_ms="5000" status_interval_ms="750"/>
+    <sync hard_reset_ms="500" max_audio_frames_per_video="10" source_buffer_ms="400" reconnect_initial_ms="250" reconnect_max_ms="5000" status_interval_ms="750"/>
   </feed>
 </cgen>"##;
         let parsed: CgenConfig = quick_xml::de::from_str(xml).expect("parse");
@@ -458,10 +448,8 @@ mod tests {
         assert_eq!(feeds[0].video.field_order, "tff");
         assert_eq!(feeds[0].video.standard, "atsc");
         assert_eq!(feeds[0].banner.scroll_speed, 5);
-        assert_eq!(feeds[0].banner.background_gradient_color, "#7f1d1d");
         assert!(feeds[0].clock.enabled);
         assert!(feeds[0].state.smpte_bars);
-        assert_eq!(feeds[0].sync.max_soft_drift_ms, 60);
         assert_eq!(feeds[0].sync.hard_reset_ms, 500);
         assert_eq!(feeds[0].sync.max_audio_frames_per_video, 10);
         assert_eq!(feeds[0].sync.source_buffer_ms, 400);
@@ -524,7 +512,6 @@ mod tests {
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
-            max_soft_drift_ms: default_max_soft_drift_ms(),
             hard_reset_ms: default_hard_reset_ms(),
             max_audio_frames_per_video: default_max_audio_frames_per_video(),
             source_buffer_ms: default_source_buffer_ms(),
@@ -545,8 +532,6 @@ impl Default for BannerConfig {
             scroll_speed: default_scroll_speed(),
             x: 0,
             y: 0,
-            background_color: String::new(),
-            background_gradient_color: String::new(),
             background_enabled: true,
         }
     }
