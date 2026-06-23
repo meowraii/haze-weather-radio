@@ -1,7 +1,7 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use tokio::sync::watch;
-use tokio::time::{interval, Duration, MissedTickBehavior};
-use tracing::info;
+use tokio::time::{sleep, Duration};
+use tracing::{info, warn};
 
 use crate::config::FeedConfig;
 use crate::state::RuntimeState;
@@ -92,18 +92,58 @@ impl PipelineWorker {
             "cgen feed pipeline supervised"
         );
 
-        let mut ticker = interval(Duration::from_secs(5));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        self.run_ffmpeg_relay().await
+    }
+
+    async fn run_ffmpeg_relay(&mut self) -> Result<()> {
+        let ffmpeg = self.ffmpeg.clone().unwrap_or_else(|| "ffmpeg".to_string());
+        let args = ffmpeg_relay_args(&self.feed);
+        let mut restart_delay = Duration::from_millis(500);
         loop {
+            info!(
+                feed_id = %self.feed.id,
+                input = %self.feed.program_input_url(),
+                output = %self.feed.program_output_url(),
+                "starting cgen FFmpeg release relay"
+            );
+            let mut child = tokio::process::Command::new(&ffmpeg)
+                .args(&args)
+                .kill_on_drop(true)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .with_context(|| format!("failed to start cgen FFmpeg relay using {ffmpeg}"))?;
+
+            if let Some(stderr) = child.stderr.take() {
+                let feed_id = self.feed.id.clone();
+                tokio::spawn(async move {
+                    log_ffmpeg_stderr(feed_id, stderr).await;
+                });
+            }
+
             tokio::select! {
                 changed = self.state_rx.changed() => {
                     if changed.is_err() {
+                        let _ = child.kill().await;
                         return Ok(());
                     }
                     self.log_state();
                 }
-                _ = ticker.tick() => {
-                    self.log_state();
+                status = child.wait() => {
+                    match status {
+                        Ok(status) if status.success() => {
+                            info!(feed_id = %self.feed.id, "cgen FFmpeg relay exited cleanly");
+                            restart_delay = Duration::from_millis(500);
+                        }
+                        Ok(status) => {
+                            warn!(feed_id = %self.feed.id, status = %status, "cgen FFmpeg relay exited; restarting");
+                        }
+                        Err(err) => {
+                            warn!(feed_id = %self.feed.id, "cgen FFmpeg relay wait failed: {err}");
+                        }
+                    }
+                    sleep(restart_delay).await;
+                    restart_delay = (restart_delay * 2).min(Duration::from_secs(10));
                 }
             }
         }
@@ -129,5 +169,106 @@ impl PipelineWorker {
                 "cgen alert state active"
             );
         }
+    }
+}
+
+fn ffmpeg_relay_args(feed: &FeedConfig) -> Vec<String> {
+    let output = feed.output();
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-fflags".to_string(),
+        "nobuffer".to_string(),
+        "-flags".to_string(),
+        "low_delay".to_string(),
+        "-thread_queue_size".to_string(),
+        "512".to_string(),
+        "-i".to_string(),
+        feed.program_input_url().to_string(),
+        "-map".to_string(),
+        "0".to_string(),
+        "-c".to_string(),
+        "copy".to_string(),
+        "-muxdelay".to_string(),
+        "0".to_string(),
+        "-muxpreload".to_string(),
+        "0".to_string(),
+    ];
+    if !output.format.trim().is_empty() {
+        args.extend(["-f".to_string(), output.format.clone()]);
+    }
+    args.push(feed.program_output_url().to_string());
+    args
+}
+
+async fn log_ffmpeg_stderr(feed_id: String, stderr: tokio::process::ChildStderr) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim();
+        if !line.is_empty() {
+            warn!(feed_id = %feed_id, "cgen FFmpeg: {line}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{
+        AudioConfig, BannerConfig, ClockConfig, EndpointConfig, FeedConfig, GraphicsConfig,
+        PriorityInputConfig, StateConfig, TextConfig, VideoConfig,
+    };
+
+    use super::ffmpeg_relay_args;
+
+    #[test]
+    fn relay_args_copy_program_input_to_udp_output() {
+        let feed = FeedConfig {
+            id: "CAP-IT-ALL".to_string(),
+            name: "CAP CGEN".to_string(),
+            enabled: true,
+            input: EndpointConfig::default(),
+            output: EndpointConfig::default(),
+            program_input: EndpointConfig {
+                url: "udp://239.0.0.1:9000?overrun_nonfatal=1&reuse=1".to_string(),
+                format: "mpegts".to_string(),
+                ..Default::default()
+            },
+            priority_input: PriorityInputConfig {
+                feed_id: "CAP-IT-ALL".to_string(),
+                ..Default::default()
+            },
+            program_output: EndpointConfig {
+                url: "udp://239.0.0.2:9001?pkt_size=1316".to_string(),
+                format: "mpegts".to_string(),
+                ..Default::default()
+            },
+            alert_output: EndpointConfig::default(),
+            video: VideoConfig {
+                width: 1280,
+                height: 720,
+                fps: "source".to_string(),
+            },
+            audio: AudioConfig::default(),
+            banner: BannerConfig::default(),
+            graphics: GraphicsConfig::default(),
+            clock: ClockConfig::default(),
+            text: TextConfig::default(),
+            state: StateConfig::default(),
+        };
+
+        let args = ffmpeg_relay_args(&feed);
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-i", "udp://239.0.0.1:9000?overrun_nonfatal=1&reuse=1"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c", "copy"]));
+        assert!(args.windows(2).any(|pair| pair == ["-f", "mpegts"]));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("udp://239.0.0.2:9001?pkt_size=1316")
+        );
     }
 }
