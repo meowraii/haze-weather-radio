@@ -71,9 +71,11 @@ impl PipelineWorker {
             ticker_height = self.feed.banner.ticker_height,
             banner_font = %self.feed.banner.font,
             banner_font_size = self.feed.banner.font_size,
+            banner_scroll_speed = self.feed.banner.scroll_speed,
             banner_x = self.feed.banner.x,
             banner_y = self.feed.banner.y,
             banner_background_color = %self.feed.banner.background_color,
+            banner_background_gradient_color = %self.feed.banner.background_gradient_color,
             banner_background_enabled = self.feed.banner.background_enabled,
             font = %self.feed.graphics.font,
             font_size = self.feed.graphics.font_size,
@@ -659,7 +661,7 @@ fn video_filter(
     let font_color = hex_color(non_empty_ref(&feed.text.color).unwrap_or("#ffffff"));
     let fullscreen = feed.banner.mode.eq_ignore_ascii_case("fullscreen");
     let box_x = if fullscreen { 0 } else { feed.banner.x };
-    let box_y = if fullscreen { 0 } else { feed.banner.y };
+    let box_y = if fullscreen { 0 } else { ticker_y(feed) };
     let box_w = if fullscreen {
         "iw".to_string()
     } else {
@@ -683,7 +685,7 @@ fn video_filter(
     } else if feed.banner.mode.eq_ignore_ascii_case("ticker")
         || feed.banner.mode.eq_ignore_ascii_case("auto")
     {
-        "w-mod(t*120\\,w+tw)".to_string()
+        format!("w+1-mod(t*{}\\,w+tw+2)", ticker_pixels_per_second(feed))
     } else {
         (box_x + 48).to_string()
     };
@@ -713,7 +715,7 @@ fn video_textfile_filter(feed: &FeedConfig, text_path: &Path) -> String {
         non_empty_ref(&feed.banner.font).or_else(|| non_empty_ref(&feed.graphics.font)),
     );
     let font_color = hex_color(non_empty_ref(&feed.text.color).unwrap_or("#ffffff"));
-    let box_y = feed.banner.y;
+    let box_y = ticker_y(feed);
     let box_h = feed
         .banner
         .ticker_height
@@ -721,10 +723,11 @@ fn video_textfile_filter(feed: &FeedConfig, text_path: &Path) -> String {
         .to_string();
     let text_y = format!("{box_y}+({box_h}-text_h)/2");
     format!(
-        "[0:v]scale={}:{}:flags=bicubic,drawtext={font_option}:textfile='{}':reload=1:x=w-mod(t*120\\,w+tw):y={text_y}:fontsize={font_size}:fontcolor={font_color}:box=1:boxcolor={color}@0.92:boxborderw=24,{}[v]",
+        "[0:v]scale={}:{}:flags=bicubic,drawtext={font_option}:textfile='{}':reload=1:x=w+1-mod(t*{}\\,w+tw+2):y={text_y}:fontsize={font_size}:fontcolor={font_color}:box=1:boxcolor={color}@0.92:boxborderw=24,{}[v]",
         feed.video.width,
         feed.video.height,
         escape_font_path(&text_path.display().to_string()),
+        ticker_pixels_per_second(feed),
         video_output_filter_suffix(feed)
     )
 }
@@ -848,8 +851,20 @@ fn current_overlay_text(feed: &FeedConfig, state: &RuntimeState) -> String {
 fn estimate_scroll_linger(feed: &FeedConfig, text: &str) -> Duration {
     let width = feed.video.width.max(720) as f64;
     let text_width = text.chars().count() as f64 * feed.banner.font_size.max(16) as f64 * 0.58;
-    let seconds = ((width + text_width) / 120.0 + 2.0).clamp(8.0, 90.0);
+    let seconds =
+        ((width + text_width) / ticker_pixels_per_second(feed) as f64 + 2.0).clamp(8.0, 90.0);
     Duration::from_secs_f64(seconds)
+}
+
+fn ticker_pixels_per_second(feed: &FeedConfig) -> u32 {
+    feed.banner.scroll_speed.max(1).saturating_mul(30)
+}
+
+fn ticker_y(feed: &FeedConfig) -> i32 {
+    if feed.banner.y != 0 {
+        return feed.banner.y;
+    }
+    ((feed.video.height.max(1) as f32) * 0.05).round() as i32
 }
 
 fn spawn_priority_audio_streamer(

@@ -110,12 +110,16 @@ pub(crate) struct BannerConfig {
     pub(crate) font: String,
     #[serde(rename = "@font_size", default = "default_font_size")]
     pub(crate) font_size: u32,
+    #[serde(rename = "@scroll_speed", default = "default_scroll_speed")]
+    pub(crate) scroll_speed: u32,
     #[serde(rename = "@x", default)]
     pub(crate) x: i32,
     #[serde(rename = "@y", default)]
     pub(crate) y: i32,
     #[serde(rename = "@background_color", default)]
     pub(crate) background_color: String,
+    #[serde(rename = "@background_gradient_color", default)]
+    pub(crate) background_gradient_color: String,
     #[serde(rename = "@background_enabled", default = "default_true")]
     pub(crate) background_enabled: bool,
 }
@@ -303,6 +307,10 @@ fn default_font_size() -> u32 {
     26
 }
 
+fn default_scroll_speed() -> u32 {
+    4
+}
+
 fn default_text_x() -> i32 {
     48
 }
@@ -373,7 +381,7 @@ mod tests {
     <alertOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="libx264" acodec="aac"/>
     <video width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc"/>
     <audio idle="source" alert_mode="replace" duck_db="-18"/>
-    <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded" font_size="26" background_enabled="true"/>
+    <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded" font_size="26" scroll_speed="5" background_gradient_color="#7f1d1d" background_enabled="true"/>
     <graphics background_color="#000000" font="Zalando Sans SemiExpanded" font_size="26"/>
     <clock enabled="true" x="48" y="48"/>
     <text enabled="true" x="48" y="96">Hello</text>
@@ -394,6 +402,8 @@ mod tests {
         assert!(feeds[0].video.interlaced);
         assert_eq!(feeds[0].video.field_order, "tff");
         assert_eq!(feeds[0].video.standard, "atsc");
+        assert_eq!(feeds[0].banner.scroll_speed, 5);
+        assert_eq!(feeds[0].banner.background_gradient_color, "#7f1d1d");
         assert!(feeds[0].clock.enabled);
         assert!(feeds[0].state.smpte_bars);
     }
@@ -455,9 +465,11 @@ impl Default for BannerConfig {
             ticker_height: default_ticker_height(),
             font: String::new(),
             font_size: default_font_size(),
+            scroll_speed: default_scroll_speed(),
             x: 0,
             y: 0,
             background_color: String::new(),
+            background_gradient_color: String::new(),
             background_enabled: true,
         }
     }

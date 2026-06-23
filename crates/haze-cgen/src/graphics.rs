@@ -1,11 +1,16 @@
 #[cfg(feature = "gpu-wgpu")]
 use std::borrow::Cow;
 #[cfg(feature = "gpu-wgpu")]
-use std::sync::mpsc;
+use std::{collections::HashMap, sync::mpsc, sync::Arc};
 
 use serde_json::Value;
 use tokio::sync::watch;
 
+#[cfg(feature = "gpu-wgpu")]
+use fontdue::{
+    layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
+    Font, FontSettings,
+};
 #[cfg(feature = "ffmpeg-rsmpeg")]
 use rsmpeg::{avutil::AVFrame, ffi};
 #[cfg(feature = "gpu-wgpu")]
@@ -13,8 +18,6 @@ use wgpu::util::DeviceExt;
 
 use crate::config::FeedConfig;
 use crate::state::{BannerPayload, PriorityAudio, RuntimeState, SerializedAlert};
-
-const TICKER_PIXELS_PER_FRAME_30: i32 = 4;
 
 pub(crate) struct NativeGraphicsRenderer {
     feed: FeedConfig,
@@ -97,7 +100,7 @@ impl NativeGraphicsRenderer {
             .unwrap_or("#b45309");
         let (y, u, v) = yuv_from_hex(color);
         let x = self.feed.banner.x.max(0);
-        let box_y = self.feed.banner.y.max(0);
+        let box_y = ticker_y(&self.feed, frame.height).max(0);
         let w = if self.feed.graphics.banner_width == 0 {
             frame.width
         } else {
@@ -110,18 +113,28 @@ impl NativeGraphicsRenderer {
             .ticker_height
             .max(self.feed.graphics.banner_height)
             .max(48) as i32;
-        let font_size = self.feed.banner.font_size.max(16) as i32;
-        let scale = (font_size / 8).max(2);
-        let text_width = text_width_px(&text, scale);
-        let travel = frame.width.saturating_add(text_width).max(1);
-        let scroll = ((frame_index as i32).saturating_mul(TICKER_PIXELS_PER_FRAME_30)) % travel;
-        let text_x = frame.width.saturating_sub(scroll);
+        let font_size = self.feed.banner.font_size.max(16);
+        let font_family = ticker_font_family(&self.feed).to_string();
+        let scale = ((font_size as i32) / 8).max(2);
+        let mut text_width = text_width_px(&text, scale);
+        #[cfg(feature = "gpu-wgpu")]
+        if let Some(gpu) = self.gpu.as_mut() {
+            if let Some(width) = gpu.measure_text_width(&font_family, font_size, &text) {
+                text_width = width;
+            }
+        }
+        let text_x = ticker_text_x(
+            frame.width,
+            text_width,
+            frame_index,
+            self.feed.banner.scroll_speed,
+        );
         let text_y = box_y + ((h - glyph_height_px(scale)) / 2).max(0);
+        let gradient = ticker_gradient(&self.feed, banner, audio, color);
 
         #[cfg(feature = "gpu-wgpu")]
         if let Some(gpu) = self.gpu.as_mut() {
             let text_rgb = rgb_from_hex(non_empty_ref(&self.feed.text.color).unwrap_or("#ffffff"));
-            let bg_rgb = rgb_from_hex(color);
             let target_x = x.clamp(0, frame.width);
             let target_y = box_y.clamp(0, frame.height);
             let target_w = w.min(frame.width.saturating_sub(target_x)).max(1);
@@ -132,9 +145,10 @@ impl NativeGraphicsRenderer {
                     target_h as u32,
                     &text,
                     text_x.saturating_sub(target_x),
-                    text_y.saturating_sub(target_y),
+                    &font_family,
+                    font_size,
                     scale,
-                    self.feed.banner.background_enabled.then_some(bg_rgb),
+                    self.feed.banner.background_enabled.then_some(gradient),
                     text_rgb,
                 );
                 if let Ok(overlay) = overlay {
@@ -152,7 +166,7 @@ impl NativeGraphicsRenderer {
         }
 
         if self.feed.banner.background_enabled {
-            fill_rect_yuv(frame, x, box_y, w, h, y, u, v);
+            fill_rect_yuv_gradient(frame, x, box_y, w, h, gradient, (y, u, v));
         }
         draw_text_yuv(frame, &text, text_x, text_y, scale, 235, 128, 128);
     }
@@ -186,6 +200,7 @@ struct WgpuGraphicsContext {
     white_view: wgpu::TextureView,
     target: Option<WgpuTarget>,
     text_cache: Option<WgpuTextCache>,
+    fonts: SystemFontCache,
 }
 
 #[cfg(feature = "gpu-wgpu")]
@@ -312,7 +327,14 @@ impl WgpuGraphicsContext {
             white_view,
             target: None,
             text_cache: None,
+            fonts: SystemFontCache::new(),
         })
+    }
+
+    fn measure_text_width(&mut self, family: &str, font_size: u32, text: &str) -> Option<i32> {
+        let font = self.fonts.resolve(family)?;
+        let metrics = layout_text(&font, font_size, text)?;
+        Some(metrics.width.max(1) as i32)
     }
 
     fn render_ticker(
@@ -321,36 +343,52 @@ impl WgpuGraphicsContext {
         height: u32,
         text: &str,
         text_x: i32,
-        text_y: i32,
+        font_family: &str,
+        font_size: u32,
         scale: i32,
-        background: Option<[f32; 3]>,
+        background: Option<TickerGradient>,
         text_rgb: [f32; 3],
     ) -> anyhow::Result<RgbaOverlay> {
         self.ensure_target(width, height);
-        self.ensure_text_texture(text, scale)?;
+        self.ensure_text_texture(text, font_family, font_size, scale)?;
         let target = self.target.as_ref().expect("target was just ensured");
         let text_cache = self
             .text_cache
             .as_ref()
             .expect("text texture was just ensured");
 
-        let white_bg = self.bind_group(&self.white_view);
         let text_bg = self.bind_group(&text_cache.view);
-        let mut draw_items = Vec::with_capacity(2);
-        if let Some(rgb) = background {
+        let mut draw_items = Vec::with_capacity(3);
+        if let Some(gradient) = background {
+            let mid_y = (height as f32 / 2.0).max(1.0);
             draw_items.push((
-                self.vertex_buffer(quad_vertices_px(
+                self.vertex_buffer(quad_vertices_px_gradient(
                     0.0,
                     0.0,
                     width as f32,
-                    height as f32,
+                    mid_y,
                     width as f32,
                     height as f32,
-                    [rgb[0], rgb[1], rgb[2], 0.92],
+                    rgba(gradient.top, 0.92),
+                    rgba(gradient.middle, 0.92),
                 )),
-                white_bg,
+                self.bind_group(&self.white_view),
+            ));
+            draw_items.push((
+                self.vertex_buffer(quad_vertices_px_gradient(
+                    0.0,
+                    mid_y,
+                    width as f32,
+                    (height as f32 - mid_y).max(1.0),
+                    width as f32,
+                    height as f32,
+                    rgba(gradient.middle, 0.92),
+                    rgba(gradient.bottom, 0.92),
+                )),
+                self.bind_group(&self.white_view),
             ));
         }
+        let text_y = ((height as i32 - text_cache.height as i32) / 2).max(0);
         draw_items.push((
             self.vertex_buffer(quad_vertices_px(
                 text_x as f32,
@@ -477,15 +515,30 @@ impl WgpuGraphicsContext {
         });
     }
 
-    fn ensure_text_texture(&mut self, text: &str, scale: i32) -> anyhow::Result<()> {
+    fn ensure_text_texture(
+        &mut self,
+        text: &str,
+        font_family: &str,
+        font_size: u32,
+        scale: i32,
+    ) -> anyhow::Result<()> {
         let scale = scale.max(1);
         let needs_new = self.text_cache.as_ref().is_none_or(|cache| {
-            cache.text != text || cache.scale != scale || cache.width == 0 || cache.height == 0
+            cache.text != text
+                || cache.font_family != font_family
+                || cache.font_size != font_size
+                || cache.scale != scale
+                || cache.width == 0
+                || cache.height == 0
         });
         if !needs_new {
             return Ok(());
         }
-        let (width, height, pixels) = raster_text_rgba(text, scale);
+        let (width, height, pixels) = self
+            .fonts
+            .resolve(font_family)
+            .and_then(|font| raster_text_rgba_system(&font, text, font_size))
+            .unwrap_or_else(|| raster_text_rgba_bitmap(text, scale));
         if width == 0 || height == 0 {
             anyhow::bail!("cannot render empty cgen ticker text texture");
         }
@@ -524,6 +577,8 @@ impl WgpuGraphicsContext {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.text_cache = Some(WgpuTextCache {
             text: text.to_string(),
+            font_family: font_family.to_string(),
+            font_size,
             scale,
             width,
             height,
@@ -573,11 +628,73 @@ struct WgpuTarget {
 #[cfg(feature = "gpu-wgpu")]
 struct WgpuTextCache {
     text: String,
+    font_family: String,
+    font_size: u32,
     scale: i32,
     width: u32,
     height: u32,
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
+}
+
+#[cfg(feature = "gpu-wgpu")]
+struct SystemFontCache {
+    db: fontdb::Database,
+    fonts: HashMap<String, Option<Arc<Font>>>,
+}
+
+#[cfg(feature = "gpu-wgpu")]
+impl SystemFontCache {
+    fn new() -> Self {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        Self {
+            db,
+            fonts: HashMap::new(),
+        }
+    }
+
+    fn resolve(&mut self, family: &str) -> Option<Arc<Font>> {
+        let key = family.trim().to_ascii_lowercase();
+        if let Some(font) = self.fonts.get(&key) {
+            return font.clone();
+        }
+        let font = self.load_font(family);
+        self.fonts.insert(key, font.clone());
+        font
+    }
+
+    fn load_font(&self, family: &str) -> Option<Arc<Font>> {
+        let family = family.trim();
+        let id = if family.is_empty() {
+            None
+        } else {
+            self.db.query(&fontdb::Query {
+                families: &[fontdb::Family::Name(family)],
+                ..fontdb::Query::default()
+            })
+        }
+        .or_else(|| {
+            self.db.query(&fontdb::Query {
+                families: &[fontdb::Family::SansSerif],
+                ..fontdb::Query::default()
+            })
+        })?;
+        self.db
+            .with_face_data(id, |data, face_index| {
+                Font::from_bytes(
+                    data.to_vec(),
+                    FontSettings {
+                        collection_index: face_index,
+                        scale: 40.0,
+                        load_substitutions: true,
+                    },
+                )
+                .ok()
+            })
+            .flatten()
+            .map(Arc::new)
+    }
 }
 
 #[cfg(feature = "gpu-wgpu")]
@@ -713,6 +830,60 @@ fn quad_vertices_px(
 }
 
 #[cfg(feature = "gpu-wgpu")]
+fn quad_vertices_px_gradient(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    surface_width: f32,
+    surface_height: f32,
+    top_color: [f32; 4],
+    bottom_color: [f32; 4],
+) -> [GpuVertex; 6] {
+    let x0 = px_to_ndc_x(x, surface_width);
+    let x1 = px_to_ndc_x(x + width, surface_width);
+    let y0 = px_to_ndc_y(y, surface_height);
+    let y1 = px_to_ndc_y(y + height, surface_height);
+    [
+        GpuVertex {
+            position: [x0, y0],
+            uv: [0.0, 0.0],
+            color: top_color,
+        },
+        GpuVertex {
+            position: [x1, y0],
+            uv: [1.0, 0.0],
+            color: top_color,
+        },
+        GpuVertex {
+            position: [x1, y1],
+            uv: [1.0, 1.0],
+            color: bottom_color,
+        },
+        GpuVertex {
+            position: [x0, y0],
+            uv: [0.0, 0.0],
+            color: top_color,
+        },
+        GpuVertex {
+            position: [x1, y1],
+            uv: [1.0, 1.0],
+            color: bottom_color,
+        },
+        GpuVertex {
+            position: [x0, y1],
+            uv: [0.0, 1.0],
+            color: bottom_color,
+        },
+    ]
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn rgba(rgb: [f32; 3], alpha: f32) -> [f32; 4] {
+    [rgb[0], rgb[1], rgb[2], alpha]
+}
+
+#[cfg(feature = "gpu-wgpu")]
 fn px_to_ndc_x(value: f32, width: f32) -> f32 {
     (value / width.max(1.0)) * 2.0 - 1.0
 }
@@ -723,7 +894,93 @@ fn px_to_ndc_y(value: f32, height: f32) -> f32 {
 }
 
 #[cfg(feature = "gpu-wgpu")]
-fn raster_text_rgba(text: &str, scale: i32) -> (u32, u32, Vec<u8>) {
+struct TextLayoutMetrics {
+    width: u32,
+    height: u32,
+    offset_x: f32,
+    offset_y: f32,
+    glyphs: Vec<fontdue::layout::GlyphPosition>,
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn layout_text(font: &Font, font_size: u32, text: &str) -> Option<TextLayoutMetrics> {
+    let px = font_size.max(8) as f32;
+    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+    layout.reset(&LayoutSettings {
+        x: 0.0,
+        y: 0.0,
+        ..LayoutSettings::default()
+    });
+    layout.append(&[font], &TextStyle::new(text, px, 0));
+    let glyphs = layout.glyphs();
+    if glyphs.is_empty() {
+        return None;
+    }
+    let min_x = glyphs
+        .iter()
+        .map(|glyph| glyph.x)
+        .fold(f32::INFINITY, f32::min);
+    let min_y = glyphs
+        .iter()
+        .map(|glyph| glyph.y)
+        .fold(f32::INFINITY, f32::min);
+    let max_x = glyphs
+        .iter()
+        .map(|glyph| glyph.x + glyph.width as f32)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let max_y = glyphs
+        .iter()
+        .map(|glyph| glyph.y + glyph.height as f32)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let width = (max_x - min_x).ceil().max(1.0) as u32;
+    let height = (max_y - min_y).ceil().max(1.0) as u32;
+    Some(TextLayoutMetrics {
+        width,
+        height,
+        offset_x: min_x,
+        offset_y: min_y,
+        glyphs: glyphs.clone(),
+    })
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn raster_text_rgba_system(font: &Font, text: &str, font_size: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let layout = layout_text(font, font_size, text)?;
+    let mut pixels = vec![0; layout.width as usize * layout.height as usize * 4];
+    for glyph in &layout.glyphs {
+        let (_metrics, bitmap) = font.rasterize_config(glyph.key);
+        let base_x = (glyph.x - layout.offset_x).round() as i32;
+        let base_y = (glyph.y - layout.offset_y).round() as i32;
+        for gy in 0..glyph.height as i32 {
+            let y = base_y + gy;
+            if y < 0 || y >= layout.height as i32 {
+                continue;
+            }
+            for gx in 0..glyph.width as i32 {
+                let x = base_x + gx;
+                if x < 0 || x >= layout.width as i32 {
+                    continue;
+                }
+                let alpha = bitmap
+                    .get((gy as usize * glyph.width) + gx as usize)
+                    .copied()
+                    .unwrap_or_default();
+                if alpha == 0 {
+                    continue;
+                }
+                let offset = ((y as u32 * layout.width + x as u32) * 4) as usize;
+                pixels[offset] = 255;
+                pixels[offset + 1] = 255;
+                pixels[offset + 2] = 255;
+                pixels[offset + 3] = alpha;
+            }
+        }
+    }
+    Some((layout.width, layout.height, pixels))
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn raster_text_rgba_bitmap(text: &str, scale: i32) -> (u32, u32, Vec<u8>) {
     let scale = scale.max(1);
     let width = text_width_px(text, scale).max(1) as u32;
     let height = glyph_height_px(scale).max(1) as u32;
@@ -818,6 +1075,107 @@ fn push_text_part(parts: &mut Vec<String>, text: &str) {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TickerGradient {
+    top: [f32; 3],
+    middle: [f32; 3],
+    bottom: [f32; 3],
+}
+
+fn ticker_font_family(feed: &FeedConfig) -> &str {
+    non_empty_ref(&feed.banner.font)
+        .or_else(|| non_empty_ref(&feed.graphics.font))
+        .unwrap_or("Arial")
+}
+
+fn ticker_y(feed: &FeedConfig, frame_height: i32) -> i32 {
+    if feed.banner.y != 0 {
+        return feed.banner.y;
+    }
+    ((frame_height.max(1) as f32) * 0.05).round() as i32
+}
+
+fn ticker_text_x(frame_width: i32, text_width: i32, frame_index: u64, scroll_speed: u32) -> i32 {
+    let start_x = frame_width.saturating_add(1).max(1);
+    let text_width = text_width.max(1);
+    let travel = start_x.saturating_add(text_width).saturating_add(1).max(1);
+    let speed = scroll_speed.max(1) as i64;
+    let scroll = ((frame_index as i64).saturating_mul(speed) % i64::from(travel)) as i32;
+    start_x.saturating_sub(scroll)
+}
+
+fn ticker_gradient(
+    feed: &FeedConfig,
+    banner: Option<&BannerPayload>,
+    audio: Option<&PriorityAudio>,
+    base_color: &str,
+) -> TickerGradient {
+    if let Some(color) = audio
+        .and_then(|audio| audio.background_color.as_deref())
+        .and_then(non_empty_ref)
+    {
+        let rgb = rgb_from_hex_loose(color);
+        return TickerGradient {
+            top: rgb,
+            middle: rgb,
+            bottom: rgb,
+        };
+    }
+    if let Some(colors) = banner_gradient_colors(banner) {
+        return colors;
+    }
+    let middle = rgb_from_hex_loose(base_color);
+    let edge = non_empty_ref(&feed.banner.background_gradient_color)
+        .map(rgb_from_hex_loose)
+        .unwrap_or_else(|| darken_rgb(middle, 0.62));
+    TickerGradient {
+        top: edge,
+        middle,
+        bottom: edge,
+    }
+}
+
+fn banner_gradient_colors(banner: Option<&BannerPayload>) -> Option<TickerGradient> {
+    let stops = &banner?.primary_gradient;
+    let colors = stops
+        .iter()
+        .filter_map(|stop| non_empty_ref(stop))
+        .map(rgb_from_hex_loose)
+        .collect::<Vec<_>>();
+    match colors.as_slice() {
+        [] => None,
+        [only] => Some(TickerGradient {
+            top: *only,
+            middle: *only,
+            bottom: *only,
+        }),
+        [first, .., last] => Some(TickerGradient {
+            top: *last,
+            middle: *first,
+            bottom: *last,
+        }),
+    }
+}
+
+fn rgb_from_hex_loose(value: &str) -> [f32; 3] {
+    let value = value.trim().trim_start_matches('#');
+    if value.len() != 6 {
+        return [0.5, 0.5, 0.5];
+    }
+    let r = u8::from_str_radix(&value[0..2], 16).unwrap_or(128) as f32 / 255.0;
+    let g = u8::from_str_radix(&value[2..4], 16).unwrap_or(128) as f32 / 255.0;
+    let b = u8::from_str_radix(&value[4..6], 16).unwrap_or(128) as f32 / 255.0;
+    [r, g, b]
+}
+
+fn darken_rgb(rgb: [f32; 3], amount: f32) -> [f32; 3] {
+    [
+        (rgb[0] * amount).clamp(0.0, 1.0),
+        (rgb[1] * amount).clamp(0.0, 1.0),
+        (rgb[2] * amount).clamp(0.0, 1.0),
+    ]
+}
+
 fn non_empty_ref(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
@@ -895,6 +1253,58 @@ fn fill_rect_yuv(frame: &mut AVFrame, x: i32, y: i32, w: i32, h: i32, yy: u8, u:
         }
         _ => {}
     }
+}
+
+#[cfg(feature = "ffmpeg-rsmpeg")]
+fn fill_rect_yuv_gradient(
+    frame: &mut AVFrame,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    gradient: TickerGradient,
+    fallback_yuv: (u8, u8, u8),
+) {
+    let x0 = x.clamp(0, frame.width);
+    let y0 = y.clamp(0, frame.height);
+    let x1 = x.saturating_add(w).clamp(0, frame.width);
+    let y1 = y.saturating_add(h).clamp(0, frame.height);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let height = (y1 - y0).max(1);
+    for row in 0..height {
+        let t = if height <= 1 {
+            0.0
+        } else {
+            row as f32 / (height - 1) as f32
+        };
+        let rgb = if t <= 0.5 {
+            lerp_rgb(gradient.top, gradient.middle, t * 2.0)
+        } else {
+            lerp_rgb(gradient.middle, gradient.bottom, (t - 0.5) * 2.0)
+        };
+        let (yy, u, v) = yuv_from_rgb_units(rgb).unwrap_or(fallback_yuv);
+        fill_rect_yuv(frame, x0, y0 + row, x1 - x0, 1, yy, u, v);
+    }
+}
+
+#[cfg(feature = "ffmpeg-rsmpeg")]
+fn lerp_rgb(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+#[cfg(feature = "ffmpeg-rsmpeg")]
+fn yuv_from_rgb_units(rgb: [f32; 3]) -> Option<(u8, u8, u8)> {
+    let r = (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+    let g = (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+    let b = (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+    Some(yuv_from_rgb(r, g, b))
 }
 
 #[cfg(feature = "ffmpeg-rsmpeg")]
@@ -1148,7 +1558,7 @@ fn rgb_from_hex(value: &str) -> [f32; 3] {
     [r, g, b]
 }
 
-#[cfg(all(feature = "ffmpeg-rsmpeg", feature = "gpu-wgpu"))]
+#[cfg(feature = "ffmpeg-rsmpeg")]
 fn yuv_from_rgb(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     let r = f32::from(r);
     let g = f32::from(g);
@@ -1276,12 +1686,40 @@ mod tests {
 
     #[cfg(feature = "gpu-wgpu")]
     #[test]
-    fn raster_text_rgba_emits_alpha_glyphs() {
-        let (width, height, pixels) = raster_text_rgba("A", 2);
+    fn raster_text_rgba_bitmap_emits_alpha_glyphs() {
+        let (width, height, pixels) = raster_text_rgba_bitmap("A", 2);
         assert_eq!(height, 14);
         assert!(width >= 12);
         assert_eq!(pixels.len(), width as usize * height as usize * 4);
         assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 255));
+    }
+
+    #[test]
+    fn ticker_scroll_starts_off_right_and_exits_left() {
+        assert_eq!(ticker_text_x(1920, 320, 0, 4), 1921);
+        let exit_frame = (1921 + 320) / 4;
+        assert!(ticker_text_x(1920, 320, exit_frame as u64, 4) <= -319);
+    }
+
+    #[test]
+    fn default_ticker_y_is_five_percent_down() {
+        let mut feed = test_feed();
+        feed.banner.y = 0;
+        assert_eq!(ticker_y(&feed, 1080), 54);
+        feed.banner.y = 32;
+        assert_eq!(ticker_y(&feed, 1080), 32);
+    }
+
+    #[test]
+    fn html_banner_gradient_order_is_preserved() {
+        let banner = BannerPayload {
+            primary_gradient: vec!["#ff0000".to_string(), "#220000".to_string()],
+            ..Default::default()
+        };
+        let gradient = banner_gradient_colors(Some(&banner)).expect("gradient");
+        assert_eq!(gradient.top, rgb_from_hex_loose("#220000"));
+        assert_eq!(gradient.middle, rgb_from_hex_loose("#ff0000"));
+        assert_eq!(gradient.bottom, rgb_from_hex_loose("#220000"));
     }
 
     #[cfg(feature = "gpu-wgpu")]

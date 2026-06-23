@@ -17,26 +17,29 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 		"enabled": true,
 		"feeds": []any{
 			map[string]any{
-				"id":                        "CAP-IT-ALL",
-				"name":                      "CAP CGEN",
-				"enabled":                   true,
-				"mode":                      "release",
-				"program_input_url":         "udp://239.0.0.1:9000?overrun_nonfatal=1&reuse=1",
-				"program_input_format":      "mpegts",
-				"priority_feed_id":          "CAP-IT-ALL",
-				"program_output_url":        "udp://239.0.0.2:9001?pkt_size=1316",
-				"program_output_format":     "mpegts",
-				"alert_output_url":          "udp://239.0.0.2:9001?pkt_size=1316",
-				"alert_output_format":       "mpegts",
-				"vcodec":                    "libx264",
-				"acodec":                    "aac",
-				"width":                     "1280",
-				"height":                    "720",
-				"fps":                       "source",
-				"interlaced":                true,
-				"field_order":               "bff",
-				"standard":                  "atsc",
-				"banner_background_enabled": true,
+				"id":                               "CAP-IT-ALL",
+				"name":                             "CAP CGEN",
+				"enabled":                          true,
+				"mode":                             "release",
+				"program_input_url":                "udp://239.0.0.1:9000?overrun_nonfatal=1&reuse=1",
+				"program_input_format":             "mpegts",
+				"priority_feed_id":                 "CAP-IT-ALL",
+				"program_output_url":               "udp://239.0.0.2:9001?pkt_size=1316",
+				"program_output_format":            "mpegts",
+				"alert_output_url":                 "udp://239.0.0.2:9001?pkt_size=1316",
+				"alert_output_format":              "mpegts",
+				"vcodec":                           "libx264",
+				"acodec":                           "aac",
+				"width":                            "1280",
+				"height":                           "720",
+				"fps":                              "source",
+				"interlaced":                       true,
+				"field_order":                      "bff",
+				"standard":                         "atsc",
+				"banner_background_enabled":        true,
+				"banner_background_color":          "#b45309",
+				"banner_background_gradient_color": "#7f1d1d",
+				"scroll_speed":                     "6",
 			},
 		},
 	})
@@ -52,6 +55,9 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 	}
 	if feeds[0]["interlaced"] != true || feeds[0]["field_order"] != "bff" || feeds[0]["standard"] != "atsc" {
 		t.Fatalf("video flags = %#v", feeds[0])
+	}
+	if feeds[0]["scroll_speed"] != "6" || feeds[0]["banner_background_gradient_color"] != "#7f1d1d" {
+		t.Fatalf("banner controls = %#v", feeds[0])
 	}
 
 	acted, err := cgenActionPayload(configPath, map[string]any{

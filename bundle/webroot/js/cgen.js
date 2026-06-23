@@ -45,8 +45,10 @@ const fields = {
     bannerWidth: document.getElementById('cgenBannerWidth'),
     bannerHeight: document.getElementById('cgenBannerHeight'),
     bannerColor: document.getElementById('cgenBannerColor'),
+    bannerGradientColor: document.getElementById('cgenBannerGradientColor'),
     bannerMode: document.getElementById('cgenBannerMode'),
     bannerBackgroundEnabled: document.getElementById('cgenBannerBackgroundEnabled'),
+    scrollSpeed: document.getElementById('cgenScrollSpeed'),
     text: document.getElementById('cgenText'),
     textEnabled: document.getElementById('cgenTextEnabled'),
     textFontSize: document.getElementById('cgenTextFontSize'),
@@ -129,8 +131,10 @@ function readEditor() {
         ticker_height: value('bannerHeight', '96'),
         font: value('font', 'Zalando Sans SemiExpanded'),
         font_size: value('fontSize', '26'),
+        scroll_speed: value('scrollSpeed', '4'),
         background_color: value('backgroundColor', '#000000'),
         banner_background_color: value('bannerColor', '#b45309'),
+        banner_background_gradient_color: value('bannerGradientColor', '#7f1d1d'),
         banner_background_enabled: value('bannerBackgroundEnabled'),
         banner_x: value('bannerX', '0'),
         banner_y: value('bannerY', '0'),
@@ -177,6 +181,7 @@ function writeEditor(feed) {
     setValue('backgroundColor', feed.background_color || '#000000');
     setValue('font', feed.font || 'Zalando Sans SemiExpanded');
     setValue('fontSize', feed.font_size || '26');
+    setValue('scrollSpeed', feed.scroll_speed || '4');
     setValue('textX', feed.text_x || '48');
     setValue('textY', feed.text_y || '96');
     setValue('textColor', feed.text_color || '#ffffff');
@@ -185,6 +190,7 @@ function writeEditor(feed) {
     setValue('bannerWidth', feed.banner_width || feed.width || '1920');
     setValue('bannerHeight', feed.banner_height || feed.ticker_height || '96');
     setValue('bannerColor', feed.banner_background_color || '#b45309');
+    setValue('bannerGradientColor', feed.banner_background_gradient_color || '#7f1d1d');
     setValue('bannerMode', feed.banner_mode || 'auto');
     setValue('bannerBackgroundEnabled', feed.banner_background_enabled !== false);
     setValue('text', feed.text || '');
@@ -266,8 +272,16 @@ function renderPreview() {
     const sx = width / Number(feed.width || 1280);
     const sy = height / Number(feed.height || 720);
     if (feed.banner_background_enabled) {
-        ctx.fillStyle = feed.banner_background_color || '#b45309';
-        ctx.fillRect(Number(feed.banner_x || 0) * sx, Number(feed.banner_y || 0) * sy, Number(feed.banner_width || feed.width || 1280) * sx, Number(feed.banner_height || 96) * sy);
+        const bx = Number(feed.banner_x || 0) * sx;
+        const by = Number(feed.banner_y || 0) * sy;
+        const bw = Number(feed.banner_width || feed.width || 1280) * sx;
+        const bh = Number(feed.banner_height || 96) * sy;
+        const gradient = ctx.createLinearGradient(0, by, 0, by + bh);
+        gradient.addColorStop(0, feed.banner_background_gradient_color || '#7f1d1d');
+        gradient.addColorStop(0.5, feed.banner_background_color || '#b45309');
+        gradient.addColorStop(1, feed.banner_background_gradient_color || '#7f1d1d');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(bx, by, bw, bh);
     }
     ctx.fillStyle = feed.text_color || '#ffffff';
     ctx.font = `${Math.max(8, Number(feed.text_font_size || feed.font_size || 32) * sy)}px sans-serif`;
@@ -340,8 +354,10 @@ function defaultFeed() {
         standard: 'atsc',
         background_color: '#000000',
         banner_background_color: '#b45309',
+        banner_background_gradient_color: '#7f1d1d',
         banner_mode: 'auto',
         banner_background_enabled: true,
+        scroll_speed: '4',
         banner_x: '0',
         banner_y: '0',
         banner_width: '1920',
@@ -406,7 +422,7 @@ export function initCgenView() {
     document.getElementById('cgenClockButton')?.addEventListener('click', () => runAction('clock', { enabled: !fields.clockEnabled.checked }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenInsertTextButton')?.addEventListener('click', () => runAction('insert_text', { text: fields.text.value }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenClearTextButton')?.addEventListener('click', () => runAction('clear_text').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
-    document.getElementById('cgenInsertBannerButton')?.addEventListener('click', () => runAction('insert_banner_background', { color: fields.bannerColor.value }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
+    document.getElementById('cgenInsertBannerButton')?.addEventListener('click', () => runAction('insert_banner_background', { color: fields.bannerColor.value, gradient_color: fields.bannerGradientColor.value }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenClearBannerButton')?.addEventListener('click', () => runAction('clear_banner_background').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     window.setInterval(renderPreview, 1000);
     loadCgen().catch((error) => setStatus(error.message || 'Unable to load CGEN config.', 'err'));

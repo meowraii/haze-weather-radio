@@ -69,14 +69,16 @@ type cgenAudioXML struct {
 }
 
 type cgenBannerXML struct {
-	Mode              string `xml:"mode,attr,omitempty"`
-	TickerHeight      string `xml:"ticker_height,attr,omitempty"`
-	Font              string `xml:"font,attr,omitempty"`
-	FontSize          string `xml:"font_size,attr,omitempty"`
-	X                 string `xml:"x,attr,omitempty"`
-	Y                 string `xml:"y,attr,omitempty"`
-	BackgroundColor   string `xml:"background_color,attr,omitempty"`
-	BackgroundEnabled string `xml:"background_enabled,attr,omitempty"`
+	Mode                    string `xml:"mode,attr,omitempty"`
+	TickerHeight            string `xml:"ticker_height,attr,omitempty"`
+	Font                    string `xml:"font,attr,omitempty"`
+	FontSize                string `xml:"font_size,attr,omitempty"`
+	ScrollSpeed             string `xml:"scroll_speed,attr,omitempty"`
+	X                       string `xml:"x,attr,omitempty"`
+	Y                       string `xml:"y,attr,omitempty"`
+	BackgroundColor         string `xml:"background_color,attr,omitempty"`
+	BackgroundGradientColor string `xml:"background_gradient_color,attr,omitempty"`
+	BackgroundEnabled       string `xml:"background_enabled,attr,omitempty"`
 }
 
 type cgenGraphicsXML struct {
@@ -193,6 +195,9 @@ func cgenActionPayload(configPath string, payload map[string]any) (map[string]an
 		if color := strings.TrimSpace(stringValue(payload, "color")); color != "" {
 			feed.Banner.BackgroundColor = color
 		}
+		if color := strings.TrimSpace(stringValue(payload, "gradient_color")); color != "" {
+			feed.Banner.BackgroundGradientColor = color
+		}
 	case "clear_banner_background":
 		feed.Banner.BackgroundEnabled = "false"
 	default:
@@ -297,9 +302,11 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Banner.TickerHeight = cleanPositive(feed.Banner.TickerHeight, "96")
 		feed.Banner.Font = fallbackText(strings.TrimSpace(feed.Banner.Font), "Zalando Sans SemiExpanded")
 		feed.Banner.FontSize = cleanPositive(feed.Banner.FontSize, "26")
+		feed.Banner.ScrollSpeed = cleanPositive(feed.Banner.ScrollSpeed, "4")
 		feed.Banner.X = cleanNumber(feed.Banner.X, "0")
 		feed.Banner.Y = cleanNumber(feed.Banner.Y, "0")
 		feed.Banner.BackgroundColor = cleanColor(feed.Banner.BackgroundColor, "#b45309")
+		feed.Banner.BackgroundGradientColor = cleanColor(feed.Banner.BackgroundGradientColor, "#7f1d1d")
 		feed.Banner.BackgroundEnabled = boolText(xmlBool(feed.Banner.BackgroundEnabled, true))
 		feed.Graphics.BackgroundColor = cleanColor(feed.Graphics.BackgroundColor, "#000000")
 		feed.Graphics.Font = fallbackText(strings.TrimSpace(feed.Graphics.Font), feed.Banner.Font)
@@ -379,14 +386,16 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			DuckDB:    stringFromAny(source["duck_db"]),
 		},
 		Banner: cgenBannerXML{
-			Mode:              stringFromAny(source["banner_mode"]),
-			TickerHeight:      stringFromAny(source["ticker_height"]),
-			Font:              stringFromAny(source["font"]),
-			FontSize:          stringFromAny(source["font_size"]),
-			X:                 stringFromAny(source["banner_x"]),
-			Y:                 stringFromAny(source["banner_y"]),
-			BackgroundColor:   stringFromAny(source["banner_background_color"]),
-			BackgroundEnabled: boolText(boolFromAny(source["banner_background_enabled"], true)),
+			Mode:                    stringFromAny(source["banner_mode"]),
+			TickerHeight:            stringFromAny(source["ticker_height"]),
+			Font:                    stringFromAny(source["font"]),
+			FontSize:                stringFromAny(source["font_size"]),
+			ScrollSpeed:             stringFromAny(source["scroll_speed"]),
+			X:                       stringFromAny(source["banner_x"]),
+			Y:                       stringFromAny(source["banner_y"]),
+			BackgroundColor:         stringFromAny(source["banner_background_color"]),
+			BackgroundGradientColor: stringFromAny(source["banner_background_gradient_color"]),
+			BackgroundEnabled:       boolText(boolFromAny(source["banner_background_enabled"], true)),
 		},
 		Graphics: cgenGraphicsXML{
 			BackgroundColor: stringFromAny(source["background_color"]),
@@ -432,57 +441,59 @@ func cgenPayload(path string, config cgenXML) map[string]any {
 	rows := make([]map[string]any, 0, len(config.Feeds))
 	for _, feed := range config.Feeds {
 		rows = append(rows, map[string]any{
-			"id":                        feed.ID,
-			"name":                      feed.Name,
-			"enabled":                   xmlBool(feed.Enabled, false),
-			"mode":                      feed.State.Mode,
-			"smpte_bars":                xmlBool(feed.State.SMPTEBars, false),
-			"program_input_url":         feed.ProgramInput.URL,
-			"program_input_format":      feed.ProgramInput.Format,
-			"priority_feed_id":          feed.PriorityInput.FeedID,
-			"priority_input_url":        feed.PriorityInput.URL,
-			"priority_input_format":     feed.PriorityInput.Format,
-			"program_output_url":        feed.ProgramOutput.URL,
-			"program_output_format":     feed.ProgramOutput.Format,
-			"alert_output_url":          feed.AlertOutput.URL,
-			"alert_output_format":       feed.AlertOutput.Format,
-			"vcodec":                    feed.ProgramOutput.VCodec,
-			"acodec":                    feed.ProgramOutput.ACodec,
-			"video_bitrate_kbps":        feed.ProgramOutput.VideoBitrateKbps,
-			"audio_bitrate_kbps":        feed.ProgramOutput.AudioBitrateKbps,
-			"width":                     feed.Video.Width,
-			"height":                    feed.Video.Height,
-			"fps":                       feed.Video.FPS,
-			"interlaced":                xmlBool(feed.Video.Interlaced, false),
-			"field_order":               feed.Video.FieldOrder,
-			"standard":                  feed.Video.Standard,
-			"audio_idle":                feed.Audio.Idle,
-			"audio_alert_mode":          feed.Audio.AlertMode,
-			"duck_db":                   feed.Audio.DuckDB,
-			"banner_mode":               feed.Banner.Mode,
-			"ticker_height":             feed.Banner.TickerHeight,
-			"font":                      feed.Graphics.Font,
-			"font_size":                 feed.Graphics.FontSize,
-			"background_color":          feed.Graphics.BackgroundColor,
-			"banner_background_color":   feed.Banner.BackgroundColor,
-			"banner_background_enabled": xmlBool(feed.Banner.BackgroundEnabled, true),
-			"banner_x":                  feed.Graphics.BannerX,
-			"banner_y":                  feed.Graphics.BannerY,
-			"banner_width":              feed.Graphics.BannerWidth,
-			"banner_height":             feed.Graphics.BannerHeight,
-			"text_enabled":              xmlBool(feed.Text.Enabled, false),
-			"text":                      feed.Text.Content,
-			"text_x":                    feed.Text.X,
-			"text_y":                    feed.Text.Y,
-			"text_font_size":            feed.Text.FontSize,
-			"text_color":                feed.Text.Color,
-			"clock_enabled":             xmlBool(feed.Clock.Enabled, false),
-			"clock_format":              feed.Clock.Format,
-			"clock_x":                   feed.Clock.X,
-			"clock_y":                   feed.Clock.Y,
-			"clock_font_size":           feed.Clock.FontSize,
-			"clock_color":               feed.Clock.Color,
-			"updated_at":                fallbackText(feed.State.UpdatedAt, feed.UpdatedAt),
+			"id":                               feed.ID,
+			"name":                             feed.Name,
+			"enabled":                          xmlBool(feed.Enabled, false),
+			"mode":                             feed.State.Mode,
+			"smpte_bars":                       xmlBool(feed.State.SMPTEBars, false),
+			"program_input_url":                feed.ProgramInput.URL,
+			"program_input_format":             feed.ProgramInput.Format,
+			"priority_feed_id":                 feed.PriorityInput.FeedID,
+			"priority_input_url":               feed.PriorityInput.URL,
+			"priority_input_format":            feed.PriorityInput.Format,
+			"program_output_url":               feed.ProgramOutput.URL,
+			"program_output_format":            feed.ProgramOutput.Format,
+			"alert_output_url":                 feed.AlertOutput.URL,
+			"alert_output_format":              feed.AlertOutput.Format,
+			"vcodec":                           feed.ProgramOutput.VCodec,
+			"acodec":                           feed.ProgramOutput.ACodec,
+			"video_bitrate_kbps":               feed.ProgramOutput.VideoBitrateKbps,
+			"audio_bitrate_kbps":               feed.ProgramOutput.AudioBitrateKbps,
+			"width":                            feed.Video.Width,
+			"height":                           feed.Video.Height,
+			"fps":                              feed.Video.FPS,
+			"interlaced":                       xmlBool(feed.Video.Interlaced, false),
+			"field_order":                      feed.Video.FieldOrder,
+			"standard":                         feed.Video.Standard,
+			"audio_idle":                       feed.Audio.Idle,
+			"audio_alert_mode":                 feed.Audio.AlertMode,
+			"duck_db":                          feed.Audio.DuckDB,
+			"banner_mode":                      feed.Banner.Mode,
+			"ticker_height":                    feed.Banner.TickerHeight,
+			"scroll_speed":                     feed.Banner.ScrollSpeed,
+			"font":                             feed.Graphics.Font,
+			"font_size":                        feed.Graphics.FontSize,
+			"background_color":                 feed.Graphics.BackgroundColor,
+			"banner_background_color":          feed.Banner.BackgroundColor,
+			"banner_background_gradient_color": feed.Banner.BackgroundGradientColor,
+			"banner_background_enabled":        xmlBool(feed.Banner.BackgroundEnabled, true),
+			"banner_x":                         feed.Graphics.BannerX,
+			"banner_y":                         feed.Graphics.BannerY,
+			"banner_width":                     feed.Graphics.BannerWidth,
+			"banner_height":                    feed.Graphics.BannerHeight,
+			"text_enabled":                     xmlBool(feed.Text.Enabled, false),
+			"text":                             feed.Text.Content,
+			"text_x":                           feed.Text.X,
+			"text_y":                           feed.Text.Y,
+			"text_font_size":                   feed.Text.FontSize,
+			"text_color":                       feed.Text.Color,
+			"clock_enabled":                    xmlBool(feed.Clock.Enabled, false),
+			"clock_format":                     feed.Clock.Format,
+			"clock_x":                          feed.Clock.X,
+			"clock_y":                          feed.Clock.Y,
+			"clock_font_size":                  feed.Clock.FontSize,
+			"clock_color":                      feed.Clock.Color,
+			"updated_at":                       fallbackText(feed.State.UpdatedAt, feed.UpdatedAt),
 		})
 	}
 	return map[string]any{

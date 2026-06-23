@@ -11,7 +11,7 @@
     <alertOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="mpeg2video" acodec="ac3" video_bitrate_kbps="12000" audio_bitrate_kbps="192"></alertOutput>
     <video width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc"></video>
     <audio idle="source" alert_mode="replace" duck_db="-18"></audio>
-    <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded" font_size="26" x="0" y="0" background_color="#b45309" background_enabled="true"></banner>
+    <banner mode="auto" ticker_height="96" font="Arial" font_size="34" scroll_speed="4" x="0" y="0" background_color="#b45309" background_gradient_color="#7f1d1d" background_enabled="true"></banner>
     <graphics background_color="#000000" font="Zalando Sans SemiExpanded" font_size="26" text_x="48" text_y="96" banner_x="0" banner_y="0" banner_width="1920" banner_height="96"></graphics>
     <clock enabled="false" format="Jan 02 15:04:05" x="48" y="48" font_size="30" color="#ffffff"></clock>
     <text enabled="false" x="48" y="96" font_size="32" color="#ffffff"></text>
