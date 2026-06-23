@@ -21,6 +21,7 @@ const ALERT_SAMPLE_RATE: u32 = 48_000;
 const ALERT_CHANNELS: u16 = 2;
 const AC3_FRAME_SAMPLES: usize = 1536;
 const DEFAULT_AC3_BITRATE: i64 = 192_000;
+#[allow(dead_code)]
 const DEFAULT_VIDEO_BITRATE: i64 = 12_000_000;
 const CLOCK_CORRECTION_GAIN: f64 = 0.02;
 
@@ -36,6 +37,7 @@ struct StreamSpec {
 struct InputStreamSpec {
     input_index: usize,
     time_base: AVRational,
+    #[allow(dead_code)]
     frame_rate: AVRational,
     codecpar: AVCodecParameters,
 }
@@ -114,11 +116,6 @@ fn encode_once(
         .find(|spec| spec.codecpar.codec_type == ffi::AVMEDIA_TYPE_VIDEO)
         .map(|spec| spec.input_index)
         .context("native cgen input has no video stream")?;
-    let video_spec = input_specs
-        .iter()
-        .find(|spec| spec.input_index == video_input_index)
-        .context("native cgen video stream disappeared")?;
-    let mut video_processor = VideoProcessor::new(feed, video_spec)?;
 
     let audio_input_index = input_specs
         .iter()
@@ -145,9 +142,6 @@ fn encode_once(
     let mut stream_map = create_output_streams(
         &mut output,
         &input_specs,
-        video_input_index,
-        video_processor.output_time_base(),
-        video_processor.output_codecpar(),
         audio_input_index,
         audio_processor
             .as_ref()
@@ -201,8 +195,6 @@ fn encode_once(
                     processor.write_alert_until(target_audio_pts, audio_spec, &mut output)?;
                 }
             }
-            video_processor.process_packet(&packet, spec, &mut output)?;
-            continue;
         }
         if Some(input_index) == audio_input_index {
             if let Some(processor) = audio_processor.as_mut() {
@@ -242,20 +234,13 @@ fn collect_input_specs(input: &AVFormatContextInput) -> Result<Vec<InputStreamSp
 fn create_output_streams(
     output: &mut AVFormatContextOutput,
     input_specs: &[InputStreamSpec],
-    video_input_index: usize,
-    video_time_base: AVRational,
-    video_codecpar: AVCodecParameters,
     audio_input_index: Option<usize>,
     audio_codecpar: Option<AVCodecParameters>,
 ) -> Result<Vec<StreamSpec>> {
     let mut out = Vec::with_capacity(input_specs.len());
     for spec in input_specs {
         let mut stream = output.new_stream();
-        let output_time_base = if spec.input_index == video_input_index {
-            stream.set_codecpar(video_codecpar.clone());
-            stream.set_time_base(video_time_base);
-            video_time_base
-        } else if Some(spec.input_index) == audio_input_index {
+        let output_time_base = if Some(spec.input_index) == audio_input_index {
             let codecpar = audio_codecpar
                 .as_ref()
                 .context("native cgen audio output codec parameters are missing")?;
@@ -361,6 +346,7 @@ fn ticks_per_second(time_base: AVRational) -> f64 {
     f64::from(time_base.den.max(1)) / f64::from(time_base.num.max(1))
 }
 
+#[allow(dead_code)]
 struct VideoProcessor {
     feed_id: String,
     decoder: AVCodecContext,
@@ -372,6 +358,7 @@ struct VideoProcessor {
     next_pts: i64,
 }
 
+#[allow(dead_code)]
 impl VideoProcessor {
     fn new(feed: &FeedConfig, video_spec: &InputStreamSpec) -> Result<Self> {
         let decoder = create_video_decoder(&video_spec.codecpar)?;
@@ -878,6 +865,7 @@ fn create_audio_decoder(codecpar: &AVCodecParameters) -> Result<AVCodecContext> 
     Ok(decoder)
 }
 
+#[allow(dead_code)]
 fn create_video_decoder(codecpar: &AVCodecParameters) -> Result<AVCodecContext> {
     let codec = AVCodec::find_decoder(codecpar.codec_id)
         .context("native cgen source video decoder is unavailable")?;
@@ -891,6 +879,7 @@ fn create_video_decoder(codecpar: &AVCodecParameters) -> Result<AVCodecContext> 
     Ok(decoder)
 }
 
+#[allow(dead_code)]
 fn create_video_encoder(feed: &FeedConfig, video_spec: &InputStreamSpec) -> Result<AVCodecContext> {
     let output = feed.output();
     let codec_name = output_codec_name(&output.vcodec);
@@ -927,6 +916,7 @@ fn create_video_encoder(feed: &FeedConfig, video_spec: &InputStreamSpec) -> Resu
     Ok(encoder)
 }
 
+#[allow(dead_code)]
 fn output_codec_name(value: &str) -> String {
     let value = value.trim();
     if value.is_empty() {
@@ -941,6 +931,7 @@ fn output_codec_name(value: &str) -> String {
     value.to_string()
 }
 
+#[allow(dead_code)]
 fn output_frame_rate(feed: &FeedConfig, video_spec: &InputStreamSpec) -> AVRational {
     parse_rational(&feed.video.fps)
         .filter(valid_rational)
@@ -976,10 +967,12 @@ fn parse_rational(value: &str) -> Option<AVRational> {
         .map(|num| AVRational { num, den: 1 })
 }
 
+#[allow(dead_code)]
 fn valid_rational(value: &AVRational) -> bool {
     value.num > 0 && value.den > 0
 }
 
+#[allow(dead_code)]
 fn select_video_pix_fmt(codec: &AVCodec, codec_name: &str) -> i32 {
     let desired = if prefers_nv12(codec_name) {
         ffi::AV_PIX_FMT_NV12
@@ -1009,6 +1002,7 @@ fn prefers_nv12(codec_name: &str) -> bool {
         || codec_name.contains("vaapi")
 }
 
+#[allow(dead_code)]
 fn video_encoder_options(codec_name: &str) -> Option<AVDictionary> {
     let lower = codec_name.to_ascii_lowercase();
     if lower.contains("libx264") || lower.contains("libx265") {
