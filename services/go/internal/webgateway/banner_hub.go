@@ -197,7 +197,7 @@ func (h *BannerHub) Active(feedID string, now time.Time) []bannerOnAirAlert {
 			delete(h.onAir, key)
 			continue
 		}
-		if strings.TrimSpace(feedID) != "" && key != feedID {
+		if strings.TrimSpace(feedID) != "" && strings.TrimSpace(feedID) != "*" && key != feedID {
 			continue
 		}
 		out = append(out, active)

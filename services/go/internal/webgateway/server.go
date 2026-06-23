@@ -56,7 +56,7 @@ func NewServerWithSurface(config Config, configPath string, webroot string, surf
 	mediaBridgeAddr := firstNonBlank(os.Getenv("HAZE_MEDIA_BRIDGE_ADDR"), hostBridgeAddr)
 	mediaHub := NewMediaHub(mediaBridgeAddr)
 	bannerHub := NewBannerHub(configPath, hostBridgeAddr)
-	return &Server{
+	server := &Server{
 		startedAt:  time.Now().UTC(),
 		config:     config,
 		configPath: filepath.Clean(configPath),
@@ -68,6 +68,10 @@ func NewServerWithSurface(config Config, configPath string, webroot string, surf
 		bannerHub:  bannerHub,
 		breakIn:    NewOperatorBreakInManager(),
 	}
+	if server.surface.allowsAdmin() {
+		server.startBannerStatePublisher(hostBridgeAddr)
+	}
+	return server
 }
 
 // Handler builds the HTTP route tree.

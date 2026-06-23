@@ -380,8 +380,9 @@ try {
         if ($MediaBackend -eq "rsmpeg") {
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-playout --features ffmpeg-rsmpeg
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cgen --features ffmpeg-rsmpeg
         } else {
-            cargo build @CargoProfileArgs @CargoTargetArgs -p haze -p haze-playout
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze -p haze-playout -p haze-cgen
         }
     }
 
@@ -389,11 +390,15 @@ try {
     $TargetProfileDir = if ($RunningOnWindows) { "target/x86_64-pc-windows-gnullvm/$ProfileDir" } else { "target/$ProfileDir" }
     $ExePath = Join-Path $Root "$TargetProfileDir/haze.exe"
     $PlayoutExePath = Join-Path $Root "$TargetProfileDir/haze-playout-rs.exe"
+    $CgenExePath = Join-Path $Root "$TargetProfileDir/haze-cgen.exe"
     if (-not (Test-Path -LiteralPath $ExePath)) {
         throw "Missing Haze executable: $ExePath"
     }
     if (-not (Test-Path -LiteralPath $PlayoutExePath)) {
         throw "Missing Rust playout executable: $PlayoutExePath"
+    }
+    if (-not (Test-Path -LiteralPath $CgenExePath)) {
+        throw "Missing Rust cgen executable: $CgenExePath"
     }
 
     New-Item -ItemType Directory -Force -Path $OutFull | Out-Null
@@ -418,6 +423,7 @@ try {
         "haze-ivr.exe",
         "haze-playout.exe",
         "haze-playout-rs.exe",
+        "haze-cgen.exe",
         "avcodec-62.dll",
         "avdevice-62.dll",
         "avfilter-11.dll",
@@ -464,6 +470,7 @@ try {
 
     Copy-Item -LiteralPath $ExePath -Destination (Join-Path $BinFull "haze.exe") -Force
     Copy-Item -LiteralPath $PlayoutExePath -Destination (Join-Path $BinFull "haze-playout-rs.exe") -Force
+    Copy-Item -LiteralPath $CgenExePath -Destination (Join-Path $BinFull "haze-cgen.exe") -Force
 
     if (-not $SkipGoServices) {
         & (Join-Path $ScriptDir "build-go-services.ps1") -OutputDir $OutputDir

@@ -235,7 +235,7 @@ func activeBannerRecords(configPath string, feedID string, now time.Time) []arch
 	rows := archiveStoreRecords(configPath, "accepted", time.Time{})
 	out := make([]archiveCAPRecord, 0, len(rows))
 	for _, record := range rows {
-		if feedID != "" && record.FeedID != feedID {
+		if feedID != "" && feedID != "*" && record.FeedID != feedID {
 			continue
 		}
 		if archiveAlertExpired(record.Alert, now) {
@@ -307,7 +307,7 @@ func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []
 			if targetFeedID == "" {
 				continue
 			}
-			if feedID != "" && targetFeedID != feedID {
+			if feedID != "" && feedID != "*" && targetFeedID != feedID {
 				continue
 			}
 			expires := now.Add(30 * time.Minute)
@@ -382,7 +382,7 @@ func parseQueueTimestamp(raw string) time.Time {
 func findArchiveAlertByQueueHint(configPath string, item bannerOnAirAlert) (archiveCAPRecord, bool) {
 	hint := strings.ToLower(strings.Join([]string{item.AlertID, item.Event, item.Header, item.QueueID}, " "))
 	for _, record := range archiveStoreRecords(configPath, "accepted", time.Time{}) {
-		if item.FeedID != "" && record.FeedID != item.FeedID {
+		if item.FeedID != "" && item.FeedID != "*" && record.FeedID != item.FeedID {
 			continue
 		}
 		info := chooseArchiveInfo(record.Alert)

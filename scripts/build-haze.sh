@@ -179,20 +179,26 @@ if [[ "$skip_cargo_build" -eq 0 ]]; then
   if [[ "$media_backend" == "rsmpeg" ]]; then
     cargo build "${cargo_profile_args[@]}" -p haze
     cargo build "${cargo_profile_args[@]}" -p haze-playout --features ffmpeg-rsmpeg
+    cargo build "${cargo_profile_args[@]}" -p haze-cgen --features ffmpeg-rsmpeg
   else
-    cargo build "${cargo_profile_args[@]}" -p haze -p haze-playout
+    cargo build "${cargo_profile_args[@]}" -p haze -p haze-playout -p haze-cgen
   fi
 fi
 
 profile_dir="$profile"
 exe_path="$root/target/$profile_dir/haze"
 playout_exe_path="$root/target/$profile_dir/haze-playout-rs"
+cgen_exe_path="$root/target/$profile_dir/haze-cgen"
 if [[ ! -x "$exe_path" ]]; then
   echo "Missing Haze executable: $exe_path" >&2
   exit 1
 fi
 if [[ ! -x "$playout_exe_path" ]]; then
   echo "Missing Rust playout executable: $playout_exe_path" >&2
+  exit 1
+fi
+if [[ ! -x "$cgen_exe_path" ]]; then
+  echo "Missing Rust cgen executable: $cgen_exe_path" >&2
   exit 1
 fi
 
@@ -214,6 +220,7 @@ rm -f \
   "$out_full/haze-ivr" \
   "$out_full/haze-playout" \
   "$out_full/haze-playout-rs" \
+  "$out_full/haze-cgen" \
   "$bin_full/haze-web" \
   "$bin_full/haze-data-ingest" \
   "$bin_full/haze-cap-ingest" \
@@ -223,13 +230,16 @@ rm -f \
   "$bin_full/haze-webhook" \
   "$bin_full/haze-ivr" \
   "$bin_full/haze-playout" \
-  "$bin_full/haze-playout-rs"
+  "$bin_full/haze-playout-rs" \
+  "$bin_full/haze-cgen"
 rm -rf "$out_full/webroot" "$out_full/audio"
 
 cp "$exe_path" "$out_full/haze"
 chmod +x "$out_full/haze"
 cp "$playout_exe_path" "$bin_full/haze-playout-rs"
 chmod +x "$bin_full/haze-playout-rs"
+cp "$cgen_exe_path" "$bin_full/haze-cgen"
+chmod +x "$bin_full/haze-cgen"
 
 if [[ "$skip_go_services" -eq 0 ]]; then
   bash "$script_dir/build-go-services.sh" --output-dir "$output_dir"

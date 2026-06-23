@@ -55,6 +55,7 @@ struct AudioItem {
     package_id: String,
     title: String,
     pcm: Arc<[u8]>,
+    metadata: AudioItemMetadata,
     resume_offset: usize,
     gap_after: Duration,
     not_before: Option<DateTime<Utc>>,
@@ -63,6 +64,19 @@ struct AudioItem {
     predicted_start: String,
     predicted_finish: String,
     source: ItemSource,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AudioItemMetadata {
+    audio_path: String,
+    duration_ms: u64,
+    alert_packet: Option<Value>,
+    alert_text: String,
+    banner_text: String,
+    background_color: String,
+    priority: String,
+    feed_ids: Vec<String>,
+    broadcast_immediate: bool,
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -169,6 +183,8 @@ struct AlertQueueItem {
     #[serde(default)]
     alert_id: String,
     #[serde(default)]
+    alert_packet: Option<Value>,
+    #[serde(default)]
     r#type: String,
     #[serde(default)]
     priority: String,
@@ -190,6 +206,10 @@ struct AlertQueueItem {
     alert_text: String,
     #[serde(default)]
     banner_text: String,
+    #[serde(default)]
+    background_color: String,
+    #[serde(default)]
+    broadcast_immediate: bool,
     #[serde(default)]
     alert_sent_at: String,
     #[serde(default)]
@@ -538,6 +558,47 @@ fn u16_at(value: &Value, key: &str, fallback: u16) -> u16 {
                 .or_else(|| value.as_str().and_then(|raw| raw.trim().parse().ok()))
         })
         .unwrap_or(fallback)
+}
+
+fn bool_at(value: &Value, key: &str) -> bool {
+    value
+        .get(key)
+        .and_then(|value| {
+            value.as_bool().or_else(|| {
+                value.as_str().map(|raw| {
+                    matches!(
+                        raw.trim().to_ascii_lowercase().as_str(),
+                        "true" | "1" | "yes" | "on"
+                    )
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn value_string_array(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn pcm_duration_ms(bytes: usize, sample_rate: u32, channels: u16) -> u64 {
+    let frame_bytes = usize::from(channels.max(1)) * 2;
+    if sample_rate == 0 || frame_bytes == 0 {
+        return 0;
+    }
+    let frames = bytes / frame_bytes;
+    ((frames as u128) * 1000 / u128::from(sample_rate)) as u64
 }
 
 impl FeedHandle {
@@ -1089,6 +1150,11 @@ async fn start_item(client: &BridgeClient, cfg: &LoadedConfig, feed_id: &str, it
                     "failed to mark alert started: {err}"
                 );
             }
+            let mut data = item_event_data(feed_id, item);
+            if let Some(object) = data.as_object_mut() {
+                object.insert("header".to_string(), json!(header));
+                object.insert("event".to_string(), json!(event));
+            }
             let _ = client
                 .publish(json!({
                     "type": "alert.playout.started",
@@ -1097,12 +1163,7 @@ async fn start_item(client: &BridgeClient, cfg: &LoadedConfig, feed_id: &str, it
                     "queue_id": item.id,
                     "header": header,
                     "event": event,
-                    "data": {
-                        "feed_id": feed_id,
-                        "queue_id": item.id,
-                        "header": header,
-                        "event": event,
-                    }
+                    "data": data
                 }))
                 .await;
         }
@@ -1136,6 +1197,11 @@ async fn finish_item(client: &BridgeClient, feed_id: &str, item: &AudioItem) {
                     "failed to mark alert played: {err}"
                 );
             }
+            let mut data = item_event_data(feed_id, item);
+            if let Some(object) = data.as_object_mut() {
+                object.insert("header".to_string(), json!(header));
+                object.insert("event".to_string(), json!(event));
+            }
             let _ = client
                 .publish(json!({
                     "type": "alert.playout.completed",
@@ -1144,12 +1210,7 @@ async fn finish_item(client: &BridgeClient, feed_id: &str, item: &AudioItem) {
                     "queue_id": item.id,
                     "header": header,
                     "event": event,
-                    "data": {
-                        "feed_id": feed_id,
-                        "queue_id": item.id,
-                        "header": header,
-                        "event": event,
-                    }
+                    "data": data
                 }))
                 .await;
         }
@@ -1743,6 +1804,7 @@ async fn build_package(
         package_id: package_id.to_string(),
         title,
         pcm,
+        metadata: AudioItemMetadata::default(),
         resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: None,
@@ -1775,11 +1837,21 @@ async fn audio_item_from_rendered_product(
     }
     let path = resolve_path(&cfg.base_dir, audio_path);
     let pcm = audio_cache.read_wav_pcm(&path, cfg).await?;
+    let duration_ms = pcm_duration_ms(
+        pcm.len(),
+        cfg.root.playout.sample_rate,
+        cfg.root.playout.channels,
+    );
     Ok(Some(AudioItem {
         id: queue_id(&format!("{}-{package_id}", feed.id)),
         package_id: package_id.to_string(),
         title: fallback_text(&product.title, &title_for_package(package_id)),
         pcm,
+        metadata: AudioItemMetadata {
+            audio_path: audio_path.to_string(),
+            duration_ms,
+            ..Default::default()
+        },
         resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: None,
@@ -2008,6 +2080,11 @@ async fn audio_item_from_ready(
     }
     let path = resolve_path(&cfg.base_dir, audio_path);
     let pcm = audio_cache.read_wav_pcm(&path, cfg).await?;
+    let duration_ms = pcm_duration_ms(
+        pcm.len(),
+        cfg.root.playout.sample_rate,
+        cfg.root.playout.channels,
+    );
     let package_id = bridge::first_text(&Value::Null, &data, &["package_id", "pkg_id"]).to_string();
     let title = fallback_text(
         bridge::first_text(&Value::Null, &data, &["title"]),
@@ -2021,6 +2098,11 @@ async fn audio_item_from_ready(
         package_id,
         title,
         pcm,
+        metadata: AudioItemMetadata {
+            audio_path: audio_path.to_string(),
+            duration_ms,
+            ..Default::default()
+        },
         resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: parse_time(bridge::first_text(
@@ -2058,6 +2140,11 @@ async fn audio_item_from_priority_ready(
     let pcm = audio_cache
         .read_raw_pcm(&path, sample_rate, channels.max(1), cfg)
         .await?;
+    let duration_ms = pcm_duration_ms(
+        pcm.len(),
+        cfg.root.playout.sample_rate,
+        cfg.root.playout.channels,
+    );
     let title = fallback_text(
         bridge::first_text(&Value::Null, &data, &["title", "header"]),
         "Weather Alert",
@@ -2081,6 +2168,23 @@ async fn audio_item_from_priority_ready(
         package_id: "same_alert".to_string(),
         title: title.clone(),
         pcm,
+        metadata: AudioItemMetadata {
+            audio_path: audio_path.to_string(),
+            duration_ms,
+            alert_packet: data.get("alert_packet").cloned(),
+            alert_text: bridge::first_text(
+                &Value::Null,
+                &data,
+                &["alert_text", "tts_text", "text", "message"],
+            )
+            .to_string(),
+            banner_text: bridge::first_text(&Value::Null, &data, &["banner_text"]).to_string(),
+            background_color: bridge::first_text(&Value::Null, &data, &["background_color"])
+                .to_string(),
+            priority: bridge::first_text(&Value::Null, &data, &["priority"]).to_string(),
+            feed_ids: value_string_array(&data, "feed_ids"),
+            broadcast_immediate: bool_at(&data, "broadcast_immediate"),
+        },
         resume_offset: 0,
         gap_after: Duration::from_millis(500),
         not_before: None,
@@ -2288,12 +2392,28 @@ async fn audio_item_from_alert(
             cfg,
         )
         .await?;
+    let duration_ms = pcm_duration_ms(
+        pcm.len(),
+        cfg.root.playout.sample_rate,
+        cfg.root.playout.channels,
+    );
     let title = fallback_text(&item.header, "SAME Alert");
     Ok(AudioItem {
         id: id.to_string(),
         package_id: "same_alert".to_string(),
         title,
         pcm,
+        metadata: AudioItemMetadata {
+            audio_path: item.audio_path.clone(),
+            duration_ms,
+            alert_packet: item.alert_packet.clone(),
+            alert_text: item.alert_text.clone(),
+            banner_text: item.banner_text.clone(),
+            background_color: item.background_color.clone(),
+            priority: item.priority.clone(),
+            feed_ids: item.feed_ids.clone(),
+            broadcast_immediate: item.broadcast_immediate,
+        },
         resume_offset: 0,
         gap_after: Duration::from_millis(500),
         not_before: None,
@@ -2459,10 +2579,19 @@ fn legacy_split_alert_item(item: &AlertQueueItem) -> bool {
 fn item_event_data(feed_id: &str, item: &AudioItem) -> Value {
     json!({
         "feed_id": feed_id,
+        "feed_ids": if item.metadata.feed_ids.is_empty() { vec![feed_id.to_string()] } else { item.metadata.feed_ids.clone() },
         "queue_id": item.id,
         "pkg_id": item.package_id,
         "package_id": item.package_id,
         "title": item.title,
+        "audio_path": item.metadata.audio_path,
+        "duration_ms": item.metadata.duration_ms,
+        "alert_packet": item.metadata.alert_packet,
+        "alert_text": item.metadata.alert_text,
+        "banner_text": item.metadata.banner_text,
+        "background_color": item.metadata.background_color,
+        "priority": item.metadata.priority,
+        "broadcast_immediate": item.metadata.broadcast_immediate,
         "queued_at": item.queued_at,
         "target_start_at": item.target_start,
         "predicted_start_at": item.predicted_start,
@@ -2591,6 +2720,50 @@ mod tests {
     }
 
     #[test]
+    fn item_event_data_includes_cgen_alert_metadata() {
+        let item = AudioItem {
+            id: "alert-1".to_string(),
+            package_id: "same_alert".to_string(),
+            title: "Severe Thunderstorm Warning".to_string(),
+            pcm: Arc::from(vec![0; 48_000].into_boxed_slice()),
+            metadata: AudioItemMetadata {
+                audio_path: "runtime/audio/alerts/alert.raw".to_string(),
+                duration_ms: 500,
+                alert_packet: Some(json!({"id": "cap-1"})),
+                alert_text: "spoken alert".to_string(),
+                banner_text: "banner alert".to_string(),
+                background_color: "#b91c1c".to_string(),
+                priority: "same".to_string(),
+                feed_ids: vec!["sk-0001".to_string(), "CAP-IT-ALL".to_string()],
+                broadcast_immediate: true,
+            },
+            resume_offset: 0,
+            gap_after: Duration::from_millis(500),
+            not_before: None,
+            queued_at: String::new(),
+            target_start: String::new(),
+            predicted_start: String::new(),
+            predicted_finish: String::new(),
+            source: ItemSource::Alert {
+                manifest_path: PathBuf::from("runtime/queues/alerts/alert-1.json"),
+                header: "Severe Thunderstorm Warning".to_string(),
+                event: "SVR".to_string(),
+            },
+        };
+
+        let data = item_event_data("sk-0001", &item);
+
+        assert_eq!(data["audio_path"], "runtime/audio/alerts/alert.raw");
+        assert_eq!(data["duration_ms"], 500);
+        assert_eq!(data["banner_text"], "banner alert");
+        assert_eq!(data["background_color"], "#b91c1c");
+        assert_eq!(data["priority"], "same");
+        assert_eq!(data["broadcast_immediate"], true);
+        assert_eq!(data["feed_ids"][1], "CAP-IT-ALL");
+        assert_eq!(data["alert_packet"]["id"], "cap-1");
+    }
+
+    #[test]
     fn all_location_alert_feed_accepts_concrete_feed_targets() {
         let feed = FeedConfig {
             id: "CAP-IT-ALL".to_string(),
@@ -2641,6 +2814,7 @@ mod tests {
             package_id: "forecast".to_string(),
             title: "Forecast".to_string(),
             pcm: Arc::from(vec![1; 16].into_boxed_slice()),
+            metadata: AudioItemMetadata::default(),
             resume_offset: 0,
             gap_after: Duration::from_secs(1),
             not_before: None,
@@ -2664,6 +2838,7 @@ mod tests {
             package_id: "forecast".to_string(),
             title: "Forecast".to_string(),
             pcm: Arc::from(vec![1; 16].into_boxed_slice()),
+            metadata: AudioItemMetadata::default(),
             resume_offset: 0,
             gap_after: Duration::from_secs(1),
             not_before: None,
@@ -2729,6 +2904,7 @@ mod tests {
             package_id: "forecast".to_string(),
             title: title.to_string(),
             pcm: Arc::from(vec![1; 16].into_boxed_slice()),
+            metadata: AudioItemMetadata::default(),
             resume_offset: 0,
             gap_after: Duration::from_secs(1),
             not_before: None,

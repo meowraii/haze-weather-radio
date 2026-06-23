@@ -41,6 +41,7 @@ struct ServicesConfig {
 #[derive(Debug, Default, Deserialize)]
 struct RustServicesConfig {
     playout: Option<RustPlayoutConfig>,
+    cgen: Option<RustCgenConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -48,6 +49,15 @@ struct RustPlayoutConfig {
     enabled: Option<bool>,
     executable: Option<PathBuf>,
     alert_poll: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RustCgenConfig {
+    enabled: Option<bool>,
+    executable: Option<PathBuf>,
+    config: Option<PathBuf>,
+    ffmpeg: Option<String>,
+    graphics_backend: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -722,6 +732,11 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
         .as_ref()
         .and_then(|services| services.rust.as_ref())
         .and_then(|services| services.playout.as_ref());
+    let rust_cgen = root
+        .services
+        .as_ref()
+        .and_then(|services| services.rust.as_ref())
+        .and_then(|services| services.cgen.as_ref());
     let mut specs = Vec::new();
     let mut deferred_cap_specs = Vec::new();
 
@@ -1088,6 +1103,41 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
             args,
         });
     }
+    if let Some(cgen) = rust_cgen.filter(|cgen| cgen.enabled.unwrap_or(false)) {
+        let mut args = vec![
+            "--config".to_string(),
+            host.config_path.to_string_lossy().into_owned(),
+            "--cgen".to_string(),
+            cgen.config
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("managed/configs/cgen.xml"))
+                .to_string_lossy()
+                .into_owned(),
+            "--bridge".to_string(),
+            std::env::var("HAZE_HOST_BRIDGE_ADDR").unwrap_or_default(),
+        ];
+        if let Some(ffmpeg) = cgen
+            .ffmpeg
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            args.extend(["--ffmpeg".to_string(), ffmpeg.to_string()]);
+        }
+        if let Some(backend) = cgen
+            .graphics_backend
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            args.extend(["--graphics-backend".to_string(), backend.to_string()]);
+        }
+        specs.push(ServiceSpec {
+            id: "svc:cgen",
+            kind: "managed",
+            binary: executable_name("haze-cgen"),
+            configured_executable: cgen.executable.clone(),
+            args,
+        });
+    }
     specs.extend(deferred_cap_specs);
     specs
 }
@@ -1246,6 +1296,7 @@ fn executable_name(base: &'static str) -> &'static str {
             "haze-webhook" => "haze-webhook.exe",
             "haze-ivr" => "haze-ivr.exe",
             "haze-playout-rs" => "haze-playout-rs.exe",
+            "haze-cgen" => "haze-cgen.exe",
             _ => base,
         }
     }
@@ -1414,6 +1465,7 @@ fn is_known_managed_executable(path: &str) -> bool {
         executable_name("haze-webhook"),
         executable_name("haze-ivr"),
         executable_name("haze-playout-rs"),
+        executable_name("haze-cgen"),
     ]
     .into_iter()
     .any(|known| known.eq_ignore_ascii_case(&file_name))
@@ -1630,6 +1682,7 @@ fn service_label(service_id: &str) -> &str {
         "svc:webhook" => "Webhook",
         "svc:ivr" => "IVR",
         "svc:playout" => "Playout",
+        "svc:cgen" => "CG renderer",
         _ => service_id,
     }
 }
@@ -1870,6 +1923,33 @@ services:
     }
 
     #[test]
+    fn rust_cgen_service_uses_managed_xml_config() {
+        let root: RootConfig = serde_yaml::from_str(
+            r#"
+services:
+  rust:
+    cgen:
+      enabled: true
+      config: managed/configs/cgen.xml
+      ffmpeg: ffmpeg
+      graphics_backend: auto
+"#,
+        )
+        .expect("config");
+
+        let specs = service_specs(&root, &test_host());
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].id, "svc:cgen");
+        assert_eq!(specs[0].binary, executable_name("haze-cgen"));
+        assert!(specs[0].args.contains(&"--cgen".to_string()));
+        assert!(specs[0]
+            .args
+            .contains(&"managed/configs/cgen.xml".to_string()));
+        assert!(specs[0].args.contains(&"--graphics-backend".to_string()));
+    }
+
+    #[test]
     fn nws_cap_atom_source_does_not_append_query_filters() {
         let root: RootConfig = serde_yaml::from_str(
             r#"
@@ -1938,6 +2018,7 @@ cap:
     fn service_labels_are_operator_readable() {
         assert_eq!(service_label("go:web_gateway"), "Web panel");
         assert_eq!(service_label("svc:product_render"), "Product render");
+        assert_eq!(service_label("svc:cgen"), "CG renderer");
         assert_eq!(service_label("unknown-service"), "unknown-service");
     }
 }

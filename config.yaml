@@ -22,6 +22,11 @@ services:
       enabled: true
       alert_poll: "500ms"
       ffmpeg: "ffmpeg"
+    cgen:
+      enabled: false
+      config: "managed/configs/cgen.xml"
+      ffmpeg: "ffmpeg"
+      graphics_backend: "auto"
   go:
     enabled: true
     web_gateway:

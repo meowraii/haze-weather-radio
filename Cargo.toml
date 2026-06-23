@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/haze",
+    "crates/haze-cgen",
     "crates/haze-media",
     "crates/haze-playout",
 ]

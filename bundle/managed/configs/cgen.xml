@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cgen enabled="true">
+  <!--
+    Disabled example feed. Set enabled="true" after choosing real input/output URLs.
+    feed id="*" follows station-wide priority alerts for any feed.
+  -->
+  <feed id="*" enabled="false">
+    <input url="udp://127.0.0.1:5000?overrun_nonfatal=1" format="mpegts"/>
+    <output url="udp://127.0.0.1:5001" format="mpegts" vcodec="libx264" acodec="aac" video_bitrate_kbps="4500" audio_bitrate_kbps="128"/>
+    <video width="1280" height="720" fps="source"/>
+    <audio idle="source" alert_mode="replace"/>
+    <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded"/>
+  </feed>
+</cgen>
