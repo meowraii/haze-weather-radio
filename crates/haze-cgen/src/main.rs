@@ -90,6 +90,7 @@ async fn main() -> Result<()> {
             state_rx.clone(),
             args.ffmpeg.clone(),
             args.graphics_backend.clone(),
+            base_dir.clone(),
         );
         tokio::spawn(async move {
             if let Err(err) = worker.run().await {

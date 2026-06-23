@@ -40,6 +40,8 @@ pub(crate) struct PriorityAudio {
     pub(crate) queue_id: String,
     pub(crate) audio_path: Option<PathBuf>,
     pub(crate) duration_ms: Option<u64>,
+    pub(crate) sample_rate: u32,
+    pub(crate) channels: u16,
     pub(crate) alert_packet: Option<Value>,
     pub(crate) banner_text: Option<String>,
     pub(crate) background_color: Option<String>,
@@ -95,6 +97,13 @@ impl RuntimeState {
             queue_id,
             audio_path: non_empty(text_at(data, &["audio_path"])).map(PathBuf::from),
             duration_ms: number_at(data, &["duration_ms"]),
+            sample_rate: number_at(data, &["sample_rate"])
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(48_000),
+            channels: number_at(data, &["channels"])
+                .and_then(|value| u16::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(1),
             alert_packet: data.get("alert_packet").cloned(),
             banner_text: non_empty(text_at(data, &["banner_text"])),
             background_color: non_empty(text_at(data, &["background_color"])),
@@ -128,6 +137,9 @@ impl RuntimeState {
                 .unwrap_or(false);
             if matches {
                 self.active_audio.remove(&feed_id);
+                changed = true;
+            }
+            if self.banners.remove(&feed_id).is_some() {
                 changed = true;
             }
         }
@@ -257,5 +269,27 @@ mod tests {
             }
         })));
         assert!(state.priority_audio_for("CAP-IT-ALL").is_some());
+    }
+
+    #[test]
+    fn completion_clears_visual_banner_for_feed() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "feed_id": "CAP-IT-ALL",
+                "alerts": [{"message": "Alert text"}]
+            }
+        })));
+        assert!(state.banner_for("CAP-IT-ALL").is_some());
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.completed",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "alert-1",
+            "data": {"queue_id": "alert-1"}
+        })));
+        assert!(state.banner_for("CAP-IT-ALL").is_none());
     }
 }

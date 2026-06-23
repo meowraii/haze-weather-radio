@@ -1173,6 +1173,12 @@ fn publish_alert_event(
         "header": &item.header,
         "status": &item.status,
         "audio_path": audio_path.map(|path| path.to_string_lossy().into_owned()),
+        "sample_rate": item.sample_rate,
+        "channels": item.channels,
+        "duration_ms": audio_path
+            .and_then(|path| fs::metadata(path).ok())
+            .and_then(|metadata| audio_duration(item, metadata.len()))
+            .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64),
         "timestamp_unix_ms": unix_now_ms(),
     }));
 }

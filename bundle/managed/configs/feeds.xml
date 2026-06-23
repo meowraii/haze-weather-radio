@@ -118,7 +118,7 @@
           </allowlist>
         </filter>
       </cap_cp>
-      <nws_cap enabled="true">
+      <nws_cap enabled="false">
         <filter use_feed_locations="false">
           <allowlist>
             <severity>Severe</severity>
