@@ -380,7 +380,7 @@ try {
         if ($MediaBackend -eq "rsmpeg") {
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-playout --features ffmpeg-rsmpeg
-            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cgen --features ffmpeg-rsmpeg
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cgen --features "ffmpeg-rsmpeg gpu-wgpu"
         } else {
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze -p haze-playout -p haze-cgen
         }

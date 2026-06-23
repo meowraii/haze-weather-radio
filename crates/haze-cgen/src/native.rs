@@ -19,6 +19,7 @@ use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::config::FeedConfig;
+use crate::graphics::NativeGraphicsRenderer;
 use crate::state::{PriorityAudio, RuntimeState};
 
 const ALERT_SAMPLE_RATE: u32 = 48_000;
@@ -125,7 +126,7 @@ fn encode_once(
         .iter()
         .find(|spec| spec.input_index == video_input_index)
         .context("native cgen video stream disappeared")?;
-    let mut video_processor = VideoProcessor::new(feed, video_spec)?;
+    let mut video_processor = VideoProcessor::new(feed, video_spec, state_rx.clone())?;
 
     let audio_input_index = input_specs
         .iter()
@@ -360,12 +361,17 @@ struct VideoProcessor {
     convert_frame_rate: bool,
     interlaced: bool,
     field_order: ffi::AVFieldOrder,
+    graphics: NativeGraphicsRenderer,
     pending_field_frame: Option<AVFrame>,
     next_pts: i64,
 }
 
 impl VideoProcessor {
-    fn new(feed: &FeedConfig, video_spec: &InputStreamSpec) -> Result<Self> {
+    fn new(
+        feed: &FeedConfig,
+        video_spec: &InputStreamSpec,
+        state_rx: watch::Receiver<RuntimeState>,
+    ) -> Result<Self> {
         let decoder = create_video_decoder(&video_spec.codecpar)?;
         let encoder = create_video_encoder(feed, video_spec)?;
         let encoder_pix_fmt = encoder.pix_fmt;
@@ -394,6 +400,7 @@ impl VideoProcessor {
             convert_frame_rate,
             interlaced: feed.video.interlaced,
             field_order: video_field_order(feed),
+            graphics: NativeGraphicsRenderer::new(feed, state_rx),
             pending_field_frame: None,
             next_pts: 0,
         })
@@ -451,7 +458,7 @@ impl VideoProcessor {
                 let mut woven = self.weave_field_pair(&first_field, &frame)?;
                 self.stamp_frame_metadata(&mut woven);
                 woven.set_pts(self.frame_pts(source_frame, spec));
-                return self.encode_frame(&woven, spec, output);
+                return self.encode_frame(&mut woven, spec, output);
             }
             self.pending_field_frame = Some(frame);
             self.decoded_frames = self.decoded_frames.saturating_add(1);
@@ -464,15 +471,16 @@ impl VideoProcessor {
         let mut frame = self.normalize_frame(source_frame)?;
         self.stamp_frame_metadata(&mut frame);
         frame.set_pts(self.frame_pts(source_frame, spec));
-        self.encode_frame(&frame, spec, output)
+        self.encode_frame(&mut frame, spec, output)
     }
 
     fn encode_frame(
         &mut self,
-        frame: &AVFrame,
+        frame: &mut AVFrame,
         spec: &StreamSpec,
         output: &mut AVFormatContextOutput,
     ) -> Result<()> {
+        self.graphics.render_frame(frame, self.encoded_frames);
         self.encoder
             .send_frame(Some(frame))
             .context("failed to send native cgen video frame to encoder")?;

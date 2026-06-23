@@ -45,6 +45,7 @@ const fields = {
     bannerWidth: document.getElementById('cgenBannerWidth'),
     bannerHeight: document.getElementById('cgenBannerHeight'),
     bannerColor: document.getElementById('cgenBannerColor'),
+    bannerMode: document.getElementById('cgenBannerMode'),
     bannerBackgroundEnabled: document.getElementById('cgenBannerBackgroundEnabled'),
     text: document.getElementById('cgenText'),
     textEnabled: document.getElementById('cgenTextEnabled'),
@@ -124,7 +125,7 @@ function readEditor() {
         audio_idle: 'source',
         audio_alert_mode: 'replace',
         duck_db: value('duckDB', '-18'),
-        banner_mode: selected()?.banner_mode || 'auto',
+        banner_mode: value('bannerMode', 'auto'),
         ticker_height: value('bannerHeight', '96'),
         font: value('font', 'Zalando Sans SemiExpanded'),
         font_size: value('fontSize', '26'),
@@ -184,6 +185,7 @@ function writeEditor(feed) {
     setValue('bannerWidth', feed.banner_width || feed.width || '1920');
     setValue('bannerHeight', feed.banner_height || feed.ticker_height || '96');
     setValue('bannerColor', feed.banner_background_color || '#b45309');
+    setValue('bannerMode', feed.banner_mode || 'auto');
     setValue('bannerBackgroundEnabled', feed.banner_background_enabled !== false);
     setValue('text', feed.text || '');
     setValue('textEnabled', Boolean(feed.text_enabled));
@@ -338,6 +340,7 @@ function defaultFeed() {
         standard: 'atsc',
         background_color: '#000000',
         banner_background_color: '#b45309',
+        banner_mode: 'auto',
         banner_background_enabled: true,
         banner_x: '0',
         banner_y: '0',

@@ -1,5 +1,6 @@
 mod bridge;
 mod config;
+mod graphics;
 #[cfg(feature = "ffmpeg-rsmpeg")]
 mod native;
 mod pipeline;
