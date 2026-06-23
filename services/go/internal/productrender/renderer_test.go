@@ -1085,6 +1085,44 @@ func TestCAPEndedUpdateRemovesReferencedActiveAlert(t *testing.T) {
 	}
 }
 
+func TestCAPEndedUpdateOverridesActiveAlertByEventAndLocation(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	service := &Service{cfg: cfg}
+	now := time.Now().UTC()
+	active, err := capingest.ParseCAP([]byte(testCAP("urn:test:alert:active-no-reference", "Alert", "active", "2099-06-15T21:30:00-06:00", false)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.recordCAPAlert(active, now); err != nil {
+		t.Fatal(err)
+	}
+	ended, err := capingest.ParseCAP([]byte(testCAP("urn:test:alert:ended-no-reference", "Update", "ended", "2099-06-15T21:30:00-06:00", true)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates, err := service.recordCAPAlert(ended, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) == 0 || !updates[0].Cancelled {
+		t.Fatalf("ended update did not emit cancellation update: %#v", updates)
+	}
+	if !containsString(updates[0].CancelledIDs, active.Identifier) {
+		t.Fatalf("ended update did not override active alert: %#v", updates[0].CancelledIDs)
+	}
+	rows, err := cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.AlertID == active.Identifier {
+			t.Fatalf("overridden active alert remained accepted: %#v", rows)
+		}
+	}
+}
+
 func TestAlertBroadcastAudioPrefersBroadcastMP3Resource(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "cap", "example_civilEmerg_AlertReady_2026_04_10T19_08_12_03_00IA99FB9E1_6FB6_4951_B234_863F1341C4C1.xml"))
 	if err != nil {
@@ -1474,6 +1512,15 @@ func testNWSCAP(identifier string, msgType string, sent string, expires string) 
 
 func capWithReferences(raw string, references string) string {
 	return strings.Replace(raw, "<references/>", "<references>"+references+"</references>", 1)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func testBroadCAP() string {

@@ -3,6 +3,7 @@ package capingest
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -92,6 +93,50 @@ func TestPollAtomOnlyMarksSeenAfterSuccessfulPublish(t *testing.T) {
 	}
 	if capRequests.Load() < 2 {
 		t.Fatalf("CAP was not retried after transient failure")
+	}
+}
+
+func TestFetchAtomFallsBackToSecondaryURL(t *testing.T) {
+	var primaryRequests atomic.Int32
+	var fallbackRequests atomic.Int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/primary":
+			primaryRequests.Add(1)
+			http.Error(w, "primary unavailable", http.StatusBadGateway)
+		case "/fallback":
+			fallbackRequests.Add(1)
+			w.Header().Set("Content-Type", "application/atom+xml")
+			_, _ = fmt.Fprintf(w, `<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:test:fallback-alert</id>
+    <updated>2026-06-16T21:55:00Z</updated>
+    <link href="%s/cap" rel="alternate"/>
+  </entry>
+</feed>`, server.URL)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	poller := NewPoller(events.NewJSONLPublisher(io.Discard))
+	entries, err := poller.fetchAtom(context.Background(), SourceConfig{
+		ID:      "naads",
+		URL:     server.URL + "/primary",
+		URLs:    []string{server.URL + "/fallback"},
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("fetchAtom: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != "tag:test:fallback-alert" {
+		t.Fatalf("entries = %#v", entries)
+	}
+	if primaryRequests.Load() != 1 || fallbackRequests.Load() != 1 {
+		t.Fatalf("requests primary=%d fallback=%d", primaryRequests.Load(), fallbackRequests.Load())
 	}
 }
 

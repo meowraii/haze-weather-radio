@@ -76,6 +76,7 @@ type AtomEntry struct {
 type SourceConfig struct {
 	ID           string
 	URL          string
+	URLs         []string
 	PollInterval time.Duration
 	Timeout      time.Duration
 	UserAgent    string

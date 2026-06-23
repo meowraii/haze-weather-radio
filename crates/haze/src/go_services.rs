@@ -92,6 +92,7 @@ struct CapIngestConfig {
     source_id: Option<String>,
     source: Option<String>,
     url: Option<String>,
+    fallback_url: Option<String>,
     interval: Option<String>,
     timeout: Option<String>,
 }
@@ -783,6 +784,11 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                 if let Some(url) = &cap.url {
                     if !url.trim().is_empty() {
                         args.extend(["--url".to_string(), url.to_string()]);
+                    }
+                }
+                if let Some(url) = &cap.fallback_url {
+                    if !url.trim().is_empty() {
+                        args.extend(["--fallback-url".to_string(), url.to_string()]);
                     }
                 }
                 deferred_cap_specs.push(ServiceSpec {

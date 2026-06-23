@@ -501,6 +501,35 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 			storeCAPArchiveRecord(s.cfg.Store, "rejected", record)
 			continue
 		}
+		entries := loadActiveCAPEntries(s.cfg.Store, feed.ID, now)
+		archiveExpiredCAPEntries("", feed.ID, entries, now, s.cfg.Store)
+		entries = pruneCAPEntries(entries, now)
+		priorEntries := append([]capRegistryEntry(nil), entries...)
+		if capAcceptedArchiveContains(s.cfg.Store, feed.ID, alert.Identifier) && !capEntryExists(priorEntries, alert.Identifier) {
+			priorEntries = append(priorEntries, capRegistryEntry{ID: alert.Identifier})
+		}
+		if isExplicitCAPEnd(alert) {
+			cancelledIDs := cancelledAlertIDsWithOverrides(priorEntries, alert, s.cfg.BaseDir)
+			deleteCAPReferences(s.cfg.Store, feed.ID, cancelledIDs)
+			storeCAPArchiveRecord(s.cfg.Store, "expired", capArchiveRecord{
+				ID:        alert.Identifier,
+				FeedID:    feed.ID,
+				Status:    "expired",
+				Reason:    "cancelled or ended by alerting authority",
+				UpdatedAt: now,
+				Alert:     alert,
+				RawXML:    alert.RawXML,
+			})
+			updates = append(updates, capRegistryUpdate{
+				FeedID:       feed.ID,
+				Renderable:   hasRenderableCAPEntries(removeCAPIDs(entries, cancelledIDs), now),
+				Broadcast:    false,
+				Cancelled:    true,
+				CancelledIDs: cancelledIDs,
+				SAME:         capSAMEPayload(alert, feed, s.cfg.BaseDir, now),
+			})
+			continue
+		}
 		if !feedAllowsRoutineOnlyCAPAlert(feed, alert) {
 			record := capArchiveRecord{
 				ID:        alert.Identifier,
@@ -527,25 +556,8 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 			storeCAPArchiveRecord(s.cfg.Store, "rejected", record)
 			continue
 		}
-		entries := loadActiveCAPEntries(s.cfg.Store, feed.ID, now)
-		archiveExpiredCAPEntries("", feed.ID, entries, now, s.cfg.Store)
-		entries = pruneCAPEntries(entries, now)
-		priorEntries := append([]capRegistryEntry(nil), entries...)
-		if capAcceptedArchiveContains(s.cfg.Store, feed.ID, alert.Identifier) && !capEntryExists(priorEntries, alert.Identifier) {
-			priorEntries = append(priorEntries, capRegistryEntry{ID: alert.Identifier})
-		}
 		entries = removeCAPReferences(entries, alert.References)
 		deleteCAPReferences(s.cfg.Store, feed.ID, parseCAPReferences(alert.References))
-
-		if strings.EqualFold(alert.MessageType, "Cancel") {
-			deleteCAPReferences(s.cfg.Store, feed.ID, cancelledAlertIDs(alert))
-			updates = append(updates, capRegistryUpdate{
-				FeedID:       feed.ID,
-				Cancelled:    true,
-				CancelledIDs: cancelledAlertIDs(alert),
-			})
-			continue
-		}
 
 		nextEntry := capRegistryEntry{
 			ID:        alert.Identifier,
@@ -1182,6 +1194,145 @@ func cancelledAlertIDs(alert capingest.Alert) []string {
 		ids = append(ids, strings.TrimSpace(alert.Identifier))
 	}
 	return uniqueStrings(ids)
+}
+
+func cancelledAlertIDsWithOverrides(entries []capRegistryEntry, alert capingest.Alert, baseDir string) []string {
+	ids := cancelledAlertIDs(alert)
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		seen[id] = struct{}{}
+	}
+	for _, entry := range entries {
+		id := fallbackText(entry.ID, entry.Alert.Identifier)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		if capAlertOverrides(alert, entry.Alert, baseDir) {
+			ids = append(ids, id)
+			seen[id] = struct{}{}
+		}
+	}
+	return uniqueStrings(ids)
+}
+
+func capAlertOverrides(next capingest.Alert, previous capingest.Alert, baseDir string) bool {
+	if next.Identifier == "" || previous.Identifier == "" || next.Identifier == previous.Identifier {
+		return false
+	}
+	if !isExplicitCAPEnd(next) {
+		return false
+	}
+	if detectCAPSource(next) != detectCAPSource(previous) {
+		return false
+	}
+	if next.Sender != "" && previous.Sender != "" && !strings.EqualFold(next.Sender, previous.Sender) {
+		return false
+	}
+	if !stringSetOverlaps(capLifecycleEventSet(next), capLifecycleEventSet(previous)) {
+		return false
+	}
+	return stringSetOverlaps(capLifecycleLocationSet(next, baseDir), capLifecycleLocationSet(previous, baseDir))
+}
+
+func capLifecycleEventSet(alert capingest.Alert) map[string]struct{} {
+	out := map[string]struct{}{}
+	add := func(raw string) {
+		key := normalizeLifecycleKey(raw)
+		if key != "" {
+			out[key] = struct{}{}
+		}
+	}
+	for _, info := range alert.Infos {
+		add(info.Event)
+		add(alertSubject(info))
+		add(stripAlertHeadlineState(info.Headline))
+		for _, code := range info.EventCodes {
+			name := strings.ToLower(strings.TrimSpace(code.Name))
+			if strings.Contains(name, "same") || strings.Contains(name, "event") {
+				add(code.Value)
+			}
+		}
+	}
+	return out
+}
+
+func capLifecycleLocationSet(alert capingest.Alert, baseDir string) map[string]struct{} {
+	db := loadAlertGeoDB(baseDir)
+	out := map[string]struct{}{}
+	add := func(raw string) {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			return
+		}
+		out[strings.ToUpper(value)] = struct{}{}
+		if digits := digitsOnly(value); digits != "" {
+			out[digits] = struct{}{}
+			if same := sameLocationCode(digits); same != "" {
+				out[same] = struct{}{}
+			}
+		}
+		if normalized := normalizeNWSCode(value); normalized != "" {
+			out[normalized] = struct{}{}
+		}
+		for _, same := range sameLocationCodesForAlertCode(db, value) {
+			if same != "" {
+				out[same] = struct{}{}
+			}
+		}
+	}
+	for _, code := range alertCoverageCodes(alert) {
+		add(code)
+	}
+	return out
+}
+
+func normalizeLifecycleKey(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	raw = strings.ReplaceAll(raw, "_", " ")
+	raw = strings.ReplaceAll(raw, "-", " ")
+	return strings.Join(strings.Fields(raw), " ")
+}
+
+func stringSetOverlaps(left map[string]struct{}, right map[string]struct{}) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return false
+	}
+	if len(left) > len(right) {
+		left, right = right, left
+	}
+	for value := range left {
+		if _, ok := right[value]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func removeCAPIDs(entries []capRegistryEntry, ids []string) []capRegistryEntry {
+	if len(entries) == 0 || len(ids) == 0 {
+		return entries
+	}
+	remove := map[string]struct{}{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			remove[id] = struct{}{}
+		}
+	}
+	out := entries[:0]
+	for _, entry := range entries {
+		if _, ok := remove[entry.ID]; ok {
+			continue
+		}
+		if _, ok := remove[entry.Alert.Identifier]; ok {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func pruneCAPEntries(entries []capRegistryEntry, now time.Time) []capRegistryEntry {

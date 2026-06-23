@@ -34,6 +34,8 @@ services:
       enabled: true
       source_id: "go-cap"
       source: "naads"
+      url: "http://rss1.naad-adna.pelmorex.com/"
+      fallback_url: "http://rss2.naad-adna.pelmorex.com/"
       interval: "30s"
       timeout: "15s"
     tts:

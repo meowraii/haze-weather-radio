@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,7 +17,10 @@ import (
 	"github.com/meowraii/haze-weather-radio/services/go/internal/processguard"
 )
 
-const defaultNAADSURL = "https://rss.naad-adna.pelmorex.com/"
+const (
+	defaultNAADSURL  = "http://rss1.naad-adna.pelmorex.com/"
+	defaultNAADSURL2 = "http://rss2.naad-adna.pelmorex.com/"
+)
 
 func main() {
 	log.SetOutput(os.Stdout)
@@ -30,6 +34,7 @@ func run() error {
 	sourceID := flag.String("source-id", "cap", "source identifier used in emitted events")
 	sourceKind := flag.String("source", "naads", "source preset: naads, nws, or custom")
 	url := flag.String("url", "", "Atom feed URL")
+	fallbackURLs := flag.String("fallback-url", "", "comma-separated fallback Atom feed URLs")
 	once := flag.Bool("once", false, "fetch once and exit")
 	interval := flag.Duration("interval", 30*time.Second, "poll interval for continuous mode")
 	timeout := flag.Duration("timeout", 15*time.Second, "HTTP request timeout")
@@ -54,9 +59,14 @@ func run() error {
 		publisher = events.NewHostBridgePublisher(bridgeAddr)
 	}
 	poller := capingest.NewPoller(publisher)
+	sourceURLs := splitURLs(*fallbackURLs)
+	if len(sourceURLs) == 0 {
+		sourceURLs = defaultFallbackURLsForSource(*sourceKind)
+	}
 	source := capingest.SourceConfig{
 		ID:           *sourceID,
 		URL:          sourceURL,
+		URLs:         sourceURLs,
 		PollInterval: *interval,
 		Timeout:      *timeout,
 		UserAgent:    *userAgent,
@@ -89,4 +99,25 @@ func defaultURLForSource(kind string) string {
 	default:
 		return ""
 	}
+}
+
+func defaultFallbackURLsForSource(kind string) []string {
+	switch kind {
+	case "naads":
+		return []string{defaultNAADSURL2}
+	default:
+		return nil
+	}
+}
+
+func splitURLs(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

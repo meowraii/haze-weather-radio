@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
@@ -94,11 +95,40 @@ func (p *Poller) PollAtom(ctx context.Context, source SourceConfig) error {
 }
 
 func (p *Poller) fetchAtom(ctx context.Context, source SourceConfig) ([]AtomEntry, error) {
-	body, err := p.httpGet(ctx, source, source.URL, "application/atom+xml, application/xml;q=0.9, */*;q=0.1")
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for _, url := range sourceAtomURLs(source) {
+		body, err := p.httpGet(ctx, source, url, "application/atom+xml, application/xml;q=0.9, */*;q=0.1")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return ParseAtomEntries(body)
 	}
-	return ParseAtomEntries(body)
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("no Atom URL configured")
+}
+
+func sourceAtomURLs(source SourceConfig) []string {
+	out := make([]string, 0, 1+len(source.URLs))
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	add(source.URL)
+	for _, url := range source.URLs {
+		add(url)
+	}
+	return out
 }
 
 func (p *Poller) fetchFirstCAP(ctx context.Context, source SourceConfig, links []string) (Alert, error) {
