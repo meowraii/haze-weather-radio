@@ -743,10 +743,6 @@
                                         <span>Program output</span>
                                         <input id="cgenProgramOutput" type="text" placeholder="udp://239.0.0.2:9001?pkt_size=1316">
                                     </label>
-                                    <label class="daemon-field cgen-wide">
-                                        <span>Alert + program output</span>
-                                        <input id="cgenAlertOutput" type="text" placeholder="udp://239.0.0.2:9001?pkt_size=1316">
-                                    </label>
                                     <label class="daemon-field">
                                         <span>Output format</span>
                                         <input id="cgenOutputFormat" type="text" value="mpegts">
@@ -760,12 +756,40 @@
                                         <input id="cgenACodec" type="text" value="ac3">
                                     </label>
                                     <label class="daemon-field">
-                                        <span>Video kbps</span>
-                                        <input id="cgenVideoBitrate" type="number" min="100" step="100" value="12000">
+                                        <span>HD kbps</span>
+                                        <input id="cgenHdBitrate" type="number" min="100" step="100" value="12000">
                                     </label>
                                     <label class="daemon-field">
-                                        <span>Audio kbps</span>
-                                        <input id="cgenAudioBitrate" type="number" min="32" step="8" value="192">
+                                        <span>720p</span>
+                                        <input id="cgenP720Enabled" type="checkbox">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>720p kbps</span>
+                                        <input id="cgenP720Bitrate" type="number" min="100" step="100" value="8000">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>SD</span>
+                                        <input id="cgenSdEnabled" type="checkbox">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>SD kbps</span>
+                                        <input id="cgenSdBitrate" type="number" min="100" step="100" value="5000">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>5.1 AC-3</span>
+                                        <input id="cgenSurroundEnabled" type="checkbox">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>5.1 kbps</span>
+                                        <input id="cgenSurroundBitrate" type="number" min="32" step="8" value="384">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Stereo AC-3</span>
+                                        <input id="cgenStereoEnabled" type="checkbox">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Stereo kbps</span>
+                                        <input id="cgenStereoBitrate" type="number" min="32" step="8" value="192">
                                     </label>
                                 </div>
                             </section>
@@ -835,10 +859,6 @@
                                         <input id="cgenTextY" type="number" value="128">
                                     </label>
                                     <label class="daemon-field">
-                                        <span>Text color</span>
-                                        <input id="cgenTextColor" type="color" value="#ffffff">
-                                    </label>
-                                    <label class="daemon-field">
                                         <span>Banner X</span>
                                         <input id="cgenBannerX" type="number" value="0">
                                     </label>
@@ -899,10 +919,6 @@
                                     <label class="daemon-field">
                                         <span>Clock size</span>
                                         <input id="cgenClockFontSize" type="number" value="30">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>Clock color</span>
-                                        <input id="cgenClockColor" type="color" value="#ffffff">
                                     </label>
                                     <label class="ba-switch bulletin-enabled-row">
                                         <input id="cgenSmpteBars" type="checkbox">

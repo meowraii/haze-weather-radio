@@ -1160,7 +1160,7 @@ mod tests {
 
     use crate::config::{
         AudioConfig, BannerConfig, ClockConfig, EndpointConfig, FeedConfig, GraphicsConfig,
-        PriorityInputConfig, StateConfig, SyncConfig, TextConfig, VideoConfig,
+        LadderConfig, PriorityInputConfig, StateConfig, SyncConfig, TextConfig, VideoConfig,
     };
     use crate::state::{BannerPayload, PriorityAudio, RuntimeState, SerializedAlert};
 
@@ -1201,6 +1201,7 @@ mod tests {
                 standard: String::new(),
             },
             audio: AudioConfig::default(),
+            ladder: LadderConfig::default(),
             banner: BannerConfig::default(),
             graphics: GraphicsConfig::default(),
             clock: ClockConfig::default(),
@@ -1447,6 +1448,7 @@ mod tests {
                 standard: String::new(),
             },
             audio: AudioConfig::default(),
+            ladder: LadderConfig::default(),
             banner: BannerConfig::default(),
             graphics: GraphicsConfig::default(),
             clock: ClockConfig::default(),

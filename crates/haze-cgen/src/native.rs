@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-use crate::config::{FeedConfig, SyncConfig};
+use crate::config::{AudioRenditionConfig, FeedConfig, SyncConfig, VideoRenditionConfig};
 use crate::graphics::NativeGraphicsRenderer;
 use crate::state::{PriorityAudio, RuntimeState};
 
@@ -44,9 +44,36 @@ struct StreamSpec {
 struct InputStreamSpec {
     input_index: usize,
     time_base: AVRational,
+    start_time: i64,
     #[allow(dead_code)]
     frame_rate: AVRational,
     codecpar: AVCodecParameters,
+}
+
+#[derive(Debug, Clone)]
+struct OutputProgram {
+    program_number: i32,
+    pmt_pid: i32,
+    pcr_pid: i32,
+    stream_indexes: Vec<i32>,
+}
+
+struct VideoOutput {
+    rendition: VideoRenditionConfig,
+    processor: VideoProcessor,
+    spec: StreamSpec,
+}
+
+struct AudioOutput {
+    rendition: AudioRenditionConfig,
+    processor: AudioProcessor,
+    spec: StreamSpec,
+    program_number: i32,
+}
+
+struct AuxiliaryOutput {
+    input_index: usize,
+    spec: StreamSpec,
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +101,7 @@ impl CgenClock {
             return true;
         }
         if self.audio_next_pts.is_none() {
-            self.audio_next_pts = Some(0);
+            self.audio_next_pts = Some(target_pts.max(0));
         }
         false
     }
@@ -83,10 +110,20 @@ impl CgenClock {
         self.audio_next_pts.unwrap_or(target_pts)
     }
 
-    fn ensure_audio_started(&mut self) {
+    fn ensure_audio_started_at(&mut self, pts: i64) {
         if self.audio_next_pts.is_none() {
-            self.audio_next_pts = Some(0);
+            self.audio_next_pts = Some(pts);
         }
+    }
+
+    fn reset_audio(&mut self) {
+        self.audio_next_pts = None;
+        self.audio_drift_ms = 0.0;
+    }
+
+    fn reset_audio_to(&mut self, pts: i64) {
+        self.audio_next_pts = Some(pts);
+        self.audio_drift_ms = 0.0;
     }
 
     fn advance_audio(&mut self, duration: i64) {
@@ -207,6 +244,25 @@ fn encode_once(
         bail!("native cgen input has no streams");
     }
 
+    let video_input_index = input_specs
+        .iter()
+        .find(|spec| spec.codecpar.codec_type == ffi::AVMEDIA_TYPE_VIDEO)
+        .map(|spec| spec.input_index)
+        .context("native cgen input has no video stream")?;
+    let video_spec = input_specs
+        .iter()
+        .find(|spec| spec.input_index == video_input_index)
+        .context("native cgen video stream disappeared")?;
+    let source_width = u32::try_from(video_spec.codecpar.width.max(0)).unwrap_or_default();
+    let source_height = u32::try_from(video_spec.codecpar.height.max(0)).unwrap_or_default();
+    let video_renditions = feed.enabled_video_renditions(source_width, source_height);
+    let audio_renditions = feed.enabled_audio_renditions();
+    if video_renditions.is_empty() {
+        bail!("native cgen has no enabled video renditions");
+    }
+    if audio_renditions.is_empty() {
+        bail!("native cgen has no enabled audio renditions");
+    }
     let mut output = AVFormatContextOutput::builder()
         .format_name(output_format.as_c_str())
         .filename(&output_url)
@@ -218,76 +274,112 @@ fn encode_once(
                 output_format.to_string_lossy()
             )
         })?;
-    let video_input_index = input_specs
-        .iter()
-        .find(|spec| spec.codecpar.codec_type == ffi::AVMEDIA_TYPE_VIDEO)
-        .map(|spec| spec.input_index)
-        .context("native cgen input has no video stream")?;
-    let video_spec = input_specs
-        .iter()
-        .find(|spec| spec.input_index == video_input_index)
-        .context("native cgen video stream disappeared")?;
-    let mut video_processor = VideoProcessor::new(feed, video_spec, state_rx.clone())?;
+
+    let mut video_outputs = Vec::with_capacity(video_renditions.len());
+    let mut programs = Vec::with_capacity(video_renditions.len());
+    for (index, rendition) in video_renditions.into_iter().enumerate() {
+        let processor = VideoProcessor::new(feed, video_spec, &rendition, state_rx.clone())?;
+        let video_pid = rendition.video_pid(index);
+        let spec = add_output_stream(
+            &mut output,
+            video_spec,
+            processor.output_codecpar(),
+            processor.output_time_base(),
+            video_pid,
+        );
+        let program_number = rendition.program_number(index);
+        let pmt_pid = rendition.pmt_pid(index);
+        programs.push(OutputProgram {
+            program_number,
+            pmt_pid,
+            pcr_pid: video_pid,
+            stream_indexes: vec![spec.output_index],
+        });
+        video_outputs.push(VideoOutput {
+            rendition,
+            processor,
+            spec,
+        });
+    }
 
     let audio_input_indices = input_specs
         .iter()
         .filter(|spec| spec.codecpar.codec_type == ffi::AVMEDIA_TYPE_AUDIO)
         .map(|spec| spec.input_index)
         .collect::<Vec<_>>();
-    let mut audio_processors = Vec::with_capacity(audio_input_indices.len());
-    for input_index in &audio_input_indices {
-        let audio_spec = input_specs
-            .iter()
-            .find(|spec| spec.input_index == *input_index)
-            .context("native cgen audio stream disappeared")?;
-        audio_processors.push(AudioProcessor::new(
-            feed,
-            audio_spec,
-            state_rx.clone(),
-            base_dir.to_path_buf(),
-        )?);
-    }
-    if audio_processors.is_empty() {
+    if audio_input_indices.is_empty() {
         warn!(
             feed_id = %feed.id,
-            "native cgen input has no audio stream; priority alert audio cannot be injected"
+            "native cgen input has no audio stream; CGEN will output silence until priority alert audio appears"
         );
     }
-    let audio_outputs = audio_processors
-        .iter()
-        .map(|processor| (processor.input_index, processor.output_codecpar()))
-        .collect::<Vec<_>>();
-    let mut stream_map = create_output_streams(
-        &mut output,
-        &input_specs,
-        video_input_index,
-        video_processor.output_codecpar(),
-        video_processor.output_time_base(),
-        &audio_outputs,
-    )?;
+    let mut audio_outputs = Vec::new();
+    for (program_index, program) in programs.iter_mut().enumerate() {
+        for (audio_index, rendition) in audio_renditions.iter().enumerate() {
+            let Some(audio_spec) = select_audio_source(&input_specs, rendition.channels()) else {
+                continue;
+            };
+            let processor = AudioProcessor::new(
+                feed,
+                audio_spec,
+                rendition,
+                video_spec,
+                state_rx.clone(),
+                base_dir.to_path_buf(),
+            )?;
+            let spec = add_output_stream(
+                &mut output,
+                audio_spec,
+                processor.output_codecpar(),
+                AVRational {
+                    num: 1,
+                    den: ALERT_SAMPLE_RATE as i32,
+                },
+                audio_pid(program_index, audio_index),
+            );
+            program.stream_indexes.push(spec.output_index);
+            audio_outputs.push(AudioOutput {
+                rendition: rendition.clone(),
+                processor,
+                spec,
+                program_number: program.program_number,
+            });
+        }
+    }
+    let mut auxiliary_outputs = Vec::new();
+    for spec in input_specs.iter().filter(|spec| {
+        spec.input_index != video_input_index
+            && spec.codecpar.codec_type != ffi::AVMEDIA_TYPE_AUDIO
+            && is_auxiliary_passthrough_stream(spec.codecpar.codec_type)
+    }) {
+        let mut codecpar = AVCodecParameters::new();
+        codecpar.copy(&spec.codecpar);
+        let out_spec = add_output_stream(
+            &mut output,
+            spec,
+            codecpar,
+            spec.time_base,
+            auxiliary_pid(auxiliary_outputs.len()),
+        );
+        for program in &mut programs {
+            program.stream_indexes.push(out_spec.output_index);
+        }
+        auxiliary_outputs.push(AuxiliaryOutput {
+            input_index: spec.input_index,
+            spec: out_spec,
+        });
+    }
+    create_output_programs(&mut output, &programs)?;
     let mut header_options = None;
     output
         .write_header(&mut header_options)
         .context("failed to write native cgen output header")?;
-    refresh_output_time_bases(&output, &mut stream_map);
-    let audio_stream_specs = audio_processors
-        .iter()
-        .filter_map(|processor| {
-            stream_map
-                .iter()
-                .find(|spec| spec.input_index == processor.input_index)
-                .cloned()
-        })
-        .collect::<Vec<_>>();
-    let auxiliary_streams = stream_map
-        .iter()
-        .filter(|spec| {
-            spec.input_index != video_input_index
-                && !audio_processors
-                    .iter()
-                    .any(|processor| processor.input_index == spec.input_index)
-        })
-        .count();
+    refresh_output_specs(
+        &output,
+        &mut video_outputs,
+        &mut audio_outputs,
+        &mut auxiliary_outputs,
+    );
     publish_status(
         &status_tx,
         feed,
@@ -296,11 +388,14 @@ fn encode_once(
             "input_connected": true,
             "output_active": true,
             "no_signal": false,
-            "video_streams": 1,
-            "audio_streams": audio_processors.len(),
-            "auxiliary_streams": auxiliary_streams,
-            "width": feed.video.width,
-            "height": feed.video.height,
+            "programs": programs.iter().map(|program| program.program_number).collect::<Vec<_>>(),
+            "video_streams": video_outputs.len(),
+            "audio_streams": audio_outputs.len(),
+            "auxiliary_streams": auxiliary_outputs.len(),
+            "active_video_renditions": video_outputs.iter().map(|output| output.rendition.id.as_str()).collect::<Vec<_>>(),
+            "active_audio_renditions": audio_outputs.iter().map(|output| output.rendition.id.as_str()).collect::<Vec<_>>(),
+            "width": video_outputs.first().map(|output| output.rendition.width).unwrap_or(feed.video.width),
+            "height": video_outputs.first().map(|output| output.rendition.height).unwrap_or(feed.video.height),
             "renderer_backend": "rsmpeg/wgpu-cpu-fallback",
         }),
     );
@@ -312,32 +407,40 @@ fn encode_once(
         .context("native cgen read packet failed")?
     {
         let input_index = packet.stream_index as usize;
-        let Some(spec) = stream_map
-            .iter()
-            .find(|spec| spec.input_index == input_index)
-        else {
-            continue;
-        };
         if input_index == video_input_index {
-            video_processor.process_packet(&packet, spec, &mut output)?;
-            for processor in &mut audio_processors {
-                if let Some(audio_spec) = audio_stream_specs
-                    .iter()
-                    .find(|spec| spec.input_index == processor.input_index)
-                {
-                    let target_audio_pts = rescale_q(
-                        video_processor.next_pts,
-                        video_processor.output_time_base(),
-                        audio_spec.output_time_base,
-                    );
-                    processor.write_mixed_until(target_audio_pts, audio_spec, &mut output)?;
-                }
+            for video_output in &mut video_outputs {
+                video_output
+                    .processor
+                    .process_packet(&packet, &video_output.spec, &mut output)?;
+            }
+            let reference_next_pts = video_outputs
+                .first()
+                .map(|output| {
+                    (
+                        output.processor.next_pts,
+                        output.processor.output_time_base(),
+                    )
+                })
+                .unwrap_or((0, AVRational { num: 1, den: 30 }));
+            for audio_output in &mut audio_outputs {
+                let target_audio_pts = rescale_q(
+                    reference_next_pts.0,
+                    reference_next_pts.1,
+                    audio_output.spec.output_time_base,
+                );
+                audio_output.processor.write_mixed_until(
+                    target_audio_pts,
+                    &audio_output.spec,
+                    &mut output,
+                )?;
             }
             if status_clock.elapsed() >= status_interval {
                 let elapsed = status_clock.elapsed().as_secs_f64().max(0.001);
-                let frames = video_processor
-                    .encoded_frames
-                    .saturating_sub(last_status_frames);
+                let encoded_frames = video_outputs
+                    .first()
+                    .map(|output| output.processor.encoded_frames)
+                    .unwrap_or(0);
+                let frames = encoded_frames.saturating_sub(last_status_frames);
                 let fps = frames as f64 / elapsed;
                 publish_status(
                     &status_tx,
@@ -347,29 +450,44 @@ fn encode_once(
                         "input_connected": true,
                         "output_active": true,
                         "current_fps": fps,
-                        "audio_video_drift_ms": audio_processors.iter().map(AudioProcessor::drift_ms).fold(0.0_f64, |acc, value| acc.max(value.abs())),
-                        "active_alert_queue_id": audio_processors.iter().find_map(AudioProcessor::active_queue_id),
+                        "audio_video_drift_ms": audio_outputs.iter().map(|output| output.processor.drift_ms()).fold(0.0_f64, |acc, value| acc.max(value.abs())),
+                        "active_alert_queue_id": audio_outputs.iter().find_map(|output| output.processor.active_queue_id()),
+                        "programs": programs.iter().map(|program| program.program_number).collect::<Vec<_>>(),
                         "renderer_backend": "rsmpeg/wgpu-cpu-fallback",
                     }),
                 );
                 status_clock = Instant::now();
-                last_status_frames = video_processor.encoded_frames;
+                last_status_frames = encoded_frames;
             }
             continue;
         }
-        if let Some(processor) = audio_processors
+        let mut handled_audio = false;
+        for audio_output in audio_outputs
             .iter_mut()
-            .find(|processor| processor.input_index == input_index)
+            .filter(|output| output.processor.input_index == input_index)
         {
-            processor.process_packet(&mut packet, spec, &mut output)?;
+            audio_output
+                .processor
+                .process_packet(&packet, &audio_output.spec, &mut output)?;
+            handled_audio = true;
+        }
+        if handled_audio {
             continue;
         }
-        packet.rescale_ts(spec.input_time_base, spec.output_time_base);
-        packet.set_stream_index(spec.output_index);
-        packet.set_pos(-1);
-        output
-            .interleaved_write_frame(&mut packet)
-            .context("native cgen write packet failed")?;
+        if let Some(auxiliary) = auxiliary_outputs
+            .iter()
+            .find(|output| output.input_index == input_index)
+        {
+            packet.rescale_ts(
+                auxiliary.spec.input_time_base,
+                auxiliary.spec.output_time_base,
+            );
+            packet.set_stream_index(auxiliary.spec.output_index);
+            packet.set_pos(-1);
+            output
+                .interleaved_write_frame(&mut packet)
+                .context("native cgen write auxiliary packet failed")?;
+        }
     }
     output
         .write_trailer()
@@ -399,6 +517,7 @@ fn collect_input_specs(input: &AVFormatContextInput) -> Result<Vec<InputStreamSp
         out.push(InputStreamSpec {
             input_index: stream.index as usize,
             time_base: stream.time_base,
+            start_time: stream.start_time,
             frame_rate: stream
                 .guess_framerate()
                 .unwrap_or(AVRational { num: 0, den: 1 }),
@@ -408,76 +527,93 @@ fn collect_input_specs(input: &AVFormatContextInput) -> Result<Vec<InputStreamSp
     Ok(out)
 }
 
-fn create_output_streams(
+fn add_output_stream(
     output: &mut AVFormatContextOutput,
-    input_specs: &[InputStreamSpec],
-    video_input_index: usize,
-    video_codecpar: AVCodecParameters,
-    video_time_base: AVRational,
-    audio_outputs: &[(usize, AVCodecParameters)],
-) -> Result<Vec<StreamSpec>> {
-    let mut out = Vec::with_capacity(input_specs.len());
-    let ordered_specs = ordered_output_specs(input_specs, video_input_index);
-    for spec in ordered_specs {
-        let audio_codecpar = audio_outputs
-            .iter()
-            .find(|(input_index, _)| *input_index == spec.input_index)
-            .map(|(_, codecpar)| codecpar);
-        if spec.input_index != video_input_index
-            && audio_codecpar.is_none()
-            && !is_auxiliary_passthrough_stream(spec.codecpar.codec_type)
-        {
-            continue;
-        }
-        let mut stream = output.new_stream();
-        let output_time_base = if spec.input_index == video_input_index {
-            stream.set_codecpar(video_codecpar.clone());
-            stream.set_time_base(video_time_base);
-            stream.time_base
-        } else if let Some(codecpar) = audio_codecpar {
-            stream.set_codecpar(codecpar.clone());
-            stream.set_time_base(AVRational {
-                num: 1,
-                den: ALERT_SAMPLE_RATE as i32,
-            });
-            stream.time_base
-        } else {
-            let mut codecpar = AVCodecParameters::new();
-            codecpar.copy(&spec.codecpar);
-            stream.set_codecpar(codecpar);
-            stream.set_time_base(spec.time_base);
-            stream.time_base
-        };
-        out.push(StreamSpec {
-            input_index: spec.input_index,
-            output_index: stream.index,
-            input_time_base: spec.time_base,
-            output_time_base,
-        });
+    input_spec: &InputStreamSpec,
+    codecpar: AVCodecParameters,
+    time_base: AVRational,
+    pid: i32,
+) -> StreamSpec {
+    let mut stream = output.new_stream();
+    stream.set_codecpar(codecpar);
+    stream.set_time_base(time_base);
+    // SAFETY: `stream` is newly allocated on this muxer and uniquely borrowed
+    // here. `id` is the MPEG-TS stream PID field FFmpeg expects callers to set
+    // before the muxer header is written.
+    unsafe {
+        (*stream.as_mut_ptr()).id = pid;
     }
-    Ok(out)
+    StreamSpec {
+        input_index: input_spec.input_index,
+        output_index: stream.index,
+        input_time_base: input_spec.time_base,
+        output_time_base: stream.time_base,
+    }
 }
 
-fn ordered_output_specs(
+fn select_audio_source(
     input_specs: &[InputStreamSpec],
-    video_input_index: usize,
-) -> Vec<&InputStreamSpec> {
-    let mut out = Vec::with_capacity(input_specs.len());
-    if let Some(video) = input_specs
+    desired_channels: u16,
+) -> Option<&InputStreamSpec> {
+    let audio_specs = input_specs
         .iter()
-        .find(|spec| spec.input_index == video_input_index)
-    {
-        out.push(video);
+        .filter(|spec| spec.codecpar.codec_type == ffi::AVMEDIA_TYPE_AUDIO)
+        .collect::<Vec<_>>();
+    if desired_channels > 2 {
+        audio_specs
+            .iter()
+            .copied()
+            .find(|spec| audio_output_channels(&spec.codecpar) >= desired_channels)
+            .or_else(|| audio_specs.first().copied())
+    } else {
+        audio_specs
+            .iter()
+            .copied()
+            .find(|spec| audio_output_channels(&spec.codecpar) <= 2)
+            .or_else(|| audio_specs.first().copied())
     }
-    out.extend(input_specs.iter().filter(|spec| {
-        spec.input_index != video_input_index && spec.codecpar.codec_type == ffi::AVMEDIA_TYPE_AUDIO
-    }));
-    out.extend(input_specs.iter().filter(|spec| {
-        spec.input_index != video_input_index
-            && spec.codecpar.codec_type != ffi::AVMEDIA_TYPE_AUDIO
-            && is_auxiliary_passthrough_stream(spec.codecpar.codec_type)
-    }));
-    out
+}
+
+fn audio_pid(program_index: usize, audio_index: usize) -> i32 {
+    0x101
+        + (i32::try_from(program_index).unwrap_or(0) * 0x20)
+        + i32::try_from(audio_index).unwrap_or(0)
+}
+
+fn auxiliary_pid(index: usize) -> i32 {
+    0x1f0 + i32::try_from(index).unwrap_or(0)
+}
+
+fn create_output_programs(
+    output: &mut AVFormatContextOutput,
+    programs: &[OutputProgram],
+) -> Result<()> {
+    for program in programs {
+        // SAFETY: the output context is alive and not yet header-written.
+        // FFmpeg owns the returned AVProgram, and we only fill public program
+        // metadata plus stream indexes that were just allocated on this muxer.
+        unsafe {
+            let raw = ffi::av_new_program(output.as_mut_ptr(), program.program_number);
+            if raw.is_null() {
+                bail!(
+                    "failed to create native cgen output program {}",
+                    program.program_number
+                );
+            }
+            (*raw).program_num = program.program_number;
+            (*raw).pmt_pid = program.pmt_pid;
+            (*raw).pcr_pid = program.pcr_pid;
+            for index in &program.stream_indexes {
+                let index = u32::try_from(*index).context("native cgen stream index overflow")?;
+                ffi::av_program_add_stream_index(
+                    output.as_mut_ptr(),
+                    program.program_number,
+                    index,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn is_auxiliary_passthrough_stream(codec_type: ffi::AVMediaType) -> bool {
@@ -490,15 +626,30 @@ fn is_auxiliary_passthrough_stream(codec_type: ffi::AVMediaType) -> bool {
     )
 }
 
-fn refresh_output_time_bases(output: &AVFormatContextOutput, stream_map: &mut [StreamSpec]) {
-    for spec in stream_map {
-        if let Some(stream) = output
-            .streams()
-            .iter()
-            .find(|stream| stream.index == spec.output_index)
-        {
-            spec.output_time_base = stream.time_base;
-        }
+fn refresh_stream_spec(output: &AVFormatContextOutput, spec: &mut StreamSpec) {
+    if let Some(stream) = output
+        .streams()
+        .iter()
+        .find(|stream| stream.index == spec.output_index)
+    {
+        spec.output_time_base = stream.time_base;
+    }
+}
+
+fn refresh_output_specs(
+    output: &AVFormatContextOutput,
+    video_outputs: &mut [VideoOutput],
+    audio_outputs: &mut [AudioOutput],
+    auxiliary_outputs: &mut [AuxiliaryOutput],
+) {
+    for video in video_outputs {
+        refresh_stream_spec(output, &mut video.spec);
+    }
+    for audio in audio_outputs {
+        refresh_stream_spec(output, &mut audio.spec);
+    }
+    for auxiliary in auxiliary_outputs {
+        refresh_stream_spec(output, &mut auxiliary.spec);
     }
 }
 
@@ -590,10 +741,11 @@ impl VideoProcessor {
     fn new(
         feed: &FeedConfig,
         video_spec: &InputStreamSpec,
+        rendition: &VideoRenditionConfig,
         state_rx: watch::Receiver<RuntimeState>,
     ) -> Result<Self> {
         let decoder = create_video_decoder(&video_spec.codecpar)?;
-        let encoder = create_video_encoder(feed, video_spec)?;
+        let encoder = create_video_encoder(feed, video_spec, rendition)?;
         let encoder_pix_fmt = encoder.pix_fmt;
         let output_frame_rate = encoder.framerate;
         let source_frame_rate = if valid_rational(&video_spec.frame_rate) {
@@ -601,26 +753,39 @@ impl VideoProcessor {
         } else {
             output_frame_rate
         };
-        let convert_frame_rate = parse_rational(&feed.video.fps).is_some()
+        let output_fps = rendition.frame_rate_text(&feed.video.fps);
+        let convert_frame_rate = parse_rational(output_fps).is_some()
             && valid_rational(&source_frame_rate)
             && valid_rational(&output_frame_rate)
             && rational_cmp(source_frame_rate, output_frame_rate) != std::cmp::Ordering::Equal;
+        let mut render_feed = feed.clone();
+        render_feed.video.width = rendition.width;
+        render_feed.video.height = rendition.height;
+        render_feed.video.fps = output_fps.to_string();
+        render_feed.video.interlaced = rendition.interlaced;
+        render_feed.video.field_order = rendition.field_order.clone();
+        render_feed.video.standard = rendition.standard.clone();
+        if render_feed.graphics.banner_width == 0
+            || render_feed.graphics.banner_width == feed.video.width
+        {
+            render_feed.graphics.banner_width = rendition.width;
+        }
         Ok(Self {
             feed_id: feed.id.clone(),
             decoder,
             encoder,
             scaler: None,
-            encoder_width: feed.video.width as i32,
-            encoder_height: feed.video.height as i32,
+            encoder_width: rendition.width as i32,
+            encoder_height: rendition.height as i32,
             encoder_pix_fmt,
             source_frame_rate,
             output_frame_rate,
             decoded_frames: 0,
             encoded_frames: 0,
             convert_frame_rate,
-            interlaced: feed.video.interlaced,
-            field_order: video_field_order(feed),
-            graphics: NativeGraphicsRenderer::new(feed, state_rx),
+            interlaced: rendition.interlaced,
+            field_order: video_field_order(&rendition.field_order),
+            graphics: NativeGraphicsRenderer::new(&render_feed, state_rx),
             pending_field_frame: None,
             next_pts: 0,
         })
@@ -676,6 +841,8 @@ impl VideoProcessor {
             let frame = self.normalize_frame(source_frame)?;
             if let Some(first_field) = self.pending_field_frame.take() {
                 let mut woven = self.weave_field_pair(&first_field, &frame)?;
+                copy_a53_side_data(source_frame, &mut woven)
+                    .context("failed to preserve native cgen caption side data")?;
                 self.stamp_frame_metadata(&mut woven);
                 woven.set_pts(self.frame_pts(source_frame, spec));
                 return self.encode_frame(&mut woven, spec, output);
@@ -792,6 +959,8 @@ impl VideoProcessor {
             .context("native cgen video scaler is unavailable")?
             .scale_frame(source_frame, 0, source_frame.height, &mut frame)
             .context("failed to scale native cgen video frame")?;
+        copy_a53_side_data(source_frame, &mut frame)
+            .context("failed to preserve native cgen caption side data")?;
         Ok(frame)
     }
 
@@ -923,6 +1092,30 @@ fn weave_frame_planes(
     Ok(())
 }
 
+fn copy_a53_side_data(source: &AVFrame, target: &mut AVFrame) -> Result<bool> {
+    let Some(side_data) = source.get_side_data(ffi::AV_FRAME_DATA_A53_CC) else {
+        return Ok(false);
+    };
+    if side_data.data.is_null() || side_data.size == 0 {
+        return Ok(false);
+    }
+    // SAFETY: both frames are valid AVFrames. FFmpeg allocates `dst` owned by
+    // `target`; source side-data size and pointer are checked above before the
+    // bounded byte copy.
+    unsafe {
+        let dst = ffi::av_frame_new_side_data(
+            target.as_mut_ptr(),
+            ffi::AV_FRAME_DATA_A53_CC,
+            side_data.size,
+        );
+        if dst.is_null() {
+            bail!("failed to allocate native cgen A53 caption side data");
+        }
+        ptr::copy_nonoverlapping(side_data.data, (*dst).data, side_data.size);
+    }
+    Ok(true)
+}
+
 fn frame_plane_layout(
     format: i32,
     width: i32,
@@ -963,10 +1156,15 @@ struct AudioProcessor {
     priority_feed_id: String,
     state_rx: watch::Receiver<RuntimeState>,
     base_dir: PathBuf,
+    input_time_base: AVRational,
+    input_start_time: i64,
+    video_time_base: AVRational,
+    video_start_time: i64,
     decoder: AVCodecContext,
     encoder: AVCodecContext,
     resampler: Option<AudioResampler>,
     output_channels: u16,
+    output_bitrate: i64,
     active_queue_id: Option<String>,
     active_path: Option<PathBuf>,
     pcm: Vec<u8>,
@@ -982,12 +1180,15 @@ impl AudioProcessor {
     fn new(
         feed: &FeedConfig,
         audio_spec: &InputStreamSpec,
+        rendition: &AudioRenditionConfig,
+        video_spec: &InputStreamSpec,
         state_rx: watch::Receiver<RuntimeState>,
         base_dir: PathBuf,
     ) -> Result<Self> {
         let decoder = create_audio_decoder(&audio_spec.codecpar)?;
-        let output_channels = audio_output_channels(&audio_spec.codecpar);
-        let encoder = create_ac3_encoder(output_channels)?;
+        let output_channels = rendition.channels();
+        let output_bitrate = rendition.bitrate_bps();
+        let encoder = create_ac3_encoder(output_channels, output_bitrate)?;
         let priority_feed_id = if feed.priority_input.feed_id.trim().is_empty() {
             feed.id.clone()
         } else {
@@ -999,10 +1200,15 @@ impl AudioProcessor {
             priority_feed_id,
             state_rx,
             base_dir,
+            input_time_base: audio_spec.time_base,
+            input_start_time: audio_spec.start_time,
+            video_time_base: video_spec.time_base,
+            video_start_time: video_spec.start_time,
             decoder,
             encoder,
             resampler: None,
             output_channels,
+            output_bitrate,
             active_queue_id: None,
             active_path: None,
             pcm: Vec::new(),
@@ -1029,7 +1235,7 @@ impl AudioProcessor {
             (*raw).sample_rate = ALERT_SAMPLE_RATE as i32;
             (*raw).ch_layout =
                 AVChannelLayout::from_nb_channels(self.output_channels.into()).into_inner();
-            (*raw).bit_rate = ac3_bitrate_for_channels(self.output_channels);
+            (*raw).bit_rate = self.output_bitrate;
             (*raw).frame_size = AC3_FRAME_SAMPLES as i32;
         }
         codecpar
@@ -1037,7 +1243,7 @@ impl AudioProcessor {
 
     fn process_packet(
         &mut self,
-        source_packet: &mut AVPacket,
+        source_packet: &AVPacket,
         spec: &StreamSpec,
         output: &mut AVFormatContextOutput,
     ) -> Result<()> {
@@ -1051,7 +1257,7 @@ impl AudioProcessor {
         loop {
             match self.decoder.receive_frame() {
                 Ok(frame) => {
-                    self.enqueue_source_frame(&frame)?;
+                    self.enqueue_source_frame(&frame, spec)?;
                     self.write_available_source_audio(spec, output)?;
                 }
                 Err(err) if is_again(&err) => return Ok(()),
@@ -1060,7 +1266,27 @@ impl AudioProcessor {
         }
     }
 
-    fn enqueue_source_frame(&mut self, source_frame: &AVFrame) -> Result<()> {
+    fn enqueue_source_frame(&mut self, source_frame: &AVFrame, spec: &StreamSpec) -> Result<()> {
+        let source_pts = self.source_frame_output_pts(source_frame, spec.output_time_base);
+        if let Some(source_pts) = source_pts {
+            if self.clock.audio_next_pts.is_none() {
+                self.clock.ensure_audio_started_at(source_pts);
+            } else if self.source_pcm.is_empty() {
+                let current = self.clock.audio_next_pts.unwrap_or(source_pts);
+                let drift_ms =
+                    pts_delta_ms(current.saturating_sub(source_pts), spec.output_time_base);
+                if drift_ms.abs() > f64::from(self.clock.sync.hard_reset_ms.max(1)) {
+                    warn!(
+                        feed_id = %self.feed_id,
+                        input_index = self.input_index,
+                        drift_ms,
+                        source_pts,
+                        "native cgen source audio clock reset after source timestamp discontinuity"
+                    );
+                    self.clock.reset_audio_to(source_pts);
+                }
+            }
+        }
         let source_pcm = match self.frame_to_output_pcm16(source_frame) {
             Ok(samples) => samples,
             Err(err) => {
@@ -1078,10 +1304,55 @@ impl AudioProcessor {
             return Ok(());
         }
         self.source_pcm.extend(source_pcm);
-        while self.source_pcm.len() > self.source_max_samples {
-            self.source_pcm.pop_front();
-        }
+        self.drop_excess_source_audio(spec.output_time_base);
         Ok(())
+    }
+
+    fn source_frame_output_pts(
+        &self,
+        source_frame: &AVFrame,
+        output_time_base: AVRational,
+    ) -> Option<i64> {
+        let audio_pts = if valid_media_pts(source_frame.pts) {
+            source_frame.pts
+        } else if valid_media_pts(self.input_start_time) {
+            self.input_start_time
+        } else {
+            return None;
+        };
+        source_audio_output_pts(
+            audio_pts,
+            self.input_time_base,
+            self.video_start_time,
+            self.video_time_base,
+            output_time_base,
+        )
+    }
+
+    fn drop_excess_source_audio(&mut self, output_time_base: AVRational) {
+        let channels = usize::from(self.output_channels.max(1));
+        while self.source_pcm.len() > self.source_max_samples {
+            let excess = self
+                .source_pcm
+                .len()
+                .saturating_sub(self.source_max_samples);
+            let sample_frames = (excess / channels).max(1);
+            let drop_samples = sample_frames.saturating_mul(channels);
+            for _ in 0..drop_samples {
+                if self.source_pcm.pop_front().is_none() {
+                    break;
+                }
+            }
+            let duration = rescale_q(
+                sample_frames as i64,
+                AVRational {
+                    num: 1,
+                    den: ALERT_SAMPLE_RATE as i32,
+                },
+                output_time_base,
+            );
+            self.clock.advance_audio(duration.max(0));
+        }
     }
 
     fn frame_to_output_pcm16(&mut self, frame: &AVFrame) -> Result<Vec<i16>> {
@@ -1176,7 +1447,7 @@ impl AudioProcessor {
             return Ok(());
         }
         let duration = audio_frame_duration(spec.output_time_base);
-        self.clock.ensure_audio_started();
+        self.clock.ensure_audio_started_at(0);
         let mut frames_written = 0usize;
         while self.source_pcm.len() >= samples_per_packet && frames_written < 32 {
             let pts = self.clock.audio_pts(0);
@@ -1218,6 +1489,7 @@ impl AudioProcessor {
         let Some(audio) = audio else {
             if self.was_alert_active {
                 self.source_pcm.clear();
+                self.clock.reset_audio();
             }
             self.active_queue_id = None;
             self.active_path = None;
@@ -1229,6 +1501,7 @@ impl AudioProcessor {
         if !self.was_alert_active {
             self.source_pcm.clear();
             self.cursor = 0;
+            self.clock.reset_audio();
         }
         self.was_alert_active = true;
         self.ensure_loaded(&audio)?;
@@ -1380,10 +1653,11 @@ impl AudioResampler {
     }
 
     fn convert(&mut self, frame: &AVFrame) -> Result<Vec<i16>> {
-        let out_samples = self
-            .context
-            .get_out_samples(frame.nb_samples.max(0))
-            .max(AC3_FRAME_SAMPLES as i32);
+        let input_samples = frame.nb_samples.max(0);
+        if input_samples == 0 {
+            return Ok(Vec::new());
+        }
+        let out_samples = self.context.get_out_samples(input_samples).max(1);
         let mut output = AVFrame::new();
         output.set_nb_samples(out_samples);
         output.set_format(ffi::AV_SAMPLE_FMT_S16);
@@ -1394,9 +1668,27 @@ impl AudioResampler {
         output
             .alloc_buffer()
             .context("failed to allocate native cgen resampled audio frame")?;
-        self.context
-            .convert_frame(Some(frame), &mut output)
-            .context("failed to resample native cgen source audio")?;
+        let input_data = unsafe {
+            let extended = (*frame.as_ptr()).extended_data as *const *const u8;
+            if extended.is_null() {
+                frame.data.as_ptr() as *const *const u8
+            } else {
+                extended
+            }
+        };
+        let produced = unsafe {
+            self.context.convert(
+                output.data_mut().as_mut_ptr(),
+                out_samples,
+                input_data,
+                input_samples,
+            )
+        }
+        .context("failed to resample native cgen source audio")?;
+        if produced <= 0 {
+            return Ok(Vec::new());
+        }
+        output.set_nb_samples(produced);
         packed_s16_frame_to_vec(&output, usize::from(self.input.output_channels))
     }
 }
@@ -1417,7 +1709,7 @@ impl AudioResamplerInput {
     }
 }
 
-fn create_ac3_encoder(channels: u16) -> Result<AVCodecContext> {
+fn create_ac3_encoder(channels: u16, bitrate: i64) -> Result<AVCodecContext> {
     let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_AC3)
         .context("native cgen AC-3 encoder is unavailable")?;
     let sample_fmt = if codec
@@ -1437,7 +1729,7 @@ fn create_ac3_encoder(channels: u16) -> Result<AVCodecContext> {
         num: 1,
         den: ALERT_SAMPLE_RATE as i32,
     });
-    encoder.set_bit_rate(ac3_bitrate_for_channels(channels));
+    encoder.set_bit_rate(bitrate);
     encoder
         .open(None)
         .context("failed to open native cgen AC-3 encoder")?;
@@ -1472,24 +1764,28 @@ fn create_video_decoder(codecpar: &AVCodecParameters) -> Result<AVCodecContext> 
 }
 
 #[allow(dead_code)]
-fn create_video_encoder(feed: &FeedConfig, video_spec: &InputStreamSpec) -> Result<AVCodecContext> {
+fn create_video_encoder(
+    feed: &FeedConfig,
+    video_spec: &InputStreamSpec,
+    rendition: &VideoRenditionConfig,
+) -> Result<AVCodecContext> {
     let output = feed.output();
-    let codec_name = output_codec_name(&output.vcodec);
+    let codec_name = output_codec_name(rendition.codec_name(&output.vcodec));
     let codec_name_c = cstring_arg(&codec_name, "video codec name")?;
     let codec = AVCodec::find_encoder_by_name(codec_name_c.as_c_str())
         .with_context(|| format!("native cgen video encoder {codec_name} is unavailable"))?;
     let pix_fmt = select_video_pix_fmt(&codec, &codec_name);
-    let frame_rate = output_frame_rate(feed, video_spec);
+    let frame_rate = output_frame_rate(feed, video_spec, rendition);
     let mut encoder = AVCodecContext::new(&codec);
-    let width = if feed.video.width == 0 {
+    let width = if rendition.width == 0 {
         video_spec.codecpar.width
     } else {
-        feed.video.width as i32
+        rendition.width as i32
     };
-    let height = if feed.video.height == 0 {
+    let height = if rendition.height == 0 {
         video_spec.codecpar.height
     } else {
-        feed.video.height as i32
+        rendition.height as i32
     };
     encoder.set_width(width);
     encoder.set_height(height);
@@ -1500,15 +1796,16 @@ fn create_video_encoder(feed: &FeedConfig, video_spec: &InputStreamSpec) -> Resu
     });
     encoder.set_framerate(frame_rate);
     encoder.set_pkt_timebase(encoder.time_base);
-    encoder.set_gop_size(if feed.video.interlaced { 15 } else { 30 });
+    encoder.set_gop_size(if rendition.interlaced { 15 } else { 30 });
     encoder.set_max_b_frames(0);
     encoder.set_bit_rate(
-        output
-            .video_bitrate_kbps
+        rendition
+            .bitrate_kbps
+            .or(output.video_bitrate_kbps)
             .map(|kbps| i64::from(kbps) * 1000)
             .unwrap_or(DEFAULT_VIDEO_BITRATE),
     );
-    if feed.video.interlaced {
+    if rendition.interlaced {
         encoder.set_flags(
             encoder.flags
                 | ffi::AV_CODEC_FLAG_INTERLACED_DCT as i32
@@ -1518,7 +1815,7 @@ fn create_video_encoder(feed: &FeedConfig, video_spec: &InputStreamSpec) -> Resu
         // order is a plain AVCodecContext metadata field used by encoders and
         // muxers to advertise interlaced output.
         unsafe {
-            (*encoder.as_mut_ptr()).field_order = video_field_order(feed);
+            (*encoder.as_mut_ptr()).field_order = video_field_order(&rendition.field_order);
         }
     } else {
         // SAFETY: same ownership as above; explicitly mark non-interlaced
@@ -1527,7 +1824,7 @@ fn create_video_encoder(feed: &FeedConfig, video_spec: &InputStreamSpec) -> Resu
             (*encoder.as_mut_ptr()).field_order = ffi::AV_FIELD_PROGRESSIVE;
         }
     }
-    let options = video_encoder_options(&codec_name, feed);
+    let options = video_encoder_options(&codec_name, rendition.interlaced, &rendition.field_order);
     encoder
         .open(options)
         .with_context(|| format!("failed to open native cgen video encoder {codec_name}"))?;
@@ -1550,8 +1847,12 @@ fn output_codec_name(value: &str) -> String {
 }
 
 #[allow(dead_code)]
-fn output_frame_rate(feed: &FeedConfig, video_spec: &InputStreamSpec) -> AVRational {
-    parse_rational(&feed.video.fps)
+fn output_frame_rate(
+    feed: &FeedConfig,
+    video_spec: &InputStreamSpec,
+    rendition: &VideoRenditionConfig,
+) -> AVRational {
+    parse_rational(rendition.frame_rate_text(&feed.video.fps))
         .filter(valid_rational)
         .or_else(|| valid_rational(&video_spec.frame_rate).then_some(video_spec.frame_rate))
         .unwrap_or(AVRational {
@@ -1560,10 +1861,10 @@ fn output_frame_rate(feed: &FeedConfig, video_spec: &InputStreamSpec) -> AVRatio
         })
 }
 
-fn video_field_order(feed: &FeedConfig) -> ffi::AVFieldOrder {
-    if feed.video.field_order.eq_ignore_ascii_case("bff")
-        || feed.video.field_order.eq_ignore_ascii_case("bottom")
-        || feed.video.field_order.eq_ignore_ascii_case("bottom_first")
+fn video_field_order(value: &str) -> ffi::AVFieldOrder {
+    if value.eq_ignore_ascii_case("bff")
+        || value.eq_ignore_ascii_case("bottom")
+        || value.eq_ignore_ascii_case("bottom_first")
     {
         ffi::AV_FIELD_BB
     } else {
@@ -1636,7 +1937,11 @@ fn prefers_nv12(codec_name: &str) -> bool {
 }
 
 #[allow(dead_code)]
-fn video_encoder_options(codec_name: &str, feed: &FeedConfig) -> Option<AVDictionary> {
+fn video_encoder_options(
+    codec_name: &str,
+    interlaced: bool,
+    field_order: &str,
+) -> Option<AVDictionary> {
     let lower = codec_name.to_ascii_lowercase();
     if lower.contains("libx264") || lower.contains("libx265") {
         return Some(AVDictionary::new(c"preset", c"ultrafast", 0).set(c"tune", c"zerolatency", 0));
@@ -1644,8 +1949,8 @@ fn video_encoder_options(codec_name: &str, feed: &FeedConfig) -> Option<AVDictio
     if lower.contains("nvenc") {
         return Some(AVDictionary::new(c"preset", c"ll", 0).set(c"tune", c"ull", 0));
     }
-    if feed.video.interlaced && lower.contains("mpeg2") {
-        let top = if video_field_order(feed) == ffi::AV_FIELD_BB {
+    if interlaced && lower.contains("mpeg2") {
+        let top = if video_field_order(field_order) == ffi::AV_FIELD_BB {
             c"0"
         } else {
             c"1"
@@ -1785,6 +2090,30 @@ fn pts_delta_ms(delta: i64, time_base: AVRational) -> f64 {
     (delta as f64) * num * 1000.0 / den
 }
 
+fn source_audio_output_pts(
+    audio_pts: i64,
+    audio_time_base: AVRational,
+    video_start_pts: i64,
+    video_time_base: AVRational,
+    output_time_base: AVRational,
+) -> Option<i64> {
+    if !valid_media_pts(audio_pts)
+        || !valid_media_pts(video_start_pts)
+        || !valid_rational(&audio_time_base)
+        || !valid_rational(&video_time_base)
+        || !valid_rational(&output_time_base)
+    {
+        return None;
+    }
+    let audio = rescale_q(audio_pts, audio_time_base, output_time_base);
+    let video = rescale_q(video_start_pts, video_time_base, output_time_base);
+    Some(audio.saturating_sub(video))
+}
+
+fn valid_media_pts(value: i64) -> bool {
+    value != ffi::AV_NOPTS_VALUE
+}
+
 fn rescale_q(value: i64, source: AVRational, target: AVRational) -> i64 {
     unsafe { ffi::av_rescale_q(value, source, target) }
 }
@@ -1892,6 +2221,25 @@ mod tests {
     }
 
     #[test]
+    fn source_audio_output_pts_preserves_audio_lead() {
+        let ninety_k = AVRational {
+            num: 1,
+            den: 90_000,
+        };
+        let audio_tb = AVRational {
+            num: 1,
+            den: ALERT_SAMPLE_RATE as i32,
+        };
+        let output = source_audio_output_pts(4_800, audio_tb, 9_000, ninety_k, audio_tb)
+            .expect("valid source offset");
+        assert_eq!(output, 0);
+
+        let leading_audio = source_audio_output_pts(0, audio_tb, 9_000, ninety_k, audio_tb)
+            .expect("valid leading source offset");
+        assert_eq!(leading_audio, -4_800);
+    }
+
+    #[test]
     fn cgen_clock_hard_resets_large_audio_drift() {
         let mut clock = CgenClock::new(SyncConfig {
             hard_reset_ms: 100,
@@ -1915,7 +2263,8 @@ mod tests {
     #[test]
     fn ac3_encoder_emits_packet_for_one_frame() {
         let channels = ALERT_CHANNELS;
-        let mut encoder = create_ac3_encoder(channels).expect("AC-3 encoder");
+        let mut encoder =
+            create_ac3_encoder(channels, ac3_bitrate_for_channels(channels)).expect("AC-3 encoder");
         let silence = vec![0i16; AC3_FRAME_SAMPLES * usize::from(channels)];
         let mut frame = AVFrame::new();
         frame.set_nb_samples(AC3_FRAME_SAMPLES as i32);

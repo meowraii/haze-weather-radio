@@ -37,6 +37,8 @@ pub(crate) struct FeedConfig {
     #[serde(default)]
     pub(crate) audio: AudioConfig,
     #[serde(default)]
+    pub(crate) ladder: LadderConfig,
+    #[serde(default)]
     pub(crate) banner: BannerConfig,
     #[serde(default)]
     pub(crate) graphics: GraphicsConfig,
@@ -100,6 +102,60 @@ pub(crate) struct AudioConfig {
     pub(crate) alert_mode: String,
     #[serde(rename = "@duck_db", default)]
     pub(crate) duck_db: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct LadderConfig {
+    #[serde(rename = "video", default)]
+    pub(crate) videos: Vec<VideoRenditionConfig>,
+    #[serde(rename = "audio", default)]
+    pub(crate) audios: Vec<AudioRenditionConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct VideoRenditionConfig {
+    #[serde(rename = "@id")]
+    pub(crate) id: String,
+    #[serde(rename = "@enabled", default = "default_true_text")]
+    pub(crate) enabled: String,
+    #[serde(rename = "@width")]
+    pub(crate) width: u32,
+    #[serde(rename = "@height")]
+    pub(crate) height: u32,
+    #[serde(rename = "@fps", default)]
+    pub(crate) fps: String,
+    #[serde(rename = "@interlaced", default)]
+    pub(crate) interlaced: bool,
+    #[serde(rename = "@field_order", default = "default_field_order")]
+    pub(crate) field_order: String,
+    #[serde(rename = "@standard", default)]
+    pub(crate) standard: String,
+    #[serde(rename = "@vcodec", default)]
+    pub(crate) vcodec: String,
+    #[serde(rename = "@bitrate_kbps", default)]
+    pub(crate) bitrate_kbps: Option<u32>,
+    #[serde(rename = "@program", default)]
+    pub(crate) program: Option<i32>,
+    #[serde(rename = "@video_pid", default)]
+    pub(crate) video_pid: Option<i32>,
+    #[serde(rename = "@pmt_pid", default)]
+    pub(crate) pmt_pid: Option<i32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct AudioRenditionConfig {
+    #[serde(rename = "@id")]
+    pub(crate) id: String,
+    #[serde(rename = "@enabled", default = "default_true_text")]
+    pub(crate) enabled: String,
+    #[serde(rename = "@channels", default = "default_stereo_channels")]
+    pub(crate) channels: u16,
+    #[serde(rename = "@acodec", default)]
+    pub(crate) acodec: String,
+    #[serde(rename = "@bitrate_kbps", default)]
+    pub(crate) bitrate_kbps: Option<u32>,
+    #[serde(rename = "@language", default = "default_audio_language")]
+    pub(crate) language: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -249,6 +305,17 @@ impl FeedConfig {
                 self.video.height
             );
         }
+        for video in self.enabled_video_renditions(self.video.width, self.video.height) {
+            if !allowed_video_size(video.width, video.height) {
+                bail!(
+                    "cgen feed {} video rendition {} size {}x{} is not supported",
+                    self.id,
+                    video.id,
+                    video.width,
+                    video.height
+                );
+            }
+        }
         if !self.audio.alert_mode.eq_ignore_ascii_case("replace") {
             bail!("cgen feed {} audio alert_mode must be replace", self.id);
         }
@@ -278,6 +345,149 @@ impl FeedConfig {
             &self.program_output
         }
     }
+
+    pub(crate) fn enabled_video_renditions(
+        &self,
+        source_width: u32,
+        source_height: u32,
+    ) -> Vec<VideoRenditionConfig> {
+        let mut out = Vec::new();
+        if self.ladder.videos.is_empty() {
+            out.push(self.legacy_hd_rendition());
+            return out;
+        }
+        for video in &self.ladder.videos {
+            if video.enabled_for_source(source_width, source_height) {
+                out.push(video.clone());
+            }
+        }
+        if out.is_empty() {
+            out.push(self.legacy_hd_rendition());
+        }
+        out
+    }
+
+    pub(crate) fn enabled_audio_renditions(&self) -> Vec<AudioRenditionConfig> {
+        if self.ladder.audios.is_empty() {
+            return vec![
+                self.legacy_surround_rendition(),
+                self.legacy_stereo_rendition(),
+            ];
+        }
+        let mut out = self
+            .ladder
+            .audios
+            .iter()
+            .filter(|audio| audio.enabled_bool())
+            .cloned()
+            .collect::<Vec<_>>();
+        if out.is_empty() {
+            out.push(self.legacy_stereo_rendition());
+        }
+        out
+    }
+
+    fn legacy_hd_rendition(&self) -> VideoRenditionConfig {
+        VideoRenditionConfig {
+            id: "hd".to_string(),
+            enabled: "true".to_string(),
+            width: self.video.width,
+            height: self.video.height,
+            fps: self.video.fps.clone(),
+            interlaced: self.video.interlaced,
+            field_order: self.video.field_order.clone(),
+            standard: self.video.standard.clone(),
+            vcodec: self.output().vcodec.clone(),
+            bitrate_kbps: self.output().video_bitrate_kbps,
+            program: Some(1),
+            video_pid: Some(0x100),
+            pmt_pid: Some(0x1000),
+        }
+    }
+
+    fn legacy_surround_rendition(&self) -> AudioRenditionConfig {
+        AudioRenditionConfig {
+            id: "surround_51".to_string(),
+            enabled: "true".to_string(),
+            channels: 6,
+            acodec: self.output().acodec.clone(),
+            bitrate_kbps: Some(384),
+            language: "eng".to_string(),
+        }
+    }
+
+    fn legacy_stereo_rendition(&self) -> AudioRenditionConfig {
+        AudioRenditionConfig {
+            id: "stereo".to_string(),
+            enabled: "true".to_string(),
+            channels: 2,
+            acodec: self.output().acodec.clone(),
+            bitrate_kbps: self.output().audio_bitrate_kbps.or(Some(192)),
+            language: "eng".to_string(),
+        }
+    }
+}
+
+impl VideoRenditionConfig {
+    pub(crate) fn enabled_for_source(&self, source_width: u32, source_height: u32) -> bool {
+        let enabled = self.enabled.trim();
+        if enabled.eq_ignore_ascii_case("auto") {
+            return self.id.eq_ignore_ascii_case("hd")
+                && self.width == source_width
+                && self.height == source_height;
+        }
+        xml_bool_text(enabled, true)
+    }
+
+    pub(crate) fn codec_name<'a>(&'a self, fallback: &'a str) -> &'a str {
+        non_empty(self.vcodec.as_str()).unwrap_or(fallback)
+    }
+
+    pub(crate) fn frame_rate_text<'a>(&'a self, fallback: &'a str) -> &'a str {
+        non_empty(self.fps.as_str()).unwrap_or(fallback)
+    }
+
+    pub(crate) fn program_number(&self, index: usize) -> i32 {
+        self.program
+            .unwrap_or_else(|| i32::try_from(index + 1).unwrap_or(1))
+            .max(1)
+    }
+
+    pub(crate) fn video_pid(&self, index: usize) -> i32 {
+        self.video_pid
+            .unwrap_or_else(|| 0x100 + (i32::try_from(index).unwrap_or(0) * 0x20))
+    }
+
+    pub(crate) fn pmt_pid(&self, index: usize) -> i32 {
+        self.pmt_pid
+            .unwrap_or_else(|| 0x1000 + i32::try_from(index).unwrap_or(0))
+    }
+}
+
+impl AudioRenditionConfig {
+    pub(crate) fn enabled_bool(&self) -> bool {
+        xml_bool_text(&self.enabled, true)
+    }
+
+    pub(crate) fn channels(&self) -> u16 {
+        self.channels.clamp(1, 6)
+    }
+
+    pub(crate) fn codec_name<'a>(&'a self, fallback: &'a str) -> &'a str {
+        non_empty(self.acodec.as_str()).unwrap_or(fallback)
+    }
+
+    pub(crate) fn bitrate_bps(&self) -> i64 {
+        self.bitrate_kbps
+            .map(|kbps| i64::from(kbps) * 1000)
+            .unwrap_or_else(|| {
+                if self.channels() > 2 {
+                    384_000
+                } else {
+                    192_000
+                }
+            })
+    }
 }
 
 pub(crate) fn load_config(path: &Path) -> Result<CgenConfig> {
@@ -305,6 +515,18 @@ pub(crate) fn allowed_video_size(width: u32, height: u32) -> bool {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_true_text() -> String {
+    "true".to_string()
+}
+
+fn default_stereo_channels() -> u16 {
+    2
+}
+
+fn default_audio_language() -> String {
+    "eng".to_string()
 }
 
 fn source_audio() -> String {
@@ -381,6 +603,22 @@ pub(crate) fn default_reconnect_max_ms() -> u32 {
 
 pub(crate) fn default_status_interval_ms() -> u32 {
     1_000
+}
+
+fn xml_bool_text(value: &str, default: bool) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return default;
+    }
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on" | "enabled"
+    )
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 #[cfg(test)]
@@ -497,6 +735,7 @@ mod tests {
                 alert_mode: "replace".to_string(),
                 duck_db: String::new(),
             },
+            ladder: LadderConfig::default(),
             banner: BannerConfig::default(),
             graphics: GraphicsConfig::default(),
             clock: ClockConfig::default(),
@@ -506,6 +745,57 @@ mod tests {
         };
         assert!(feed.matches_feed("sk-0001"));
         assert!(feed.matches_feed("CAP-IT-ALL"));
+    }
+
+    #[test]
+    fn parses_mpts_output_ladder() {
+        let xml = r#"
+<cgen enabled="true">
+  <feed id="CAP-IT-ALL" enabled="true">
+    <programInput url="udp://239.0.0.1:9000" format="mpegts"/>
+    <priorityInput feed_id="*" format="priority-audio"/>
+    <programOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="mpeg2video" acodec="ac3"/>
+    <video width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc"/>
+    <audio idle="source" alert_mode="replace"/>
+    <ladder>
+      <video id="hd" enabled="auto" width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc" bitrate_kbps="12000" program="1" video_pid="256" pmt_pid="4096"/>
+      <video id="p720" enabled="false" width="1280" height="720" fps="30000/1001" bitrate_kbps="8000" program="2"/>
+      <audio id="surround_51" enabled="true" channels="6" acodec="ac3" bitrate_kbps="384" language="eng"/>
+      <audio id="stereo" enabled="true" channels="2" acodec="ac3" bitrate_kbps="192" language="eng"/>
+    </ladder>
+  </feed>
+</cgen>"#;
+        let parsed: CgenConfig = quick_xml::de::from_str(xml).expect("parse");
+        let feeds = parsed.enabled_feeds().expect("feeds");
+        let videos = feeds[0].enabled_video_renditions(1920, 1080);
+        let audios = feeds[0].enabled_audio_renditions();
+
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].id, "hd");
+        assert_eq!(videos[0].program_number(0), 1);
+        assert_eq!(videos[0].video_pid(0), 256);
+        assert_eq!(audios.len(), 2);
+        assert_eq!(audios[0].channels(), 6);
+        assert_eq!(audios[1].channels(), 2);
+    }
+
+    #[test]
+    fn legacy_single_output_synthesizes_ladder() {
+        let xml = r#"
+<cgen enabled="true">
+  <feed id="legacy" enabled="true">
+    <programInput url="udp://in" format="mpegts"/>
+    <programOutput url="udp://out" format="mpegts" vcodec="mpeg2video" acodec="ac3" video_bitrate_kbps="12000" audio_bitrate_kbps="192"/>
+    <video width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc"/>
+    <audio idle="source" alert_mode="replace"/>
+  </feed>
+</cgen>"#;
+        let parsed: CgenConfig = quick_xml::de::from_str(xml).expect("parse");
+        let mut feeds = parsed.enabled_feeds().expect("feeds");
+        let feed = feeds.remove(0);
+
+        assert_eq!(feed.enabled_video_renditions(1920, 1080).len(), 1);
+        assert_eq!(feed.enabled_audio_renditions().len(), 2);
     }
 }
 

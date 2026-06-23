@@ -30,6 +30,7 @@ type cgenFeedXML struct {
 	AlertOutput   cgenEndpointXML      `xml:"alertOutput"`
 	Video         cgenVideoXML         `xml:"video"`
 	Audio         cgenAudioXML         `xml:"audio"`
+	Ladder        cgenLadderXML        `xml:"ladder"`
 	Banner        cgenBannerXML        `xml:"banner"`
 	Graphics      cgenGraphicsXML      `xml:"graphics"`
 	Clock         cgenClockXML         `xml:"clock"`
@@ -46,6 +47,36 @@ type cgenEndpointXML struct {
 	ACodec           string `xml:"acodec,attr,omitempty"`
 	VideoBitrateKbps string `xml:"video_bitrate_kbps,attr,omitempty"`
 	AudioBitrateKbps string `xml:"audio_bitrate_kbps,attr,omitempty"`
+}
+
+type cgenLadderXML struct {
+	Videos []cgenVideoRenditionXML `xml:"video"`
+	Audios []cgenAudioRenditionXML `xml:"audio"`
+}
+
+type cgenVideoRenditionXML struct {
+	ID          string `xml:"id,attr"`
+	Enabled     string `xml:"enabled,attr,omitempty"`
+	Width       string `xml:"width,attr,omitempty"`
+	Height      string `xml:"height,attr,omitempty"`
+	FPS         string `xml:"fps,attr,omitempty"`
+	Interlaced  string `xml:"interlaced,attr,omitempty"`
+	FieldOrder  string `xml:"field_order,attr,omitempty"`
+	Standard    string `xml:"standard,attr,omitempty"`
+	VCodec      string `xml:"vcodec,attr,omitempty"`
+	BitrateKbps string `xml:"bitrate_kbps,attr,omitempty"`
+	Program     string `xml:"program,attr,omitempty"`
+	VideoPID    string `xml:"video_pid,attr,omitempty"`
+	PMTPID      string `xml:"pmt_pid,attr,omitempty"`
+}
+
+type cgenAudioRenditionXML struct {
+	ID          string `xml:"id,attr"`
+	Enabled     string `xml:"enabled,attr,omitempty"`
+	Channels    string `xml:"channels,attr,omitempty"`
+	ACodec      string `xml:"acodec,attr,omitempty"`
+	BitrateKbps string `xml:"bitrate_kbps,attr,omitempty"`
+	Language    string `xml:"language,attr,omitempty"`
 }
 
 type cgenPriorityInputXML struct {
@@ -295,7 +326,8 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Video.Standard = normalizeCgenStandard(feed.Video.Standard)
 		feed.Audio.Idle = fallbackText(strings.TrimSpace(feed.Audio.Idle), "source")
 		feed.Audio.AlertMode = fallbackText(strings.TrimSpace(feed.Audio.AlertMode), "replace")
-		feed.Audio.DuckDB = cleanNumber(feed.Audio.DuckDB, "0")
+		feed.Audio.DuckDB = "0"
+		normalizeCgenLadder(feed)
 		feed.Banner.Mode = fallbackText(strings.TrimSpace(feed.Banner.Mode), "auto")
 		feed.Banner.TickerHeight = cleanPositive(feed.Banner.TickerHeight, "128")
 		feed.Banner.Font = fallbackText(strings.TrimSpace(feed.Banner.Font), "Arial")
@@ -340,6 +372,132 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 	return config, nil
 }
 
+func normalizeCgenLadder(feed *cgenFeedXML) {
+	videos := map[string]cgenVideoRenditionXML{}
+	for _, video := range feed.Ladder.Videos {
+		id := strings.ToLower(strings.TrimSpace(video.ID))
+		if id != "" {
+			video.ID = id
+			videos[id] = video
+		}
+	}
+	audios := map[string]cgenAudioRenditionXML{}
+	for _, audio := range feed.Ladder.Audios {
+		id := strings.ToLower(strings.TrimSpace(audio.ID))
+		if id != "" {
+			audio.ID = id
+			audios[id] = audio
+		}
+	}
+
+	hd := normalizeVideoRendition(videos["hd"], cgenVideoRenditionXML{
+		ID:          "hd",
+		Enabled:     "auto",
+		Width:       feed.Video.Width,
+		Height:      feed.Video.Height,
+		FPS:         feed.Video.FPS,
+		Interlaced:  feed.Video.Interlaced,
+		FieldOrder:  feed.Video.FieldOrder,
+		Standard:    feed.Video.Standard,
+		VCodec:      feed.ProgramOutput.VCodec,
+		BitrateKbps: feed.ProgramOutput.VideoBitrateKbps,
+		Program:     "1",
+		VideoPID:    "256",
+		PMTPID:      "4096",
+	})
+	p720 := normalizeVideoRendition(videos["p720"], cgenVideoRenditionXML{
+		ID:          "p720",
+		Enabled:     "false",
+		Width:       "1280",
+		Height:      "720",
+		FPS:         fallbackText(feed.Video.FPS, "30000/1001"),
+		Interlaced:  "false",
+		FieldOrder:  "tff",
+		Standard:    "atsc",
+		VCodec:      feed.ProgramOutput.VCodec,
+		BitrateKbps: "8000",
+		Program:     "2",
+		VideoPID:    "288",
+		PMTPID:      "4097",
+	})
+	sd := normalizeVideoRendition(videos["sd"], cgenVideoRenditionXML{
+		ID:          "sd",
+		Enabled:     "false",
+		Width:       "720",
+		Height:      "480",
+		FPS:         fallbackText(feed.Video.FPS, "30000/1001"),
+		Interlaced:  "true",
+		FieldOrder:  "tff",
+		Standard:    "atsc",
+		VCodec:      feed.ProgramOutput.VCodec,
+		BitrateKbps: "5000",
+		Program:     "3",
+		VideoPID:    "320",
+		PMTPID:      "4098",
+	})
+	surround := normalizeAudioRendition(audios["surround_51"], cgenAudioRenditionXML{
+		ID:          "surround_51",
+		Enabled:     "true",
+		Channels:    "6",
+		ACodec:      feed.ProgramOutput.ACodec,
+		BitrateKbps: "384",
+		Language:    "eng",
+	})
+	stereo := normalizeAudioRendition(audios["stereo"], cgenAudioRenditionXML{
+		ID:          "stereo",
+		Enabled:     "true",
+		Channels:    "2",
+		ACodec:      feed.ProgramOutput.ACodec,
+		BitrateKbps: fallbackText(feed.ProgramOutput.AudioBitrateKbps, "192"),
+		Language:    "eng",
+	})
+	feed.Ladder = cgenLadderXML{
+		Videos: []cgenVideoRenditionXML{hd, p720, sd},
+		Audios: []cgenAudioRenditionXML{surround, stereo},
+	}
+	feed.ProgramOutput.VideoBitrateKbps = hd.BitrateKbps
+	feed.ProgramOutput.AudioBitrateKbps = stereo.BitrateKbps
+	feed.AlertOutput = feed.ProgramOutput
+}
+
+func normalizeVideoRendition(value cgenVideoRenditionXML, fallback cgenVideoRenditionXML) cgenVideoRenditionXML {
+	value.ID = fallbackText(strings.ToLower(strings.TrimSpace(value.ID)), fallback.ID)
+	value.Enabled = normalizeCgenEnabledText(value.Enabled, fallback.Enabled)
+	value.Width = cleanPositive(value.Width, fallback.Width)
+	value.Height = cleanPositive(value.Height, fallback.Height)
+	value.FPS = fallbackText(strings.TrimSpace(value.FPS), fallback.FPS)
+	value.Interlaced = boolText(xmlBool(value.Interlaced, xmlBool(fallback.Interlaced, false)))
+	value.FieldOrder = normalizeCgenFieldOrder(fallbackText(value.FieldOrder, fallback.FieldOrder))
+	value.Standard = normalizeCgenStandard(fallbackText(value.Standard, fallback.Standard))
+	value.VCodec = fallbackText(strings.TrimSpace(value.VCodec), fallback.VCodec)
+	value.BitrateKbps = cleanPositive(value.BitrateKbps, fallback.BitrateKbps)
+	value.Program = cleanPositive(value.Program, fallback.Program)
+	value.VideoPID = cleanPositive(value.VideoPID, fallback.VideoPID)
+	value.PMTPID = cleanPositive(value.PMTPID, fallback.PMTPID)
+	return value
+}
+
+func normalizeAudioRendition(value cgenAudioRenditionXML, fallback cgenAudioRenditionXML) cgenAudioRenditionXML {
+	value.ID = fallbackText(strings.ToLower(strings.TrimSpace(value.ID)), fallback.ID)
+	value.Enabled = boolText(xmlBool(value.Enabled, xmlBool(fallback.Enabled, true)))
+	value.Channels = cleanPositive(value.Channels, fallback.Channels)
+	value.ACodec = fallbackText(strings.TrimSpace(value.ACodec), fallback.ACodec)
+	value.BitrateKbps = cleanPositive(value.BitrateKbps, fallback.BitrateKbps)
+	value.Language = fallbackText(strings.TrimSpace(value.Language), fallback.Language)
+	return value
+}
+
+func normalizeCgenEnabledText(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "auto") {
+		return "auto"
+	}
+	if value == "" && strings.EqualFold(strings.TrimSpace(fallback), "auto") {
+		return "auto"
+	}
+	return boolText(xmlBool(value, xmlBool(fallback, true)))
+}
+
 func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 	source, ok := raw.(map[string]any)
 	if !ok {
@@ -363,16 +521,16 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			Format:           stringFromAny(source["program_output_format"]),
 			VCodec:           stringFromAny(source["vcodec"]),
 			ACodec:           stringFromAny(source["acodec"]),
-			VideoBitrateKbps: stringFromAny(source["video_bitrate_kbps"]),
-			AudioBitrateKbps: stringFromAny(source["audio_bitrate_kbps"]),
+			VideoBitrateKbps: firstStringFromAny(source, "hd_bitrate_kbps", "video_bitrate_kbps"),
+			AudioBitrateKbps: firstStringFromAny(source, "stereo_bitrate_kbps", "audio_bitrate_kbps"),
 		},
 		AlertOutput: cgenEndpointXML{
-			URL:              stringFromAny(source["alert_output_url"]),
-			Format:           stringFromAny(source["alert_output_format"]),
+			URL:              stringFromAny(source["program_output_url"]),
+			Format:           stringFromAny(source["program_output_format"]),
 			VCodec:           stringFromAny(source["vcodec"]),
 			ACodec:           stringFromAny(source["acodec"]),
-			VideoBitrateKbps: stringFromAny(source["video_bitrate_kbps"]),
-			AudioBitrateKbps: stringFromAny(source["audio_bitrate_kbps"]),
+			VideoBitrateKbps: firstStringFromAny(source, "hd_bitrate_kbps", "video_bitrate_kbps"),
+			AudioBitrateKbps: firstStringFromAny(source, "stereo_bitrate_kbps", "audio_bitrate_kbps"),
 		},
 		Video: cgenVideoXML{
 			Width:      stringFromAny(source["width"]),
@@ -385,7 +543,74 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 		Audio: cgenAudioXML{
 			Idle:      stringFromAny(source["audio_idle"]),
 			AlertMode: stringFromAny(source["audio_alert_mode"]),
-			DuckDB:    stringFromAny(source["duck_db"]),
+			DuckDB:    "0",
+		},
+		Ladder: cgenLadderXML{
+			Videos: []cgenVideoRenditionXML{
+				{
+					ID:          "hd",
+					Enabled:     boolOrTextFromAny(source["hd_enabled"], "auto"),
+					Width:       stringFromAny(source["width"]),
+					Height:      stringFromAny(source["height"]),
+					FPS:         stringFromAny(source["fps"]),
+					Interlaced:  boolText(boolFromAny(source["interlaced"], false)),
+					FieldOrder:  stringFromAny(source["field_order"]),
+					Standard:    stringFromAny(source["standard"]),
+					VCodec:      stringFromAny(source["vcodec"]),
+					BitrateKbps: firstStringFromAny(source, "hd_bitrate_kbps", "video_bitrate_kbps"),
+					Program:     "1",
+					VideoPID:    "256",
+					PMTPID:      "4096",
+				},
+				{
+					ID:          "p720",
+					Enabled:     boolText(boolFromAny(source["p720_enabled"], false)),
+					Width:       "1280",
+					Height:      "720",
+					FPS:         stringFromAny(source["fps"]),
+					Interlaced:  "false",
+					FieldOrder:  "tff",
+					Standard:    "atsc",
+					VCodec:      stringFromAny(source["vcodec"]),
+					BitrateKbps: fallbackText(stringFromAny(source["p720_bitrate_kbps"]), "8000"),
+					Program:     "2",
+					VideoPID:    "288",
+					PMTPID:      "4097",
+				},
+				{
+					ID:          "sd",
+					Enabled:     boolText(boolFromAny(source["sd_enabled"], false)),
+					Width:       "720",
+					Height:      "480",
+					FPS:         stringFromAny(source["fps"]),
+					Interlaced:  "true",
+					FieldOrder:  "tff",
+					Standard:    "atsc",
+					VCodec:      stringFromAny(source["vcodec"]),
+					BitrateKbps: fallbackText(stringFromAny(source["sd_bitrate_kbps"]), "5000"),
+					Program:     "3",
+					VideoPID:    "320",
+					PMTPID:      "4098",
+				},
+			},
+			Audios: []cgenAudioRenditionXML{
+				{
+					ID:          "surround_51",
+					Enabled:     boolText(boolFromAny(source["surround_enabled"], true)),
+					Channels:    "6",
+					ACodec:      stringFromAny(source["acodec"]),
+					BitrateKbps: fallbackText(stringFromAny(source["surround_bitrate_kbps"]), "384"),
+					Language:    "eng",
+				},
+				{
+					ID:          "stereo",
+					Enabled:     boolText(boolFromAny(source["stereo_enabled"], true)),
+					Channels:    "2",
+					ACodec:      stringFromAny(source["acodec"]),
+					BitrateKbps: firstStringFromAny(source, "stereo_bitrate_kbps", "audio_bitrate_kbps"),
+					Language:    "eng",
+				},
+			},
 		},
 		Banner: cgenBannerXML{
 			Mode:              stringFromAny(source["banner_mode"]),
@@ -467,6 +692,16 @@ func cgenPayload(path string, config cgenXML) map[string]any {
 			"acodec":                          feed.ProgramOutput.ACodec,
 			"video_bitrate_kbps":              feed.ProgramOutput.VideoBitrateKbps,
 			"audio_bitrate_kbps":              feed.ProgramOutput.AudioBitrateKbps,
+			"hd_enabled":                      videoRendition(feed.Ladder, "hd").Enabled,
+			"hd_bitrate_kbps":                 videoRendition(feed.Ladder, "hd").BitrateKbps,
+			"p720_enabled":                    xmlBool(videoRendition(feed.Ladder, "p720").Enabled, false),
+			"p720_bitrate_kbps":               videoRendition(feed.Ladder, "p720").BitrateKbps,
+			"sd_enabled":                      xmlBool(videoRendition(feed.Ladder, "sd").Enabled, false),
+			"sd_bitrate_kbps":                 videoRendition(feed.Ladder, "sd").BitrateKbps,
+			"surround_enabled":                xmlBool(audioRendition(feed.Ladder, "surround_51").Enabled, true),
+			"surround_bitrate_kbps":           audioRendition(feed.Ladder, "surround_51").BitrateKbps,
+			"stereo_enabled":                  xmlBool(audioRendition(feed.Ladder, "stereo").Enabled, true),
+			"stereo_bitrate_kbps":             audioRendition(feed.Ladder, "stereo").BitrateKbps,
 			"width":                           feed.Video.Width,
 			"height":                          feed.Video.Height,
 			"fps":                             feed.Video.FPS,
@@ -615,4 +850,42 @@ func cleanColor(value string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func firstStringFromAny(source map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := stringFromAny(source[key]); strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func boolOrTextFromAny(value any, fallback string) string {
+	text := strings.TrimSpace(stringFromAny(value))
+	if strings.EqualFold(text, "auto") {
+		return "auto"
+	}
+	if text != "" {
+		return boolText(boolFromAny(value, xmlBool(fallback, true)))
+	}
+	return fallback
+}
+
+func videoRendition(ladder cgenLadderXML, id string) cgenVideoRenditionXML {
+	for _, video := range ladder.Videos {
+		if strings.EqualFold(video.ID, id) {
+			return video
+		}
+	}
+	return cgenVideoRenditionXML{}
+}
+
+func audioRendition(ladder cgenLadderXML, id string) cgenAudioRenditionXML {
+	for _, audio := range ladder.Audios {
+		if strings.EqualFold(audio.ID, id) {
+			return audio
+		}
+	}
+	return cgenAudioRenditionXML{}
 }

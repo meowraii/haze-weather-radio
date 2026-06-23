@@ -2097,7 +2097,7 @@ fn glyph_rows(ch: char) -> Option<[u8; 7]> {
 mod tests {
     use super::*;
     use crate::config::{
-        AudioConfig, BannerConfig, ClockConfig, EndpointConfig, GraphicsConfig,
+        AudioConfig, BannerConfig, ClockConfig, EndpointConfig, GraphicsConfig, LadderConfig,
         PriorityInputConfig, StateConfig, SyncConfig, TextConfig, VideoConfig,
     };
 
@@ -2239,6 +2239,7 @@ mod tests {
                 standard: String::new(),
             },
             audio: AudioConfig::default(),
+            ladder: LadderConfig::default(),
             banner: BannerConfig::default(),
             graphics: GraphicsConfig::default(),
             clock: ClockConfig::default(),

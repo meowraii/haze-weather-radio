@@ -23,12 +23,18 @@ const fields = {
     priorityFeed: document.getElementById('cgenPriorityFeed'),
     priorityInput: document.getElementById('cgenPriorityInput'),
     programOutput: document.getElementById('cgenProgramOutput'),
-    alertOutput: document.getElementById('cgenAlertOutput'),
     outputFormat: document.getElementById('cgenOutputFormat'),
     vcodec: document.getElementById('cgenVCodec'),
     acodec: document.getElementById('cgenACodec'),
-    videoBitrate: document.getElementById('cgenVideoBitrate'),
-    audioBitrate: document.getElementById('cgenAudioBitrate'),
+    hdBitrate: document.getElementById('cgenHdBitrate'),
+    p720Enabled: document.getElementById('cgenP720Enabled'),
+    p720Bitrate: document.getElementById('cgenP720Bitrate'),
+    sdEnabled: document.getElementById('cgenSdEnabled'),
+    sdBitrate: document.getElementById('cgenSdBitrate'),
+    surroundEnabled: document.getElementById('cgenSurroundEnabled'),
+    surroundBitrate: document.getElementById('cgenSurroundBitrate'),
+    stereoEnabled: document.getElementById('cgenStereoEnabled'),
+    stereoBitrate: document.getElementById('cgenStereoBitrate'),
     syncHardReset: document.getElementById('cgenSyncHardReset'),
     syncMaxAudioFrames: document.getElementById('cgenSyncMaxAudioFrames'),
     syncSourceBuffer: document.getElementById('cgenSyncSourceBuffer'),
@@ -45,7 +51,6 @@ const fields = {
     fontSize: document.getElementById('cgenFontSize'),
     textX: document.getElementById('cgenTextX'),
     textY: document.getElementById('cgenTextY'),
-    textColor: document.getElementById('cgenTextColor'),
     bannerX: document.getElementById('cgenBannerX'),
     bannerY: document.getElementById('cgenBannerY'),
     bannerWidth: document.getElementById('cgenBannerWidth'),
@@ -60,7 +65,6 @@ const fields = {
     clockX: document.getElementById('cgenClockX'),
     clockY: document.getElementById('cgenClockY'),
     clockFontSize: document.getElementById('cgenClockFontSize'),
-    clockColor: document.getElementById('cgenClockColor'),
     smpteBars: document.getElementById('cgenSmpteBars'),
 };
 
@@ -115,12 +119,22 @@ function readEditor() {
         priority_input_format: 'priority-audio',
         program_output_url: value('programOutput'),
         program_output_format: value('outputFormat', 'mpegts'),
-        alert_output_url: value('alertOutput') || value('programOutput'),
+        alert_output_url: value('programOutput'),
         alert_output_format: value('outputFormat', 'mpegts'),
         vcodec: value('vcodec', 'mpeg2video'),
         acodec: value('acodec', 'ac3'),
-        video_bitrate_kbps: value('videoBitrate', '12000'),
-        audio_bitrate_kbps: value('audioBitrate', '192'),
+        video_bitrate_kbps: value('hdBitrate', '12000'),
+        audio_bitrate_kbps: value('stereoBitrate', '192'),
+        hd_enabled: 'auto',
+        hd_bitrate_kbps: value('hdBitrate', '12000'),
+        p720_enabled: value('p720Enabled'),
+        p720_bitrate_kbps: value('p720Bitrate', '8000'),
+        sd_enabled: value('sdEnabled'),
+        sd_bitrate_kbps: value('sdBitrate', '5000'),
+        surround_enabled: value('surroundEnabled'),
+        surround_bitrate_kbps: value('surroundBitrate', '384'),
+        stereo_enabled: value('stereoEnabled'),
+        stereo_bitrate_kbps: value('stereoBitrate', '192'),
         width: value('width', '1920'),
         height: value('height', '1080'),
         fps: value('fps', '30000/1001'),
@@ -146,13 +160,13 @@ function readEditor() {
         text_x: value('textX', '48'),
         text_y: value('textY', '128'),
         text_font_size: value('textFontSize', '58'),
-        text_color: value('textColor', '#ffffff'),
+        text_color: '#ffffff',
         clock_enabled: value('clockEnabled'),
         clock_format: value('clockFormat', 'Jan 02 15:04:05'),
         clock_x: value('clockX', '48'),
         clock_y: value('clockY', '48'),
         clock_font_size: value('clockFontSize', '30'),
-        clock_color: value('clockColor', '#ffffff'),
+        clock_color: '#ffffff',
         sync_hard_reset_ms: value('syncHardReset', '250'),
         sync_max_audio_frames_per_video: value('syncMaxAudioFrames', '4'),
         sync_source_buffer_ms: value('syncSourceBuffer', '120'),
@@ -174,12 +188,18 @@ function writeEditor(feed) {
     setValue('priorityFeed', feed.priority_feed_id || feed.id);
     setValue('priorityInput', feed.priority_input_url || '');
     setValue('programOutput', feed.program_output_url || '');
-    setValue('alertOutput', feed.alert_output_url || feed.program_output_url || '');
     setValue('outputFormat', feed.program_output_format || feed.alert_output_format || 'mpegts');
     setValue('vcodec', feed.vcodec || 'mpeg2video');
     setValue('acodec', feed.acodec || 'ac3');
-    setValue('videoBitrate', feed.video_bitrate_kbps || '12000');
-    setValue('audioBitrate', feed.audio_bitrate_kbps || '192');
+    setValue('hdBitrate', feed.hd_bitrate_kbps || feed.video_bitrate_kbps || '12000');
+    setValue('p720Enabled', Boolean(feed.p720_enabled));
+    setValue('p720Bitrate', feed.p720_bitrate_kbps || '8000');
+    setValue('sdEnabled', Boolean(feed.sd_enabled));
+    setValue('sdBitrate', feed.sd_bitrate_kbps || '5000');
+    setValue('surroundEnabled', feed.surround_enabled !== false);
+    setValue('surroundBitrate', feed.surround_bitrate_kbps || '384');
+    setValue('stereoEnabled', feed.stereo_enabled !== false);
+    setValue('stereoBitrate', feed.stereo_bitrate_kbps || feed.audio_bitrate_kbps || '192');
     setValue('syncHardReset', feed.sync_hard_reset_ms || '250');
     setValue('syncMaxAudioFrames', feed.sync_max_audio_frames_per_video || '4');
     setValue('syncSourceBuffer', feed.sync_source_buffer_ms || '120');
@@ -197,7 +217,6 @@ function writeEditor(feed) {
     setValue('scrollSpeed', feed.scroll_speed || '8');
     setValue('textX', feed.text_x || '48');
     setValue('textY', feed.text_y || '128');
-    setValue('textColor', feed.text_color || '#ffffff');
     setValue('bannerX', feed.banner_x || '0');
     setValue('bannerY', feed.banner_y || '0');
     setValue('bannerWidth', feed.banner_width || feed.width || '1920');
@@ -211,7 +230,6 @@ function writeEditor(feed) {
     setValue('clockX', feed.clock_x || '48');
     setValue('clockY', feed.clock_y || '48');
     setValue('clockFontSize', feed.clock_font_size || '30');
-    setValue('clockColor', feed.clock_color || '#ffffff');
     renderPreview();
     renderMeta();
 }
@@ -243,7 +261,7 @@ function renderMeta() {
     const feed = readEditor();
     metaProgramInput.textContent = feed.program_input_url || '-';
     metaPriority.textContent = feed.priority_feed_id || '-';
-    metaOutput.textContent = feed.alert_output_url || feed.program_output_url || '-';
+    metaOutput.textContent = feed.program_output_url || '-';
 }
 
 function drawSmpte(ctx, width, height) {
@@ -293,13 +311,13 @@ function renderPreview() {
         ctx.fillStyle = gradient;
         ctx.fillRect(bx, by, bw, bh);
     }
-    ctx.fillStyle = feed.text_color || '#ffffff';
+    ctx.fillStyle = '#ffffff';
     ctx.font = `${Math.max(8, Number(feed.text_font_size || feed.font_size || 58) * sy)}px sans-serif`;
     if (feed.text_enabled && feed.text) {
         ctx.fillText(feed.text.slice(0, 80), Number(feed.text_x || 48) * sx, Number(feed.text_y || 96) * sy);
     }
     if (feed.clock_enabled) {
-        ctx.fillStyle = feed.clock_color || '#ffffff';
+        ctx.fillStyle = '#ffffff';
         ctx.font = `${Math.max(8, Number(feed.clock_font_size || 30) * sy)}px monospace`;
         ctx.fillText(new Date().toLocaleString(), Number(feed.clock_x || 48) * sx, Number(feed.clock_y || 48) * sy);
     }
@@ -350,12 +368,21 @@ function defaultFeed() {
         program_input_format: 'mpegts',
         priority_feed_id: '*',
         program_output_url: 'udp://239.0.0.2:9001?pkt_size=1316',
-        alert_output_url: 'udp://239.0.0.2:9001?pkt_size=1316',
         program_output_format: 'mpegts',
         vcodec: 'mpeg2video',
         acodec: 'ac3',
         video_bitrate_kbps: '12000',
         audio_bitrate_kbps: '192',
+        hd_enabled: 'auto',
+        hd_bitrate_kbps: '12000',
+        p720_enabled: false,
+        p720_bitrate_kbps: '8000',
+        sd_enabled: false,
+        sd_bitrate_kbps: '5000',
+        surround_enabled: true,
+        surround_bitrate_kbps: '384',
+        stereo_enabled: true,
+        stereo_bitrate_kbps: '192',
         sync_hard_reset_ms: '250',
         sync_max_audio_frames_per_video: '4',
         sync_source_buffer_ms: '120',
@@ -379,11 +406,9 @@ function defaultFeed() {
         text_x: '48',
         text_y: '128',
         text_font_size: '58',
-        text_color: '#ffffff',
         clock_x: '48',
         clock_y: '48',
         clock_font_size: '30',
-        clock_color: '#ffffff',
     };
 }
 
