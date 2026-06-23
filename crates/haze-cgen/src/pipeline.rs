@@ -483,11 +483,7 @@ fn ffmpeg_constant_compositor_args(
     ];
     let filters = [
         video_textfile_filter(feed, text_path),
-        "[0:a]aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo[src]".to_string(),
-        "[1:a]aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo[prio]".to_string(),
-        "[src][prio]sidechaincompress=threshold=0.001:ratio=20:attack=10:release=250[ducked]"
-            .to_string(),
-        "[ducked][prio]amix=inputs=2:duration=longest:normalize=0[aout]".to_string(),
+        "[0:a]aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo[aout]".to_string(),
     ];
     args.extend(["-filter_complex".to_string(), filters.join(";")]);
     args.extend([
@@ -1370,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_compositor_args_keep_program_stream_and_priority_sidechain() {
+    fn persistent_compositor_args_keep_program_stream_without_ducking() {
         let mut feed = test_feed();
         feed.program_output.vcodec = "mpeg2video".to_string();
         feed.program_output.acodec = "ac3".to_string();
@@ -1387,10 +1383,8 @@ mod tests {
         );
 
         assert!(args.iter().any(|arg| arg.contains("textfile='C\\:")));
-        assert!(args
-            .iter()
-            .any(|arg| arg.contains("sidechaincompress=threshold=0.001:ratio=20")));
-        assert!(args.iter().any(|arg| arg.contains("amix=inputs=2")));
+        assert!(!args.iter().any(|arg| arg.contains("sidechaincompress")));
+        assert!(!args.iter().any(|arg| arg.contains("amix=inputs=2")));
         assert!(args
             .iter()
             .any(|arg| arg == "udp://127.0.0.1:39000?fifo_size=1000000&overrun_nonfatal=1"));

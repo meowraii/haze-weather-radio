@@ -29,7 +29,6 @@ const fields = {
     acodec: document.getElementById('cgenACodec'),
     videoBitrate: document.getElementById('cgenVideoBitrate'),
     audioBitrate: document.getElementById('cgenAudioBitrate'),
-    duckDB: document.getElementById('cgenDuckDB'),
     syncMaxSoftDrift: document.getElementById('cgenSyncMaxSoftDrift'),
     syncHardReset: document.getElementById('cgenSyncHardReset'),
     syncMaxAudioFrames: document.getElementById('cgenSyncMaxAudioFrames'),
@@ -53,8 +52,6 @@ const fields = {
     bannerY: document.getElementById('cgenBannerY'),
     bannerWidth: document.getElementById('cgenBannerWidth'),
     bannerHeight: document.getElementById('cgenBannerHeight'),
-    bannerColor: document.getElementById('cgenBannerColor'),
-    bannerGradientColor: document.getElementById('cgenBannerGradientColor'),
     bannerMode: document.getElementById('cgenBannerMode'),
     bannerBackgroundEnabled: document.getElementById('cgenBannerBackgroundEnabled'),
     scrollSpeed: document.getElementById('cgenScrollSpeed'),
@@ -135,15 +132,15 @@ function readEditor() {
         standard: value('standard', 'atsc'),
         audio_idle: 'source',
         audio_alert_mode: 'replace',
-        duck_db: value('duckDB', '-18'),
+        duck_db: '0',
         banner_mode: value('bannerMode', 'auto'),
         ticker_height: value('bannerHeight', '128'),
         font: value('font', 'Arial'),
         font_size: value('fontSize', '58'),
         scroll_speed: value('scrollSpeed', '8'),
         background_color: value('backgroundColor', '#000000'),
-        banner_background_color: value('bannerColor', '#b45309'),
-        banner_background_gradient_color: value('bannerGradientColor', '#7f1d1d'),
+        banner_background_color: selected()?.banner_background_color || '#b45309',
+        banner_background_gradient_color: selected()?.banner_background_gradient_color || '#7f1d1d',
         banner_background_enabled: value('bannerBackgroundEnabled'),
         banner_x: value('bannerX', '0'),
         banner_y: value('bannerY', '0'),
@@ -189,7 +186,6 @@ function writeEditor(feed) {
     setValue('acodec', feed.acodec || 'ac3');
     setValue('videoBitrate', feed.video_bitrate_kbps || '12000');
     setValue('audioBitrate', feed.audio_bitrate_kbps || '192');
-    setValue('duckDB', feed.duck_db || '-18');
     setValue('syncMaxSoftDrift', feed.sync_max_soft_drift_ms || '80');
     setValue('syncHardReset', feed.sync_hard_reset_ms || '750');
     setValue('syncMaxAudioFrames', feed.sync_max_audio_frames_per_video || '12');
@@ -214,8 +210,6 @@ function writeEditor(feed) {
     setValue('bannerY', feed.banner_y || '0');
     setValue('bannerWidth', feed.banner_width || feed.width || '1920');
     setValue('bannerHeight', feed.banner_height || feed.ticker_height || '128');
-    setValue('bannerColor', feed.banner_background_color || '#b45309');
-    setValue('bannerGradientColor', feed.banner_background_gradient_color || '#7f1d1d');
     setValue('bannerMode', feed.banner_mode || 'auto');
     setValue('bannerBackgroundEnabled', feed.banner_background_enabled !== false);
     setValue('text', feed.text || '');
@@ -454,7 +448,13 @@ export function initCgenView() {
     document.getElementById('cgenClockButton')?.addEventListener('click', () => runAction('clock', { enabled: !fields.clockEnabled.checked }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenInsertTextButton')?.addEventListener('click', () => runAction('insert_text', { text: fields.text.value }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenClearTextButton')?.addEventListener('click', () => runAction('clear_text').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
-    document.getElementById('cgenInsertBannerButton')?.addEventListener('click', () => runAction('insert_banner_background', { color: fields.bannerColor.value, gradient_color: fields.bannerGradientColor.value }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
+    document.getElementById('cgenInsertBannerButton')?.addEventListener('click', () => {
+        const feed = selected() || defaultFeed();
+        runAction('insert_banner_background', {
+            color: feed.banner_background_color || '#b45309',
+            gradient_color: feed.banner_background_gradient_color || '#7f1d1d',
+        }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err'));
+    });
     document.getElementById('cgenClearBannerButton')?.addEventListener('click', () => runAction('clear_banner_background').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     window.setInterval(renderPreview, 1000);
     loadCgen().catch((error) => setStatus(error.message || 'Unable to load CGEN config.', 'err'));

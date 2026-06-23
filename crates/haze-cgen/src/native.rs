@@ -10,6 +10,7 @@ use haze_media::{normalize_pcm, Pcm};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVCodecParameters, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput};
 use rsmpeg::avutil::{AVChannelLayout, AVDictionary, AVFrame, AVRational};
+use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
 use rsmpeg::{error::RsmpegError, ffi};
 use serde_json::{json, Value};
@@ -23,6 +24,7 @@ use crate::state::{PriorityAudio, RuntimeState};
 
 const ALERT_SAMPLE_RATE: u32 = 48_000;
 const ALERT_CHANNELS: u16 = 2;
+const MAX_OUTPUT_AUDIO_CHANNELS: u16 = 8;
 const AC3_FRAME_SAMPLES: usize = 1536;
 const DEFAULT_AC3_BITRATE: i64 = 192_000;
 #[allow(dead_code)]
@@ -225,50 +227,65 @@ fn encode_once(
         .context("native cgen video stream disappeared")?;
     let mut video_processor = VideoProcessor::new(feed, video_spec, state_rx.clone())?;
 
-    let audio_input_index = input_specs
+    let audio_input_indices = input_specs
         .iter()
-        .find(|spec| spec.codecpar.codec_type == ffi::AVMEDIA_TYPE_AUDIO)
-        .map(|spec| spec.input_index);
-    let mut audio_processor = if let Some(input_index) = audio_input_index {
+        .filter(|spec| spec.codecpar.codec_type == ffi::AVMEDIA_TYPE_AUDIO)
+        .map(|spec| spec.input_index)
+        .collect::<Vec<_>>();
+    let mut audio_processors = Vec::with_capacity(audio_input_indices.len());
+    for input_index in &audio_input_indices {
         let audio_spec = input_specs
             .iter()
-            .find(|spec| spec.input_index == input_index)
+            .find(|spec| spec.input_index == *input_index)
             .context("native cgen audio stream disappeared")?;
-        Some(AudioProcessor::new(
+        audio_processors.push(AudioProcessor::new(
             feed,
             audio_spec,
-            state_rx,
+            state_rx.clone(),
             base_dir.to_path_buf(),
-        )?)
-    } else {
+        )?);
+    }
+    if audio_processors.is_empty() {
         warn!(
             feed_id = %feed.id,
             "native cgen input has no audio stream; priority alert audio cannot be injected"
         );
-        None
-    };
+    }
+    let audio_outputs = audio_processors
+        .iter()
+        .map(|processor| (processor.input_index, processor.output_codecpar()))
+        .collect::<Vec<_>>();
     let mut stream_map = create_output_streams(
         &mut output,
         &input_specs,
         video_input_index,
         video_processor.output_codecpar(),
         video_processor.output_time_base(),
-        audio_input_index,
-        audio_processor
-            .as_ref()
-            .map(|processor| processor.output_codecpar()),
+        &audio_outputs,
     )?;
     let mut header_options = None;
     output
         .write_header(&mut header_options)
         .context("failed to write native cgen output header")?;
     refresh_output_time_bases(&output, &mut stream_map);
-    let audio_stream_spec = audio_input_index.and_then(|input_index| {
-        stream_map
-            .iter()
-            .find(|spec| spec.input_index == input_index)
-            .cloned()
-    });
+    let audio_stream_specs = audio_processors
+        .iter()
+        .filter_map(|processor| {
+            stream_map
+                .iter()
+                .find(|spec| spec.input_index == processor.input_index)
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    let auxiliary_streams = stream_map
+        .iter()
+        .filter(|spec| {
+            spec.input_index != video_input_index
+                && !audio_processors
+                    .iter()
+                    .any(|processor| processor.input_index == spec.input_index)
+        })
+        .count();
     publish_status(
         &status_tx,
         feed,
@@ -278,7 +295,8 @@ fn encode_once(
             "output_active": true,
             "no_signal": false,
             "video_streams": 1,
-            "audio_streams": usize::from(audio_stream_spec.is_some()),
+            "audio_streams": audio_processors.len(),
+            "auxiliary_streams": auxiliary_streams,
             "width": feed.video.width,
             "height": feed.video.height,
             "renderer_backend": "rsmpeg/wgpu-cpu-fallback",
@@ -300,15 +318,18 @@ fn encode_once(
         };
         if input_index == video_input_index {
             video_processor.process_packet(&packet, spec, &mut output)?;
-            if let (Some(processor), Some(audio_spec)) =
-                (audio_processor.as_mut(), audio_stream_spec.as_ref())
-            {
-                let target_audio_pts = rescale_q(
-                    video_processor.next_pts,
-                    video_processor.output_time_base(),
-                    audio_spec.output_time_base,
-                );
-                processor.write_mixed_until(target_audio_pts, audio_spec, &mut output)?;
+            for processor in &mut audio_processors {
+                if let Some(audio_spec) = audio_stream_specs
+                    .iter()
+                    .find(|spec| spec.input_index == processor.input_index)
+                {
+                    let target_audio_pts = rescale_q(
+                        video_processor.next_pts,
+                        video_processor.output_time_base(),
+                        audio_spec.output_time_base,
+                    );
+                    processor.write_mixed_until(target_audio_pts, audio_spec, &mut output)?;
+                }
             }
             if status_clock.elapsed() >= status_interval {
                 let elapsed = status_clock.elapsed().as_secs_f64().max(0.001);
@@ -324,8 +345,8 @@ fn encode_once(
                         "input_connected": true,
                         "output_active": true,
                         "current_fps": fps,
-                        "audio_video_drift_ms": audio_processor.as_ref().map(AudioProcessor::drift_ms),
-                        "active_alert_queue_id": audio_processor.as_ref().and_then(AudioProcessor::active_queue_id),
+                        "audio_video_drift_ms": audio_processors.iter().map(AudioProcessor::drift_ms).fold(0.0_f64, |acc, value| acc.max(value.abs())),
+                        "active_alert_queue_id": audio_processors.iter().find_map(AudioProcessor::active_queue_id),
                         "renderer_backend": "rsmpeg/wgpu-cpu-fallback",
                     }),
                 );
@@ -334,11 +355,12 @@ fn encode_once(
             }
             continue;
         }
-        if Some(input_index) == audio_input_index {
-            if let Some(processor) = audio_processor.as_mut() {
-                processor.process_packet(&mut packet, spec, &mut output)?;
-                continue;
-            }
+        if let Some(processor) = audio_processors
+            .iter_mut()
+            .find(|processor| processor.input_index == input_index)
+        {
+            processor.process_packet(&mut packet, spec, &mut output)?;
+            continue;
         }
         packet.rescale_ts(spec.input_time_base, spec.output_time_base);
         packet.set_stream_index(spec.output_index);
@@ -390,12 +412,19 @@ fn create_output_streams(
     video_input_index: usize,
     video_codecpar: AVCodecParameters,
     video_time_base: AVRational,
-    audio_input_index: Option<usize>,
-    audio_codecpar: Option<AVCodecParameters>,
+    audio_outputs: &[(usize, AVCodecParameters)],
 ) -> Result<Vec<StreamSpec>> {
-    let mut out = Vec::with_capacity(2);
-    for spec in input_specs {
-        if spec.input_index != video_input_index && Some(spec.input_index) != audio_input_index {
+    let mut out = Vec::with_capacity(input_specs.len());
+    let ordered_specs = ordered_output_specs(input_specs, video_input_index);
+    for spec in ordered_specs {
+        let audio_codecpar = audio_outputs
+            .iter()
+            .find(|(input_index, _)| *input_index == spec.input_index)
+            .map(|(_, codecpar)| codecpar);
+        if spec.input_index != video_input_index
+            && audio_codecpar.is_none()
+            && !is_auxiliary_passthrough_stream(spec.codecpar.codec_type)
+        {
             continue;
         }
         let mut stream = output.new_stream();
@@ -403,10 +432,7 @@ fn create_output_streams(
             stream.set_codecpar(video_codecpar.clone());
             stream.set_time_base(video_time_base);
             stream.time_base
-        } else if Some(spec.input_index) == audio_input_index {
-            let codecpar = audio_codecpar
-                .as_ref()
-                .context("native cgen audio output codec parameters are missing")?;
+        } else if let Some(codecpar) = audio_codecpar {
             stream.set_codecpar(codecpar.clone());
             stream.set_time_base(AVRational {
                 num: 1,
@@ -414,7 +440,11 @@ fn create_output_streams(
             });
             stream.time_base
         } else {
-            unreachable!("non-selected native cgen stream was filtered before stream creation")
+            let mut codecpar = AVCodecParameters::new();
+            codecpar.copy(&spec.codecpar);
+            stream.set_codecpar(codecpar);
+            stream.set_time_base(spec.time_base);
+            stream.time_base
         };
         out.push(StreamSpec {
             input_index: spec.input_index,
@@ -424,6 +454,38 @@ fn create_output_streams(
         });
     }
     Ok(out)
+}
+
+fn ordered_output_specs(
+    input_specs: &[InputStreamSpec],
+    video_input_index: usize,
+) -> Vec<&InputStreamSpec> {
+    let mut out = Vec::with_capacity(input_specs.len());
+    if let Some(video) = input_specs
+        .iter()
+        .find(|spec| spec.input_index == video_input_index)
+    {
+        out.push(video);
+    }
+    out.extend(input_specs.iter().filter(|spec| {
+        spec.input_index != video_input_index && spec.codecpar.codec_type == ffi::AVMEDIA_TYPE_AUDIO
+    }));
+    out.extend(input_specs.iter().filter(|spec| {
+        spec.input_index != video_input_index
+            && spec.codecpar.codec_type != ffi::AVMEDIA_TYPE_AUDIO
+            && is_auxiliary_passthrough_stream(spec.codecpar.codec_type)
+    }));
+    out
+}
+
+fn is_auxiliary_passthrough_stream(codec_type: ffi::AVMediaType) -> bool {
+    matches!(
+        codec_type,
+        ffi::AVMEDIA_TYPE_DATA
+            | ffi::AVMEDIA_TYPE_SUBTITLE
+            | ffi::AVMEDIA_TYPE_ATTACHMENT
+            | ffi::AVMEDIA_TYPE_UNKNOWN
+    )
 }
 
 fn refresh_output_time_bases(output: &AVFormatContextOutput, stream_map: &mut [StreamSpec]) {
@@ -894,12 +956,15 @@ fn frame_plane_layout(
 }
 
 struct AudioProcessor {
+    input_index: usize,
     feed_id: String,
     priority_feed_id: String,
     state_rx: watch::Receiver<RuntimeState>,
     base_dir: PathBuf,
     decoder: AVCodecContext,
     encoder: AVCodecContext,
+    resampler: Option<AudioResampler>,
+    output_channels: u16,
     active_queue_id: Option<String>,
     active_path: Option<PathBuf>,
     pcm: Vec<u8>,
@@ -919,26 +984,30 @@ impl AudioProcessor {
         base_dir: PathBuf,
     ) -> Result<Self> {
         let decoder = create_audio_decoder(&audio_spec.codecpar)?;
-        let encoder = create_ac3_encoder()?;
+        let output_channels = audio_output_channels(&audio_spec.codecpar);
+        let encoder = create_ac3_encoder(output_channels)?;
         let priority_feed_id = if feed.priority_input.feed_id.trim().is_empty() {
             feed.id.clone()
         } else {
             feed.priority_input.feed_id.clone()
         };
         Ok(Self {
+            input_index: audio_spec.input_index,
             feed_id: feed.id.clone(),
             priority_feed_id,
             state_rx,
             base_dir,
             decoder,
             encoder,
+            resampler: None,
+            output_channels,
             active_queue_id: None,
             active_path: None,
             pcm: Vec::new(),
             cursor: 0,
-            source_pcm: VecDeque::with_capacity(source_buffer_samples(&feed.sync)),
+            source_pcm: VecDeque::with_capacity(source_buffer_samples(&feed.sync, output_channels)),
             clock: CgenClock::new(feed.sync.clone()),
-            source_max_samples: source_buffer_samples(&feed.sync),
+            source_max_samples: source_buffer_samples(&feed.sync, output_channels),
             was_alert_active: false,
             warned_unsupported_source_format: false,
         })
@@ -957,8 +1026,8 @@ impl AudioProcessor {
             (*raw).format = ffi::AV_SAMPLE_FMT_FLTP;
             (*raw).sample_rate = ALERT_SAMPLE_RATE as i32;
             (*raw).ch_layout =
-                AVChannelLayout::from_nb_channels(ALERT_CHANNELS.into()).into_inner();
-            (*raw).bit_rate = DEFAULT_AC3_BITRATE;
+                AVChannelLayout::from_nb_channels(self.output_channels.into()).into_inner();
+            (*raw).bit_rate = ac3_bitrate_for_channels(self.output_channels);
             (*raw).frame_size = AC3_FRAME_SAMPLES as i32;
         }
         codecpar
@@ -987,7 +1056,7 @@ impl AudioProcessor {
     }
 
     fn enqueue_source_frame(&mut self, source_frame: &AVFrame) -> Result<()> {
-        let source_pcm = match frame_to_stereo_pcm16(source_frame) {
+        let source_pcm = match self.frame_to_output_pcm16(source_frame) {
             Ok(samples) => samples,
             Err(err) => {
                 if !self.warned_unsupported_source_format {
@@ -1008,6 +1077,29 @@ impl AudioProcessor {
             self.source_pcm.pop_front();
         }
         Ok(())
+    }
+
+    fn frame_to_output_pcm16(&mut self, frame: &AVFrame) -> Result<Vec<i16>> {
+        self.resampler = Some(AudioResampler::for_frame(
+            self.resampler.take(),
+            frame,
+            self.output_channels,
+        )?);
+        match self
+            .resampler
+            .as_mut()
+            .context("native cgen audio resampler is unavailable")?
+            .convert(frame)
+        {
+            Ok(samples) => Ok(samples),
+            Err(_err) => {
+                self.resampler = Some(AudioResampler::for_frame(None, frame, self.output_channels)?);
+                self.resampler
+                    .as_mut()
+                    .context("native cgen audio resampler is unavailable after rebuild")?
+                    .convert(frame)
+            }
+        }
     }
 
     fn write_mixed_until(
@@ -1158,19 +1250,19 @@ impl AudioProcessor {
     }
 
     fn encode_next_source_frame(&mut self) -> Result<AVPacket> {
-        let mut chunk = Vec::with_capacity(AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS));
-        for _ in 0..(AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS)) {
+        let mut chunk = Vec::with_capacity(AC3_FRAME_SAMPLES * usize::from(self.output_channels));
+        for _ in 0..(AC3_FRAME_SAMPLES * usize::from(self.output_channels)) {
             chunk.push(self.source_pcm.pop_front().unwrap_or_default());
         }
         self.encode_frame_from_i16(&chunk)
     }
 
     fn next_alert_samples(&mut self) -> Vec<i16> {
-        let mut out = Vec::with_capacity(AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS));
+        let channels = usize::from(self.output_channels);
+        let mut out = Vec::with_capacity(AC3_FRAME_SAMPLES * channels);
         for _ in 0..AC3_FRAME_SAMPLES {
             let (left, right) = next_stereo_sample(&self.pcm, &mut self.cursor);
-            out.push(left);
-            out.push(right);
+            append_alert_sample_for_layout(&mut out, left, right, channels);
         }
         out
     }
@@ -1180,14 +1272,21 @@ impl AudioProcessor {
         frame.set_nb_samples(AC3_FRAME_SAMPLES as i32);
         frame.set_format(ffi::AV_SAMPLE_FMT_FLTP);
         frame.set_sample_rate(ALERT_SAMPLE_RATE as i32);
-        frame.set_ch_layout(AVChannelLayout::from_nb_channels(ALERT_CHANNELS.into()).into_inner());
+        frame.set_ch_layout(
+            AVChannelLayout::from_nb_channels(self.output_channels.into()).into_inner(),
+        );
         frame
             .alloc_buffer()
             .context("failed to allocate native cgen alert audio frame")?;
         frame
             .make_writable()
             .context("failed to make native cgen alert audio frame writable")?;
-        fill_fltp_stereo_frame(&mut frame, samples, AC3_FRAME_SAMPLES);
+        fill_fltp_frame(
+            &mut frame,
+            samples,
+            AC3_FRAME_SAMPLES,
+            usize::from(self.output_channels),
+        );
         self.encoder
             .send_frame(Some(&frame))
             .context("failed to send native cgen alert audio frame to encoder")?;
@@ -1201,7 +1300,84 @@ impl AudioProcessor {
     }
 }
 
-fn create_ac3_encoder() -> Result<AVCodecContext> {
+struct AudioResampler {
+    context: SwrContext,
+    input: AudioResamplerInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AudioResamplerInput {
+    layout: String,
+    format: i32,
+    sample_rate: i32,
+    output_channels: u16,
+}
+
+impl AudioResampler {
+    fn for_frame(existing: Option<Self>, frame: &AVFrame, output_channels: u16) -> Result<Self> {
+        let input = AudioResamplerInput::from_frame(frame, output_channels);
+        if let Some(existing) = existing {
+            if existing.input == input {
+                return Ok(existing);
+            }
+        }
+
+        let input_layout = frame_channel_layout(frame);
+        let output_layout = AVChannelLayout::from_nb_channels(output_channels.into());
+        let mut context = SwrContext::new(
+            &output_layout.into_inner(),
+            ffi::AV_SAMPLE_FMT_S16,
+            ALERT_SAMPLE_RATE as i32,
+            &input_layout.into_inner(),
+            frame.format,
+            frame.sample_rate.max(1),
+        )
+        .context("failed to create native cgen audio resampler")?;
+        context
+            .init()
+            .context("failed to initialize native cgen audio resampler")?;
+        Ok(Self { context, input })
+    }
+
+    fn convert(&mut self, frame: &AVFrame) -> Result<Vec<i16>> {
+        let out_samples = self
+            .context
+            .get_out_samples(frame.nb_samples.max(0))
+            .max(AC3_FRAME_SAMPLES as i32);
+        let mut output = AVFrame::new();
+        output.set_nb_samples(out_samples);
+        output.set_format(ffi::AV_SAMPLE_FMT_S16);
+        output.set_sample_rate(ALERT_SAMPLE_RATE as i32);
+        output.set_ch_layout(
+            AVChannelLayout::from_nb_channels(self.input.output_channels.into()).into_inner(),
+        );
+        output
+            .alloc_buffer()
+            .context("failed to allocate native cgen resampled audio frame")?;
+        self.context
+            .convert_frame(Some(frame), &mut output)
+            .context("failed to resample native cgen source audio")?;
+        packed_s16_frame_to_vec(&output, usize::from(self.input.output_channels))
+    }
+}
+
+impl AudioResamplerInput {
+    fn from_frame(frame: &AVFrame, output_channels: u16) -> Self {
+        Self {
+            layout: frame
+                .ch_layout()
+                .describe()
+                .ok()
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| format!("{}c", frame.ch_layout().nb_channels.max(1))),
+            format: frame.format,
+            sample_rate: frame.sample_rate.max(1),
+            output_channels,
+        }
+    }
+}
+
+fn create_ac3_encoder(channels: u16) -> Result<AVCodecContext> {
     let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_AC3)
         .context("native cgen AC-3 encoder is unavailable")?;
     let sample_fmt = if codec
@@ -1216,12 +1392,12 @@ fn create_ac3_encoder() -> Result<AVCodecContext> {
     let mut encoder = AVCodecContext::new(&codec);
     encoder.set_sample_rate(ALERT_SAMPLE_RATE as i32);
     encoder.set_sample_fmt(sample_fmt);
-    encoder.set_ch_layout(AVChannelLayout::from_nb_channels(ALERT_CHANNELS.into()).into_inner());
+    encoder.set_ch_layout(AVChannelLayout::from_nb_channels(channels.into()).into_inner());
     encoder.set_time_base(AVRational {
         num: 1,
         den: ALERT_SAMPLE_RATE as i32,
     });
-    encoder.set_bit_rate(DEFAULT_AC3_BITRATE);
+    encoder.set_bit_rate(ac3_bitrate_for_channels(channels));
     encoder
         .open(None)
         .context("failed to open native cgen AC-3 encoder")?;
@@ -1445,121 +1621,60 @@ fn video_encoder_options(codec_name: &str, feed: &FeedConfig) -> Option<AVDictio
     None
 }
 
-fn frame_to_stereo_pcm16(frame: &AVFrame) -> Result<Vec<i16>> {
-    let channels = usize::try_from(frame.ch_layout().nb_channels.max(1)).unwrap_or(1);
+fn fill_fltp_frame(frame: &mut AVFrame, pcm: &[i16], samples: usize, channels: usize) {
+    let planes = frame.data_mut();
+    for channel in 0..channels {
+        let plane = planes[channel] as *mut f32;
+        for sample_index in 0..samples {
+            let value = pcm
+                .get(sample_index * channels + channel)
+                .copied()
+                .unwrap_or_default();
+            // SAFETY: AVFrame::alloc_buffer allocated one FLTP plane per
+            // channel with at least `samples` f32 values each.
+            unsafe {
+                *plane.add(sample_index) = pcm_i16_to_f32(value);
+            }
+        }
+    }
+}
+
+fn packed_s16_frame_to_vec(frame: &AVFrame, channels: usize) -> Result<Vec<i16>> {
     let samples = usize::try_from(frame.nb_samples.max(0)).unwrap_or_default();
-    let mut out = Vec::with_capacity(samples * usize::from(ALERT_CHANNELS));
-    match frame.format {
-        ffi::AV_SAMPLE_FMT_S16 => {
-            let data = frame.data[0] as *const i16;
-            for sample_index in 0..samples {
-                // SAFETY: decoded audio frames expose at least nb_samples *
-                // channels packed samples in data[0] for AV_SAMPLE_FMT_S16.
-                let (left, right) =
-                    unsafe { packed_i16_stereo_sample(data, sample_index, channels) };
-                out.push(left);
-                out.push(right);
-            }
-        }
-        ffi::AV_SAMPLE_FMT_S16P => {
-            let left_plane = frame.data[0] as *const i16;
-            let right_plane = if channels > 1 {
-                frame.data[1] as *const i16
-            } else {
-                left_plane
-            };
-            for sample_index in 0..samples {
-                // SAFETY: decoded planar frames expose nb_samples entries in
-                // each channel plane used by the channel layout.
-                let (left, right) = unsafe {
-                    (
-                        *left_plane.add(sample_index),
-                        *right_plane.add(sample_index),
-                    )
-                };
-                out.push(left);
-                out.push(right);
-            }
-        }
-        ffi::AV_SAMPLE_FMT_FLT => {
-            let data = frame.data[0] as *const f32;
-            for sample_index in 0..samples {
-                // SAFETY: decoded audio frames expose at least nb_samples *
-                // channels packed f32 samples in data[0] for AV_SAMPLE_FMT_FLT.
-                let (left, right) =
-                    unsafe { packed_f32_stereo_sample(data, sample_index, channels) };
-                out.push(pcm_f32_to_i16(left));
-                out.push(pcm_f32_to_i16(right));
-            }
-        }
-        ffi::AV_SAMPLE_FMT_FLTP => {
-            let left_plane = frame.data[0] as *const f32;
-            let right_plane = if channels > 1 {
-                frame.data[1] as *const f32
-            } else {
-                left_plane
-            };
-            for sample_index in 0..samples {
-                // SAFETY: decoded planar frames expose nb_samples entries in
-                // each channel plane used by the channel layout.
-                let (left, right) = unsafe {
-                    (
-                        *left_plane.add(sample_index),
-                        *right_plane.add(sample_index),
-                    )
-                };
-                out.push(pcm_f32_to_i16(left));
-                out.push(pcm_f32_to_i16(right));
-            }
-        }
-        other => bail!("unsupported source audio sample format {other}"),
+    let total = samples.saturating_mul(channels);
+    let data = frame.data[0] as *const i16;
+    if data.is_null() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::with_capacity(total);
+    for index in 0..total {
+        // SAFETY: the output frame is allocated as packed S16 with
+        // `nb_samples * channels` samples in data[0].
+        out.push(unsafe { *data.add(index) });
     }
     Ok(out)
 }
 
-unsafe fn packed_i16_stereo_sample(
-    data: *const i16,
-    sample_index: usize,
-    channels: usize,
-) -> (i16, i16) {
-    let base = sample_index * channels;
-    let left = unsafe { *data.add(base) };
-    let right = if channels > 1 {
-        unsafe { *data.add(base + 1) }
-    } else {
-        left
-    };
-    (left, right)
-}
-
-unsafe fn packed_f32_stereo_sample(
-    data: *const f32,
-    sample_index: usize,
-    channels: usize,
-) -> (f32, f32) {
-    let base = sample_index * channels;
-    let left = unsafe { *data.add(base) };
-    let right = if channels > 1 {
-        unsafe { *data.add(base + 1) }
-    } else {
-        left
-    };
-    (left, right)
-}
-
-fn fill_fltp_stereo_frame(frame: &mut AVFrame, pcm: &[i16], samples: usize) {
-    let planes = frame.data_mut();
-    let left = planes[0] as *mut f32;
-    let right = planes[1] as *mut f32;
-    for sample_index in 0..samples {
-        let base = sample_index * usize::from(ALERT_CHANNELS);
-        let l = pcm.get(base).copied().unwrap_or_default();
-        let r = pcm.get(base + 1).copied().unwrap_or_default();
-        // SAFETY: AVFrame::alloc_buffer allocated two FLTP planes with at least
-        // `samples` f32 values each, and the loop writes within that range.
-        unsafe {
-            *left.add(sample_index) = pcm_i16_to_f32(l);
-            *right.add(sample_index) = pcm_i16_to_f32(r);
+fn append_alert_sample_for_layout(out: &mut Vec<i16>, left: i16, right: i16, channels: usize) {
+    match channels {
+        0 => {}
+        1 => out.push(((i32::from(left) + i32::from(right)) / 2) as i16),
+        2 => {
+            out.push(left);
+            out.push(right);
+        }
+        _ => {
+            out.push(left);
+            out.push(right);
+            let center = ((i32::from(left) + i32::from(right)) / 2) as i16;
+            out.push(center);
+            if channels > 3 {
+                out.push(0);
+            }
+            for channel in 4..channels {
+                let value = if channel % 2 == 0 { left } else { right };
+                out.push(value);
+            }
         }
     }
 }
@@ -1578,10 +1693,6 @@ fn pcm_i16_to_f32(value: i16) -> f32 {
     f32::from(value) / 32768.0
 }
 
-fn pcm_f32_to_i16(value: f32) -> i16 {
-    (value.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16
-}
-
 fn audio_frame_duration(output_time_base: AVRational) -> i64 {
     rescale_q(
         AC3_FRAME_SAMPLES as i64,
@@ -1594,14 +1705,39 @@ fn audio_frame_duration(output_time_base: AVRational) -> i64 {
     .max(1)
 }
 
-fn source_buffer_samples(sync: &SyncConfig) -> usize {
+fn audio_output_channels(codecpar: &AVCodecParameters) -> u16 {
+    let channels = codecpar
+        .ch_layout()
+        .nb_channels
+        .clamp(1, i32::from(MAX_OUTPUT_AUDIO_CHANNELS));
+    u16::try_from(channels).unwrap_or(ALERT_CHANNELS)
+}
+
+fn frame_channel_layout(frame: &AVFrame) -> AVChannelLayout {
+    frame
+        .ch_layout()
+        .describe()
+        .ok()
+        .and_then(|value| AVChannelLayout::from_string(value.as_c_str()))
+        .unwrap_or_else(|| AVChannelLayout::from_nb_channels(frame.ch_layout().nb_channels.max(1)))
+}
+
+fn ac3_bitrate_for_channels(channels: u16) -> i64 {
+    if channels > 2 {
+        384_000
+    } else {
+        DEFAULT_AC3_BITRATE
+    }
+}
+
+fn source_buffer_samples(sync: &SyncConfig, channels: u16) -> usize {
     let samples = (u64::from(ALERT_SAMPLE_RATE)
-        * u64::from(ALERT_CHANNELS)
+        * u64::from(channels.max(1))
         * u64::from(sync.source_buffer_ms.max(20)))
         / 1_000;
     usize::try_from(samples)
-        .unwrap_or(AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS) * 16)
-        .max(AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS))
+        .unwrap_or(AC3_FRAME_SAMPLES * usize::from(channels.max(1)) * 16)
+        .max(AC3_FRAME_SAMPLES * usize::from(channels.max(1)))
 }
 
 fn pts_delta_ms(delta: i64, time_base: AVRational) -> f64 {
@@ -1701,7 +1837,7 @@ mod tests {
             ..SyncConfig::default()
         };
         assert_eq!(
-            source_buffer_samples(&sync),
+            source_buffer_samples(&sync, ALERT_CHANNELS),
             (ALERT_SAMPLE_RATE as usize * ALERT_CHANNELS as usize) / 4
         );
     }
@@ -1739,17 +1875,30 @@ mod tests {
     #[cfg(feature = "ffmpeg-rsmpeg")]
     #[test]
     fn ac3_encoder_emits_packet_for_one_frame() {
-        let mut encoder = create_ac3_encoder().expect("AC-3 encoder");
-        let silence = vec![0i16; AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS)];
+        let channels = ALERT_CHANNELS;
+        let mut encoder = create_ac3_encoder(channels).expect("AC-3 encoder");
+        let silence = vec![0i16; AC3_FRAME_SAMPLES * usize::from(channels)];
         let mut frame = AVFrame::new();
         frame.set_nb_samples(AC3_FRAME_SAMPLES as i32);
         frame.set_format(ffi::AV_SAMPLE_FMT_FLTP);
         frame.set_sample_rate(ALERT_SAMPLE_RATE as i32);
-        frame.set_ch_layout(AVChannelLayout::from_nb_channels(ALERT_CHANNELS.into()).into_inner());
+        frame.set_ch_layout(AVChannelLayout::from_nb_channels(channels.into()).into_inner());
         frame.alloc_buffer().expect("audio frame buffer");
-        fill_fltp_stereo_frame(&mut frame, &silence, AC3_FRAME_SAMPLES);
+        fill_fltp_frame(
+            &mut frame,
+            &silence,
+            AC3_FRAME_SAMPLES,
+            usize::from(channels),
+        );
         encoder.send_frame(Some(&frame)).expect("send frame");
         let packet = encoder.receive_packet().expect("receive packet");
         assert!(packet.size > 0);
+    }
+
+    #[test]
+    fn alert_samples_expand_to_surround_layout() {
+        let mut out = Vec::new();
+        append_alert_sample_for_layout(&mut out, 1000, -1000, 6);
+        assert_eq!(out, vec![1000, -1000, 0, 0, 1000, -1000]);
     }
 }

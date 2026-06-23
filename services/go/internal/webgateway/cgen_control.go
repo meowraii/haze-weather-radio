@@ -308,7 +308,7 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Video.Standard = normalizeCgenStandard(feed.Video.Standard)
 		feed.Audio.Idle = fallbackText(strings.TrimSpace(feed.Audio.Idle), "source")
 		feed.Audio.AlertMode = fallbackText(strings.TrimSpace(feed.Audio.AlertMode), "replace")
-		feed.Audio.DuckDB = cleanNumber(feed.Audio.DuckDB, "-18")
+		feed.Audio.DuckDB = cleanNumber(feed.Audio.DuckDB, "0")
 		feed.Banner.Mode = fallbackText(strings.TrimSpace(feed.Banner.Mode), "auto")
 		feed.Banner.TickerHeight = cleanPositive(feed.Banner.TickerHeight, "128")
 		feed.Banner.Font = fallbackText(strings.TrimSpace(feed.Banner.Font), "Arial")
