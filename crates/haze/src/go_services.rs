@@ -876,6 +876,8 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
             if tts.enabled.unwrap_or(false) {
                 let mut args = vec![
                     "--service".to_string(),
+                    "--bridge".to_string(),
+                    std::env::var("HAZE_HOST_BRIDGE_ADDR").unwrap_or_default(),
                     "--readers".to_string(),
                     tts.readers
                         .clone()

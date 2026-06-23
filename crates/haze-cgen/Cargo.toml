@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-ffmpeg-rsmpeg = ["haze-media/ffmpeg-rsmpeg"]
+ffmpeg-rsmpeg = ["haze-media/ffmpeg-rsmpeg", "dep:rsmpeg", "rsmpeg/link_system_ffmpeg"]
 gpu-wgpu = ["dep:wgpu"]
 
 [dependencies]
@@ -27,6 +27,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 wgpu = { version = "26", optional = true }
+rsmpeg = { version = "0.18.0", default-features = false, features = ["ffmpeg8"], optional = true }
 
 haze-media = { path = "../haze-media" }
 

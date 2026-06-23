@@ -33,6 +33,9 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 				"width":                     "1280",
 				"height":                    "720",
 				"fps":                       "source",
+				"interlaced":                true,
+				"field_order":               "bff",
+				"standard":                  "atsc",
 				"banner_background_enabled": true,
 			},
 		},
@@ -46,6 +49,9 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 	}
 	if feeds[0]["program_input_url"] != "udp://239.0.0.1:9000?overrun_nonfatal=1&reuse=1" {
 		t.Fatalf("program input = %#v", feeds[0]["program_input_url"])
+	}
+	if feeds[0]["interlaced"] != true || feeds[0]["field_order"] != "bff" || feeds[0]["standard"] != "atsc" {
+		t.Fatalf("video flags = %#v", feeds[0])
 	}
 
 	acted, err := cgenActionPayload(configPath, map[string]any{

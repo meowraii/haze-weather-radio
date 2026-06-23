@@ -54,9 +54,12 @@ type cgenPriorityInputXML struct {
 }
 
 type cgenVideoXML struct {
-	Width  string `xml:"width,attr,omitempty"`
-	Height string `xml:"height,attr,omitempty"`
-	FPS    string `xml:"fps,attr,omitempty"`
+	Width      string `xml:"width,attr,omitempty"`
+	Height     string `xml:"height,attr,omitempty"`
+	FPS        string `xml:"fps,attr,omitempty"`
+	Interlaced string `xml:"interlaced,attr,omitempty"`
+	FieldOrder string `xml:"field_order,attr,omitempty"`
+	Standard   string `xml:"standard,attr,omitempty"`
 }
 
 type cgenAudioXML struct {
@@ -284,6 +287,9 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Video.Width = cleanPositive(feed.Video.Width, "1280")
 		feed.Video.Height = cleanPositive(feed.Video.Height, "720")
 		feed.Video.FPS = fallbackText(strings.TrimSpace(feed.Video.FPS), "source")
+		feed.Video.Interlaced = boolText(xmlBool(feed.Video.Interlaced, false))
+		feed.Video.FieldOrder = normalizeCgenFieldOrder(feed.Video.FieldOrder)
+		feed.Video.Standard = normalizeCgenStandard(feed.Video.Standard)
 		feed.Audio.Idle = fallbackText(strings.TrimSpace(feed.Audio.Idle), "source")
 		feed.Audio.AlertMode = fallbackText(strings.TrimSpace(feed.Audio.AlertMode), "replace")
 		feed.Audio.DuckDB = cleanNumber(feed.Audio.DuckDB, "-18")
@@ -360,9 +366,12 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			AudioBitrateKbps: stringFromAny(source["audio_bitrate_kbps"]),
 		},
 		Video: cgenVideoXML{
-			Width:  stringFromAny(source["width"]),
-			Height: stringFromAny(source["height"]),
-			FPS:    stringFromAny(source["fps"]),
+			Width:      stringFromAny(source["width"]),
+			Height:     stringFromAny(source["height"]),
+			FPS:        stringFromAny(source["fps"]),
+			Interlaced: boolText(boolFromAny(source["interlaced"], false)),
+			FieldOrder: stringFromAny(source["field_order"]),
+			Standard:   stringFromAny(source["standard"]),
 		},
 		Audio: cgenAudioXML{
 			Idle:      stringFromAny(source["audio_idle"]),
@@ -444,6 +453,9 @@ func cgenPayload(path string, config cgenXML) map[string]any {
 			"width":                     feed.Video.Width,
 			"height":                    feed.Video.Height,
 			"fps":                       feed.Video.FPS,
+			"interlaced":                xmlBool(feed.Video.Interlaced, false),
+			"field_order":               feed.Video.FieldOrder,
+			"standard":                  feed.Video.Standard,
 			"audio_idle":                feed.Audio.Idle,
 			"audio_alert_mode":          feed.Audio.AlertMode,
 			"duck_db":                   feed.Audio.DuckDB,
@@ -491,6 +503,24 @@ func cleanCgenEndpoint(value cgenEndpointXML) cgenEndpointXML {
 	value.VideoBitrateKbps = cleanOptionalPositive(value.VideoBitrateKbps)
 	value.AudioBitrateKbps = cleanOptionalPositive(value.AudioBitrateKbps)
 	return value
+}
+
+func normalizeCgenFieldOrder(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "bff" || value == "bottom" || value == "bottom_first" {
+		return "bff"
+	}
+	return "tff"
+}
+
+func normalizeCgenStandard(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "atsc", "pal", "secam":
+		return value
+	default:
+		return ""
+	}
 }
 
 func cleanCgenID(value string) string {

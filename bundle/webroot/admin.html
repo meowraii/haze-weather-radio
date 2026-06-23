@@ -753,11 +753,11 @@
                                     </label>
                                     <label class="daemon-field">
                                         <span>Video codec</span>
-                                        <input id="cgenVCodec" type="text" value="libx264">
+                                        <input id="cgenVCodec" type="text" value="mpeg2video">
                                     </label>
                                     <label class="daemon-field">
                                         <span>Audio codec</span>
-                                        <input id="cgenACodec" type="text" value="aac">
+                                        <input id="cgenACodec" type="text" value="ac3">
                                     </label>
                                     <label class="daemon-field">
                                         <span>Duck dB</span>
@@ -788,7 +788,27 @@
                                     </label>
                                     <label class="daemon-field">
                                         <span>FPS</span>
-                                        <input id="cgenFPS" type="text" value="source">
+                                        <input id="cgenFPS" type="text" value="30000/1001">
+                                    </label>
+                                    <label class="daemon-field check-row">
+                                        <input id="cgenInterlaced" type="checkbox">
+                                        <span>Interlace</span>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Field Order</span>
+                                        <select id="cgenFieldOrder">
+                                            <option value="tff">Top first</option>
+                                            <option value="bff">Bottom first</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Video Standard</span>
+                                        <select id="cgenStandard">
+                                            <option value="">Auto</option>
+                                            <option value="atsc">ATSC</option>
+                                            <option value="pal">PAL</option>
+                                            <option value="secam">SECAM</option>
+                                        </select>
                                     </label>
                                     <label class="daemon-field">
                                         <span>Background</span>

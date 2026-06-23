@@ -802,6 +802,7 @@ dependencies = [
  "clap",
  "haze-media",
  "quick-xml",
+ "rsmpeg",
  "serde",
  "serde_json",
  "serde_yaml",

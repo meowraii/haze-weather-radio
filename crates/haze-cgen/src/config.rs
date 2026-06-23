@@ -82,6 +82,12 @@ pub(crate) struct VideoConfig {
     pub(crate) height: u32,
     #[serde(rename = "@fps", default)]
     pub(crate) fps: String,
+    #[serde(rename = "@interlaced", default)]
+    pub(crate) interlaced: bool,
+    #[serde(rename = "@field_order", default = "default_field_order")]
+    pub(crate) field_order: String,
+    #[serde(rename = "@standard", default)]
+    pub(crate) standard: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -317,6 +323,10 @@ fn default_insert_font_size() -> u32 {
     32
 }
 
+fn default_field_order() -> String {
+    "tff".to_string()
+}
+
 fn release_mode() -> String {
     "release".to_string()
 }
@@ -332,7 +342,7 @@ mod tests {
   <feed id="*" enabled="false">
     <input url="udp://127.0.0.1:5000" format="mpegts"/>
     <output url="udp://127.0.0.1:5001" format="mpegts" vcodec="libx264" acodec="aac"/>
-    <video width="1280" height="720" fps="source"/>
+    <video width="1280" height="720" fps="source" interlaced="false" field_order="tff"/>
     <audio idle="source" alert_mode="replace"/>
     <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded"/>
   </feed>
@@ -361,7 +371,7 @@ mod tests {
     <priorityInput feed_id="CAP-IT-ALL" format="priority-audio"/>
     <programOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="libx264" acodec="aac"/>
     <alertOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="libx264" acodec="aac"/>
-    <video width="1280" height="720" fps="source"/>
+    <video width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc"/>
     <audio idle="source" alert_mode="replace" duck_db="-18"/>
     <banner mode="auto" ticker_height="96" font="Zalando Sans SemiExpanded" font_size="26" background_enabled="true"/>
     <graphics background_color="#000000" font="Zalando Sans SemiExpanded" font_size="26"/>
@@ -380,6 +390,10 @@ mod tests {
             "udp://239.0.0.2:9001?pkt_size=1316"
         );
         assert_eq!(feeds[0].priority_input.feed_id, "CAP-IT-ALL");
+        assert_eq!(feeds[0].video.width, 1920);
+        assert!(feeds[0].video.interlaced);
+        assert_eq!(feeds[0].video.field_order, "tff");
+        assert_eq!(feeds[0].video.standard, "atsc");
         assert!(feeds[0].clock.enabled);
         assert!(feeds[0].state.smpte_bars);
     }
@@ -414,6 +428,9 @@ mod tests {
                 width: 1280,
                 height: 720,
                 fps: "source".to_string(),
+                interlaced: false,
+                field_order: "tff".to_string(),
+                standard: String::new(),
             },
             audio: AudioConfig {
                 idle: "source".to_string(),

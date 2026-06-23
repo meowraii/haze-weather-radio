@@ -31,6 +31,9 @@ const fields = {
     width: document.getElementById('cgenWidth'),
     height: document.getElementById('cgenHeight'),
     fps: document.getElementById('cgenFPS'),
+    interlaced: document.getElementById('cgenInterlaced'),
+    fieldOrder: document.getElementById('cgenFieldOrder'),
+    standard: document.getElementById('cgenStandard'),
     backgroundColor: document.getElementById('cgenBackgroundColor'),
     font: document.getElementById('cgenFont'),
     fontSize: document.getElementById('cgenFontSize'),
@@ -108,13 +111,16 @@ function readEditor() {
         program_output_format: value('outputFormat', 'mpegts'),
         alert_output_url: value('alertOutput') || value('programOutput'),
         alert_output_format: value('outputFormat', 'mpegts'),
-        vcodec: value('vcodec', 'libx264'),
-        acodec: value('acodec', 'aac'),
-        video_bitrate_kbps: selected()?.video_bitrate_kbps || '4500',
-        audio_bitrate_kbps: selected()?.audio_bitrate_kbps || '128',
-        width: value('width', '1280'),
-        height: value('height', '720'),
-        fps: value('fps', 'source'),
+        vcodec: value('vcodec', 'mpeg2video'),
+        acodec: value('acodec', 'ac3'),
+        video_bitrate_kbps: selected()?.video_bitrate_kbps || '12000',
+        audio_bitrate_kbps: selected()?.audio_bitrate_kbps || '192',
+        width: value('width', '1920'),
+        height: value('height', '1080'),
+        fps: value('fps', '30000/1001'),
+        interlaced: value('interlaced'),
+        field_order: value('fieldOrder', 'tff'),
+        standard: value('standard', 'atsc'),
         audio_idle: 'source',
         audio_alert_mode: 'replace',
         duck_db: value('duckDB', '-18'),
@@ -127,7 +133,7 @@ function readEditor() {
         banner_background_enabled: value('bannerBackgroundEnabled'),
         banner_x: value('bannerX', '0'),
         banner_y: value('bannerY', '0'),
-        banner_width: value('bannerWidth', value('width', '1280')),
+        banner_width: value('bannerWidth', value('width', '1920')),
         banner_height: value('bannerHeight', '96'),
         text_enabled: value('textEnabled'),
         text: fields.text.value,
@@ -158,12 +164,15 @@ function writeEditor(feed) {
     setValue('programOutput', feed.program_output_url || '');
     setValue('alertOutput', feed.alert_output_url || feed.program_output_url || '');
     setValue('outputFormat', feed.program_output_format || feed.alert_output_format || 'mpegts');
-    setValue('vcodec', feed.vcodec || 'libx264');
-    setValue('acodec', feed.acodec || 'aac');
+    setValue('vcodec', feed.vcodec || 'mpeg2video');
+    setValue('acodec', feed.acodec || 'ac3');
     setValue('duckDB', feed.duck_db || '-18');
-    setValue('width', feed.width || '1280');
-    setValue('height', feed.height || '720');
-    setValue('fps', feed.fps || 'source');
+    setValue('width', feed.width || '1920');
+    setValue('height', feed.height || '1080');
+    setValue('fps', feed.fps || '30000/1001');
+    setValue('interlaced', Boolean(feed.interlaced));
+    setValue('fieldOrder', feed.field_order || 'tff');
+    setValue('standard', feed.standard || 'atsc');
     setValue('backgroundColor', feed.background_color || '#000000');
     setValue('font', feed.font || 'Zalando Sans SemiExpanded');
     setValue('fontSize', feed.font_size || '26');
@@ -172,7 +181,7 @@ function writeEditor(feed) {
     setValue('textColor', feed.text_color || '#ffffff');
     setValue('bannerX', feed.banner_x || '0');
     setValue('bannerY', feed.banner_y || '0');
-    setValue('bannerWidth', feed.banner_width || feed.width || '1280');
+    setValue('bannerWidth', feed.banner_width || feed.width || '1920');
     setValue('bannerHeight', feed.banner_height || feed.ticker_height || '96');
     setValue('bannerColor', feed.banner_background_color || '#b45309');
     setValue('bannerBackgroundEnabled', feed.banner_background_enabled !== false);
@@ -313,21 +322,26 @@ function defaultFeed() {
         mode: 'release',
         program_input_url: 'udp://239.0.0.1:9000?overrun_nonfatal=1&reuse=1',
         program_input_format: 'mpegts',
-        priority_feed_id: 'CAP-IT-ALL',
+        priority_feed_id: '*',
         program_output_url: 'udp://239.0.0.2:9001?pkt_size=1316',
         alert_output_url: 'udp://239.0.0.2:9001?pkt_size=1316',
         program_output_format: 'mpegts',
-        vcodec: 'libx264',
-        acodec: 'aac',
-        width: '1280',
-        height: '720',
-        fps: 'source',
+        vcodec: 'mpeg2video',
+        acodec: 'ac3',
+        video_bitrate_kbps: '12000',
+        audio_bitrate_kbps: '192',
+        width: '1920',
+        height: '1080',
+        fps: '30000/1001',
+        interlaced: true,
+        field_order: 'tff',
+        standard: 'atsc',
         background_color: '#000000',
         banner_background_color: '#b45309',
         banner_background_enabled: true,
         banner_x: '0',
         banner_y: '0',
-        banner_width: '1280',
+        banner_width: '1920',
         banner_height: '96',
         font: 'Zalando Sans SemiExpanded',
         font_size: '26',
