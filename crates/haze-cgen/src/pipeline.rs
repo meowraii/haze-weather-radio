@@ -794,6 +794,27 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_priority_input_uses_alert_from_any_feed() {
+        let mut feed = test_feed();
+        feed.priority_input.feed_id = "*".to_string();
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["sk-0001"],
+            "queue_id": "sk-alert",
+            "data": {
+                "queue_id": "sk-alert",
+                "audio_path": "runtime/audio/alerts/sk-alert.raw"
+            }
+        })));
+
+        assert!(matches!(
+            desired_mode(&feed, &state),
+            PipelineMode::Overlay { audio: Some(_), .. }
+        ));
+    }
+
+    #[test]
     fn banner_state_without_playout_timing_does_not_hold_overlay() {
         let feed = test_feed();
         let mut state = RuntimeState::default();

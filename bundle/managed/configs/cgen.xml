@@ -6,7 +6,7 @@
   -->
   <feed id="CAP-IT-ALL" name="CAP-IT-ALL CGEN" enabled="true">
     <programInput url="udp://239.0.0.1:9000?overrun_nonfatal=1&amp;reuse=1" format="mpegts"></programInput>
-    <priorityInput feed_id="CAP-IT-ALL" url="" format="priority-audio"></priorityInput>
+    <priorityInput feed_id="*" url="" format="priority-audio"></priorityInput>
     <programOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="libx264" acodec="aac" video_bitrate_kbps="4500" audio_bitrate_kbps="128"></programOutput>
     <alertOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="libx264" acodec="aac" video_bitrate_kbps="4500" audio_bitrate_kbps="128"></alertOutput>
     <video width="1280" height="720" fps="source"></video>

@@ -68,6 +68,12 @@ impl RuntimeState {
     }
 
     pub(crate) fn priority_audio_for(&self, feed_id: &str) -> Option<&PriorityAudio> {
+        if feed_id.trim() == "*" {
+            return self
+                .active_audio
+                .values()
+                .max_by_key(|audio| audio.started_at);
+        }
         self.active_audio
             .get(feed_id)
             .or_else(|| self.active_audio.get("*"))
@@ -269,6 +275,23 @@ mod tests {
             }
         })));
         assert!(state.priority_audio_for("CAP-IT-ALL").is_some());
+    }
+
+    #[test]
+    fn wildcard_priority_query_uses_any_active_feed() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["sk-0001"],
+            "queue_id": "alert-1",
+            "data": {
+                "queue_id": "alert-1",
+                "audio_path": "runtime/audio/alerts/sk.raw"
+            }
+        })));
+
+        let audio = state.priority_audio_for("*").expect("wildcard audio");
+        assert_eq!(audio.queue_id, "alert-1");
     }
 
     #[test]
