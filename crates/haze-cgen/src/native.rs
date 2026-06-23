@@ -241,8 +241,11 @@ fn create_output_streams(
     audio_input_index: Option<usize>,
     audio_codecpar: Option<AVCodecParameters>,
 ) -> Result<Vec<StreamSpec>> {
-    let mut out = Vec::with_capacity(input_specs.len());
+    let mut out = Vec::with_capacity(2);
     for spec in input_specs {
+        if spec.input_index != video_input_index && Some(spec.input_index) != audio_input_index {
+            continue;
+        }
         let mut stream = output.new_stream();
         let output_time_base = if spec.input_index == video_input_index {
             stream.set_codecpar(video_codecpar.clone());
@@ -253,12 +256,13 @@ fn create_output_streams(
                 .as_ref()
                 .context("native cgen audio output codec parameters are missing")?;
             stream.set_codecpar(codecpar.clone());
-            stream.set_time_base(spec.time_base);
+            stream.set_time_base(AVRational {
+                num: 1,
+                den: ALERT_SAMPLE_RATE as i32,
+            });
             stream.time_base
         } else {
-            stream.set_codecpar(spec.codecpar.clone());
-            stream.set_time_base(spec.time_base);
-            stream.time_base
+            unreachable!("non-selected native cgen stream was filtered before stream creation")
         };
         out.push(StreamSpec {
             input_index: spec.input_index,

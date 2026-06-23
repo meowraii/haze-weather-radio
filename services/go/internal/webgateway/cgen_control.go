@@ -302,7 +302,7 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Banner.TickerHeight = cleanPositive(feed.Banner.TickerHeight, "128")
 		feed.Banner.Font = fallbackText(strings.TrimSpace(feed.Banner.Font), "Arial")
 		feed.Banner.FontSize = cleanPositive(feed.Banner.FontSize, "58")
-		feed.Banner.ScrollSpeed = cleanPositive(feed.Banner.ScrollSpeed, "4")
+		feed.Banner.ScrollSpeed = cleanPositive(feed.Banner.ScrollSpeed, "8")
 		feed.Banner.X = cleanNumber(feed.Banner.X, "0")
 		feed.Banner.Y = cleanNumber(feed.Banner.Y, "0")
 		feed.Banner.BackgroundColor = cleanColor(feed.Banner.BackgroundColor, "#b45309")

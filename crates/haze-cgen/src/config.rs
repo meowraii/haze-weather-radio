@@ -308,7 +308,7 @@ fn default_font_size() -> u32 {
 }
 
 fn default_scroll_speed() -> u32 {
-    4
+    8
 }
 
 fn default_text_x() -> i32 {

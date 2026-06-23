@@ -131,7 +131,7 @@ function readEditor() {
         ticker_height: value('bannerHeight', '128'),
         font: value('font', 'Arial'),
         font_size: value('fontSize', '58'),
-        scroll_speed: value('scrollSpeed', '4'),
+        scroll_speed: value('scrollSpeed', '8'),
         background_color: value('backgroundColor', '#000000'),
         banner_background_color: value('bannerColor', '#b45309'),
         banner_background_gradient_color: value('bannerGradientColor', '#7f1d1d'),
@@ -181,7 +181,7 @@ function writeEditor(feed) {
     setValue('backgroundColor', feed.background_color || '#000000');
     setValue('font', feed.font || 'Arial');
     setValue('fontSize', feed.font_size || '58');
-    setValue('scrollSpeed', feed.scroll_speed || '4');
+    setValue('scrollSpeed', feed.scroll_speed || '8');
     setValue('textX', feed.text_x || '48');
     setValue('textY', feed.text_y || '128');
     setValue('textColor', feed.text_color || '#ffffff');
@@ -357,7 +357,7 @@ function defaultFeed() {
         banner_background_gradient_color: '#7f1d1d',
         banner_mode: 'auto',
         banner_background_enabled: true,
-        scroll_speed: '4',
+        scroll_speed: '8',
         banner_x: '0',
         banner_y: '0',
         banner_width: '1920',
