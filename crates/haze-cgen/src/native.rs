@@ -466,7 +466,9 @@ fn encode_once(
             .iter_mut()
             .filter(|output| output.processor.input_index == input_index)
         {
-            audio_output.processor.process_packet(&packet)?;
+            audio_output
+                .processor
+                .process_packet(&packet, &audio_output.spec)?;
             handled_audio = true;
         }
         if handled_audio {
@@ -1168,6 +1170,7 @@ struct AudioProcessor {
     pcm: Vec<u8>,
     cursor: usize,
     source_pcm: VecDeque<i16>,
+    source_front_pts: Option<i64>,
     clock: CgenClock,
     source_max_samples: usize,
     was_alert_active: bool,
@@ -1212,6 +1215,7 @@ impl AudioProcessor {
             pcm: Vec::new(),
             cursor: 0,
             source_pcm: VecDeque::with_capacity(source_buffer_samples(&feed.sync, output_channels)),
+            source_front_pts: None,
             clock: CgenClock::new(feed.sync.clone()),
             source_max_samples: source_buffer_samples(&feed.sync, output_channels),
             was_alert_active: false,
@@ -1239,9 +1243,10 @@ impl AudioProcessor {
         codecpar
     }
 
-    fn process_packet(&mut self, source_packet: &AVPacket) -> Result<()> {
+    fn process_packet(&mut self, source_packet: &AVPacket, spec: &StreamSpec) -> Result<()> {
         if self.alert_active()? {
             self.source_pcm.clear();
+            self.source_front_pts = None;
             return Ok(());
         }
         self.decoder
@@ -1250,7 +1255,7 @@ impl AudioProcessor {
         loop {
             match self.decoder.receive_frame() {
                 Ok(frame) => {
-                    self.enqueue_source_frame(&frame)?;
+                    self.enqueue_source_frame(&frame, spec.output_time_base)?;
                 }
                 Err(err) if is_again(&err) => return Ok(()),
                 Err(err) => return Err(err).context("failed to decode native cgen source audio"),
@@ -1258,7 +1263,12 @@ impl AudioProcessor {
         }
     }
 
-    fn enqueue_source_frame(&mut self, source_frame: &AVFrame) -> Result<()> {
+    fn enqueue_source_frame(
+        &mut self,
+        source_frame: &AVFrame,
+        output_time_base: AVRational,
+    ) -> Result<()> {
+        let source_pts = self.source_frame_output_pts(source_frame, output_time_base);
         let source_pcm = match self.frame_to_output_pcm16(source_frame) {
             Ok(samples) => samples,
             Err(err) => {
@@ -1275,12 +1285,32 @@ impl AudioProcessor {
         if source_pcm.is_empty() {
             return Ok(());
         }
+        if self.source_pcm.is_empty() {
+            self.source_front_pts = source_pts;
+        } else if let (Some(front_pts), Some(source_pts)) = (self.source_front_pts, source_pts) {
+            let current_frames = self.source_pcm.len() / usize::from(self.output_channels.max(1));
+            let expected_tail =
+                front_pts.saturating_add(sample_frames_duration(current_frames, output_time_base));
+            let discontinuity_ms =
+                pts_delta_ms(source_pts.saturating_sub(expected_tail), output_time_base);
+            if discontinuity_ms.abs() > f64::from(self.clock.sync.hard_reset_ms.max(1)) {
+                warn!(
+                    feed_id = %self.feed_id,
+                    input_index = self.input_index,
+                    discontinuity_ms,
+                    source_pts,
+                    expected_tail,
+                    "native cgen source audio buffer reset after timestamp discontinuity"
+                );
+                self.source_pcm.clear();
+                self.source_front_pts = Some(source_pts);
+            }
+        }
         self.source_pcm.extend(source_pcm);
-        self.drop_excess_source_audio();
+        self.drop_excess_source_audio(output_time_base);
         Ok(())
     }
 
-    #[allow(dead_code)]
     fn source_frame_output_pts(
         &self,
         source_frame: &AVFrame,
@@ -1302,7 +1332,7 @@ impl AudioProcessor {
         )
     }
 
-    fn drop_excess_source_audio(&mut self) {
+    fn drop_excess_source_audio(&mut self, output_time_base: AVRational) {
         let channels = usize::from(self.output_channels.max(1));
         while self.source_pcm.len() > self.source_max_samples {
             let excess = self
@@ -1310,13 +1340,54 @@ impl AudioProcessor {
                 .len()
                 .saturating_sub(self.source_max_samples);
             let sample_frames = (excess / channels).max(1);
-            let drop_samples = sample_frames.saturating_mul(channels);
-            for _ in 0..drop_samples {
-                if self.source_pcm.pop_front().is_none() {
-                    break;
-                }
+            self.drop_source_sample_frames(sample_frames, output_time_base);
+        }
+    }
+
+    fn drop_source_sample_frames(&mut self, sample_frames: usize, output_time_base: AVRational) {
+        let channels = usize::from(self.output_channels.max(1));
+        let drop_samples = sample_frames
+            .saturating_mul(channels)
+            .min(self.source_pcm.len());
+        for _ in 0..drop_samples {
+            if self.source_pcm.pop_front().is_none() {
+                break;
             }
         }
+        if let Some(front_pts) = self.source_front_pts {
+            self.source_front_pts = Some(front_pts.saturating_add(sample_frames_duration(
+                drop_samples / channels,
+                output_time_base,
+            )));
+        }
+        if self.source_pcm.is_empty() {
+            self.source_front_pts = None;
+        }
+    }
+
+    fn align_source_audio_to_pts(&mut self, pts: i64, output_time_base: AVRational) {
+        let Some(front_pts) = self.source_front_pts else {
+            return;
+        };
+        let frame_duration = audio_frame_duration(output_time_base);
+        let late_by = pts.saturating_sub(front_pts);
+        if late_by <= frame_duration / 2 {
+            return;
+        }
+        let drop_frames =
+            duration_sample_frames(late_by.saturating_sub(frame_duration / 2), output_time_base);
+        if drop_frames > 0 {
+            self.drop_source_sample_frames(drop_frames, output_time_base);
+        }
+    }
+
+    fn source_audio_ready_for_pts(&self, pts: i64, output_time_base: AVRational) -> bool {
+        let Some(front_pts) = self.source_front_pts else {
+            return false;
+        };
+        let frame_duration = audio_frame_duration(output_time_base);
+        front_pts <= pts.saturating_add(frame_duration / 2)
+            && self.source_pcm.len() >= AC3_FRAME_SAMPLES * usize::from(self.output_channels.max(1))
     }
 
     fn frame_to_output_pcm16(&mut self, frame: &AVFrame) -> Result<Vec<i16>> {
@@ -1365,6 +1436,7 @@ impl AudioProcessor {
                 "native cgen audio clock hard reset after drift limit"
             );
             self.source_pcm.clear();
+            self.source_front_pts = None;
         }
         let max_frames = self.clock.max_audio_frames_per_video();
         for _ in 0..max_frames {
@@ -1376,8 +1448,14 @@ impl AudioProcessor {
                 self.encode_next_alert_frame()
                     .context("failed to encode native cgen alert audio")?
             } else {
-                self.encode_next_source_frame()
-                    .context("failed to encode native cgen source audio")?
+                self.align_source_audio_to_pts(pts, spec.output_time_base);
+                if self.source_audio_ready_for_pts(pts, spec.output_time_base) {
+                    self.encode_next_source_frame(spec.output_time_base)
+                        .context("failed to encode native cgen source audio")?
+                } else {
+                    self.encode_silence_frame()
+                        .context("failed to encode native cgen source silence")?
+                }
             };
             encoded.set_pts(pts);
             encoded.set_dts(pts);
@@ -1399,6 +1477,7 @@ impl AudioProcessor {
                 "native cgen dropped stale audio backlog after frame cap"
             );
             self.source_pcm.clear();
+            self.source_front_pts = None;
         }
         Ok(())
     }
@@ -1424,6 +1503,7 @@ impl AudioProcessor {
         let Some(audio) = audio else {
             if self.was_alert_active {
                 self.source_pcm.clear();
+                self.source_front_pts = None;
                 self.clock.reset_audio();
             }
             self.active_queue_id = None;
@@ -1435,6 +1515,7 @@ impl AudioProcessor {
         };
         if !self.was_alert_active {
             self.source_pcm.clear();
+            self.source_front_pts = None;
             self.cursor = 0;
             self.clock.reset_audio();
         }
@@ -1497,12 +1578,26 @@ impl AudioProcessor {
         self.encode_frame_from_i16(&pcm)
     }
 
-    fn encode_next_source_frame(&mut self) -> Result<AVPacket> {
+    fn encode_next_source_frame(&mut self, output_time_base: AVRational) -> Result<AVPacket> {
         let mut chunk = Vec::with_capacity(AC3_FRAME_SAMPLES * usize::from(self.output_channels));
         for _ in 0..(AC3_FRAME_SAMPLES * usize::from(self.output_channels)) {
             chunk.push(self.source_pcm.pop_front().unwrap_or_default());
         }
+        if let Some(front_pts) = self.source_front_pts {
+            self.source_front_pts = Some(
+                front_pts
+                    .saturating_add(sample_frames_duration(AC3_FRAME_SAMPLES, output_time_base)),
+            );
+        }
+        if self.source_pcm.is_empty() {
+            self.source_front_pts = None;
+        }
         self.encode_frame_from_i16(&chunk)
+    }
+
+    fn encode_silence_frame(&mut self) -> Result<AVPacket> {
+        let silence = vec![0i16; AC3_FRAME_SAMPLES * usize::from(self.output_channels)];
+        self.encode_frame_from_i16(&silence)
     }
 
     fn next_alert_samples(&mut self) -> Vec<i16> {
@@ -1985,6 +2080,33 @@ fn audio_frame_duration(output_time_base: AVRational) -> i64 {
     .max(1)
 }
 
+fn sample_frames_duration(sample_frames: usize, output_time_base: AVRational) -> i64 {
+    rescale_q(
+        sample_frames as i64,
+        AVRational {
+            num: 1,
+            den: ALERT_SAMPLE_RATE as i32,
+        },
+        output_time_base,
+    )
+    .max(0)
+}
+
+fn duration_sample_frames(duration_pts: i64, output_time_base: AVRational) -> usize {
+    if duration_pts <= 0 {
+        return 0;
+    }
+    usize::try_from(rescale_q(
+        duration_pts,
+        output_time_base,
+        AVRational {
+            num: 1,
+            den: ALERT_SAMPLE_RATE as i32,
+        },
+    ))
+    .unwrap_or(usize::MAX)
+}
+
 fn audio_output_channels(codecpar: &AVCodecParameters) -> u16 {
     let channels = codecpar
         .ch_layout()
@@ -2153,6 +2275,20 @@ mod tests {
         };
         let delta = (ALERT_SAMPLE_RATE / 10) as i64;
         assert!((pts_delta_ms(delta, time_base) - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn sample_frame_duration_round_trips_in_audio_timebase() {
+        let time_base = AVRational {
+            num: 1,
+            den: 90_000,
+        };
+        let duration = sample_frames_duration(AC3_FRAME_SAMPLES, time_base);
+        assert_eq!(duration, 2880);
+        assert_eq!(
+            duration_sample_frames(duration, time_base),
+            AC3_FRAME_SAMPLES
+        );
     }
 
     #[test]
