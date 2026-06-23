@@ -106,7 +106,12 @@ impl PipelineWorker {
 
         #[cfg(feature = "ffmpeg-rsmpeg")]
         if should_use_native_transport(&self.feed) {
-            return crate::native::run_remux_supervised(self.feed.clone()).await;
+            return crate::native::run_remux_supervised(
+                self.feed.clone(),
+                self.state_rx.clone(),
+                self.base_dir.clone(),
+            )
+            .await;
         }
         #[cfg(not(feature = "ffmpeg-rsmpeg"))]
         if should_use_native_transport(&self.feed) {
