@@ -94,6 +94,42 @@ impl NativeGraphicsRenderer {
     }
 
     #[cfg(feature = "ffmpeg-rsmpeg")]
+    #[allow(dead_code)]
+    pub(crate) fn render_no_signal(&mut self, frame: &mut AVFrame) {
+        if !is_supported_format(frame.format) {
+            return;
+        }
+        fill_rect_yuv(frame, 0, 0, frame.width, frame.height, 16, 128, 128);
+        let banner_h = (frame.height / 5).clamp(72, 180);
+        let banner_y = (frame.height - banner_h) / 2;
+        fill_rect_yuv_gradient(
+            frame,
+            0,
+            banner_y,
+            frame.width,
+            banner_h,
+            TickerGradient {
+                top: rgb_from_hex_loose("#111827"),
+                middle: rgb_from_hex_loose("#000000"),
+                bottom: rgb_from_hex_loose("#111827"),
+            },
+            (16, 128, 128),
+        );
+        let label = format!("HAZE CGEN NO SIGNAL - {}", self.feed.id);
+        let scale = ((frame.height / 220).max(3)) as usize;
+        draw_text_yuv(
+            frame,
+            &label,
+            48,
+            banner_y + banner_h / 2 - (8 * scale as i32) / 2,
+            scale as i32,
+            235,
+            128,
+            128,
+        );
+    }
+
+    #[cfg(feature = "ffmpeg-rsmpeg")]
     fn render_ticker(
         &mut self,
         frame: &mut AVFrame,
@@ -1783,7 +1819,7 @@ mod tests {
     use super::*;
     use crate::config::{
         AudioConfig, BannerConfig, ClockConfig, EndpointConfig, GraphicsConfig,
-        PriorityInputConfig, StateConfig, TextConfig, VideoConfig,
+        PriorityInputConfig, StateConfig, SyncConfig, TextConfig, VideoConfig,
     };
 
     #[test]
@@ -1912,6 +1948,7 @@ mod tests {
             clock: ClockConfig::default(),
             text: TextConfig::default(),
             state: StateConfig::default(),
+            sync: SyncConfig::default(),
         }
     }
 }

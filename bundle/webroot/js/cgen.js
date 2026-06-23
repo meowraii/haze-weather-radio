@@ -27,7 +27,16 @@ const fields = {
     outputFormat: document.getElementById('cgenOutputFormat'),
     vcodec: document.getElementById('cgenVCodec'),
     acodec: document.getElementById('cgenACodec'),
+    videoBitrate: document.getElementById('cgenVideoBitrate'),
+    audioBitrate: document.getElementById('cgenAudioBitrate'),
     duckDB: document.getElementById('cgenDuckDB'),
+    syncMaxSoftDrift: document.getElementById('cgenSyncMaxSoftDrift'),
+    syncHardReset: document.getElementById('cgenSyncHardReset'),
+    syncMaxAudioFrames: document.getElementById('cgenSyncMaxAudioFrames'),
+    syncSourceBuffer: document.getElementById('cgenSyncSourceBuffer'),
+    syncReconnectInitial: document.getElementById('cgenSyncReconnectInitial'),
+    syncReconnectMax: document.getElementById('cgenSyncReconnectMax'),
+    syncStatusInterval: document.getElementById('cgenSyncStatusInterval'),
     width: document.getElementById('cgenWidth'),
     height: document.getElementById('cgenHeight'),
     fps: document.getElementById('cgenFPS'),
@@ -116,8 +125,8 @@ function readEditor() {
         alert_output_format: value('outputFormat', 'mpegts'),
         vcodec: value('vcodec', 'mpeg2video'),
         acodec: value('acodec', 'ac3'),
-        video_bitrate_kbps: selected()?.video_bitrate_kbps || '12000',
-        audio_bitrate_kbps: selected()?.audio_bitrate_kbps || '192',
+        video_bitrate_kbps: value('videoBitrate', '12000'),
+        audio_bitrate_kbps: value('audioBitrate', '192'),
         width: value('width', '1920'),
         height: value('height', '1080'),
         fps: value('fps', '30000/1001'),
@@ -152,6 +161,13 @@ function readEditor() {
         clock_y: value('clockY', '48'),
         clock_font_size: value('clockFontSize', '30'),
         clock_color: value('clockColor', '#ffffff'),
+        sync_max_soft_drift_ms: value('syncMaxSoftDrift', '80'),
+        sync_hard_reset_ms: value('syncHardReset', '750'),
+        sync_max_audio_frames_per_video: value('syncMaxAudioFrames', '12'),
+        sync_source_buffer_ms: value('syncSourceBuffer', '500'),
+        sync_reconnect_initial_ms: value('syncReconnectInitial', '500'),
+        sync_reconnect_max_ms: value('syncReconnectMax', '10000'),
+        sync_status_interval_ms: value('syncStatusInterval', '1000'),
     };
 }
 
@@ -171,7 +187,16 @@ function writeEditor(feed) {
     setValue('outputFormat', feed.program_output_format || feed.alert_output_format || 'mpegts');
     setValue('vcodec', feed.vcodec || 'mpeg2video');
     setValue('acodec', feed.acodec || 'ac3');
+    setValue('videoBitrate', feed.video_bitrate_kbps || '12000');
+    setValue('audioBitrate', feed.audio_bitrate_kbps || '192');
     setValue('duckDB', feed.duck_db || '-18');
+    setValue('syncMaxSoftDrift', feed.sync_max_soft_drift_ms || '80');
+    setValue('syncHardReset', feed.sync_hard_reset_ms || '750');
+    setValue('syncMaxAudioFrames', feed.sync_max_audio_frames_per_video || '12');
+    setValue('syncSourceBuffer', feed.sync_source_buffer_ms || '500');
+    setValue('syncReconnectInitial', feed.sync_reconnect_initial_ms || '500');
+    setValue('syncReconnectMax', feed.sync_reconnect_max_ms || '10000');
+    setValue('syncStatusInterval', feed.sync_status_interval_ms || '1000');
     setValue('width', feed.width || '1920');
     setValue('height', feed.height || '1080');
     setValue('fps', feed.fps || '30000/1001');
@@ -346,6 +371,13 @@ function defaultFeed() {
         acodec: 'ac3',
         video_bitrate_kbps: '12000',
         audio_bitrate_kbps: '192',
+        sync_max_soft_drift_ms: '80',
+        sync_hard_reset_ms: '750',
+        sync_max_audio_frames_per_video: '12',
+        sync_source_buffer_ms: '500',
+        sync_reconnect_initial_ms: '500',
+        sync_reconnect_max_ms: '10000',
+        sync_status_interval_ms: '1000',
         width: '1920',
         height: '1080',
         fps: '30000/1001',

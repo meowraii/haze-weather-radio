@@ -46,6 +46,8 @@ pub(crate) struct FeedConfig {
     pub(crate) text: TextConfig,
     #[serde(default)]
     pub(crate) state: StateConfig,
+    #[serde(default)]
+    pub(crate) sync: SyncConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -186,6 +188,30 @@ pub(crate) struct StateConfig {
     pub(crate) smpte_bars: bool,
     #[serde(rename = "@updated_at", default)]
     pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SyncConfig {
+    #[serde(rename = "@max_soft_drift_ms", default = "default_max_soft_drift_ms")]
+    pub(crate) max_soft_drift_ms: u32,
+    #[serde(rename = "@hard_reset_ms", default = "default_hard_reset_ms")]
+    pub(crate) hard_reset_ms: u32,
+    #[serde(
+        rename = "@max_audio_frames_per_video",
+        default = "default_max_audio_frames_per_video"
+    )]
+    pub(crate) max_audio_frames_per_video: u32,
+    #[serde(rename = "@source_buffer_ms", default = "default_source_buffer_ms")]
+    pub(crate) source_buffer_ms: u32,
+    #[serde(
+        rename = "@reconnect_initial_ms",
+        default = "default_reconnect_initial_ms"
+    )]
+    pub(crate) reconnect_initial_ms: u32,
+    #[serde(rename = "@reconnect_max_ms", default = "default_reconnect_max_ms")]
+    pub(crate) reconnect_max_ms: u32,
+    #[serde(rename = "@status_interval_ms", default = "default_status_interval_ms")]
+    pub(crate) status_interval_ms: u32,
 }
 
 impl CgenConfig {
@@ -339,6 +365,34 @@ fn release_mode() -> String {
     "release".to_string()
 }
 
+pub(crate) fn default_max_soft_drift_ms() -> u32 {
+    80
+}
+
+pub(crate) fn default_hard_reset_ms() -> u32 {
+    750
+}
+
+pub(crate) fn default_max_audio_frames_per_video() -> u32 {
+    12
+}
+
+pub(crate) fn default_source_buffer_ms() -> u32 {
+    500
+}
+
+pub(crate) fn default_reconnect_initial_ms() -> u32 {
+    500
+}
+
+pub(crate) fn default_reconnect_max_ms() -> u32 {
+    10_000
+}
+
+pub(crate) fn default_status_interval_ms() -> u32 {
+    1_000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,6 +440,7 @@ mod tests {
     <clock enabled="true" x="48" y="48"/>
     <text enabled="true" x="48" y="96">Hello</text>
     <state mode="overlay" smpte_bars="true"/>
+    <sync max_soft_drift_ms="60" hard_reset_ms="500" max_audio_frames_per_video="10" source_buffer_ms="400" reconnect_initial_ms="250" reconnect_max_ms="5000" status_interval_ms="750"/>
   </feed>
 </cgen>"##;
         let parsed: CgenConfig = quick_xml::de::from_str(xml).expect("parse");
@@ -406,6 +461,13 @@ mod tests {
         assert_eq!(feeds[0].banner.background_gradient_color, "#7f1d1d");
         assert!(feeds[0].clock.enabled);
         assert!(feeds[0].state.smpte_bars);
+        assert_eq!(feeds[0].sync.max_soft_drift_ms, 60);
+        assert_eq!(feeds[0].sync.hard_reset_ms, 500);
+        assert_eq!(feeds[0].sync.max_audio_frames_per_video, 10);
+        assert_eq!(feeds[0].sync.source_buffer_ms, 400);
+        assert_eq!(feeds[0].sync.reconnect_initial_ms, 250);
+        assert_eq!(feeds[0].sync.reconnect_max_ms, 5000);
+        assert_eq!(feeds[0].sync.status_interval_ms, 750);
     }
 
     #[test]
@@ -452,9 +514,24 @@ mod tests {
             clock: ClockConfig::default(),
             text: TextConfig::default(),
             state: StateConfig::default(),
+            sync: SyncConfig::default(),
         };
         assert!(feed.matches_feed("sk-0001"));
         assert!(feed.matches_feed("CAP-IT-ALL"));
+    }
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self {
+            max_soft_drift_ms: default_max_soft_drift_ms(),
+            hard_reset_ms: default_hard_reset_ms(),
+            max_audio_frames_per_video: default_max_audio_frames_per_video(),
+            source_buffer_ms: default_source_buffer_ms(),
+            reconnect_initial_ms: default_reconnect_initial_ms(),
+            reconnect_max_ms: default_reconnect_max_ms(),
+            status_interval_ms: default_status_interval_ms(),
+        }
     }
 }
 

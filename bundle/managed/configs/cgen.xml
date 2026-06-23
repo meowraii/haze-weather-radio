@@ -16,5 +16,6 @@
     <clock enabled="false" format="Jan 02 15:04:05" x="48" y="48" font_size="30" color="#ffffff"></clock>
     <text enabled="false" x="48" y="128" font_size="58" color="#ffffff"></text>
     <state mode="release" smpte_bars="false"></state>
+    <sync max_soft_drift_ms="80" hard_reset_ms="750" max_audio_frames_per_video="12" source_buffer_ms="500" reconnect_initial_ms="500" reconnect_max_ms="10000" status_interval_ms="1000"></sync>
   </feed>
 </cgen>

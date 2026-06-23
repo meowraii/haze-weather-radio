@@ -35,6 +35,7 @@ type cgenFeedXML struct {
 	Clock         cgenClockXML         `xml:"clock"`
 	Text          cgenTextXML          `xml:"text"`
 	State         cgenStateXML         `xml:"state"`
+	Sync          cgenSyncXML          `xml:"sync"`
 	UpdatedAt     string               `xml:"updated_at,attr,omitempty"`
 }
 
@@ -115,6 +116,16 @@ type cgenStateXML struct {
 	Mode      string `xml:"mode,attr,omitempty"`
 	SMPTEBars string `xml:"smpte_bars,attr,omitempty"`
 	UpdatedAt string `xml:"updated_at,attr,omitempty"`
+}
+
+type cgenSyncXML struct {
+	MaxSoftDriftMS         string `xml:"max_soft_drift_ms,attr,omitempty"`
+	HardResetMS            string `xml:"hard_reset_ms,attr,omitempty"`
+	MaxAudioFramesPerVideo string `xml:"max_audio_frames_per_video,attr,omitempty"`
+	SourceBufferMS         string `xml:"source_buffer_ms,attr,omitempty"`
+	ReconnectInitialMS     string `xml:"reconnect_initial_ms,attr,omitempty"`
+	ReconnectMaxMS         string `xml:"reconnect_max_ms,attr,omitempty"`
+	StatusIntervalMS       string `xml:"status_interval_ms,attr,omitempty"`
 }
 
 func loadCgenPayload(configPath string) (map[string]any, error) {
@@ -332,6 +343,13 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.State.Mode = normalizeCgenMode(feed.State.Mode)
 		feed.State.SMPTEBars = boolText(xmlBool(feed.State.SMPTEBars, false))
 		feed.State.UpdatedAt = strings.TrimSpace(feed.State.UpdatedAt)
+		feed.Sync.MaxSoftDriftMS = cleanPositive(feed.Sync.MaxSoftDriftMS, "80")
+		feed.Sync.HardResetMS = cleanPositive(feed.Sync.HardResetMS, "750")
+		feed.Sync.MaxAudioFramesPerVideo = cleanPositive(feed.Sync.MaxAudioFramesPerVideo, "12")
+		feed.Sync.SourceBufferMS = cleanPositive(feed.Sync.SourceBufferMS, "500")
+		feed.Sync.ReconnectInitialMS = cleanPositive(feed.Sync.ReconnectInitialMS, "500")
+		feed.Sync.ReconnectMaxMS = cleanPositive(feed.Sync.ReconnectMaxMS, "10000")
+		feed.Sync.StatusIntervalMS = cleanPositive(feed.Sync.StatusIntervalMS, "1000")
 		feed.UpdatedAt = strings.TrimSpace(feed.UpdatedAt)
 	}
 	sort.SliceStable(config.Feeds, func(i, j int) bool { return strings.ToLower(config.Feeds[i].ID) < strings.ToLower(config.Feeds[j].ID) })
@@ -428,6 +446,15 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			Mode:      stringFromAny(source["mode"]),
 			SMPTEBars: boolText(boolFromAny(source["smpte_bars"], false)),
 		},
+		Sync: cgenSyncXML{
+			MaxSoftDriftMS:         stringFromAny(source["sync_max_soft_drift_ms"]),
+			HardResetMS:            stringFromAny(source["sync_hard_reset_ms"]),
+			MaxAudioFramesPerVideo: stringFromAny(source["sync_max_audio_frames_per_video"]),
+			SourceBufferMS:         stringFromAny(source["sync_source_buffer_ms"]),
+			ReconnectInitialMS:     stringFromAny(source["sync_reconnect_initial_ms"]),
+			ReconnectMaxMS:         stringFromAny(source["sync_reconnect_max_ms"]),
+			StatusIntervalMS:       stringFromAny(source["sync_status_interval_ms"]),
+		},
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	config, err := normalizeCgen(cgenXML{Enabled: "true", Feeds: []cgenFeedXML{feed}})
@@ -493,6 +520,13 @@ func cgenPayload(path string, config cgenXML) map[string]any {
 			"clock_y":                          feed.Clock.Y,
 			"clock_font_size":                  feed.Clock.FontSize,
 			"clock_color":                      feed.Clock.Color,
+			"sync_max_soft_drift_ms":           feed.Sync.MaxSoftDriftMS,
+			"sync_hard_reset_ms":               feed.Sync.HardResetMS,
+			"sync_max_audio_frames_per_video":  feed.Sync.MaxAudioFramesPerVideo,
+			"sync_source_buffer_ms":            feed.Sync.SourceBufferMS,
+			"sync_reconnect_initial_ms":        feed.Sync.ReconnectInitialMS,
+			"sync_reconnect_max_ms":            feed.Sync.ReconnectMaxMS,
+			"sync_status_interval_ms":          feed.Sync.StatusIntervalMS,
 			"updated_at":                       fallbackText(feed.State.UpdatedAt, feed.UpdatedAt),
 		})
 	}

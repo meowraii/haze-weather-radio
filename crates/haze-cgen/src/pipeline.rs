@@ -5,10 +5,11 @@ use std::thread;
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{sleep, Duration, Instant};
 use tracing::{info, warn};
 
+use crate::bridge::BridgeClient;
 use crate::config::FeedConfig;
 use crate::state::{BannerPayload, PriorityAudio, RuntimeState, SerializedAlert};
 
@@ -18,6 +19,7 @@ pub(crate) struct PipelineWorker {
     ffmpeg: Option<String>,
     graphics_backend: String,
     base_dir: PathBuf,
+    bridge: Option<BridgeClient>,
 }
 
 impl PipelineWorker {
@@ -27,6 +29,7 @@ impl PipelineWorker {
         ffmpeg: Option<String>,
         graphics_backend: String,
         base_dir: PathBuf,
+        bridge: Option<BridgeClient>,
     ) -> Self {
         Self {
             feed,
@@ -34,6 +37,7 @@ impl PipelineWorker {
             ffmpeg,
             graphics_backend,
             base_dir,
+            bridge,
         }
     }
 
@@ -108,10 +112,12 @@ impl PipelineWorker {
 
         #[cfg(feature = "ffmpeg-rsmpeg")]
         if should_use_native_transport(&self.feed) {
+            let status_tx = self.spawn_status_publisher();
             return crate::native::run_remux_supervised(
                 self.feed.clone(),
                 self.state_rx.clone(),
                 self.base_dir.clone(),
+                status_tx,
             )
             .await;
         }
@@ -128,6 +134,27 @@ impl PipelineWorker {
         } else {
             self.run_ffmpeg_relay().await
         }
+    }
+
+    fn spawn_status_publisher(&self) -> Option<mpsc::UnboundedSender<Value>> {
+        let bridge = self.bridge.clone()?;
+        let feed_id = self.feed.id.clone();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+        tokio::spawn(async move {
+            while let Some(data) = rx.recv().await {
+                let event = serde_json::json!({
+                    "type": "cgen.status.updated",
+                    "source": "haze-cgen",
+                    "subject": feed_id,
+                    "data": data,
+                });
+                if let Err(err) = bridge.publish(event).await {
+                    warn!(feed_id = %feed_id, "failed to publish cgen status: {err:#}");
+                    break;
+                }
+            }
+        });
+        Some(tx)
     }
 
     async fn run_constant_compositor(&mut self) -> Result<()> {
@@ -1140,7 +1167,7 @@ mod tests {
 
     use crate::config::{
         AudioConfig, BannerConfig, ClockConfig, EndpointConfig, FeedConfig, GraphicsConfig,
-        PriorityInputConfig, StateConfig, TextConfig, VideoConfig,
+        PriorityInputConfig, StateConfig, SyncConfig, TextConfig, VideoConfig,
     };
     use crate::state::{BannerPayload, PriorityAudio, RuntimeState, SerializedAlert};
 
@@ -1186,6 +1213,7 @@ mod tests {
             clock: ClockConfig::default(),
             text: TextConfig::default(),
             state: StateConfig::default(),
+            sync: SyncConfig::default(),
         };
 
         let args = ffmpeg_release_args(&feed);
@@ -1433,6 +1461,7 @@ mod tests {
             clock: ClockConfig::default(),
             text: TextConfig::default(),
             state: StateConfig::default(),
+            sync: SyncConfig::default(),
         }
     }
 }

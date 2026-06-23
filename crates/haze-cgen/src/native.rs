@@ -3,9 +3,7 @@ use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use haze_media::{normalize_pcm, Pcm};
@@ -14,11 +12,12 @@ use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput};
 use rsmpeg::avutil::{AVChannelLayout, AVDictionary, AVFrame, AVRational};
 use rsmpeg::swscale::SwsContext;
 use rsmpeg::{error::RsmpegError, ffi};
-use tokio::sync::watch;
+use serde_json::{json, Value};
+use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-use crate::config::FeedConfig;
+use crate::config::{FeedConfig, SyncConfig};
 use crate::graphics::NativeGraphicsRenderer;
 use crate::state::{PriorityAudio, RuntimeState};
 
@@ -48,16 +47,85 @@ struct InputStreamSpec {
     codecpar: AVCodecParameters,
 }
 
+#[derive(Debug, Clone)]
+struct CgenClock {
+    sync: SyncConfig,
+    audio_next_pts: Option<i64>,
+    audio_drift_ms: f64,
+}
+
+impl CgenClock {
+    fn new(sync: SyncConfig) -> Self {
+        Self {
+            sync,
+            audio_next_pts: None,
+            audio_drift_ms: 0.0,
+        }
+    }
+
+    fn prepare_audio_target(&mut self, target_pts: i64, time_base: AVRational) -> bool {
+        let current = self.audio_next_pts.unwrap_or(target_pts);
+        self.audio_drift_ms = pts_delta_ms(current.saturating_sub(target_pts), time_base);
+        if self.audio_drift_ms.abs() > f64::from(self.sync.hard_reset_ms.max(1)) {
+            self.audio_next_pts = Some(target_pts);
+            self.audio_drift_ms = 0.0;
+            return true;
+        }
+        if self.audio_next_pts.is_none() {
+            self.audio_next_pts = Some(target_pts);
+        }
+        false
+    }
+
+    fn audio_pts(&self, target_pts: i64) -> i64 {
+        self.audio_next_pts.unwrap_or(target_pts)
+    }
+
+    fn advance_audio(&mut self, duration: i64) {
+        let pts = self.audio_next_pts.unwrap_or_default();
+        self.audio_next_pts = Some(pts.saturating_add(duration));
+    }
+
+    fn finish_audio_target(&mut self, target_pts: i64, time_base: AVRational) -> bool {
+        let final_pts = self.audio_next_pts.unwrap_or(target_pts);
+        self.audio_drift_ms = pts_delta_ms(final_pts.saturating_sub(target_pts), time_base);
+        if self.audio_drift_ms < -(f64::from(self.sync.hard_reset_ms.max(1))) {
+            self.audio_next_pts = Some(target_pts);
+            self.audio_drift_ms = 0.0;
+            return true;
+        }
+        false
+    }
+
+    fn max_audio_frames_for_current_drift(&self) -> usize {
+        let soft_limit_ms = f64::from(self.sync.max_soft_drift_ms.max(1));
+        if self.audio_drift_ms >= -soft_limit_ms {
+            return 1;
+        }
+        usize::try_from(self.sync.max_audio_frames_per_video.max(1))
+            .unwrap_or(12)
+            .clamp(1, 64)
+    }
+
+    fn drift_ms(&self) -> f64 {
+        self.audio_drift_ms
+    }
+}
+
 pub(crate) async fn run_remux_supervised(
     feed: FeedConfig,
     state_rx: watch::Receiver<RuntimeState>,
     base_dir: PathBuf,
+    status_tx: Option<mpsc::UnboundedSender<Value>>,
 ) -> Result<()> {
-    let mut restart_delay = Duration::from_millis(500);
+    let reconnect_initial = feed.sync.reconnect_initial_ms.max(50);
+    let reconnect_max = feed.sync.reconnect_max_ms.max(reconnect_initial).max(100);
+    let mut restart_delay = Duration::from_millis(u64::from(reconnect_initial));
     loop {
         let worker_feed = feed.clone();
         let worker_state_rx = state_rx.clone();
         let worker_base_dir = base_dir.clone();
+        let worker_status_tx = status_tx.clone();
         info!(
             feed_id = %feed.id,
             input = %feed.program_input_url(),
@@ -65,7 +133,12 @@ pub(crate) async fn run_remux_supervised(
             "starting native rsmpeg cgen constant encoder"
         );
         let result = tokio::task::spawn_blocking(move || {
-            encode_once(&worker_feed, worker_state_rx, &worker_base_dir)
+            encode_once(
+                &worker_feed,
+                worker_state_rx,
+                &worker_base_dir,
+                worker_status_tx,
+            )
         })
         .await
         .context("native cgen encoder worker panicked")?;
@@ -76,10 +149,22 @@ pub(crate) async fn run_remux_supervised(
             }
             Err(err) => {
                 warn!(feed_id = %feed.id, "native rsmpeg cgen encoder failed: {err:#}");
+                publish_status(
+                    &status_tx,
+                    &feed,
+                    json!({
+                        "feed_id": feed.id.as_str(),
+                        "input_connected": false,
+                        "output_active": false,
+                        "no_signal": true,
+                        "last_error": err.to_string(),
+                        "reconnect_delay_ms": restart_delay.as_millis(),
+                    }),
+                );
             }
         }
         sleep(restart_delay).await;
-        restart_delay = (restart_delay * 2).min(Duration::from_secs(10));
+        restart_delay = (restart_delay * 2).min(Duration::from_millis(u64::from(reconnect_max)));
     }
 }
 
@@ -87,6 +172,7 @@ fn encode_once(
     feed: &FeedConfig,
     state_rx: watch::Receiver<RuntimeState>,
     base_dir: &Path,
+    status_tx: Option<mpsc::UnboundedSender<Value>>,
 ) -> Result<()> {
     let input_url = cstring_arg(feed.program_input_url(), "program input url")?;
     let output_url = cstring_arg(feed.program_output_url(), "program output url")?;
@@ -101,6 +187,17 @@ fn encode_once(
             feed.program_input_url()
         )
     })?;
+    publish_status(
+        &status_tx,
+        feed,
+        json!({
+            "feed_id": feed.id.as_str(),
+            "input_connected": true,
+            "output_active": false,
+            "input_url": feed.program_input_url(),
+            "renderer_backend": "rsmpeg/wgpu-cpu-fallback",
+        }),
+    );
     let input_specs = collect_input_specs(&input)?;
     if input_specs.is_empty() {
         bail!("native cgen input has no streams");
@@ -161,17 +258,35 @@ fn encode_once(
             .as_ref()
             .map(|processor| processor.output_codecpar()),
     )?;
+    let mut header_options = None;
+    output
+        .write_header(&mut header_options)
+        .context("failed to write native cgen output header")?;
+    refresh_output_time_bases(&output, &mut stream_map);
     let audio_stream_spec = audio_input_index.and_then(|input_index| {
         stream_map
             .iter()
             .find(|spec| spec.input_index == input_index)
             .cloned()
     });
-    let mut header_options = None;
-    output
-        .write_header(&mut header_options)
-        .context("failed to write native cgen output header")?;
-    refresh_output_time_bases(&output, &mut stream_map);
+    publish_status(
+        &status_tx,
+        feed,
+        json!({
+            "feed_id": feed.id.as_str(),
+            "input_connected": true,
+            "output_active": true,
+            "no_signal": false,
+            "video_streams": 1,
+            "audio_streams": usize::from(audio_stream_spec.is_some()),
+            "width": feed.video.width,
+            "height": feed.video.height,
+            "renderer_backend": "rsmpeg/wgpu-cpu-fallback",
+        }),
+    );
+    let mut status_clock = Instant::now();
+    let mut last_status_frames = 0u64;
+    let status_interval = Duration::from_millis(u64::from(feed.sync.status_interval_ms.max(100)));
     while let Some(mut packet) = input
         .read_packet()
         .context("native cgen read packet failed")?
@@ -195,6 +310,28 @@ fn encode_once(
                 );
                 processor.write_mixed_until(target_audio_pts, audio_spec, &mut output)?;
             }
+            if status_clock.elapsed() >= status_interval {
+                let elapsed = status_clock.elapsed().as_secs_f64().max(0.001);
+                let frames = video_processor
+                    .encoded_frames
+                    .saturating_sub(last_status_frames);
+                let fps = frames as f64 / elapsed;
+                publish_status(
+                    &status_tx,
+                    feed,
+                    json!({
+                        "feed_id": feed.id.as_str(),
+                        "input_connected": true,
+                        "output_active": true,
+                        "current_fps": fps,
+                        "audio_video_drift_ms": audio_processor.as_ref().map(AudioProcessor::drift_ms),
+                        "active_alert_queue_id": audio_processor.as_ref().and_then(AudioProcessor::active_queue_id),
+                        "renderer_backend": "rsmpeg/wgpu-cpu-fallback",
+                    }),
+                );
+                status_clock = Instant::now();
+                last_status_frames = video_processor.encoded_frames;
+            }
             continue;
         }
         if Some(input_index) == audio_input_index {
@@ -213,6 +350,21 @@ fn encode_once(
     output
         .write_trailer()
         .context("failed to write native cgen trailer")
+}
+
+fn publish_status(
+    status_tx: &Option<mpsc::UnboundedSender<Value>>,
+    feed: &FeedConfig,
+    mut data: Value,
+) {
+    if let Some(object) = data.as_object_mut() {
+        object
+            .entry("feed_id")
+            .or_insert_with(|| Value::String(feed.id.clone()));
+    }
+    if let Some(tx) = status_tx {
+        let _ = tx.send(data);
+    }
 }
 
 fn collect_input_specs(input: &AVFormatContextInput) -> Result<Vec<InputStreamSpec>> {
@@ -753,7 +905,9 @@ struct AudioProcessor {
     pcm: Vec<u8>,
     cursor: usize,
     source_pcm: VecDeque<i16>,
-    next_pts: Option<i64>,
+    clock: CgenClock,
+    source_max_samples: usize,
+    was_alert_active: bool,
     warned_unsupported_source_format: bool,
 }
 
@@ -782,10 +936,10 @@ impl AudioProcessor {
             active_path: None,
             pcm: Vec::new(),
             cursor: 0,
-            source_pcm: VecDeque::with_capacity(
-                AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS) * 8,
-            ),
-            next_pts: Some(0),
+            source_pcm: VecDeque::with_capacity(source_buffer_samples(&feed.sync)),
+            clock: CgenClock::new(feed.sync.clone()),
+            source_max_samples: source_buffer_samples(&feed.sync),
+            was_alert_active: false,
             warned_unsupported_source_format: false,
         })
     }
@@ -850,8 +1004,7 @@ impl AudioProcessor {
             return Ok(());
         }
         self.source_pcm.extend(source_pcm);
-        let max_samples = AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS) * 64;
-        while self.source_pcm.len() > max_samples {
+        while self.source_pcm.len() > self.source_max_samples {
             self.source_pcm.pop_front();
         }
         Ok(())
@@ -864,12 +1017,21 @@ impl AudioProcessor {
         output: &mut AVFormatContextOutput,
     ) -> Result<()> {
         let duration = audio_frame_duration(spec.output_time_base);
-        if self.next_pts.is_none() {
-            self.next_pts = Some(target_pts);
+        if self
+            .clock
+            .prepare_audio_target(target_pts, spec.output_time_base)
+        {
+            warn!(
+                feed_id = %self.feed_id,
+                drift_ms = self.clock.drift_ms(),
+                target_pts,
+                "native cgen audio clock hard reset after drift limit"
+            );
+            self.source_pcm.clear();
         }
-        let max_frames = 24usize;
+        let max_frames = self.clock.max_audio_frames_for_current_drift();
         for _ in 0..max_frames {
-            let pts = self.next_pts.unwrap_or(target_pts);
+            let pts = self.clock.audio_pts(target_pts);
             if pts >= target_pts {
                 break;
             }
@@ -887,9 +1049,28 @@ impl AudioProcessor {
             output
                 .interleaved_write_frame(&mut encoded)
                 .context("native cgen write mixed audio packet failed")?;
-            self.next_pts = Some(pts.saturating_add(duration));
+            self.clock.advance_audio(duration);
+        }
+        if self
+            .clock
+            .finish_audio_target(target_pts, spec.output_time_base)
+        {
+            warn!(
+                feed_id = %self.feed_id,
+                drift_ms = self.clock.drift_ms(),
+                "native cgen dropped stale audio backlog after frame cap"
+            );
+            self.source_pcm.clear();
         }
         Ok(())
+    }
+
+    fn drift_ms(&self) -> f64 {
+        self.clock.drift_ms()
+    }
+
+    fn active_queue_id(&self) -> Option<String> {
+        self.active_queue_id.clone()
     }
 
     fn alert_active(&mut self) -> Result<bool> {
@@ -903,12 +1084,21 @@ impl AudioProcessor {
             .priority_audio_for(&self.priority_feed_id)
             .cloned();
         let Some(audio) = audio else {
+            if self.was_alert_active {
+                self.source_pcm.clear();
+            }
             self.active_queue_id = None;
             self.active_path = None;
             self.pcm.clear();
             self.cursor = 0;
+            self.was_alert_active = false;
             return Ok(false);
         };
+        if !self.was_alert_active {
+            self.source_pcm.clear();
+            self.cursor = 0;
+        }
+        self.was_alert_active = true;
         self.ensure_loaded(&audio)?;
         Ok(true)
     }
@@ -1404,6 +1594,22 @@ fn audio_frame_duration(output_time_base: AVRational) -> i64 {
     .max(1)
 }
 
+fn source_buffer_samples(sync: &SyncConfig) -> usize {
+    let samples = (u64::from(ALERT_SAMPLE_RATE)
+        * u64::from(ALERT_CHANNELS)
+        * u64::from(sync.source_buffer_ms.max(20)))
+        / 1_000;
+    usize::try_from(samples)
+        .unwrap_or(AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS) * 16)
+        .max(AC3_FRAME_SAMPLES * usize::from(ALERT_CHANNELS))
+}
+
+fn pts_delta_ms(delta: i64, time_base: AVRational) -> f64 {
+    let num = f64::from(time_base.num.max(1));
+    let den = f64::from(time_base.den.max(1));
+    (delta as f64) * num * 1000.0 / den
+}
+
 fn rescale_q(value: i64, source: AVRational, target: AVRational) -> i64 {
     unsafe { ffi::av_rescale_q(value, source, target) }
 }
@@ -1486,6 +1692,44 @@ mod tests {
         let target = clock.target_pts(tb).expect("clock target");
         assert!(target >= 48_000);
         assert!(target < 49_000);
+    }
+
+    #[test]
+    fn sync_source_buffer_uses_configured_milliseconds() {
+        let sync = SyncConfig {
+            source_buffer_ms: 250,
+            ..SyncConfig::default()
+        };
+        assert_eq!(
+            source_buffer_samples(&sync),
+            (ALERT_SAMPLE_RATE as usize * ALERT_CHANNELS as usize) / 4
+        );
+    }
+
+    #[test]
+    fn pts_delta_ms_uses_time_base() {
+        let time_base = AVRational {
+            num: 1,
+            den: ALERT_SAMPLE_RATE as i32,
+        };
+        let delta = (ALERT_SAMPLE_RATE / 10) as i64;
+        assert!((pts_delta_ms(delta, time_base) - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn cgen_clock_hard_resets_large_audio_drift() {
+        let mut clock = CgenClock::new(SyncConfig {
+            hard_reset_ms: 100,
+            ..SyncConfig::default()
+        });
+        let time_base = AVRational {
+            num: 1,
+            den: ALERT_SAMPLE_RATE as i32,
+        };
+        clock.prepare_audio_target(0, time_base);
+        clock.advance_audio((ALERT_SAMPLE_RATE as i64) * 2);
+        assert!(clock.prepare_audio_target(0, time_base));
+        assert_eq!(clock.audio_pts(0), 0);
     }
 
     fn rational_tuple(value: Option<AVRational>) -> Option<(i32, i32)> {

@@ -40,6 +40,13 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 				"banner_background_color":          "#b45309",
 				"banner_background_gradient_color": "#7f1d1d",
 				"scroll_speed":                     "6",
+				"sync_max_soft_drift_ms":           "60",
+				"sync_hard_reset_ms":               "500",
+				"sync_max_audio_frames_per_video":  "10",
+				"sync_source_buffer_ms":            "400",
+				"sync_reconnect_initial_ms":        "250",
+				"sync_reconnect_max_ms":            "5000",
+				"sync_status_interval_ms":          "750",
 			},
 		},
 	})
@@ -58,6 +65,15 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 	}
 	if feeds[0]["scroll_speed"] != "6" || feeds[0]["banner_background_gradient_color"] != "#7f1d1d" {
 		t.Fatalf("banner controls = %#v", feeds[0])
+	}
+	if feeds[0]["sync_max_soft_drift_ms"] != "60" ||
+		feeds[0]["sync_hard_reset_ms"] != "500" ||
+		feeds[0]["sync_max_audio_frames_per_video"] != "10" ||
+		feeds[0]["sync_source_buffer_ms"] != "400" ||
+		feeds[0]["sync_reconnect_initial_ms"] != "250" ||
+		feeds[0]["sync_reconnect_max_ms"] != "5000" ||
+		feeds[0]["sync_status_interval_ms"] != "750" {
+		t.Fatalf("sync controls = %#v", feeds[0])
 	}
 
 	acted, err := cgenActionPayload(configPath, map[string]any{

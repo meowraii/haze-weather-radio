@@ -760,8 +760,50 @@
                                         <input id="cgenACodec" type="text" value="ac3">
                                     </label>
                                     <label class="daemon-field">
+                                        <span>Video kbps</span>
+                                        <input id="cgenVideoBitrate" type="number" min="100" step="100" value="12000">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Audio kbps</span>
+                                        <input id="cgenAudioBitrate" type="number" min="32" step="8" value="192">
+                                    </label>
+                                    <label class="daemon-field">
                                         <span>Duck dB</span>
                                         <input id="cgenDuckDB" type="number" step="1" value="-18">
+                                    </label>
+                                </div>
+                            </section>
+
+                            <section class="section-block">
+                                <div class="section-hd"><span>Sync and Recovery</span></div>
+                                <div class="section-body cgen-editor-grid">
+                                    <label class="daemon-field">
+                                        <span>Soft drift ms</span>
+                                        <input id="cgenSyncMaxSoftDrift" type="number" min="1" value="80">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Reset drift ms</span>
+                                        <input id="cgenSyncHardReset" type="number" min="10" value="750">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Audio frames/video</span>
+                                        <input id="cgenSyncMaxAudioFrames" type="number" min="1" max="64" value="12">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Source buffer ms</span>
+                                        <input id="cgenSyncSourceBuffer" type="number" min="20" value="500">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Reconnect initial ms</span>
+                                        <input id="cgenSyncReconnectInitial" type="number" min="50" value="500">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Reconnect max ms</span>
+                                        <input id="cgenSyncReconnectMax" type="number" min="100" value="10000">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Status interval ms</span>
+                                        <input id="cgenSyncStatusInterval" type="number" min="100" value="1000">
                                     </label>
                                 </div>
                             </section>
