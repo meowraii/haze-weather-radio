@@ -136,6 +136,7 @@ func handleAlertsArchiveAction(configPath string, payload map[string]any) (map[s
 			return nil, err
 		}
 		deleteQueuedAlertMaterial(filepath.Dir(filepath.Clean(configPath)), id, feedID)
+		publishAlertArchiveInvalidated(id, feedID)
 		return map[string]any{"deleted": true}, nil
 	case "clear_expired":
 		if err := withArchiveStore(configPath, func(ctx context.Context, store datastore.Store) error {
@@ -143,6 +144,7 @@ func handleAlertsArchiveAction(configPath string, payload map[string]any) (map[s
 		}); err != nil {
 			return nil, err
 		}
+		publishAlertArchiveInvalidated("", "*")
 		return map[string]any{"cleared": "expired"}, nil
 	case "clear_all":
 		if err := withArchiveStore(configPath, func(ctx context.Context, store datastore.Store) error {
@@ -151,6 +153,7 @@ func handleAlertsArchiveAction(configPath string, payload map[string]any) (map[s
 			return nil, err
 		}
 		clearQueuedAlertMaterial(filepath.Dir(filepath.Clean(configPath)))
+		publishAlertArchiveInvalidated("", "*")
 		return map[string]any{"cleared": "all"}, nil
 	case "expire_all":
 		if err := withArchiveStore(configPath, func(ctx context.Context, store datastore.Store) error {
@@ -158,10 +161,45 @@ func handleAlertsArchiveAction(configPath string, payload map[string]any) (map[s
 		}); err != nil {
 			return nil, err
 		}
+		publishAlertArchiveInvalidated("", "*")
 		return map[string]any{"expired": "non-critical"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported alert archive action %q", action)
 	}
+}
+
+func publishAlertArchiveInvalidated(alertID string, feedID string) {
+	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
+	if bridgeAddr == "" {
+		return
+	}
+	feedID = strings.TrimSpace(feedID)
+	if feedID == "" {
+		feedID = "*"
+	}
+	data := map[string]any{
+		"feed_id":    feedID,
+		"package_id": "alerts",
+		"renderable": false,
+	}
+	if alertID != "" {
+		data["alert_id"] = alertID
+		data["alert_ids"] = []string{alertID}
+	}
+	publisher := events.NewHostBridgePublisher(bridgeAddr)
+	defer publisher.Close()
+	_ = publisher.Publish(events.Event{
+		Type:    "cap.alert.cancelled",
+		Source:  "haze-web",
+		Subject: alertID,
+		Data:    data,
+	})
+	_ = publisher.Publish(events.Event{
+		Type:    "cap.alert.registry.updated",
+		Source:  "haze-web",
+		Subject: alertID,
+		Data:    data,
+	})
 }
 
 func withArchiveStore(configPath string, fn func(context.Context, datastore.Store) error) error {

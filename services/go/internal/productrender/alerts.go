@@ -505,7 +505,8 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 		archiveExpiredCAPEntries("", feed.ID, entries, now, s.cfg.Store)
 		entries = pruneCAPEntries(entries, now)
 		priorEntries := append([]capRegistryEntry(nil), entries...)
-		if capAcceptedArchiveContains(s.cfg.Store, feed.ID, alert.Identifier) && !capEntryExists(priorEntries, alert.Identifier) {
+		hadAcceptedArchive := capAcceptedArchiveContains(s.cfg.Store, feed.ID, alert.Identifier)
+		if hadAcceptedArchive && !capEntryExists(priorEntries, alert.Identifier) {
 			priorEntries = append(priorEntries, capRegistryEntry{ID: alert.Identifier})
 		}
 		if isExplicitCAPEnd(alert) {
@@ -528,6 +529,18 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 				CancelledIDs: cancelledIDs,
 				SAME:         capSAMEPayload(alert, feed, s.cfg.BaseDir, now),
 			})
+			continue
+		}
+		if capOperatorSuppressedSameVersion(s.cfg.Store, feed.ID, alert, now) {
+			if hadAcceptedArchive {
+				deleteCAPReferences(s.cfg.Store, feed.ID, []string{alert.Identifier})
+				updates = append(updates, capRegistryUpdate{
+					FeedID:     feed.ID,
+					Renderable: hasRenderableCAPEntries(removeCAPIDs(entries, []string{alert.Identifier}), now),
+					Broadcast:  false,
+					Cancelled:  false,
+				})
+			}
 			continue
 		}
 		if !feedAllowsRoutineOnlyCAPAlert(feed, alert) {
@@ -1072,6 +1085,36 @@ func deleteCAPReferences(store datastore.Store, feedID string, ids []string) {
 	for _, id := range ids {
 		_ = store.DeleteCAPArchiveBucketItem(ctx, id, feedID, "accepted")
 	}
+}
+
+func capOperatorSuppressedSameVersion(store datastore.Store, feedID string, alert capingest.Alert, now time.Time) bool {
+	if store == nil || strings.TrimSpace(alert.Identifier) == "" || strings.TrimSpace(alert.RawXML) == "" {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	rows, err := store.ListCAPArchives(ctx, "expired", now.UTC().Add(-30*24*time.Hour))
+	if err != nil {
+		return false
+	}
+	alertID := strings.TrimSpace(alert.Identifier)
+	feedID = strings.TrimSpace(feedID)
+	rawXML := strings.TrimSpace(alert.RawXML)
+	for _, row := range rows {
+		if strings.TrimSpace(row.AlertID) != alertID || strings.TrimSpace(row.FeedID) != feedID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(row.Reason), "expired by operator") {
+			continue
+		}
+		if strings.TrimSpace(row.RawXML) == rawXML {
+			return true
+		}
+	}
+	return false
 }
 
 func storeCAPArchiveRecord(store datastore.Store, bucket string, record capArchiveRecord) {

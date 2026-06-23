@@ -919,6 +919,71 @@ func TestAlertsProductUsesNativeCAPRegistry(t *testing.T) {
 	}
 }
 
+func TestOperatorExpiredCAPReplayIsSuppressedUntilAuthorityUpdate(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	now := time.Now().UTC()
+	raw := testCAP("urn:test:operator-suppressed", "Alert", "active", "2099-06-15T21:30:00-06:00", false)
+	alert, err := capingest.ParseCAP([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeCAPArchiveRecord(cfg.Store, "expired", capArchiveRecord{
+		ID:        alert.Identifier,
+		FeedID:    "sk-0001",
+		Status:    "expired",
+		Reason:    "expired by operator",
+		UpdatedAt: now,
+		Alert:     alert,
+		RawXML:    alert.RawXML,
+	})
+	storeCAPArchiveRecord(cfg.Store, "accepted", capArchiveRecord{
+		ID:        alert.Identifier,
+		FeedID:    "sk-0001",
+		Status:    "accepted",
+		UpdatedAt: now,
+		Alert:     alert,
+		RawXML:    alert.RawXML,
+	})
+	service := &Service{cfg: cfg}
+
+	updates, err := service.recordCAPAlert(alert, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || updates[0].Broadcast {
+		t.Fatalf("operator-suppressed replay did not invalidate the accepted copy: %#v", updates)
+	}
+	accepted, err := cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accepted) != 0 {
+		t.Fatalf("operator-suppressed replay entered accepted archive: %#v", accepted)
+	}
+
+	updatedRaw := strings.Replace(raw, "nickel size hail", "quarter size hail", 1)
+	updatedAlert, err := capingest.ParseCAP([]byte(updatedRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates, err = service.recordCAPAlert(updatedAlert, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || !updates[0].Renderable {
+		t.Fatalf("authority-updated alert was not accepted: %#v", updates)
+	}
+	accepted, err = cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accepted) != 1 || accepted[0].AlertID != alert.Identifier {
+		t.Fatalf("accepted archive rows after authority update = %#v", accepted)
+	}
+}
+
 func TestMinorCAPAlertBypassesSAMEFilterForRoutinePackage(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)

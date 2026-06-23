@@ -109,6 +109,95 @@ func TestMatchFeedsFromEventReturnsAllTargetFeeds(t *testing.T) {
 	}
 }
 
+func TestCAPRegistryUpdateInvalidatesQueuedRoutineAlerts(t *testing.T) {
+	dir := t.TempDir()
+	planner := &feedPlanner{
+		cfg:  loadedConfig{BaseDir: dir},
+		feed: feedXML{ID: "sk-0001"},
+		queue: []playlistItem{{
+			QueueID:   "alerts-queued",
+			FeedID:    "sk-0001",
+			PackageID: "alerts",
+			Title:     "Alerts",
+		}, {
+			QueueID:   "forecast-queued",
+			FeedID:    "sk-0001",
+			PackageID: "forecast",
+			Title:     "Forecast",
+		}},
+	}
+	service := &Service{feeds: map[string]*feedPlanner{"sk-0001": planner}}
+
+	service.handleEvent(context.Background(), map[string]any{
+		"type":    "cap.alert.registry.updated",
+		"feed_id": "sk-0001",
+		"data":    map[string]any{"feed_id": "sk-0001", "alert_id": "urn:test"},
+	})
+
+	if len(planner.queue) != 1 || planner.queue[0].PackageID != "forecast" {
+		t.Fatalf("queue after invalidation = %#v", planner.queue)
+	}
+	if planner.current != nil {
+		t.Fatalf("current was unexpectedly changed: %#v", planner.current)
+	}
+}
+
+func TestCAPCancellationStopsCurrentRoutineAlert(t *testing.T) {
+	dir := t.TempDir()
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	messages := make(chan map[string]any, 2)
+	go func() {
+		decoder := json.NewDecoder(serverConn)
+		for {
+			var message map[string]any
+			if err := decoder.Decode(&message); err != nil {
+				close(messages)
+				return
+			}
+			messages <- message
+		}
+	}()
+
+	planner := &feedPlanner{
+		cfg:    loadedConfig{BaseDir: dir},
+		bridge: &bridgeClient{conn: clientConn},
+		feed:   feedXML{ID: "sk-0001"},
+		current: &playlistItem{
+			QueueID:   "alerts-current",
+			FeedID:    "sk-0001",
+			PackageID: "alerts",
+			Title:     "Alerts",
+		},
+		queue: []playlistItem{{
+			QueueID:   "station-id-queued",
+			FeedID:    "sk-0001",
+			PackageID: "station_id",
+			Title:     "Station Identification",
+		}},
+	}
+	service := &Service{feeds: map[string]*feedPlanner{"sk-0001": planner}}
+
+	service.handleEvent(context.Background(), map[string]any{
+		"type":    "cap.alert.cancelled",
+		"feed_id": "sk-0001",
+		"data":    map[string]any{"feed_id": "sk-0001", "alert_id": "urn:test"},
+	})
+
+	if planner.current != nil {
+		t.Fatalf("current alert was not cleared: %#v", planner.current)
+	}
+	if len(planner.queue) != 1 || planner.queue[0].PackageID != "station_id" {
+		t.Fatalf("queue after cancellation = %#v", planner.queue)
+	}
+	control := readPublishedTestMessage(t, messages)
+	if action := actionFromPublishedControl(control); action != "flush_restart" {
+		t.Fatalf("control action = %q, want flush_restart", action)
+	}
+}
+
 func TestBuildProductAudioItemUsesRoutineQueueAudioPath(t *testing.T) {
 	dir := t.TempDir()
 	audioRel := filepath.Join("managed", "audio", "bulletins", "test.wav")

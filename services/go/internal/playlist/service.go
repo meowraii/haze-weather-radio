@@ -144,6 +144,11 @@ func (s *Service) handleEvent(ctx context.Context, event map[string]any) {
 		data := mapAt(event, "data")
 		for _, planner := range s.matchFeedsFromEvent(event) {
 			planner.cancelPriorityAlerts(data)
+			planner.invalidateRoutineAlerts(true)
+		}
+	case "cap.alert.registry.updated":
+		for _, planner := range s.matchFeedsFromEvent(event) {
+			planner.invalidateRoutineAlerts(false)
 		}
 	case "playout.started":
 		data := mapAt(event, "data")
@@ -1208,6 +1213,27 @@ func (p *feedPlanner) cancelPriorityAlerts(data map[string]any) {
 		cleanupSupersededAlertQueueParts(p.cfg.BaseDir, p.feed.ID, alertID, "")
 	}
 	p.writeState()
+}
+
+func (p *feedPlanner) invalidateRoutineAlerts(stopCurrent bool) {
+	removed := false
+	filtered := p.queue[:0]
+	for _, item := range p.queue {
+		if strings.EqualFold(strings.TrimSpace(item.PackageID), "alerts") {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	p.queue = filtered
+	if stopCurrent && p.current != nil && strings.EqualFold(strings.TrimSpace(p.current.PackageID), "alerts") {
+		p.current = nil
+		removed = true
+		p.publishPlayoutControl("flush_restart")
+	}
+	if removed {
+		p.writeState()
+	}
 }
 
 func priorityAlertRequestStale(data map[string]any, now time.Time) bool {
