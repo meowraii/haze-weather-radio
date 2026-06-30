@@ -55,10 +55,14 @@ jobs:
 
       - name: Vet Go services
         working-directory: services/go
+        env:
+          CGO_ENABLED: ${{ runner.os == 'Windows' && '0' || '1' }}
         run: go vet ./...
 
       - name: Test Go services
         working-directory: services/go
+        env:
+          CGO_ENABLED: ${{ runner.os == 'Windows' && '0' || '1' }}
         run: go test -count=1 ./...
 
       - name: Test Rust workspace
