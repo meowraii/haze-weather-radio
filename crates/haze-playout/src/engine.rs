@@ -2186,7 +2186,7 @@ async fn audio_item_from_priority_ready(
             broadcast_immediate: bool_at(&data, "broadcast_immediate"),
         },
         resume_offset: 0,
-        gap_after: Duration::from_millis(500),
+        gap_after: Duration::from_millis(0),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
         target_start: String::new(),
@@ -2209,7 +2209,7 @@ async fn alert_scanner(
     poll: Duration,
 ) {
     let mut seen = HashSet::<String>::new();
-    let mut ticker = interval(poll.max(Duration::from_millis(100)));
+    let mut ticker = interval(poll.max(Duration::from_millis(25)));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
@@ -2415,7 +2415,7 @@ async fn audio_item_from_alert(
             broadcast_immediate: item.broadcast_immediate,
         },
         resume_offset: 0,
-        gap_after: Duration::from_millis(500),
+        gap_after: Duration::from_millis(0),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
         target_start: String::new(),
@@ -2494,7 +2494,7 @@ fn alert_feed_id_targets(feed_id: &str, feed: &FeedConfig) -> bool {
 fn alert_pending(status: &str) -> bool {
     matches!(
         status.trim().to_ascii_lowercase().as_str(),
-        "" | "pending" | "queued" | "claimed" | "playing"
+        "" | "pending" | "queued" | "claimed" | "event_queued" | "playing"
     )
 }
 
@@ -2675,6 +2675,7 @@ mod tests {
         assert!(alert_pending("pending"));
         assert!(alert_pending("queued"));
         assert!(alert_pending("claimed"));
+        assert!(alert_pending("event_queued"));
         assert!(alert_pending("playing"));
         assert!(!alert_pending("played"));
     }

@@ -107,6 +107,9 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 	if !strings.HasPrefix(eventType, "alert.playout.") && eventType != "playout.interrupted" && eventType != "cap.alert.audio.ready" {
 		return
 	}
+	if eventType == "cap.alert.audio.ready" {
+		return
+	}
 	feedIDs := eventFeedIDs(event.FeedID, event.FeedIDs, event.Data.FeedID, event.Data.FeedIDs)
 	queueID := fallbackString(event.Data.QueueID, event.QueueID)
 	if len(feedIDs) == 0 && strings.TrimSpace(event.Data.FeedID) != "" {
@@ -120,7 +123,10 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 	defer h.mu.Unlock()
 	for _, feedID := range feedIDs {
 		switch eventType {
-		case "alert.playout.started", "cap.alert.audio.ready":
+		case "alert.playout.started":
+			if active := h.onAir[feedID]; active.QueueID != "" && active.QueueID != queueID && now.Before(active.ExpiresAt) {
+				continue
+			}
 			item := h.queueItem(queueID, feedID)
 			packet := event.Data.AlertPacket
 			if packet == nil {
@@ -151,20 +157,30 @@ func (h *BannerHub) handleEvent(raw []byte, now time.Time) {
 				UpdatedAt:          now,
 			}
 		case "alert.playout.completed":
+			if feedID == "*" {
+				h.onAir = map[string]bannerOnAirAlert{}
+				continue
+			}
 			item := h.queueItem(queueID, feedID)
 			active := h.onAir[feedID]
 			if active.QueueID != "" && active.QueueID != queueID && active.AlertID != "" && item.AlertID != active.AlertID {
 				continue
 			}
-			if bannerQueueItemEndsAlert(item, queueID) {
+			if active.QueueID == queueID || bannerQueueItemEndsAlert(item, queueID) {
 				delete(h.onAir, feedID)
+				delete(h.onAir, "*")
 			} else if active.AlertID != "" {
 				active.ExpiresAt = now.Add(15 * time.Second)
 				active.UpdatedAt = now
 				h.onAir[feedID] = active
 			}
 		case "playout.interrupted":
-			delete(h.onAir, feedID)
+			if feedID == "*" {
+				h.onAir = map[string]bannerOnAirAlert{}
+			} else {
+				delete(h.onAir, feedID)
+				delete(h.onAir, "*")
+			}
 		}
 	}
 }
@@ -197,7 +213,7 @@ func (h *BannerHub) Active(feedID string, now time.Time) []bannerOnAirAlert {
 			delete(h.onAir, key)
 			continue
 		}
-		if strings.TrimSpace(feedID) != "" && strings.TrimSpace(feedID) != "*" && key != feedID {
+		if strings.TrimSpace(feedID) != "" && strings.TrimSpace(feedID) != "*" && key != feedID && key != "*" {
 			continue
 		}
 		out = append(out, active)

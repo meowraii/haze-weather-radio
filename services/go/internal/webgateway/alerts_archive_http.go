@@ -5,12 +5,28 @@ import (
 	"strings"
 )
 
+const (
+	archiveCAPXMLMaxIDLength     = 512
+	archiveCAPXMLMaxFeedIDLength = 128
+)
+
 func (s *Server) alertsArchiveCAPXML(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodGet && request.Method != http.MethodHead {
-		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+	s.serveArchiveCAPXML(writer, request, true)
+}
+
+func (s *Server) publicAlertsArchiveCAPXML(writer http.ResponseWriter, request *http.Request) {
+	if publicAlertsArchiveAccess(s.config) != "public" {
+		http.NotFound(writer, request)
 		return
 	}
-	if !s.auth.Authenticated(request) {
+	s.serveArchiveCAPXML(writer, request, false)
+}
+
+func (s *Server) serveArchiveCAPXML(writer http.ResponseWriter, request *http.Request, requireAuth bool) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
+	if requireAuth && !s.auth.Authenticated(request) {
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -18,6 +34,14 @@ func (s *Server) alertsArchiveCAPXML(writer http.ResponseWriter, request *http.R
 	feedID := strings.TrimSpace(request.URL.Query().Get("feed_id"))
 	if id == "" {
 		http.Error(writer, "alert id is required", http.StatusBadRequest)
+		return
+	}
+	if len(id) > archiveCAPXMLMaxIDLength || len(feedID) > archiveCAPXMLMaxFeedIDLength {
+		http.Error(writer, "alert lookup is too long", http.StatusBadRequest)
+		return
+	}
+	if feedID != "" && !validPublicAudioFeedID(feedID) {
+		http.Error(writer, "feed_id is invalid", http.StatusBadRequest)
 		return
 	}
 	record, ok := findArchiveAlert(s.configPath, id, feedID)

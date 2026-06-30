@@ -1,4 +1,5 @@
 import { PanelClient } from './lib/ws-client.js';
+import { session } from './lib/session.js';
 
 const API_BASE = '/api/public/v1';
 
@@ -27,10 +28,16 @@ const currentPage = currentPath === '/feeds' || currentPath === '/listen'
     ? 'feeds'
     : (currentPath === '/alerts' || currentPath === '/alerts/archive' ? 'alerts' : 'home');
 const isListenPage = currentPath === '/listen';
+if (currentPage === 'feeds') {
+    session.importUrlToken();
+} else {
+    removeTokenFromPublicURL();
+}
 const publicClient = new PanelClient({
     base: API_BASE,
     stream: true,
     params: currentPage === 'feeds' ? { feeds: '1' } : (currentPage === 'alerts' ? { alerts: '1' } : {}),
+    includeSessionToken: false,
 });
 let lastSummarySignature = '';
 let lastFeedsSignature = '';
@@ -38,6 +45,20 @@ let lastAlertsSignature = '';
 let lastListenSignature = '';
 let lastNoticeText = '';
 let activeAlertTab = 'accepted';
+let publicFeedTokenReconnectAttempted = false;
+
+function removeTokenFromPublicURL() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        if (!params.has('token')) return;
+        params.delete('token');
+        const cleanSearch = params.toString();
+        const cleanUrl = `${window.location.pathname}${cleanSearch ? `?${cleanSearch}` : ''}${window.location.hash || ''}`;
+        window.history.replaceState(null, '', cleanUrl);
+    } catch {
+        // If history is unavailable, the public client still avoids forwarding the token.
+    }
+}
 const feedPlayers = new Map();
 const feedPreferences = new Map();
 const feedCodecFallbacks = new Map();
@@ -178,6 +199,39 @@ function escapeHtml(value) {
     }[char]));
 }
 
+function publicText(value, fallback = '') {
+    if (value == null) return fallback;
+    if (Array.isArray(value)) {
+        const text = value.map((item) => publicText(item)).filter(Boolean).join('; ');
+        return text || fallback;
+    }
+    if (typeof value === 'object') {
+        for (const key of ['name', 'area_name', 'area', 'area_text', 'description', 'headline', 'event', 'label', 'text', 'value', 'id']) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+                const text = publicText(value[key]);
+                if (text) return text;
+            }
+        }
+        return fallback;
+    }
+    const text = String(value).trim();
+    return text || fallback;
+}
+
+function safePublicLink(value, { allowRelative = false, allowHTTP = true } = {}) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+        const parsed = new URL(raw, window.location.origin);
+        const isSameOriginRelative = allowRelative && !/^[a-z][a-z0-9+.-]*:/i.test(raw) && parsed.origin === window.location.origin;
+        if (isSameOriginRelative) return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+        if (allowHTTP && (parsed.protocol === 'http:' || parsed.protocol === 'https:')) return parsed.href;
+    } catch {
+        return '';
+    }
+    return '';
+}
+
 function formatDateTime(value) {
     if (!value) return 'not set';
     const date = new Date(value);
@@ -291,11 +345,7 @@ function publicWebRTCAudioElement(feedId) {
         audio.autoplay = true;
         audio.playsInline = true;
         audio.muted = false;
-        audio.style.position = 'fixed';
-        audio.style.width = '1px';
-        audio.style.height = '1px';
-        audio.style.opacity = '0';
-        audio.style.pointerEvents = 'none';
+        audio.className = 'public-audio-sink';
         document.body.appendChild(audio);
     }
     if (audio.dataset.hazeSinkBound !== '1') {
@@ -336,7 +386,7 @@ function renderSummary(summary) {
     }
 
     if (summary.admin_url) {
-        adminLink.href = summary.admin_url;
+        adminLink.href = safePublicLink(summary.admin_url, { allowRelative: true }) || '/admin';
         setTextIfChanged(adminHint, summary.feeds_access === 'auth_required'
             ? 'Protected feeds need an authenticated admin session in this browser.'
             : 'Open the admin panel for protected feeds and station controls.');
@@ -586,13 +636,26 @@ function httpStreamURL(feedId, absolute = false, codec = null) {
     const url = new URL(`${API_BASE}/feed/audio`, window.location.origin);
     url.searchParams.set('feed', feedId);
     url.searchParams.set('codec', normalizeHTTPCodec(codec || selectedFeedCodec(feedId)));
+    const token = publicAudioToken();
+    if (token) url.searchParams.set('token', token);
     return absolute ? url.toString() : `${url.pathname}${url.search}`;
 }
 
-function listenPageURL(feedId, absolute = false, codec = null) {
+function publicAudioToken() {
+    if (summaryState?.feeds_access !== 'auth_required') {
+        return '';
+    }
+    return session.token || '';
+}
+
+function listenPageURL(feedId, absolute = false, codec = null, options = {}) {
     const url = new URL('/listen', window.location.origin);
     url.searchParams.set('feed', feedId);
     url.searchParams.set('codec', normalizeHTTPCodec(codec || selectedFeedCodec(feedId)));
+    if (options.includeToken) {
+        const token = publicAudioToken();
+        if (token) url.searchParams.set('token', token);
+    }
     return absolute ? url.toString() : `${url.pathname}${url.search}`;
 }
 
@@ -633,9 +696,10 @@ function renderFeeds(feeds) {
     if (summaryState?.feeds_access === 'auth_required') {
         setNotice('Feed details require an authenticated admin session.');
     } else {
+        const hasHTTP = feeds.some((feed) => Boolean(feed.http_stream_enabled));
         setNotice(summaryState?.webrtc_enabled
             ? 'Live feed streaming is available.'
-            : 'No WebRTC output sink is enabled for public feeds.');
+            : (hasHTTP ? 'Public HTTP listening is available.' : 'No public feed playback output is enabled.'));
     }
     const signature = feedsSignature(feeds);
     if (signature === lastFeedsSignature) {
@@ -1545,8 +1609,8 @@ async function startFeedHTTP(feedId) {
     audio.onerror = () => {
         if (isActivePlayer(feedId, player)) {
             audio.dataset.hazePlayerState = 'error';
+            stopFeed(feedId, { silent: true });
             setPlayerStatus(feedId, 'HTTP audio error');
-            setPlayerButtons(feedId, false);
         }
     };
     setPlayerStatus(feedId, 'Connecting over HTTP...');
@@ -1844,13 +1908,14 @@ async function startFeedWebRTC(feedId) {
 async function copyHTTPLink(feedId) {
     feedId = String(feedId || '');
     if (!feedId) return;
-    const link = listenPageURL(feedId, true);
+    const includesToken = Boolean(publicAudioToken());
+    const link = listenPageURL(feedId, true, null, { includeToken: true });
     window.hazeLastShareLink = link;
     try {
         await copyTextToClipboard(link);
         setPlayerStatus(feedId, 'Listen link copied');
     } catch {
-        setPlayerStatus(feedId, `Copy blocked: ${link}`);
+        setPlayerStatus(feedId, includesToken ? 'Copy blocked; browser denied clipboard access' : `Copy blocked: ${link}`);
     }
 }
 
@@ -1866,12 +1931,7 @@ async function copyTextToClipboard(text) {
     const input = document.createElement('textarea');
     input.value = text;
     input.setAttribute('readonly', '');
-    input.style.position = 'fixed';
-    input.style.top = '0';
-    input.style.left = '0';
-    input.style.width = '1px';
-    input.style.height = '1px';
-    input.style.opacity = '0';
+    input.className = 'public-clipboard-scratch';
     document.body.appendChild(input);
     input.focus();
     input.select();
@@ -2054,36 +2114,58 @@ function normalizePublicAlerts(summary) {
     const byFeed = source.by_feed || {};
     const accepted = [];
     Object.entries(byFeed).forEach(([feedId, records]) => {
-        (records || []).forEach((record) => accepted.push({ ...record, feed_id: record.feed_id || feedId }));
+        publicAlertRecordList(records).forEach((record) => accepted.push({ ...record, feed_id: record.feed_id || feedId }));
     });
     return {
         accepted,
-        rejected: source.rejected || [],
-        expired: source.expired || [],
+        rejected: publicAlertRecordList(source.rejected),
+        expired: publicAlertRecordList(source.expired),
     };
+}
+
+function publicAlertRecordList(value) {
+    if (Array.isArray(value)) {
+        return value.filter(isPlainObject);
+    }
+    if (isPlainObject(value)) {
+        if (looksLikeAlertRecord(value)) {
+            return [value];
+        }
+        return Object.values(value).flatMap(publicAlertRecordList);
+    }
+    return [];
+}
+
+function looksLikeAlertRecord(value) {
+    return ['id', 'identifier', 'event', 'headline', 'sent', 'expires', 'description', 'instruction', 'cap_xml_url']
+        .some((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function isPlainObject(value) {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function publicAlertMetaItems(record) {
     const items = [
-        ['Event', record.event || 'unknown'],
-        ['Feed', record.feed_id || 'none'],
-        ['Status', record.status || record.bucket || 'unknown'],
-        ['Message', record.message_type || 'unknown'],
-        ['Severity', record.severity || 'unknown'],
-        ['Urgency', record.urgency || 'unknown'],
-        ['Certainty', record.certainty || 'unknown'],
+        ['Event', publicText(record.event, 'unknown')],
+        ['Feed', publicText(record.feed_id, 'none')],
+        ['Status', publicText(record.status) || publicText(record.bucket, 'unknown')],
+        ['Message', publicText(record.message_type, 'unknown')],
+        ['Severity', publicText(record.severity, 'unknown')],
+        ['Urgency', publicText(record.urgency, 'unknown')],
+        ['Certainty', publicText(record.certainty, 'unknown')],
         ['Sent', formatDateTime(record.sent)],
         ['Expires', formatDateTime(record.expires)],
     ];
-    if (record.reason) items.splice(3, 0, ['Reason', record.reason]);
-    if (record.audio_url) items.push(['Audio', record.audio_mime_type || 'available']);
+    if (publicText(record.reason)) items.splice(3, 0, ['Reason', publicText(record.reason)]);
+    if (record.audio_url) items.push(['Audio', publicText(record.audio_mime_type, 'available')]);
     return items;
 }
 
 function groupedPublicAccepted(records) {
     const groups = new Map();
     for (const record of records) {
-        const feedID = record.feed_id || 'unassigned';
+        const feedID = publicText(record.feed_id, 'unassigned');
         if (!groups.has(feedID)) groups.set(feedID, []);
         groups.get(feedID).push(record);
     }
@@ -2091,27 +2173,32 @@ function groupedPublicAccepted(records) {
 }
 
 function publicAlertAreas(record) {
-    if (Array.isArray(record.areas) && record.areas.length) return record.areas.join('; ');
-    return record.area_text || record.sender || 'No area text available';
+    if (Array.isArray(record.areas) && record.areas.length) {
+        const areas = record.areas.map((item) => publicText(item)).filter(Boolean);
+        if (areas.length) return areas.join('; ');
+    }
+    return publicText(record.area_text) || publicText(record.sender) || 'No area text available';
 }
 
 function publicAlertCard(record) {
-    const id = record.id || '';
-    const feedID = record.feed_id || '';
-    const headline = record.headline || record.event || 'Weather Alert';
-    const identifier = record.cap_xml_url
-        ? `<a class="alert-card-id" href="${escapeHtml(record.cap_xml_url)}" target="_blank" rel="noopener noreferrer" title="Open CAP XML">${escapeHtml(id)}</a>`
+    const id = publicText(record.id);
+    const feedID = publicText(record.feed_id);
+    const headline = publicText(record.headline) || publicText(record.event, 'Weather Alert');
+    const capXMLURL = safePublicLink(record.cap_xml_url, { allowRelative: true, allowHTTP: false });
+    const capAudioURL = safePublicLink(record.audio_url);
+    const identifier = capXMLURL
+        ? `<a class="alert-card-id" href="${escapeHtml(capXMLURL)}" target="_blank" rel="noopener noreferrer" title="Open CAP XML">${escapeHtml(id)}</a>`
         : `<span class="alert-card-id">${escapeHtml(id)}</span>`;
     const meta = publicAlertMetaItems(record).map(([key, value]) => `
         <span><b>${escapeHtml(key)}</b>${escapeHtml(value)}</span>
     `).join('');
-    const capAudioLink = record.audio_url ? `
-        <a class="btn-action btn-link" href="${escapeHtml(record.audio_url)}" target="_blank" rel="noopener noreferrer">
+    const capAudioLink = capAudioURL ? `
+        <a class="btn-action btn-link" href="${escapeHtml(capAudioURL)}" target="_blank" rel="noopener noreferrer">
             <i data-lucide="circle-play" width="13" height="13"></i>
             CAP Audio
         </a>` : '';
-    const capXMLLink = record.cap_xml_url ? `
-        <a class="btn-action btn-link" href="${escapeHtml(record.cap_xml_url)}" target="_blank" rel="noopener noreferrer">
+    const capXMLLink = capXMLURL ? `
+        <a class="btn-action btn-link" href="${escapeHtml(capXMLURL)}" target="_blank" rel="noopener noreferrer">
             <i data-lucide="file-code-2" width="13" height="13"></i>
             CAP XML
         </a>` : '';
@@ -2132,11 +2219,11 @@ function publicAlertCard(record) {
                     <div class="alert-details-grid">
                         <section>
                             <h4>Description</h4>
-                            <p>${escapeHtml(record.description || record.message || 'No description provided.')}</p>
+                            <p>${escapeHtml(publicText(record.description) || publicText(record.message) || 'No description provided.')}</p>
                         </section>
                         <section>
                             <h4>Instruction</h4>
-                            <p>${escapeHtml(record.instruction || 'No instruction provided.')}</p>
+                            <p>${escapeHtml(publicText(record.instruction, 'No instruction provided.'))}</p>
                         </section>
                     </div>
                 </details>
@@ -2172,7 +2259,7 @@ function renderPublicAlerts(summary) {
     const records = buckets[activeAlertTab] || [];
     const signature = JSON.stringify({
         tab: activeAlertTab,
-        records: records.map((record) => [record.id, record.feed_id, record.status, record.updated_at]),
+        records: records.map(publicAlertRenderSignature),
     });
     if (signature === lastAlertsSignature) {
         return;
@@ -2192,6 +2279,31 @@ function renderPublicAlerts(summary) {
             ? records.map(publicAlertCard).join('')
             : `<article class="alert-empty">No ${escapeHtml(activeAlertTab)} alerts are archived.</article>`);
     window.lucide?.createIcons();
+}
+
+function publicAlertRenderSignature(record) {
+    return [
+        record.id || '',
+        record.feed_id || '',
+        record.bucket || '',
+        record.status || '',
+        record.reason || '',
+        record.updated_at || '',
+        record.sent || '',
+        record.expires || '',
+        publicText(record.message_type),
+        publicText(record.headline),
+        publicText(record.event),
+        publicText(record.severity),
+        publicText(record.urgency),
+        publicText(record.certainty),
+        publicAlertAreas(record),
+        publicText(record.description) || publicText(record.message),
+        publicText(record.instruction),
+        record.audio_url || '',
+        record.audio_mime_type || '',
+        record.cap_xml_url || '',
+    ];
 }
 
 function requestedListenFeedID(feeds) {
@@ -2239,14 +2351,21 @@ function renderListen(feeds) {
         return;
     }
     const codec = requestedListenCodec();
-    const listenSignature = JSON.stringify({ feedID, codec, media: Boolean(summaryState?.media_available) });
+    const tx = feed.transmitter || {};
+    const siteNames = (tx.site_names || [tx.site_name]).filter(Boolean).join(', ') || feed.name || 'Unnamed site';
+    const nowPlaying = feed.runtime?.now_playing || 'Idle';
+    const listenSignature = JSON.stringify({
+        feedID,
+        codec,
+        media: Boolean(summaryState?.media_available),
+        siteNames,
+        nowPlaying,
+        http: Boolean(feed.http_stream_enabled),
+    });
     if (listenSignature === lastListenSignature) {
         return;
     }
     lastListenSignature = listenSignature;
-    const tx = feed.transmitter || {};
-    const siteNames = (tx.site_names || [tx.site_name]).filter(Boolean).join(', ') || feed.name || 'Unnamed site';
-    const nowPlaying = feed.runtime?.now_playing || 'Idle';
     const streamURL = httpStreamURL(feedID, false, codec);
     listenNotice.textContent = 'Public HTTP listener ready.';
     listenPanel.innerHTML = `
@@ -2276,7 +2395,7 @@ function renderListen(feeds) {
     const select = listenPanel.querySelector('[data-listen-codec]');
     select?.addEventListener('change', () => {
         const nextCodec = normalizeHTTPCodec(select.value);
-        const nextURL = listenPageURL(feedID, false, nextCodec);
+        const nextURL = listenPageURL(feedID, false, nextCodec, { includeToken: true });
         window.location.assign(nextURL);
     });
     window.lucide?.createIcons();
@@ -2285,6 +2404,12 @@ function renderListen(feeds) {
 function renderPublicState(payload) {
     const summary = payload.summary || {};
     renderSummary(summary);
+    if (shouldReconnectPublicFeedsWithToken(summary)) {
+        publicFeedTokenReconnectAttempted = true;
+        publicClient.includeSessionToken = true;
+        publicClient.reconnectNow();
+        return;
+    }
     if (currentPage === 'alerts') {
         renderPublicAlerts(summary);
         return;
@@ -2301,6 +2426,14 @@ function renderPublicState(payload) {
         return;
     }
     renderFeeds(summary.feeds || []);
+}
+
+function shouldReconnectPublicFeedsWithToken(summary) {
+    return currentPage === 'feeds'
+        && summary?.feeds_access === 'auth_required'
+        && Boolean(session.token)
+        && !publicClient.includeSessionToken
+        && !publicFeedTokenReconnectAttempted;
 }
 
 function connectPublicSocket() {
@@ -2334,7 +2467,7 @@ publicClient.addEventListener('reconnecting', (event) => {
     const seconds = Math.max(1, Math.round((event.detail?.delay || 1000) / 1000));
     if (currentPage === 'feeds') {
         setNotice(`Live feed directory unavailable. Reconnecting in ${seconds}s...`);
-    } else if (currentPage === 'alerts') {
+    } else if (currentPage === 'alerts' && alertsNotice) {
         alertsNotice.textContent = `Alert archive unavailable. Reconnecting in ${seconds}s...`;
     }
 });
@@ -2351,7 +2484,7 @@ publicClient.addEventListener('close', (event) => {
     if (!event.detail?.reconnecting) return;
     if (currentPage === 'feeds') {
         setNotice('Live feed directory connection closed. Reconnecting...');
-    } else if (currentPage === 'alerts') {
+    } else if (currentPage === 'alerts' && alertsNotice) {
         alertsNotice.textContent = 'Alert archive connection closed. Reconnecting...';
     }
 });
@@ -2363,7 +2496,7 @@ publicClient.addEventListener('decode_error', () => {
 publicClient.addEventListener('error', () => {
     if (currentPage === 'feeds') {
         feedNotice.textContent = 'Live feed directory unavailable. Reconnecting...';
-    } else if (currentPage === 'alerts') {
+    } else if (currentPage === 'alerts' && alertsNotice) {
         alertsNotice.textContent = 'Alert archive unavailable. Reconnecting...';
     }
 });

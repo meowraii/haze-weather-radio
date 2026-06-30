@@ -10,7 +10,7 @@
     <style>
         :root {
             --frame-width: 1920px;
-            --frame-height: 1080px;
+            --frame-height: 1440px;
             --frame-scale: 1;
             --banner-height: 96px;
             --banner-bg: #ff6600;
@@ -21,7 +21,7 @@
             --text-main: #f8fafc;
             --text-soft: rgba(226, 232, 240, 0.82);
             --text-dim: rgba(148, 163, 184, 0.74);
-            --ticker-font-size: 20px;
+            --ticker-font-size: 26pt;
             --fullscreen-title-size: 48px;
             --fullscreen-body-size: 24px;
             --fullscreen-meta-size: 14px;
@@ -73,7 +73,6 @@
         .fullscreen-shell {
             position: absolute;
             inset: 0;
-            transition: opacity 220ms ease;
         }
 
         .ticker-shell {
@@ -118,10 +117,7 @@
             line-height: 0.9;
             color: var(--banner-text);
             white-space: nowrap;
-            text-shadow:
-                0 0 10px rgba(0, 0, 0, 0.95),
-                0 3px 0 rgba(0, 0, 0, 0.9),
-                0 0 18px rgba(0, 0, 0, 0.9);
+            text-shadow: 0 0 10px rgba(0, 0, 0, 0.95), 3px 4px 0px rgba(0, 0, 0, 0.9), 0 0 18px rgba(0, 0, 0, 0.9);
         }
 
         .fullscreen-shell {

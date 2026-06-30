@@ -6,9 +6,10 @@
     <meta name="description" content="Public status and feed access for Haze Weather Radio">
     <title>Haze Weather Radio</title>
     <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/assets/styles.css">
-    <link rel="stylesheet" href="/assets/layout.css">
-    <style>[hidden]{display:none!important}.brand-home-link{display:inline-flex;align-items:center;color:inherit;text-decoration:none}</style>
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+    <link rel="manifest" href="/assets/site.webmanifest">
+    <link rel="stylesheet" href="/assets/styles.css?v=20260624-oldweb-project-strip">
+    <link rel="stylesheet" href="/assets/layout.css?v=20260624-oldweb-project-strip">
 </head>
 <body>
     <div class="app-shell public-app-shell">
@@ -53,13 +54,23 @@
                         <div class="public-build-row" id="publicBuildInfo"></div>
                     </div>
 
-                    <div class="public-project-strip">
-                        <p>Haze Unified Alerting Platform is an aggregator for weather information and emergency alerts.</p>
-                        <div class="public-project-actions">
-                            <a class="btn-action" href="https://github.com/meowraii/haze-weather-radio" target="_blank" rel="noreferrer">
-                                <i data-lucide="github" width="14" height="14"></i>
-                                <span>GitHub</span>
-                            </a>
+                    <div class="tls-notice public-tls-notice" id="publicTlsNotice" hidden>
+                        <p id="publicTlsNoticeText">TLS status unavailable.</p>
+                    </div>
+
+                    <div class="public-project-block">
+                        <div class="public-project-strip">
+                            <p>Haze Unified Alerting Platform is an aggregator for weather information and emergency alerts.</p>
+                            <div class="public-project-actions">
+                                <a class="btn-action" href="https://github.com/meowraii/haze-weather-radio" target="_blank" rel="noreferrer">
+                                    <i data-lucide="github" width="14" height="14"></i>
+                                    <span>GitHub</span>
+                                </a>
+                            </div>
+                        </div>
+
+                        <div class="public-oldweb-banner">
+                            <img src="/assets/haze_banner.gif" alt="Haze Weather Radio">
                         </div>
                     </div>
                 </section>
@@ -87,7 +98,7 @@
         </div>
     </div>
 
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <script type="module" src="/assets/js/public.js?v=20260618-public-feed-cards"></script>
+    <script src="/assets/js/lib/public-icons.js"></script>
+    <script type="module" src="/assets/js/public.js?v=20260624-listen-runtime-refresh"></script>
 </body>
 </html>

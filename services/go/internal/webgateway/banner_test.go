@@ -174,7 +174,7 @@ func TestBannerHubUsesArchiveAcrossCatchallFeed(t *testing.T) {
 	}
 }
 
-func TestBannerPayloadPrefersAudioReadyAlertText(t *testing.T) {
+func TestBannerPayloadPrefersPlayoutAlertText(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
 	rawCAP := `<alert>
@@ -197,7 +197,7 @@ func TestBannerPayloadPrefersAudioReadyAlertText(t *testing.T) {
 	storeBannerCAP(t, configPath, rawCAP, "CAP-IT-ALL", "accepted")
 	spoken := "This is the exact text that was fed into alert audio."
 	hub := NewBannerHub(configPath, "")
-	hub.handleEvent([]byte(`{"type":"cap.alert.audio.ready","feed_ids":["CAP-IT-ALL"],"queue_id":"spoken-queue-1","data":{"alert_id":"urn:test:banner:spoken","event":"TOR","title":"Tornado Warning","alert_text":"`+spoken+`"}}`), time.Now().UTC())
+	hub.handleEvent([]byte(`{"type":"alert.playout.started","feed_ids":["CAP-IT-ALL"],"queue_id":"spoken-queue-1","data":{"alert_id":"urn:test:banner:spoken","event":"TOR","title":"Tornado Warning","alert_text":"`+spoken+`"}}`), time.Now().UTC())
 
 	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
 
@@ -214,7 +214,7 @@ func TestBannerPayloadUsesBannerTextAndSameColorForManualAlert(t *testing.T) {
 	configPath := testBannerConfig(t, dir)
 	bannerText := "Environment Canada has issued a Practice/demo Warning for Talladega, AL ending at 5:15 pm (meowraii). Custom text."
 	hub := NewBannerHub(configPath, "")
-	hub.handleEvent([]byte(`{"type":"cap.alert.audio.ready","feed_ids":["CAP-IT-ALL"],"queue_id":"manual-warning-1","data":{"alert_id":"manual-warning","event":"DMO","title":"DMO - Practice/demo Warning","alert_text":"tts script should not be the crawl","banner_text":"`+bannerText+`"}}`), time.Now().UTC())
+	hub.handleEvent([]byte(`{"type":"alert.playout.started","feed_ids":["CAP-IT-ALL"],"queue_id":"manual-warning-1","data":{"alert_id":"manual-warning","event":"DMO","title":"DMO - Practice/demo Warning","alert_text":"tts script should not be the crawl","banner_text":"`+bannerText+`"}}`), time.Now().UTC())
 
 	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
 
@@ -236,7 +236,7 @@ func TestBannerPayloadUsesBroadcastImmediateFlagForRedColor(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
 	hub := NewBannerHub(configPath, "")
-	hub.handleEvent([]byte(`{"type":"cap.alert.audio.ready","feed_ids":["CAP-IT-ALL"],"queue_id":"broadcast-immediate-1","data":{"alert_id":"broadcast-immediate","event":"civilEmerg","title":"Broadcast Immediate","broadcast_immediate":true,"banner_text":"Broadcast immediate message."}}`), time.Now().UTC())
+	hub.handleEvent([]byte(`{"type":"alert.playout.started","feed_ids":["CAP-IT-ALL"],"queue_id":"broadcast-immediate-1","data":{"alert_id":"broadcast-immediate","event":"civilEmerg","title":"Broadcast Immediate","broadcast_immediate":true,"banner_text":"Broadcast immediate message."}}`), time.Now().UTC())
 
 	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
 
@@ -267,7 +267,7 @@ func TestBannerHubFallsBackToOnAirMetadataWithoutArchive(t *testing.T) {
 	}
 }
 
-func TestBannerPayloadUsesQueuedQueueItemWhenHubMissedEvent(t *testing.T) {
+func TestBannerPayloadUsesPlayingQueueItemWhenHubMissedEvent(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
 	spoken := "Persisted queue text should be the crawl text."
@@ -275,7 +275,7 @@ func TestBannerPayloadUsesQueuedQueueItemWhenHubMissedEvent(t *testing.T) {
 		ID:        "manual-queue-1",
 		AlertID:   "manual-alert-1",
 		Type:      "cap_alert",
-		Status:    "queued",
+		Status:    "playing",
 		FeedIDs:   []string{"CAP-IT-ALL"},
 		Header:    "Required Weekly Test",
 		Event:     "RWT",
@@ -301,7 +301,7 @@ func TestBannerPayloadUsesQueuedQueueItemWhenHubMissedEvent(t *testing.T) {
 	}
 }
 
-func TestBannerPayloadUsesPendingQueueItemWhenHubMissedEvent(t *testing.T) {
+func TestBannerPayloadIgnoresPendingQueueItemUntilPlayoutStarts(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
 	queue := sameQueueItem{
@@ -322,11 +322,8 @@ func TestBannerPayloadUsesPendingQueueItemWhenHubMissedEvent(t *testing.T) {
 
 	payload := buildBannerPayload(configPath, "CAP-IT-ALL", NewBannerHub(configPath, ""))
 
-	if !payload.Active || len(payload.Alerts) != 1 {
+	if payload.Active || len(payload.Alerts) != 0 {
 		t.Fatalf("payload = %#v", payload)
-	}
-	if payload.Alerts[0].Headline != "Tornado Warning" || payload.Alerts[0].FeedID != "CAP-IT-ALL" {
-		t.Fatalf("alert = %#v", payload.Alerts[0])
 	}
 }
 
@@ -337,7 +334,7 @@ func TestBannerPayloadUsesSingularFeedIDQueueItem(t *testing.T) {
 		ID:        "single-feed-queue-1",
 		AlertID:   "single-feed-alert-1",
 		Type:      "cap_alert",
-		Status:    "queued",
+		Status:    "playing",
 		FeedID:    "CAP-IT-ALL",
 		Header:    "Required Weekly Test",
 		Event:     "RWT",
@@ -359,7 +356,7 @@ func TestBannerPayloadUsesSingularFeedIDQueueItem(t *testing.T) {
 	}
 }
 
-func TestBannerHubActivatesFromAudioReadyEvent(t *testing.T) {
+func TestBannerHubIgnoresAudioReadyUntilPlayoutStarts(t *testing.T) {
 	dir := t.TempDir()
 	configPath := testBannerConfig(t, dir)
 	hub := NewBannerHub(configPath, "")
@@ -367,11 +364,49 @@ func TestBannerHubActivatesFromAudioReadyEvent(t *testing.T) {
 
 	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
 
-	if !payload.Active || len(payload.Alerts) != 1 {
+	if payload.Active || len(payload.Alerts) != 0 {
 		t.Fatalf("payload = %#v", payload)
 	}
-	if payload.Alerts[0].Headline != "Required Weekly Test" || payload.Alerts[0].FeedID != "CAP-IT-ALL" {
-		t.Fatalf("alert = %#v", payload.Alerts[0])
+}
+
+func TestBannerHubDoesNotReplaceActiveAlertUntilCompletion(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	hub := NewBannerHub(configPath, "")
+	now := time.Now().UTC()
+	hub.handleEvent([]byte(`{"type":"alert.playout.started","feed_ids":["CAP-IT-ALL"],"queue_id":"tor-1","data":{"alert_id":"tor-alert","event":"TOR","title":"Tornado Warning","banner_text":"Tornado warning crawl."}}`), now)
+	hub.handleEvent([]byte(`{"type":"alert.playout.started","feed_ids":["CAP-IT-ALL"],"queue_id":"svr-1","data":{"alert_id":"svr-alert","event":"SVR","title":"Severe Thunderstorm Warning","banner_text":"Severe thunderstorm crawl."}}`), now.Add(time.Second))
+
+	active := hub.Active("CAP-IT-ALL", now.Add(2*time.Second))
+	if len(active) != 1 {
+		t.Fatalf("active = %#v", active)
+	}
+	if active[0].QueueID != "tor-1" || active[0].BannerText != "Tornado warning crawl." {
+		t.Fatalf("active = %#v", active[0])
+	}
+
+	hub.handleEvent([]byte(`{"type":"alert.playout.completed","feed_ids":["CAP-IT-ALL"],"queue_id":"tor-1"}`), now.Add(3*time.Second))
+	hub.handleEvent([]byte(`{"type":"alert.playout.started","feed_ids":["CAP-IT-ALL"],"queue_id":"svr-1","data":{"alert_id":"svr-alert","event":"SVR","title":"Severe Thunderstorm Warning","banner_text":"Severe thunderstorm crawl."}}`), now.Add(4*time.Second))
+	active = hub.Active("CAP-IT-ALL", now.Add(5*time.Second))
+	if len(active) != 1 || active[0].QueueID != "svr-1" {
+		t.Fatalf("active after completion = %#v", active)
+	}
+}
+
+func TestBannerHubCompletionClearsWildcardOnAirAlert(t *testing.T) {
+	dir := t.TempDir()
+	configPath := testBannerConfig(t, dir)
+	hub := NewBannerHub(configPath, "")
+	now := time.Now().UTC()
+	hub.handleEvent([]byte(`{"type":"alert.playout.started","feed_ids":["*"],"queue_id":"wildcard-start","data":{"alert_id":"wildcard-alert","event":"RWT","title":"Required Weekly Test","banner_text":"Station-wide crawl."}}`), now)
+	if active := hub.Active("CAP-IT-ALL", now); len(active) != 1 {
+		t.Fatalf("active = %#v", active)
+	}
+
+	hub.handleEvent([]byte(`{"type":"alert.playout.completed","feed_ids":["CAP-IT-ALL"],"queue_id":"wildcard-same_full"}`), now.Add(time.Second))
+	payload := buildBannerPayload(configPath, "CAP-IT-ALL", hub)
+	if payload.Active || len(payload.Alerts) != 0 {
+		t.Fatalf("payload = %#v", payload)
 	}
 }
 

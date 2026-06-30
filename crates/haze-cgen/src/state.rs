@@ -5,6 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+const PRIORITY_AUDIO_EXPIRE_GRACE_MS: i64 = 2_000;
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RuntimeState {
     pub(crate) banners: BTreeMap<String, BannerPayload>,
@@ -54,7 +56,8 @@ impl RuntimeState {
         let event_type = text_at(event, &["type"]);
         match event_type.as_str() {
             "banner.state.updated" => self.apply_banner_state(event),
-            "alert.playout.started" | "cap.alert.audio.ready" => self.apply_priority_audio(event),
+            "alert.playout.started" => self.apply_priority_audio(event),
+            "cap.alert.audio.ready" => false,
             "alert.playout.completed" | "playout.interrupted" => self.clear_priority_audio(event),
             _ => false,
         }
@@ -71,15 +74,18 @@ impl RuntimeState {
     }
 
     pub(crate) fn priority_audio_for(&self, feed_id: &str) -> Option<&PriorityAudio> {
+        let now = Utc::now();
         if feed_id.trim() == "*" {
             return self
                 .active_audio
                 .values()
-                .max_by_key(|audio| audio.started_at);
+                .filter(|audio| audio.is_active_at(now))
+                .min_by_key(|audio| audio.started_at);
         }
         self.active_audio
             .get(feed_id)
             .or_else(|| self.active_audio.get("*"))
+            .filter(|audio| audio.is_active_at(now))
     }
 
     fn apply_banner_state(&mut self, event: &Value) -> bool {
@@ -142,8 +148,16 @@ impl RuntimeState {
             )),
             started_at: Utc::now(),
         };
+        let now = Utc::now();
         let mut changed = false;
         for feed_id in feed_ids(event) {
+            if self
+                .active_audio
+                .get(&feed_id)
+                .is_some_and(|active| active.queue_id != audio.queue_id && active.is_active_at(now))
+            {
+                continue;
+            }
             changed |= self.active_audio.get(&feed_id) != Some(&audio);
             self.active_audio.insert(feed_id, audio.clone());
         }
@@ -151,31 +165,55 @@ impl RuntimeState {
     }
 
     fn clear_priority_audio(&mut self, event: &Value) -> bool {
+        let feed_ids = feed_ids(event);
         let queue_id = fallback_text(
             &text_at(event.get("data").unwrap_or(event), &["queue_id"]),
             &text_at(event, &["queue_id"]),
             "",
         );
-        let mut changed = false;
-        for feed_id in feed_ids(event) {
-            if queue_id.is_empty() {
-                changed |= self.active_audio.remove(&feed_id).is_some();
-                continue;
+        if feed_ids.iter().any(|feed_id| feed_id.trim() == "*") {
+            if !queue_id.is_empty() {
+                let before_audio = self.active_audio.len();
+                self.active_audio
+                    .retain(|_, active| active.queue_id != queue_id);
+                return self.active_audio.len() != before_audio;
             }
-            let matches = self
+            let changed = !self.active_audio.is_empty();
+            self.active_audio.clear();
+            return changed;
+        }
+
+        let mut changed = false;
+        for feed_id in feed_ids {
+            let should_clear_audio = self
                 .active_audio
                 .get(&feed_id)
-                .map(|audio| audio.queue_id == queue_id)
-                .unwrap_or(false);
-            if matches {
-                self.active_audio.remove(&feed_id);
-                changed = true;
-            }
-            if self.banners.remove(&feed_id).is_some() {
-                changed = true;
+                .is_some_and(|active| queue_id.is_empty() || active.queue_id == queue_id);
+            if should_clear_audio {
+                changed |= self.active_audio.remove(&feed_id).is_some();
             }
         }
+        let should_clear_wildcard = self
+            .active_audio
+            .get("*")
+            .is_some_and(|active| queue_id.is_empty() || active.queue_id == queue_id);
+        if should_clear_wildcard {
+            changed |= self.active_audio.remove("*").is_some();
+        }
         changed
+    }
+}
+
+impl PriorityAudio {
+    fn is_active_at(&self, now: DateTime<Utc>) -> bool {
+        let Some(duration_ms) = self.duration_ms else {
+            return true;
+        };
+        let duration_ms = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+        let max_age = chrono::Duration::milliseconds(
+            duration_ms.saturating_add(PRIORITY_AUDIO_EXPIRE_GRACE_MS),
+        );
+        now.signed_duration_since(self.started_at) <= max_age
     }
 }
 
@@ -290,10 +328,24 @@ mod tests {
     }
 
     #[test]
+    fn cap_audio_ready_does_not_activate_priority_audio() {
+        let mut state = RuntimeState::default();
+        assert!(!state.apply_event(&json!({
+            "type": "cap.alert.audio.ready",
+            "data": {
+                "feed_ids": ["*"],
+                "queue_id": "alert-all",
+                "audio_path": "runtime/audio/alerts/all.raw"
+            }
+        })));
+        assert!(state.priority_audio_for("CAP-IT-ALL").is_none());
+    }
+
+    #[test]
     fn wildcard_priority_audio_applies_to_any_feed() {
         let mut state = RuntimeState::default();
         assert!(state.apply_event(&json!({
-            "type": "cap.alert.audio.ready",
+            "type": "alert.playout.started",
             "data": {
                 "feed_ids": ["*"],
                 "queue_id": "alert-all",
@@ -314,6 +366,82 @@ mod tests {
                 "queue_id": "alert-1",
                 "audio_path": "runtime/audio/alerts/sk.raw"
             }
+        })));
+
+        let audio = state.priority_audio_for("*").expect("wildcard audio");
+        assert_eq!(audio.queue_id, "alert-1");
+    }
+
+    #[test]
+    fn active_priority_audio_is_not_replaced_before_completion() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "tor-1",
+            "data": {
+                "queue_id": "tor-1",
+                "audio_path": "runtime/audio/alerts/tor.raw",
+                "duration_ms": 60000,
+                "banner_text": "Tornado warning"
+            }
+        })));
+        assert!(!state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "svr-1",
+            "data": {
+                "queue_id": "svr-1",
+                "audio_path": "runtime/audio/alerts/svr.raw",
+                "duration_ms": 60000,
+                "banner_text": "Severe thunderstorm warning"
+            }
+        })));
+
+        let audio = state
+            .priority_audio_for("CAP-IT-ALL")
+            .expect("active audio");
+        assert_eq!(audio.queue_id, "tor-1");
+        assert_eq!(audio.banner_text.as_deref(), Some("Tornado warning"));
+
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.completed",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "tor-1",
+            "data": {"queue_id": "tor-1"}
+        })));
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "svr-1",
+            "data": {
+                "queue_id": "svr-1",
+                "audio_path": "runtime/audio/alerts/svr.raw",
+                "duration_ms": 60000
+            }
+        })));
+        assert_eq!(
+            state
+                .priority_audio_for("CAP-IT-ALL")
+                .map(|audio| audio.queue_id.as_str()),
+            Some("svr-1")
+        );
+    }
+
+    #[test]
+    fn wildcard_priority_audio_keeps_oldest_active_alert() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["sk-0001"],
+            "queue_id": "alert-1",
+            "data": {"queue_id": "alert-1", "audio_path": "runtime/audio/alerts/one.raw", "duration_ms": 60000}
+        })));
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "alert-2",
+            "data": {"queue_id": "alert-2", "audio_path": "runtime/audio/alerts/two.raw", "duration_ms": 60000}
         })));
 
         let audio = state.priority_audio_for("*").expect("wildcard audio");
@@ -365,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_clears_visual_banner_for_feed() {
+    fn completion_does_not_clear_visual_banner_for_feed() {
         let mut state = RuntimeState::default();
         assert!(state.apply_event(&json!({
             "type": "banner.state.updated",
@@ -377,12 +505,119 @@ mod tests {
             }
         })));
         assert!(state.banner_for("CAP-IT-ALL").is_some());
-        assert!(state.apply_event(&json!({
+        assert!(!state.apply_event(&json!({
             "type": "alert.playout.completed",
             "feed_ids": ["CAP-IT-ALL"],
             "queue_id": "alert-1",
             "data": {"queue_id": "alert-1"}
         })));
+        assert!(state.banner_for("CAP-IT-ALL").is_some());
+    }
+
+    #[test]
+    fn inactive_banner_state_clears_visual_banner_for_feed() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "feed_id": "CAP-IT-ALL",
+                "signature": "alert-on",
+                "alerts": [{"message": "Alert text"}]
+            }
+        })));
+        assert!(state.banner_for("CAP-IT-ALL").is_some());
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": false,
+                "feed_id": "CAP-IT-ALL",
+                "signature": "alert-off",
+                "alerts": []
+            }
+        })));
         assert!(state.banner_for("CAP-IT-ALL").is_none());
+    }
+
+    #[test]
+    fn completion_clears_priority_audio_when_queue_id_matches() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "audio-ready-id",
+            "data": {
+                "queue_id": "audio-ready-id",
+                "audio_path": "runtime/audio/alerts/alert.raw",
+                "duration_ms": 60000
+            }
+        })));
+        assert!(state.priority_audio_for("CAP-IT-ALL").is_some());
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.completed",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "audio-ready-id",
+            "data": {"queue_id": "audio-ready-id"}
+        })));
+        assert!(state.priority_audio_for("CAP-IT-ALL").is_none());
+    }
+
+    #[test]
+    fn mismatched_completion_does_not_clear_active_priority_audio() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "active-alert",
+            "data": {
+                "queue_id": "active-alert",
+                "audio_path": "runtime/audio/alerts/active.raw",
+                "duration_ms": 60000
+            }
+        })));
+        assert!(!state.apply_event(&json!({
+            "type": "alert.playout.completed",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "other-alert",
+            "data": {"queue_id": "other-alert"}
+        })));
+        assert_eq!(
+            state
+                .priority_audio_for("CAP-IT-ALL")
+                .map(|audio| audio.queue_id.as_str()),
+            Some("active-alert")
+        );
+    }
+
+    #[test]
+    fn mismatched_specific_completion_does_not_clear_wildcard_priority_audio() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["*"],
+            "queue_id": "wildcard-start",
+            "data": {
+                "queue_id": "wildcard-start",
+                "audio_path": "runtime/audio/alerts/wildcard.raw",
+                "duration_ms": 60000
+            }
+        })));
+        assert!(state.priority_audio_for("CAP-IT-ALL").is_some());
+        assert!(!state.apply_event(&json!({
+            "type": "alert.playout.completed",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "specific-complete",
+            "data": {"queue_id": "specific-complete"}
+        })));
+        assert!(state.priority_audio_for("CAP-IT-ALL").is_some());
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.completed",
+            "feed_ids": ["CAP-IT-ALL"],
+            "queue_id": "wildcard-start",
+            "data": {"queue_id": "wildcard-start"}
+        })));
+        assert!(state.priority_audio_for("CAP-IT-ALL").is_none());
     }
 }

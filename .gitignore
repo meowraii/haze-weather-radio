@@ -73,3 +73,8 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 desktop.ini
+services/go/internal/playlist/runtime/playlists/item.json
+bundle/webroot/site.webmanifest
+Cargo.lock
+services/go/internal/playlist/runtime/playlists/item.json
+services/go/internal/ivr/runtime/ivr/sip-debug.log

@@ -8,6 +8,7 @@ func DefaultProviders() map[string]Provider {
 	kokoro := NewKokoroProvider()
 	f5 := NewF5TTSProvider()
 	chatterbox := NewChatterboxProvider()
+	speaky := NewSpeakyAPIProvider("")
 	return map[string]Provider{
 		sapi.ID():       sapi,
 		espeak.ID():     espeak,
@@ -15,5 +16,6 @@ func DefaultProviders() map[string]Provider {
 		kokoro.ID():     kokoro,
 		f5.ID():         f5,
 		chatterbox.ID(): chatterbox,
+		speaky.ID():     speaky,
 	}
 }

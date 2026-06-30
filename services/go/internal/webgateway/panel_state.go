@@ -9,14 +9,17 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
 )
 
@@ -172,21 +175,82 @@ func panelStatePayload(config Config, configPath string, startedAt time.Time, re
 }
 
 func publicStatePayload(config Config, configPath string, startedAt time.Time, request *http.Request, auth *AuthManager, mediaAvailable bool) (map[string]any, error) {
-	includeFeeds := publicFeedAccess(config) == "public" || (publicFeedAccess(config) == "auth_required" && auth != nil && auth.Authenticated(request))
-	summary, err := summaryPayload(config, configPath, startedAt, request, mediaAvailable, false)
+	feedAccess := publicFeedAccess(config)
+	includeFeeds := publicRequestWantsFeeds(request) && (feedAccess == "public" || (feedAccess == "auth_required" && auth != nil && auth.Authenticated(request)))
+	var summary map[string]any
+	var err error
+	if includeFeeds {
+		summary, err = publicFeedsSummaryPayload(config, configPath, startedAt, request, mediaAvailable)
+	} else {
+		summary, err = publicSummaryPayload(config, configPath, startedAt, request, mediaAvailable)
+	}
 	if err != nil {
 		return nil, err
 	}
 	if !includeFeeds {
 		summary["feeds"] = []any{}
 	}
-	if publicAlertsArchiveAccess(config) == "public" {
+	if publicRequestWantsAlerts(request) && publicAlertsArchiveAccess(config) == "public" {
 		if archive, err := publicAlertsArchivePayload(configPath); err == nil {
-			summary["alerts_archive_data"] = archive
 			summary["alerts"] = archive
 		}
 	}
 	return map[string]any{"summary": summary}, nil
+}
+
+func publicSummaryPayload(config Config, configPath string, startedAt time.Time, request *http.Request, mediaAvailable bool) (map[string]any, error) {
+	feeds, err := loadBasicFeedSummaries(configPath)
+	if err != nil {
+		return nil, err
+	}
+	enabled := 0
+	for _, feed := range feeds {
+		if value, _ := feed["enabled"].(bool); value {
+			enabled++
+		}
+	}
+	webrtcEnabled := publicWebRTCAvailable(config, feeds)
+	summary := baseSummaryPayload(config, startedAt, request, mediaAvailable, len(feeds), enabled, webrtcEnabled)
+	summary["feeds"] = []any{}
+	return summary, nil
+}
+
+func publicFeedsSummaryPayload(config Config, configPath string, startedAt time.Time, request *http.Request, mediaAvailable bool) (map[string]any, error) {
+	feeds, err := loadPublicFeedSummaries(configPath)
+	if err != nil {
+		return nil, err
+	}
+	enabled := 0
+	for _, feed := range feeds {
+		if value, _ := feed["enabled"].(bool); value {
+			enabled++
+		}
+	}
+	webrtcEnabled := publicWebRTCAvailable(config, feeds)
+	summary := baseSummaryPayload(config, startedAt, request, mediaAvailable, len(feeds), enabled, webrtcEnabled)
+	summary["feeds"] = feeds
+	return summary, nil
+}
+
+func publicRequestWantsFeeds(request *http.Request) bool {
+	return requestBoolQuery(request, "feeds")
+}
+
+func publicRequestWantsAlerts(request *http.Request) bool {
+	return requestBoolQuery(request, "alerts")
+}
+
+func requestBoolQuery(request *http.Request, key string) bool {
+	if request == nil || request.URL == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(request.URL.Query().Get(key)))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func summaryPayload(config Config, configPath string, startedAt time.Time, request *http.Request, mediaAvailable bool, admin bool) (map[string]any, error) {
@@ -201,6 +265,17 @@ func summaryPayload(config Config, configPath string, startedAt time.Time, reque
 		}
 	}
 	webrtcEnabled := publicWebRTCAvailable(config, feeds)
+	summary := baseSummaryPayload(config, startedAt, request, mediaAvailable, len(feeds), enabled, webrtcEnabled)
+	summary["feeds"] = feeds
+	if admin {
+		summary["data_pool_key_count"] = len(readJSONMap(resolveConfigPath(configPath, "runtime/state/dataPool.json")))
+		return summary, nil
+	}
+	summary["feeds"] = publicFeedSummaries(feeds)
+	return summary, nil
+}
+
+func baseSummaryPayload(config Config, startedAt time.Time, request *http.Request, mediaAvailable bool, feedCount int, enabledFeedCount int, webrtcEnabled bool) map[string]any {
 	summary := map[string]any{
 		"name":               siteName(config),
 		"hostname":           hostname(),
@@ -211,10 +286,9 @@ func summaryPayload(config Config, configPath string, startedAt time.Time, reque
 		"git_commit":         gitCommit(),
 		"os":                 runtime.GOOS,
 		"architecture":       runtime.GOARCH,
-		"feed_count":         len(feeds),
-		"enabled_feed_count": enabled,
+		"feed_count":         feedCount,
+		"enabled_feed_count": enabledFeedCount,
 		"uptime_seconds":     time.Since(startedAt).Seconds(),
-		"feeds":              feeds,
 		"feeds_access":       publicFeedAccess(config),
 		"webrtc_enabled":     webrtcEnabled,
 		"media_available":    mediaAvailable,
@@ -229,12 +303,7 @@ func summaryPayload(config Config, configPath string, startedAt time.Time, reque
 	for key, value := range WebRTCAudioCapabilities() {
 		summary["capabilities"].(map[string]any)[key] = value
 	}
-	if admin {
-		summary["data_pool_key_count"] = len(readJSONMap(resolveConfigPath(configPath, "runtime/state/dataPool.json")))
-		return summary, nil
-	}
-	summary["feeds"] = publicFeedSummaries(feeds)
-	return summary, nil
+	return summary
 }
 
 func loadFeedSummaries(configPath string) ([]map[string]any, error) {
@@ -257,6 +326,68 @@ func loadFeedSummaries(configPath string) ([]map[string]any, error) {
 			continue
 		}
 		out = append(out, feedSummary(feed, outputs[feed.ID], forecastNames, clcNames, nwsFIPSNames, queueItems))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return fmt.Sprint(out[i]["id"]) < fmt.Sprint(out[j]["id"])
+	})
+	return out, nil
+}
+
+func loadBasicFeedSummaries(configPath string) ([]map[string]any, error) {
+	root, err := loadYAMLMap(configPath)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := loadFeedsXML(configPath, root)
+	if err != nil {
+		return nil, err
+	}
+	outputs, _ := loadOutputsXML(configPath, root)
+	out := make([]map[string]any, 0, len(parsed.Feeds))
+	for _, feed := range parsed.Feeds {
+		if strings.TrimSpace(feed.ID) == "" {
+			continue
+		}
+		output := outputs[feed.ID]
+		out = append(out, map[string]any{
+			"id":                  strings.TrimSpace(feed.ID),
+			"enabled":             xmlBool(feed.EnabledRaw, true),
+			"webrtc_enabled":      xmlBool(output.WebRTC.EnabledRaw, false),
+			"http_stream_enabled": true,
+		})
+	}
+	return out, nil
+}
+
+func loadPublicFeedSummaries(configPath string) ([]map[string]any, error) {
+	root, err := loadYAMLMap(configPath)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := loadFeedsXML(configPath, root)
+	if err != nil {
+		return nil, err
+	}
+	outputs, _ := loadOutputsXML(configPath, root)
+	out := make([]map[string]any, 0, len(parsed.Feeds))
+	for _, feed := range parsed.Feeds {
+		id := strings.TrimSpace(feed.ID)
+		if id == "" {
+			continue
+		}
+		station := stationTransmitter(feed)
+		output := outputs[id]
+		webrtcEnabled := xmlBool(output.WebRTC.EnabledRaw, false)
+		out = append(out, map[string]any{
+			"id":                  id,
+			"name":                fallbackText(station.SiteName, id),
+			"enabled":             xmlBool(feed.EnabledRaw, true),
+			"runtime":             map[string]any{"now_playing": "Idle"},
+			"transmitter":         publicTransmitterPayloadFromXML(station, feed),
+			"transmitters":        publicTransmitterPayloadsFromXML(feed),
+			"webrtc_enabled":      webrtcEnabled,
+			"http_stream_enabled": true,
+		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return fmt.Sprint(out[i]["id"]) < fmt.Sprint(out[j]["id"])
@@ -328,16 +459,31 @@ func publicTransmitterPayload(transmitter map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	out := map[string]any{
-		"site_name":     transmitter["site_name"],
-		"site_names":    transmitter["site_names"],
-		"relationship":  transmitter["relationship"],
-		"frequency_mhz": transmitter["frequency_mhz"],
-		"gpclk":         transmitter["gpclk"],
-		"gpio":          transmitter["gpio"],
-		"rds":           transmitter["rds"],
+		"site_name":  transmitter["site_name"],
+		"site_names": transmitter["site_names"],
 	}
 	if callsign := strings.TrimSpace(fmt.Sprint(transmitter["callsign"])); callsign != "" {
 		out["callsign"] = callsign
+	}
+	return out
+}
+
+func publicTransmitterPayloadFromXML(transmitter transmitterXML, feed feedXML) map[string]any {
+	out := map[string]any{
+		"site_name":  fallbackText(transmitter.SiteName, feed.ID),
+		"site_names": siteNamesForFeed(feed),
+	}
+	if callsign := strings.TrimSpace(transmitter.Callsign); callsign != "" {
+		out["callsign"] = callsign
+	}
+	return out
+}
+
+func publicTransmitterPayloadsFromXML(feed feedXML) []map[string]any {
+	transmitters := transmitterList(feed)
+	out := make([]map[string]any, 0, len(transmitters))
+	for _, transmitter := range transmitters {
+		out = append(out, publicTransmitterPayloadFromXML(transmitter, feed))
 	}
 	return out
 }
@@ -1093,7 +1239,7 @@ func tlsStatePayload(config Config, request *http.Request) map[string]any {
 		host = request.Host
 	}
 	https := request != nil && requestIsHTTPS(request)
-	actualDomain := host != "" && !strings.HasPrefix(host, "127.") && !strings.HasPrefix(host, "localhost") && !strings.Contains(host, "[::1]")
+	actualDomain := isActualDomain(host)
 	enabled := config.Webpanel.TLS.Enabled
 	needsSetup := actualDomain && !https && !enabled
 	message := "Panel is using local HTTP."
@@ -1114,66 +1260,320 @@ func tlsStatePayload(config Config, request *http.Request) map[string]any {
 }
 
 func adminURL(config Config, request *http.Request) string {
-	host := ""
-	if request != nil {
-		host = request.Host
+	if config.Webpanel.Admin.Port <= 0 || (config.Webpanel.Port > 0 && config.Webpanel.Admin.Port == config.Webpanel.Port) {
+		return "/admin"
+	}
+	hostPart := normalizeDomain(config.Webpanel.Admin.Host)
+	if hostPart == "" || hostPart == "0.0.0.0" || hostPart == "::" {
+		hostPart = requestHostName(request)
+		if hostPart == "" {
+			hostPart = "localhost"
+		}
+	}
+	scheme := "http"
+	if requestIsHTTPS(request) {
+		scheme = "https"
 	}
 	if config.Webpanel.Admin.Port > 0 {
-		hostPart := config.Webpanel.Admin.Host
-		if hostPart == "" || hostPart == "0.0.0.0" {
-			if request != nil {
-				hostPart = request.Host
-				if strings.Contains(hostPart, ":") {
-					hostPart, _, _ = strings.Cut(hostPart, ":")
-				}
-			}
-			if hostPart == "" {
-				hostPart = "localhost"
-			}
-		}
-		host = fmt.Sprintf("%s:%d", hostPart, config.Webpanel.Admin.Port)
+		return scheme + "://" + net.JoinHostPort(hostPart, strconv.Itoa(config.Webpanel.Admin.Port)) + "/admin"
 	}
-	if host == "" {
-		host = "localhost:8086"
-	}
-	return "http://" + host + "/admin"
+	return "/admin"
 }
 
 func publicAlertsArchivePayload(configPath string) (map[string]any, error) {
-	payload, err := alertsArchivePayload(configPath)
-	if err != nil {
-		return nil, err
+	now := time.Now().UTC()
+	active, rejected, expired := archiveStoreRecordBuckets(configPath, now)
+
+	byFeed := map[string][]map[string]any{}
+	for _, record := range active {
+		feedID := fallbackText(record.FeedID, "unknown")
+		byFeed[feedID] = append(byFeed[feedID], publicArchivePayloadFromRecord(record, "accepted"))
 	}
-	byFeed := map[string]any{}
-	switch accepted := payload["accepted_by_feed"].(type) {
-	case map[string][]map[string]any:
-		for feedID, records := range accepted {
-			byFeed[feedID] = records
-		}
-	case map[string]any:
-		for feedID, records := range accepted {
-			byFeed[feedID] = records
-		}
-	case []map[string]any:
-		for _, record := range accepted {
-			feedID := fallbackText(fmt.Sprint(record["feed_id"]), "unknown")
-			byFeed[feedID] = appendAny(byFeed[feedID], record)
-		}
-	case []any:
-		for _, item := range accepted {
-			record, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			feedID := fallbackText(fmt.Sprint(record["feed_id"]), "unknown")
-			byFeed[feedID] = appendAny(byFeed[feedID], record)
-		}
+	acceptedTruncated := false
+	for feedID, records := range byFeed {
+		limited, truncated := limitPublicArchiveRecords(records, publicArchiveAcceptedPerFeedLimit)
+		byFeed[feedID] = limited
+		acceptedTruncated = acceptedTruncated || truncated
 	}
+	rejectedRecords, rejectedTruncated := limitPublicArchiveRecords(publicArchivePayloadsFromRecords(rejected, "rejected"), publicArchiveBucketLimit)
+	expiredRecords, expiredTruncated := limitPublicArchiveRecords(publicArchivePayloadsFromRecords(expiredWithin(expired, now, 30*24*time.Hour), "expired"), publicArchiveBucketLimit)
 	return map[string]any{
 		"by_feed":  byFeed,
-		"rejected": payload["rejected"],
-		"expired":  payload["expired"],
+		"rejected": rejectedRecords,
+		"expired":  expiredRecords,
+		"limits": map[string]any{
+			"accepted_per_feed": publicArchiveAcceptedPerFeedLimit,
+			"bucket":            publicArchiveBucketLimit,
+		},
+		"truncated": map[string]any{
+			"accepted": acceptedTruncated,
+			"rejected": rejectedTruncated,
+			"expired":  expiredTruncated,
+		},
 	}, nil
+}
+
+func publicArchivePayloadsFromRecords(records []archiveCAPRecord, bucket string) []map[string]any {
+	out := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		out = append(out, publicArchivePayloadFromRecord(record, bucket))
+	}
+	return out
+}
+
+func publicArchivePayloadFromRecord(record archiveCAPRecord, bucket string) map[string]any {
+	info := chooseArchiveInfo(record.Alert)
+	areas := archiveAreaNames(info)
+	audio := archiveBroadcastAudio(record.Alert)
+	return publicArchiveRecordPayload(map[string]any{
+		"id":              fallbackString(record.ID, record.Alert.Identifier),
+		"feed_id":         record.FeedID,
+		"bucket":          bucket,
+		"status":          fallbackString(record.Status, bucket),
+		"reason":          record.Reason,
+		"updated_at":      record.UpdatedAt,
+		"sender":          record.Alert.Sender,
+		"sent":            record.Alert.Sent,
+		"message_type":    record.Alert.MessageType,
+		"headline":        alerttext.NormalizeHeadline(fallbackString(info.Headline, info.Event)),
+		"event":           info.Event,
+		"severity":        info.Severity,
+		"urgency":         info.Urgency,
+		"certainty":       info.Certainty,
+		"effective":       info.Effective,
+		"onset":           info.Onset,
+		"expires":         info.Expires,
+		"description":     info.Description,
+		"instruction":     info.Instruction,
+		"areas":           areas,
+		"area_text":       alerttext.JoinParts(areas),
+		"audio_url":       audio.URL,
+		"audio_mime_type": audio.MimeType,
+		"cap_xml_url":     archivePublicCAPXMLURL(record),
+	})
+}
+
+func archivePublicCAPXMLURL(record archiveCAPRecord) string {
+	return publicCAPXMLURLFromAdminURL(archiveCAPXMLURL(record))
+}
+
+const (
+	publicArchiveAcceptedPerFeedLimit = 25
+	publicArchiveBucketLimit          = 25
+	publicArchiveTextFieldLimit       = 520
+	publicArchiveAreaLimit            = 24
+	publicArchiveAreaTextLimit        = 120
+)
+
+func limitPublicArchiveRecords(records []map[string]any, limit int) ([]map[string]any, bool) {
+	if limit <= 0 || len(records) <= limit {
+		return records, false
+	}
+	return records[:limit], true
+}
+
+func publicArchiveRecordMaps(value any) []map[string]any {
+	switch typed := value.(type) {
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, publicArchiveRecordPayload(item))
+		}
+		return out
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, publicArchiveRecordMaps(item)...)
+		}
+		return out
+	case map[string]any:
+		if looksLikeArchiveRecordPayload(typed) {
+			return []map[string]any{publicArchiveRecordPayload(typed)}
+		}
+		out := []map[string]any{}
+		for _, item := range typed {
+			out = append(out, publicArchiveRecordMaps(item)...)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func publicArchiveRecordPayload(record map[string]any) map[string]any {
+	out := map[string]any{}
+	areaList := publicArchiveAreasPayload(record["areas"])
+	hasAreaList := len(areaList) > 0
+	for _, key := range []string{
+		"id",
+		"feed_id",
+		"bucket",
+		"status",
+		"reason",
+		"sender",
+		"sent",
+		"message_type",
+		"headline",
+		"event",
+		"severity",
+		"urgency",
+		"certainty",
+		"effective",
+		"onset",
+		"expires",
+		"description",
+		"instruction",
+		"areas",
+		"area_text",
+		"audio_url",
+		"audio_mime_type",
+		"cap_xml_url",
+		"updated_at",
+	} {
+		value, ok := record[key]
+		if !ok {
+			continue
+		}
+		if key == "area_text" && hasAreaList {
+			continue
+		}
+		if key == "description" || key == "instruction" || key == "area_text" || key == "reason" {
+			value = limitPublicArchiveText(fmt.Sprint(value), publicArchiveTextFieldLimit)
+		}
+		if key == "audio_url" && !archiveAudioURLAllowed(fmt.Sprint(value)) {
+			continue
+		}
+		if key == "areas" {
+			value = areaList
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func publicArchiveAreasPayload(value any) []string {
+	values := []string{}
+	switch typed := value.(type) {
+	case []string:
+		values = typed
+	case []any:
+		values = make([]string, 0, len(typed))
+		for _, item := range typed {
+			text := strings.TrimSpace(fmt.Sprint(item))
+			if text != "" {
+				values = append(values, text)
+			}
+		}
+	default:
+		return nil
+	}
+	out := make([]string, 0, min(len(values), publicArchiveAreaLimit+1))
+	for _, value := range values {
+		if len(out) >= publicArchiveAreaLimit {
+			break
+		}
+		out = append(out, limitPublicArchiveText(value, publicArchiveAreaTextLimit))
+	}
+	if remaining := len(values) - len(out); remaining > 0 {
+		out = append(out, fmt.Sprintf("and %d more areas", remaining))
+	}
+	return out
+}
+
+func limitPublicArchiveText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:limit])) + "..."
+}
+
+func looksLikeArchiveRecordPayload(record map[string]any) bool {
+	for _, key := range []string{"id", "feed_id", "event", "headline", "sent", "expires", "description", "instruction", "cap_xml_url"} {
+		if _, ok := record[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func publicArchiveCAPXMLLinks(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = publicArchiveCAPXMLLinks(item)
+		}
+		if rawURL := strings.TrimSpace(fmt.Sprint(typed["cap_xml_url"])); rawURL != "" {
+			out["cap_xml_url"] = publicCAPXMLURLFromAdminURL(rawURL)
+		}
+		return out
+	case map[string][]map[string]any:
+		out := make(map[string][]map[string]any, len(typed))
+		for key, records := range typed {
+			out[key] = publicArchiveCAPXMLRecordLinks(records)
+		}
+		return out
+	case []map[string]any:
+		return publicArchiveCAPXMLRecordLinks(typed)
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, publicArchiveCAPXMLLinks(item))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func publicArchiveCAPXMLRecordLinks(records []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		copied := make(map[string]any, len(record))
+		for key, value := range record {
+			copied[key] = value
+		}
+		if rawURL := strings.TrimSpace(fmt.Sprint(record["cap_xml_url"])); rawURL != "" {
+			copied["cap_xml_url"] = publicCAPXMLURLFromAdminURL(rawURL)
+		}
+		out = append(out, copied)
+	}
+	return out
+}
+
+func publicCAPXMLURLFromAdminURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	if parsed.IsAbs() && parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	if parsed.Path != "/api/v1/alerts/archive/cap.xml" && parsed.Path != "/api/public/v1/alerts/archive/cap.xml" {
+		return ""
+	}
+	query := publicCAPXMLQuery(parsed.Query())
+	if query == "" {
+		return "/api/public/v1/alerts/archive/cap.xml"
+	}
+	return "/api/public/v1/alerts/archive/cap.xml?" + query
+}
+
+func publicCAPXMLQuery(values url.Values) string {
+	parts := make([]string, 0, 2)
+	if id := strings.TrimSpace(values.Get("id")); id != "" {
+		parts = append(parts, "id="+url.QueryEscape(id))
+	}
+	if feedID := strings.TrimSpace(values.Get("feed_id")); feedID != "" {
+		parts = append(parts, "feed_id="+url.QueryEscape(feedID))
+	}
+	return strings.Join(parts, "&")
 }
 
 func loadPackageIDs(configPath string) ([]string, error) {
@@ -1328,7 +1728,19 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
+var (
+	hostnameOnce  sync.Once
+	hostnameValue string
+)
+
 func hostname() string {
+	hostnameOnce.Do(func() {
+		hostnameValue = lookupHostname()
+	})
+	return hostnameValue
+}
+
+func lookupHostname() string {
 	name, err := os.Hostname()
 	if err != nil || strings.TrimSpace(name) == "" {
 		return "unknown"
@@ -1397,6 +1809,29 @@ func usableServerIP(value string) bool {
 }
 
 func interfaceServerIP() string {
+	return cachedInterfaceServerIP()
+}
+
+var (
+	interfaceServerIPMu       sync.Mutex
+	interfaceServerIPCached   string
+	interfaceServerIPCachedAt time.Time
+)
+
+const interfaceServerIPCacheTTL = 30 * time.Second
+
+func cachedInterfaceServerIP() string {
+	interfaceServerIPMu.Lock()
+	defer interfaceServerIPMu.Unlock()
+	if time.Since(interfaceServerIPCachedAt) < interfaceServerIPCacheTTL {
+		return interfaceServerIPCached
+	}
+	interfaceServerIPCached = scanInterfaceServerIP()
+	interfaceServerIPCachedAt = time.Now()
+	return interfaceServerIPCached
+}
+
+func scanInterfaceServerIP() string {
 	type candidate struct {
 		ip    string
 		score int
@@ -1451,7 +1886,19 @@ func interfaceAddrIP(addr net.Addr) net.IP {
 	}
 }
 
+var (
+	gitCommitOnce  sync.Once
+	gitCommitValue string
+)
+
 func gitCommit() string {
+	gitCommitOnce.Do(func() {
+		gitCommitValue = lookupGitCommit()
+	})
+	return gitCommitValue
+}
+
+func lookupGitCommit() string {
 	for _, name := range []string{"HAZE_GIT_COMMIT", "GIT_COMMIT"} {
 		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
 			return value

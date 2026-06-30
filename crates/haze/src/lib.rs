@@ -9,6 +9,8 @@ mod signals;
 
 use std::env;
 use std::fmt;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
@@ -27,6 +29,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+
+const DAEMON_LOCK_FILE: &str = "runtime/state/haze.pid";
 
 /// Command line options for the Haze daemon host.
 #[derive(Debug, Parser)]
@@ -100,6 +104,11 @@ pub fn run(args: DaemonArgs) -> Result<()> {
         env::set_var("LOG_LEVEL", level.to_uppercase());
     }
 
+    let _instance_guard = if args.host_smoke {
+        None
+    } else {
+        Some(acquire_runtime_instance_lock(&layout.runtime_dir)?)
+    };
     let _log_guard = init_tracing(args.log_level.as_deref(), &layout.runtime_dir);
     let mut host_bridge = host_bridge::HostBridge::start()?;
     env::set_var("HAZE_HOST_BRIDGE_ADDR", host_bridge.addr());
@@ -265,6 +274,107 @@ fn normalize_config_path(workdir: &Path, path: &Path) -> PathBuf {
     }
 }
 
+struct RuntimeInstanceGuard {
+    path: PathBuf,
+    pid: u32,
+}
+
+impl Drop for RuntimeInstanceGuard {
+    fn drop(&mut self) {
+        if read_lock_pid(&self.path) == Some(self.pid) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn acquire_runtime_instance_lock(runtime_dir: &Path) -> Result<RuntimeInstanceGuard> {
+    let path = runtime_dir.join(DAEMON_LOCK_FILE);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create Haze instance lock directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let pid = std::process::id();
+    for _ in 0..2 {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                writeln!(file, "{pid}").with_context(|| {
+                    format!("failed to write Haze instance lock {}", path.display())
+                })?;
+                file.flush().with_context(|| {
+                    format!("failed to flush Haze instance lock {}", path.display())
+                })?;
+                return Ok(RuntimeInstanceGuard { path, pid });
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                if let Some(existing_pid) = read_lock_pid(&path) {
+                    if process_alive(existing_pid) {
+                        anyhow::bail!(
+                            "another Haze host is already running for runtime {} (pid {}). Stop it before starting another instance.",
+                            runtime_dir.display(),
+                            existing_pid
+                        );
+                    }
+                }
+                fs::remove_file(&path).with_context(|| {
+                    format!(
+                        "failed to remove stale Haze instance lock {}",
+                        path.display()
+                    )
+                })?;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to acquire Haze instance lock {}", path.display())
+                });
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "failed to acquire Haze instance lock {}; another process is starting",
+        path.display()
+    )
+}
+
+fn read_lock_pid(path: &Path) -> Option<u32> {
+    let raw = fs::read_to_string(path).ok()?;
+    parse_lock_pid(&raw)
+}
+
+fn parse_lock_pid(raw: &str) -> Option<u32> {
+    raw.lines().next()?.trim().parse().ok()
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, FALSE};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if handle.is_null() {
+            return false;
+        }
+        CloseHandle(handle);
+        true
+    }
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn process_alive(_pid: u32) -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +395,23 @@ mod tests {
         let config = normalize_config_path(Path::new("."), &absolute);
 
         assert_eq!(config, absolute);
+    }
+
+    #[test]
+    fn lock_pid_parser_reads_first_line() {
+        assert_eq!(parse_lock_pid("1234\nextra"), Some(1234));
+        assert_eq!(parse_lock_pid(" nope "), None);
+        assert_eq!(parse_lock_pid(""), None);
+    }
+
+    #[test]
+    fn runtime_instance_lock_blocks_second_host() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = acquire_runtime_instance_lock(temp.path()).expect("first lock");
+
+        assert!(acquire_runtime_instance_lock(temp.path()).is_err());
+
+        drop(first);
+        assert!(acquire_runtime_instance_lock(temp.path()).is_ok());
     }
 }

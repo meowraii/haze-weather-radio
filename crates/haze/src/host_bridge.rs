@@ -29,7 +29,6 @@ enum ClientMessage {
     Consumed,
 }
 
-/// Local event bridge used by daemon services and playout.
 pub(crate) struct HostBridge {
     addr: String,
     sender: Sender<Value>,
@@ -37,11 +36,6 @@ pub(crate) struct HostBridge {
 }
 
 impl HostBridge {
-    /// Starts a loopback JSONL event bridge.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the daemon cannot bind a local TCP listener.
     pub(crate) fn start() -> Result<Self> {
         let listener =
             TcpListener::bind(("127.0.0.1", 0)).context("failed to bind host event bridge")?;

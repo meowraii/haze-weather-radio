@@ -19,6 +19,9 @@ const (
 	httpWAVChannels      = 1
 	httpWAVBitsPerSample = 16
 	httpWAVFrameSamples  = httpWAVSampleRate / 50
+	httpAudioMaxFeedID   = 128
+	httpAudioMaxCodecID  = 64
+	httpAudioDrainLimit  = 64
 )
 
 type httpAudioFormat struct {
@@ -34,8 +37,7 @@ type httpAudioFormat struct {
 }
 
 func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodGet && request.Method != http.MethodHead {
-		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+	if !requestMethodGETOrHEAD(writer, request) {
 		return
 	}
 	access := publicFeedAccess(s.config)
@@ -47,22 +49,35 @@ func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Reque
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if s.media == nil || !s.media.Available() {
-		http.Error(writer, "media bridge is not available", http.StatusServiceUnavailable)
-		return
-	}
 	feedID := strings.TrimSpace(request.URL.Query().Get("feed"))
 	if feedID == "" {
 		http.Error(writer, "feed is required", http.StatusBadRequest)
 		return
 	}
-	if !s.feedWebRTCEnabled(feedID) {
+	if len(feedID) > httpAudioMaxFeedID {
+		http.Error(writer, "feed is too long", http.StatusBadRequest)
+		return
+	}
+	if !validPublicAudioFeedID(feedID) {
+		http.Error(writer, "feed is invalid", http.StatusBadRequest)
+		return
+	}
+	if !publicHTTPAudioFeedEnabled(s.configPath, feedID) {
 		http.Error(writer, "feed audio output is not enabled", http.StatusForbidden)
 		return
 	}
-	format, ok := httpAudioFormatByID(request.URL.Query().Get("codec"))
+	codec := strings.TrimSpace(request.URL.Query().Get("codec"))
+	if len(codec) > httpAudioMaxCodecID {
+		http.Error(writer, "codec is too long", http.StatusBadRequest)
+		return
+	}
+	format, ok := httpAudioFormatByID(codec)
 	if !ok {
 		http.Error(writer, "unsupported HTTP audio codec", http.StatusBadRequest)
+		return
+	}
+	if s.media == nil || !s.media.Available() {
+		http.Error(writer, "media bridge is not available", http.StatusServiceUnavailable)
 		return
 	}
 	ffmpeg := ""
@@ -93,6 +108,44 @@ func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Reque
 	if err != nil && !errors.Is(err, http.ErrHandlerTimeout) && !errors.Is(err, context.Canceled) {
 		return
 	}
+}
+
+func validPublicAudioFeedID(feedID string) bool {
+	if feedID == "" {
+		return false
+	}
+	for _, r := range feedID {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '-', '_', '.', ':':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func publicHTTPAudioFeedEnabled(configPath string, feedID string) bool {
+	feedID = strings.TrimSpace(feedID)
+	if feedID == "" {
+		return false
+	}
+	feeds, err := loadBasicFeedSummaries(configPath)
+	if err != nil {
+		return false
+	}
+	for _, feed := range feeds {
+		if stringValue(feed, "id") != feedID {
+			continue
+		}
+		enabled, _ := feed["enabled"].(bool)
+		httpStream, _ := feed["http_stream_enabled"].(bool)
+		return enabled && httpStream
+	}
+	return false
 }
 
 func httpAudioFormatByID(raw string) (httpAudioFormat, bool) {
@@ -166,16 +219,10 @@ func (h *MediaHub) StreamWAV(ctx context.Context, feedID string, writer http.Res
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			for drained := 0; drained < cap(updates); drained++ {
-				select {
-				case chunk, ok := <-updates:
-					if !ok {
-						return nil
-					}
-					queue = appendWAVSamples(queue, chunk)
-				default:
-					drained = cap(updates)
-				}
+			var ok bool
+			queue, ok = drainHTTPAudioUpdates(updates, queue)
+			if !ok {
+				return nil
 			}
 			popWAVFrameInto(&queue, frame)
 			pcm16BytesInto(frameBytes, frame)
@@ -285,17 +332,11 @@ func (h *MediaHub) StreamEncodedAudio(ctx context.Context, feedID string, writer
 			}
 			return waitErr
 		case <-ticker.C:
-			for drained := 0; drained < cap(updates); drained++ {
-				select {
-				case chunk, ok := <-updates:
-					if !ok {
-						cancel()
-						return wait()
-					}
-					queue = appendWAVSamples(queue, chunk)
-				default:
-					drained = cap(updates)
-				}
+			var ok bool
+			queue, ok = drainHTTPAudioUpdates(updates, queue)
+			if !ok {
+				cancel()
+				return wait()
 			}
 			popWAVFrameInto(&queue, frame)
 			pcm16BytesInto(frameBytes, frame)
@@ -306,6 +347,25 @@ func (h *MediaHub) StreamEncodedAudio(ctx context.Context, feedID string, writer
 			}
 		}
 	}
+}
+
+func drainHTTPAudioUpdates(updates <-chan PCMChunk, queue []int16) ([]int16, bool) {
+	limit := cap(updates)
+	if limit <= 0 || limit > httpAudioDrainLimit {
+		limit = httpAudioDrainLimit
+	}
+	for drained := 0; drained < limit; drained++ {
+		select {
+		case chunk, ok := <-updates:
+			if !ok {
+				return queue, false
+			}
+			queue = appendWAVSamples(queue, chunk)
+		default:
+			return queue, true
+		}
+	}
+	return queue, true
 }
 
 func writeWAVStreamHeader(writer http.ResponseWriter, sampleRate int, channels int, bitsPerSample int) error {

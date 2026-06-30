@@ -269,13 +269,13 @@ func TestFeedSpecialtySubtypesUsesECCCCitypagePrefix(t *testing.T) {
 	}
 }
 
-func TestThunderstormOutlookGeometryFiltersDistantPrairiePolygons(t *testing.T) {
+func TestThunderstormOutlookGeometryOnlyAcceptsContainingPolygons(t *testing.T) {
 	const saskatoonLon = -106.6700
 	const saskatoonLat = 52.1332
 	tests := []struct {
 		name        string
 		geometry    map[string]any
-		wantNear    bool
+		wantCovered bool
 		maxDistance float64
 	}{
 		{
@@ -287,11 +287,11 @@ func TestThunderstormOutlookGeometryFiltersDistantPrairiePolygons(t *testing.T) 
 				{-107.0, 52.4},
 				{-107.0, 51.9},
 			}),
-			wantNear:    true,
+			wantCovered: true,
 			maxDistance: 0,
 		},
 		{
-			name: "near saskatoon",
+			name: "near but not covering saskatoon",
 			geometry: polygonGeometry([][]float64{
 				{-106.8, 53.1},
 				{-106.2, 53.1},
@@ -299,8 +299,8 @@ func TestThunderstormOutlookGeometryFiltersDistantPrairiePolygons(t *testing.T) 
 				{-106.8, 53.5},
 				{-106.8, 53.1},
 			}),
-			wantNear:    true,
-			maxDistance: thunderstormOutlookNearbyKM,
+			wantCovered: false,
+			maxDistance: thunderstormOutlookCoverageToleranceKM,
 		},
 		{
 			name: "northern alberta near bc border",
@@ -311,8 +311,8 @@ func TestThunderstormOutlookGeometryFiltersDistantPrairiePolygons(t *testing.T) 
 				{-118.5, 59.4},
 				{-118.5, 58.2},
 			}),
-			wantNear:    false,
-			maxDistance: thunderstormOutlookNearbyKM,
+			wantCovered: false,
+			maxDistance: thunderstormOutlookCoverageToleranceKM,
 		},
 	}
 	for _, test := range tests {
@@ -322,9 +322,9 @@ func TestThunderstormOutlookGeometryFiltersDistantPrairiePolygons(t *testing.T) 
 			if !ok {
 				t.Fatal("geometry distance was not computed")
 			}
-			gotNear := distance <= test.maxDistance
-			if gotNear != test.wantNear {
-				t.Fatalf("distance = %.1f km, near = %v, want %v", distance, gotNear, test.wantNear)
+			gotCovered := distance <= test.maxDistance
+			if gotCovered != test.wantCovered {
+				t.Fatalf("distance = %.1f km, covered = %v, want %v", distance, gotCovered, test.wantCovered)
 			}
 			if test.name == "northern alberta near bc border" {
 				direction, ok := geoFeatureDirectionFromPoint(feature, saskatoonLon, saskatoonLat)

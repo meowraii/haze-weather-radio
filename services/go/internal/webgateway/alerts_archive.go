@@ -36,27 +36,7 @@ type archiveCAPRecord struct {
 func alertsArchivePayload(configPath string) (map[string]any, error) {
 	now := time.Now().UTC()
 	baseDir := filepath.Dir(filepath.Clean(configPath))
-	active := []archiveCAPRecord{}
-	rejected := []archiveCAPRecord{}
-	expired := []archiveCAPRecord{}
-	acceptedRows := archiveStoreRecords(configPath, "accepted", time.Time{})
-	for _, record := range acceptedRows {
-		if archiveAlertExpired(record.Alert, now) {
-			record.Status = "expired"
-			expired = append(expired, record)
-		} else {
-			record.Status = "accepted"
-			active = append(active, record)
-		}
-	}
-	rejected = append(rejected, archiveStoreRecords(configPath, "rejected", time.Time{})...)
-	expired = append(expired, archiveStoreRecords(configPath, "expired", now.Add(-30*24*time.Hour))...)
-	active = uniqueArchiveRecords(active)
-	rejected = uniqueArchiveRecords(rejected)
-	expired = uniqueArchiveRecords(expired)
-	sortArchiveRecords(active)
-	sortArchiveRecords(rejected)
-	sortArchiveRecords(expired)
+	active, rejected, expired := archiveStoreRecordBuckets(configPath, now)
 	return map[string]any{
 		"accepted_by_feed": archiveRecordsPayload(active, "accepted", baseDir),
 		"rejected":         archiveRecordsPayload(rejected, "rejected", baseDir),
@@ -76,6 +56,46 @@ func archiveStoreRecords(configPath string, bucket string, since time.Time) []ar
 		return nil
 	}
 	defer store.Close()
+	return listArchiveStoreRecords(ctx, store, bucket, since)
+}
+
+func archiveStoreRecordBuckets(configPath string, now time.Time) ([]archiveCAPRecord, []archiveCAPRecord, []archiveCAPRecord) {
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		return nil, nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store, err := datastore.Open(ctx, config.Storage, filepath.Dir(filepath.Clean(configPath)))
+	if err != nil {
+		return nil, nil, nil
+	}
+	defer store.Close()
+
+	active := []archiveCAPRecord{}
+	rejected := []archiveCAPRecord{}
+	expired := []archiveCAPRecord{}
+	for _, record := range listArchiveStoreRecords(ctx, store, "accepted", time.Time{}) {
+		if archiveAlertExpired(record.Alert, now) {
+			record.Status = "expired"
+			expired = append(expired, record)
+		} else {
+			record.Status = "accepted"
+			active = append(active, record)
+		}
+	}
+	rejected = append(rejected, listArchiveStoreRecords(ctx, store, "rejected", time.Time{})...)
+	expired = append(expired, listArchiveStoreRecords(ctx, store, "expired", now.Add(-30*24*time.Hour))...)
+	active = uniqueArchiveRecords(active)
+	rejected = uniqueArchiveRecords(rejected)
+	expired = uniqueArchiveRecords(expired)
+	sortArchiveRecords(active)
+	sortArchiveRecords(rejected)
+	sortArchiveRecords(expired)
+	return active, rejected, expired
+}
+
+func listArchiveStoreRecords(ctx context.Context, store datastore.Store, bucket string, since time.Time) []archiveCAPRecord {
 	rows, err := store.ListCAPArchives(ctx, bucket, since)
 	if err != nil {
 		return nil
@@ -120,8 +140,10 @@ func uniqueArchiveRecords(records []archiveCAPRecord) []archiveCAPRecord {
 func handleAlertsArchiveAction(configPath string, payload map[string]any) (map[string]any, error) {
 	action := strings.ToLower(strings.TrimSpace(stringValue(payload, "action")))
 	switch action {
-	case "rebroadcast", "rebroadcast_without_same":
-		return rebroadcastArchivedAlert(configPath, payload, action == "rebroadcast")
+	case "rebroadcast", "force_broadcast", "rebroadcast_without_same", "force_broadcast_without_same":
+		withSAME := action == "rebroadcast" || action == "force_broadcast"
+		force := strings.HasPrefix(action, "force_broadcast")
+		return rebroadcastArchivedAlert(configPath, payload, withSAME, force)
 	case "preview_same":
 		return previewArchivedAlertSAME(configPath, payload)
 	case "delete":
@@ -169,6 +191,7 @@ func handleAlertsArchiveAction(configPath string, payload map[string]any) (map[s
 }
 
 func publishAlertArchiveInvalidated(alertID string, feedID string) {
+	clearBannerArchiveCache()
 	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
 	if bridgeAddr == "" {
 		return
@@ -221,17 +244,24 @@ func withArchiveStore(configPath string, fn func(context.Context, datastore.Stor
 }
 
 func archiveRecordsPayload(records []archiveCAPRecord, bucket string, baseDir string) []map[string]any {
+	queueItems, _ := loadAlertQueueItems(filepath.Join(baseDir, "config.yaml"))
 	out := make([]map[string]any, 0, len(records))
 	for _, record := range records {
-		out = append(out, archiveRecordPayload(record, bucket, baseDir))
+		out = append(out, archiveRecordPayloadWithQueue(record, bucket, baseDir, queueItems))
 	}
 	return out
 }
 
 func archiveRecordPayload(record archiveCAPRecord, bucket string, baseDir string) map[string]any {
+	queueItems, _ := loadAlertQueueItems(filepath.Join(baseDir, "config.yaml"))
+	return archiveRecordPayloadWithQueue(record, bucket, baseDir, queueItems)
+}
+
+func archiveRecordPayloadWithQueue(record archiveCAPRecord, bucket string, baseDir string, queueItems []sameQueueItem) map[string]any {
 	info := chooseArchiveInfo(record.Alert)
 	audio := archiveBroadcastAudio(record.Alert)
 	resolution := capsame.ResolveEvent(record.Alert, info, baseDir)
+	relayed := archiveRecordRelayed(record, queueItems)
 	areas := archiveAreaNames(info)
 	message := alerttext.BuildCAPAlertText(alerttext.CAPMessageRequest{
 		Alert:     record.Alert,
@@ -269,6 +299,8 @@ func archiveRecordPayload(record archiveCAPRecord, bucket string, baseDir string
 		"audio_url":              audio.URL,
 		"audio_mime_type":        audio.MimeType,
 		"cap_xml_url":            archiveCAPXMLURL(record),
+		"relayed":                relayed,
+		"broadcast_action_label": archiveBroadcastActionLabel(relayed),
 		"same_preview_available": archiveSAMEPreviewAvailable(record.Alert, baseDir),
 		"same_event":             resolution.Event,
 		"same_event_source":      resolution.Source,
@@ -281,6 +313,53 @@ func archiveRecordPayload(record archiveCAPRecord, bucket string, baseDir string
 		"background_color":       visual[0],
 		"background_gradient":    visual,
 	}
+}
+
+func archiveBroadcastActionLabel(relayed bool) string {
+	if relayed {
+		return "Rebroadcast"
+	}
+	return "Force Broadcast"
+}
+
+func archiveRecordRelayed(record archiveCAPRecord, items []sameQueueItem) bool {
+	id := fallbackString(record.ID, record.Alert.Identifier)
+	if id == "" {
+		return false
+	}
+	for _, item := range items {
+		if !queueItemMatchesArchiveRecord(item, id, record.FeedID) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func queueItemMatchesArchiveRecord(item sameQueueItem, alertID string, feedID string) bool {
+	if strings.TrimSpace(feedID) != "" && !itemTargetsFeed(item, feedID) {
+		return false
+	}
+	if strings.TrimSpace(item.AlertID) == alertID {
+		return true
+	}
+	if item.AlertPacket != nil && strings.TrimSpace(item.AlertPacket.ID) == alertID {
+		return true
+	}
+	safeAlertID := safeID(alertID)
+	if safeAlertID == "" {
+		return false
+	}
+	if strings.Contains(strings.TrimSpace(item.ID), safeAlertID) {
+		return true
+	}
+	if strings.Contains(strings.TrimSpace(item.ManifestPath), safeAlertID) {
+		return true
+	}
+	if item.AlertPacket != nil && strings.Contains(strings.TrimSpace(item.AlertPacket.ID), safeAlertID) {
+		return true
+	}
+	return false
 }
 
 func archiveCAPXMLURL(record archiveCAPRecord) string {
@@ -296,7 +375,7 @@ func archiveCAPXMLURL(record archiveCAPRecord) string {
 	return "/api/v1/alerts/archive/cap.xml?" + query.Encode()
 }
 
-func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAME bool) (map[string]any, error) {
+func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAME bool, force bool) (map[string]any, error) {
 	id := strings.TrimSpace(stringValue(payload, "id"))
 	feedID := strings.TrimSpace(stringValue(payload, "feed_id"))
 	if id == "" || feedID == "" {
@@ -307,7 +386,7 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 		return nil, fmt.Errorf("alert %s was not found", id)
 	}
 	if withSAME {
-		if !archiveSAMEAllowed(configPath, record.Alert, time.Now().UTC()) {
+		if !force && !archiveSAMEAllowed(configPath, record.Alert, time.Now().UTC()) {
 			withSAME = false
 		} else if item, err := queueArchiveSAME(configPath, record); err == nil {
 			_ = item
@@ -317,12 +396,14 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 	}
 	audio := archiveBroadcastAudio(record.Alert)
 	data := map[string]any{
-		"feed_id":      feedID,
-		"alert_id":     id,
-		"package_id":   "alerts",
-		"title":        archiveAlertTitle(record.Alert),
-		"rebroadcast":  true,
-		"include_same": withSAME,
+		"feed_id":         feedID,
+		"alert_id":        id,
+		"package_id":      "alerts",
+		"title":           archiveAlertTitle(record.Alert),
+		"rebroadcast":     true,
+		"force":           force,
+		"force_broadcast": force,
+		"include_same":    withSAME,
 	}
 	info := chooseArchiveInfo(record.Alert)
 	areas := archiveAreaNames(info)
@@ -475,11 +556,8 @@ func queueArchiveSAME(configPath string, record archiveCAPRecord) (sameQueueItem
 }
 
 func findArchiveAlert(configPath string, id string, feedID string) (archiveCAPRecord, bool) {
-	for _, bucket := range [][]archiveCAPRecord{
-		archiveStoreRecords(configPath, "accepted", time.Time{}),
-		archiveStoreRecords(configPath, "expired", time.Now().UTC().Add(-30*24*time.Hour)),
-		archiveStoreRecords(configPath, "rejected", time.Time{}),
-	} {
+	active, rejected, expired := archiveStoreRecordBuckets(configPath, time.Now().UTC())
+	for _, bucket := range [][]archiveCAPRecord{active, expired, rejected} {
 		for _, record := range bucket {
 			if (record.ID == id || record.Alert.Identifier == id) && (feedID == "" || record.FeedID == feedID) {
 				if record.FeedID == "" {
@@ -590,12 +668,25 @@ func archiveBroadcastAudio(alert capingest.Alert) archiveAudio {
 			if url == "" {
 				url = strings.TrimSpace(resource.DerefURI)
 			}
-			if url != "" {
+			if archiveAudioURLAllowed(url) {
 				return archiveAudio{URL: url, MimeType: resource.MimeType}
 			}
 		}
 	}
 	return archiveAudio{}
+}
+
+func archiveAudioURLAllowed(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return parsed.Host != ""
+	default:
+		return false
+	}
 }
 
 func archiveAreaNames(info capingest.AlertInfo) []string {

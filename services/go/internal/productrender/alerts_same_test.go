@@ -395,6 +395,88 @@ func TestCAPUpdateBroadcastRequiresFeedRelevantNewlyActiveArea(t *testing.T) {
 	}
 }
 
+func TestCatchallFirstSeenCAPUpdateBroadcastsWithoutNewlyActiveAreas(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feed feedXML
+	feed.ID = "CAP-IT-ALL"
+	feed.EnabledRaw = "true"
+	feed.Playout.Routine = "false"
+	feed.Alerts.CapCP.EnabledRaw = "true"
+	feed.Alerts.CapCP.Filter.UseFeedLocations = "false"
+	feed.Alerts.CapCP.Filter.Allowlist.Severities = []string{"Moderate", "Severe", "Extreme"}
+	feed.Alerts.CapCP.Filter.Allowlist.Certainties = []string{"Observed", "Likely"}
+	cfg.Feeds = []feedXML{feed}
+	service := &Service{cfg: cfg}
+
+	raw := strings.Replace(testWatchCAP("urn:test:catchall:first-seen-update", "065522"), "<parameter><valueName>layer:EC-MSC-SMC:1.1:Newly_Active_Areas</valueName><value>065522</value></parameter>", "", 1)
+	alert := parseTestAlert(t, capAsUpdate(raw))
+	updates, err := service.recordCAPAlert(alert, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || !updates[0].Broadcast {
+		t.Fatalf("first-seen catchall update should broadcast: %#v", updates)
+	}
+
+	repeatUpdates, err := service.recordCAPAlert(alert, time.Date(2026, 6, 15, 22, 12, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeatUpdates) != 1 || repeatUpdates[0].Broadcast {
+		t.Fatalf("repeat catchall update should not rebroadcast: %#v", repeatUpdates)
+	}
+}
+
+func TestCatchallFirstSeenCAPUpdateBroadcastsWithUnrelatedPriorAlerts(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	var feed feedXML
+	feed.ID = "CAP-IT-ALL"
+	feed.EnabledRaw = "true"
+	feed.Playout.Routine = "false"
+	feed.Alerts.CapCP.EnabledRaw = "true"
+	feed.Alerts.CapCP.Filter.UseFeedLocations = "false"
+	raw := strings.Replace(testWatchCAP("urn:test:catchall:first-seen-with-prior", "065522"), "<parameter><valueName>layer:EC-MSC-SMC:1.1:Newly_Active_Areas</valueName><value>065522</value></parameter>", "", 1)
+	alert := parseTestAlert(t, capAsUpdate(raw))
+	prior := []capRegistryEntry{{
+		ID:        "urn:test:other-active-alert",
+		UpdatedAt: time.Date(2026, 6, 15, 22, 0, 0, 0, time.UTC),
+	}}
+
+	if !capPriorityBroadcastAllowedWithPrior(alert, feed, dir, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC), prior) {
+		t.Fatal("first-seen catchall update should broadcast even when another alert is already active")
+	}
+}
+
+func TestCAPPriorityQueueContainsMatchesAlertAndFeed(t *testing.T) {
+	dir := t.TempDir()
+	queueDir := filepath.Join(dir, "runtime", "queues", "alerts")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(queueDir, "000_CAP-IT-ALL_urn_test_cap_same.json"), `{
+  "id": "000_CAP-IT-ALL_urn_test_cap_same",
+  "alert_id": "urn:test:cap",
+  "feed_ids": ["CAP-IT-ALL"],
+  "status": "played"
+}`)
+
+	if !capPriorityQueueContains(dir, "CAP-IT-ALL", "urn:test:cap") {
+		t.Fatal("queue manifest should count as already relayed")
+	}
+	if capPriorityQueueContains(dir, "sk-0001", "urn:test:cap") {
+		t.Fatal("queue manifest should not match a different feed")
+	}
+	if capPriorityQueueContains(dir, "CAP-IT-ALL", "urn:test:other") {
+		t.Fatal("queue manifest should not match a different alert")
+	}
+}
+
 func TestCAPPriorityBroadcastSuppressesEndedAlerts(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)

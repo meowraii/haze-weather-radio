@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,7 +42,81 @@ func TestServerIPIgnoresLoopbackLocalAddress(t *testing.T) {
 	}
 }
 
-func TestHealth(t *testing.T) {
+func TestCachedInterfaceServerIPUsesTTL(t *testing.T) {
+	interfaceServerIPMu.Lock()
+	previousIP := interfaceServerIPCached
+	previousAt := interfaceServerIPCachedAt
+	interfaceServerIPCached = "198.51.100.44"
+	interfaceServerIPCachedAt = time.Now()
+	interfaceServerIPMu.Unlock()
+	defer func() {
+		interfaceServerIPMu.Lock()
+		interfaceServerIPCached = previousIP
+		interfaceServerIPCachedAt = previousAt
+		interfaceServerIPMu.Unlock()
+	}()
+
+	if got := cachedInterfaceServerIP(); got != "198.51.100.44" {
+		t.Fatalf("cachedInterfaceServerIP = %q, want cached value", got)
+	}
+
+	interfaceServerIPMu.Lock()
+	interfaceServerIPCachedAt = time.Now().Add(-interfaceServerIPCacheTTL - time.Second)
+	interfaceServerIPMu.Unlock()
+	_ = cachedInterfaceServerIP()
+	interfaceServerIPMu.Lock()
+	refreshedAt := interfaceServerIPCachedAt
+	interfaceServerIPMu.Unlock()
+	if !refreshedAt.After(time.Now().Add(-5 * time.Second)) {
+		t.Fatalf("cache timestamp was not refreshed: %s", refreshedAt)
+	}
+}
+
+func TestGitCommitIsCachedAfterFirstLookup(t *testing.T) {
+	previousValue := gitCommitValue
+	t.Setenv("HAZE_GIT_COMMIT", "first")
+	gitCommitOnce = sync.Once{}
+	gitCommitValue = ""
+	defer func() {
+		gitCommitOnce = sync.Once{}
+		gitCommitValue = previousValue
+	}()
+
+	if got := gitCommit(); got != "first" {
+		t.Fatalf("gitCommit first = %q", got)
+	}
+	t.Setenv("HAZE_GIT_COMMIT", "second")
+	if got := gitCommit(); got != "first" {
+		t.Fatalf("gitCommit cached = %q, want first", got)
+	}
+}
+
+func TestPublicContentSecurityPolicyUsesLocalScripts(t *testing.T) {
+	for _, path := range []string{"/", "/feeds", "/listen", "/alerts", "/alerts/archive", "/api/public/v1/health", "/assets/js/public.js", "/assets/layout.css"} {
+		csp := contentSecurityPolicy(path)
+		if !strings.Contains(csp, "script-src 'self'") {
+			t.Fatalf("public CSP for %s does not restrict scripts to self: %s", path, csp)
+		}
+		if strings.Contains(csp, "unpkg.com") {
+			t.Fatalf("public CSP for %s allows CDN script source: %s", path, csp)
+		}
+		if strings.Contains(csp, "style-src 'self' 'unsafe-inline'") {
+			t.Fatalf("public CSP for %s allows inline styles: %s", path, csp)
+		}
+		if !strings.Contains(csp, "style-src 'self' https://fonts.googleapis.com") {
+			t.Fatalf("public CSP for %s does not restrict style sources: %s", path, csp)
+		}
+	}
+}
+
+func TestAdminContentSecurityPolicyKeepsLucideCompatibility(t *testing.T) {
+	csp := contentSecurityPolicy("/admin")
+	if !strings.Contains(csp, "https://unpkg.com") {
+		t.Fatalf("admin CSP should keep current lucide CDN compatibility: %s", csp)
+	}
+}
+
+func TestPublicHealthRedactsWebRTCDiagnostics(t *testing.T) {
 	server := NewServer(Config{}, ".")
 	request := httptest.NewRequest(http.MethodGet, "/api/public/v1/health", nil)
 	response := httptest.NewRecorder()
@@ -50,6 +125,9 @@ func TestHealth(t *testing.T) {
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d", response.Code)
+	}
+	if cache := response.Header().Get("Cache-Control"); cache != "no-store" {
+		t.Fatalf("Cache-Control = %q", cache)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
@@ -67,6 +145,152 @@ func TestHealth(t *testing.T) {
 	}
 	if strings.TrimSpace(fmt.Sprint(capabilities["webrtc_default_codec"])) == "" {
 		t.Fatalf("missing webrtc_default_codec capability: %#v", capabilities)
+	}
+	for _, key := range []string{"webrtc_peer_count", "webrtc_peers", "webrtc_source_count", "webrtc_sources"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("public health leaked %s: %#v", key, payload)
+		}
+	}
+}
+
+func TestPublicReadOnlyRoutesRejectStateChangingMethods(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "index.html"), "<!doctype html><title>public</title>")
+	mustWrite(t, filepath.Join(dir, "layout.css"), "body{color:white}")
+	config := Config{}
+	config.Webpanel.Public.AlertsArchive.Access = "public"
+	server := NewServerWithConfigPath(config, "config.yaml", dir)
+
+	for _, path := range []string{"/", "/feeds", "/listen", "/alerts", "/api/public/v1/health", "/assets/layout.css"} {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s status = %d, want %d", path, response.Code, http.StatusMethodNotAllowed)
+		}
+		if allow := response.Header().Get("Allow"); allow != "GET, HEAD" {
+			t.Fatalf("%s Allow = %q", path, allow)
+		}
+		if strings.HasPrefix(path, "/api/public/") || publicHTMLPath(path) {
+			if cache := response.Header().Get("Cache-Control"); cache != "no-store" {
+				t.Fatalf("%s Cache-Control = %q, want no-store", path, cache)
+			}
+		}
+	}
+}
+
+func TestBundledPublicIndexIncludesTLSNoticeHooks(t *testing.T) {
+	raw, err := os.ReadFile(repoFixturePath(t, "bundle", "webroot", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(raw)
+	for _, fragment := range []string{`id="publicTlsNotice"`, `id="publicTlsNoticeText"`, `class="tls-notice public-tls-notice"`} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("public index missing %s", fragment)
+		}
+	}
+}
+
+func TestBundledPublicIndexPlacesOldWebBannerAfterProjectStrip(t *testing.T) {
+	raw, err := os.ReadFile(repoFixturePath(t, "bundle", "webroot", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(raw)
+	projectIndex := strings.Index(html, `class="public-project-strip"`)
+	bannerIndex := strings.Index(html, `class="public-oldweb-banner"`)
+	if projectIndex < 0 || bannerIndex < 0 {
+		t.Fatalf("missing project strip or old web banner")
+	}
+	if bannerIndex < projectIndex {
+		t.Fatalf("old web banner should be after project strip")
+	}
+	if !strings.Contains(html, `src="/assets/haze_banner.gif"`) {
+		t.Fatalf("old web banner should use bundled haze_banner.gif")
+	}
+}
+
+func TestAdminURLDoesNotEchoPublicHostByDefault(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+	request.Host = "attacker.example"
+
+	if got := adminURL(Config{}, request); got != "/admin" {
+		t.Fatalf("adminURL default = %q, want /admin", got)
+	}
+}
+
+func TestAdminURLIsRelativeWhenAdminSharesPublicPort(t *testing.T) {
+	config := Config{}
+	config.Webpanel.Port = 8086
+	config.Webpanel.Admin.Host = "0.0.0.0"
+	config.Webpanel.Admin.Port = 8086
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8086/", nil)
+	request.Host = "attacker.example"
+
+	if got := adminURL(config, request); got != "/admin" {
+		t.Fatalf("adminURL shared port = %q, want /admin", got)
+	}
+}
+
+func TestAdminURLUsesConfiguredSeparateAdminPort(t *testing.T) {
+	config := Config{}
+	config.Webpanel.Port = 8086
+	config.Webpanel.Admin.Host = "0.0.0.0"
+	config.Webpanel.Admin.Port = 9000
+	request := httptest.NewRequest(http.MethodGet, "https://panel.example/", nil)
+	request.Host = "panel.example"
+	request.Header.Set("X-Forwarded-Proto", "https")
+
+	if got := adminURL(config, request); got != "https://panel.example:9000/admin" {
+		t.Fatalf("adminURL separate port = %q", got)
+	}
+}
+
+func repoFixturePath(t *testing.T, parts ...string) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		candidateParts := append([]string{dir}, parts...)
+		candidate := filepath.Join(candidateParts...)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("could not find repo fixture %s", filepath.Join(parts...))
+		}
+		dir = parent
+	}
+}
+
+func TestAdminHealthRequiresAuthAndIncludesWebRTCDiagnostics(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	config := authEnabledConfig()
+	server := NewServer(config, ".")
+
+	unauthorized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", unauthorized.Code)
+	}
+
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/health?token="+url.QueryEscape(token), nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
 	}
 	if _, ok := payload["webrtc_peer_count"].(float64); !ok {
 		t.Fatalf("missing webrtc_peer_count: %#v", payload)
@@ -152,8 +376,12 @@ func TestBannerCurrentDoesNotRequireSession(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d", response.Code)
 	}
-	if !strings.Contains(response.Body.String(), `"feed_id": "CAP-IT-ALL"`) {
-		t.Fatalf("body = %q", response.Body.String())
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("body was not JSON: %v body=%q", err, response.Body.String())
+	}
+	if payload["feed_id"] != "CAP-IT-ALL" {
+		t.Fatalf("feed_id = %v body=%q", payload["feed_id"], response.Body.String())
 	}
 }
 
@@ -162,6 +390,30 @@ func TestPublicSurfaceDoesNotExposeAdminRoutes(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+func TestAdminSurfaceDoesNotExposePublicHealth(t *testing.T) {
+	server := NewServerWithSurface(Config{}, "config.yaml", ".", "admin")
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/public/v1/health", nil)
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+func TestPublicSurfaceDoesNotExposeAdminHealth(t *testing.T) {
+	server := NewServerWithSurface(Config{}, "config.yaml", ".", "public")
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
 	server.Handler().ServeHTTP(response, request)
 
 	if response.Code != http.StatusNotFound {
@@ -234,6 +486,67 @@ func TestPublicListenPageServedWhenFeedsAvailable(t *testing.T) {
 	}
 }
 
+func TestPublicListenPageServedForHTTPOnlyFeeds(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	mustWrite(t, filepath.Join(dir, "index.html"), "<!doctype html><title>http only listener</title>")
+	mustWrite(t, filepath.Join(dir, "config.yaml"), `version: test
+feeds_file: managed/configs/feeds.xml
+outputs_file: managed/configs/output.xml
+webpanel:
+  public:
+    site_name: Test Haze
+    feeds:
+      access: public
+      webrtc:
+        enabled: false
+`)
+	mustWrite(t, filepath.Join(dir, "managed", "configs", "output.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<outputs>
+  <feed id="sk-0001"><webrtc enabled="false"/></feed>
+</outputs>
+`)
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, dir)
+	server.media = newMemoryMediaHub()
+
+	listen := httptest.NewRecorder()
+	server.Handler().ServeHTTP(listen, httptest.NewRequest(http.MethodGet, "/listen?feed=sk-0001&codec=mp3", nil))
+	if listen.Code != http.StatusOK {
+		t.Fatalf("HTTP-only listen status = %d", listen.Code)
+	}
+	feeds := httptest.NewRecorder()
+	server.Handler().ServeHTTP(feeds, httptest.NewRequest(http.MethodGet, "/feeds", nil))
+	if feeds.Code != http.StatusOK {
+		t.Fatalf("HTTP-only feeds status = %d", feeds.Code)
+	}
+	audio := httptest.NewRecorder()
+	server.Handler().ServeHTTP(audio, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=sk-0001&codec=pcm16", nil))
+	if audio.Code != http.StatusOK {
+		t.Fatalf("HTTP-only audio HEAD status = %d", audio.Code)
+	}
+
+	state, err := publicStatePayload(config, configPath, time.Now().UTC(), httptest.NewRequest(http.MethodGet, "/api/public/v1/panel/ws?feeds=1", nil), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := state["summary"].(map[string]any)
+	if summary["webrtc_enabled"] != false {
+		t.Fatalf("summary should report WebRTC disabled: %#v", summary)
+	}
+	publicFeeds := summary["feeds"].([]map[string]any)
+	if len(publicFeeds) != 1 {
+		t.Fatalf("public feeds = %#v", publicFeeds)
+	}
+	if publicFeeds[0]["webrtc_enabled"] != false || publicFeeds[0]["http_stream_enabled"] != true {
+		t.Fatalf("HTTP-only public feed flags = %#v", publicFeeds[0])
+	}
+}
+
 func TestPublicAboutPageIsRemoved(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "index.html"), "<!doctype html><title>about</title>")
@@ -291,6 +604,51 @@ func TestWebSocketLoginReturnsToken(t *testing.T) {
 	}
 	if payload["token"] == "" {
 		t.Fatal("token was empty")
+	}
+}
+
+func TestAssetsServeStaticFilesButNotHTMLEntrypoints(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "admin.html"), "<!doctype html><title>admin</title>")
+	mustWrite(t, filepath.Join(dir, "styles.css"), "body{color:white}")
+	mustWrite(t, filepath.Join(dir, "site.webmanifest"), `{"name":"Haze Weather Radio"}`)
+	mustWrite(t, filepath.Join(dir, "haze_banner.gif"), "GIF89a")
+	mustWrite(t, filepath.Join(dir, ".env"), "ADMIN_PASSWD=secret")
+	mustWrite(t, filepath.Join(dir, "js", "public.js.map"), `{"sources":["public.js"]}`)
+	mustWrite(t, filepath.Join(dir, "js", ".secret.js"), "console.log('secret')")
+	mustWrite(t, filepath.Join(dir, "js", "public.js"), "console.log('ok')")
+	server := NewServer(Config{}, dir)
+
+	for _, item := range []struct {
+		path       string
+		wantStatus int
+		wantType   string
+		wantCache  string
+	}{
+		{path: "/assets/styles.css", wantStatus: http.StatusOK, wantCache: "public, max-age=3600, must-revalidate"},
+		{path: "/assets/js/public.js", wantStatus: http.StatusOK, wantCache: "public, max-age=3600, must-revalidate"},
+		{path: "/assets/site.webmanifest", wantStatus: http.StatusOK, wantType: "application/manifest+json", wantCache: "public, max-age=3600, must-revalidate"},
+		{path: "/assets/haze_banner.gif", wantStatus: http.StatusOK, wantCache: "public, max-age=86400"},
+		{path: "/assets/admin.html", wantStatus: http.StatusNotFound},
+		{path: "/assets/.env", wantStatus: http.StatusNotFound},
+		{path: "/assets/js/.secret.js", wantStatus: http.StatusNotFound},
+		{path: "/assets/js/public.js.map", wantStatus: http.StatusNotFound},
+		{path: "/assets/", wantStatus: http.StatusNotFound},
+		{path: "/assets/js/", wantStatus: http.StatusNotFound},
+		{path: "/assets/%2e%2e/config.yaml", wantStatus: http.StatusBadRequest},
+		{path: "/assets/C:/Windows/win.ini", wantStatus: http.StatusNotFound},
+	} {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, item.path, nil))
+		if response.Code != item.wantStatus {
+			t.Fatalf("%s status = %d, want %d", item.path, response.Code, item.wantStatus)
+		}
+		if item.wantType != "" && !strings.Contains(response.Header().Get("Content-Type"), item.wantType) {
+			t.Fatalf("%s Content-Type = %q, want %q", item.path, response.Header().Get("Content-Type"), item.wantType)
+		}
+		if item.wantCache != "" && response.Header().Get("Cache-Control") != item.wantCache {
+			t.Fatalf("%s Cache-Control = %q, want %q", item.path, response.Header().Get("Cache-Control"), item.wantCache)
+		}
 	}
 }
 
@@ -667,8 +1025,70 @@ func TestPublicWebSocketSendsPublicState(t *testing.T) {
 	if feed["id"] != "sk-0001" {
 		t.Fatalf("feed = %#v", feed)
 	}
-	if _, ok := feed["clc_codes"]; ok {
-		t.Fatalf("public feed leaked admin field: %#v", feed)
+	for _, key := range []string{
+		"alert_queue_depth",
+		"clc_codes",
+		"coverage_regions",
+		"languages",
+		"location_count",
+		"outputs",
+		"playlist_items",
+		"recent_alerts",
+		"same_all_locations",
+		"same_locations",
+		"timezone",
+	} {
+		if _, ok := feed[key]; ok {
+			t.Fatalf("public feed leaked admin field %s: %#v", key, feed)
+		}
+	}
+	transmitter, _ := feed["transmitter"].(map[string]any)
+	if transmitter["site_name"] != "Saskatoon" || transmitter["callsign"] != "XLF322" {
+		t.Fatalf("public transmitter = %#v", transmitter)
+	}
+	for _, key := range []string{"gpclk", "gpio", "rds", "frequency_mhz", "relationship"} {
+		if _, ok := transmitter[key]; ok {
+			t.Fatalf("public feed leaked transmitter field %s: %#v", key, transmitter)
+		}
+	}
+	transmitters, _ := feed["transmitters"].([]any)
+	if len(transmitters) != 1 {
+		t.Fatalf("public transmitters = %#v", feed["transmitters"])
+	}
+	for _, key := range []string{"gpclk", "gpio", "rds", "frequency_mhz", "relationship"} {
+		if _, ok := transmitters[0].(map[string]any)[key]; ok {
+			t.Fatalf("public feed leaked transmitter list field %s: %#v", key, transmitters[0])
+		}
+	}
+}
+
+func TestPublicWebSocketOmitsFeedDetailsUnlessRequested(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, ".")
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/public/v1/panel/ws"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	readType(t, ctx, conn, "hello")
+	state := readType(t, ctx, conn, "public_state")
+	summary := state["data"].(map[string]any)["summary"].(map[string]any)
+	if summary["feed_count"] != float64(1) && summary["feed_count"] != 1 {
+		t.Fatalf("summary should retain feed count: %#v", summary)
+	}
+	if feeds := summary["feeds"].([]any); len(feeds) != 0 {
+		t.Fatalf("homepage public socket should not include feed detail payload: %#v", feeds)
 	}
 }
 
@@ -699,6 +1119,326 @@ func TestPublicWebSocketHidesAuthRequiredFeedsWithoutToken(t *testing.T) {
 	}
 	if feeds := summary["feeds"].([]any); len(feeds) != 0 {
 		t.Fatalf("auth-required feeds leaked without token: %#v", feeds)
+	}
+}
+
+func TestPublicWebSocketShowsAuthRequiredFeedsWithToken(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "auth_required")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, ".")
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/public/v1/panel/ws?feeds=1&token=" + url.QueryEscape(token)
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	readType(t, ctx, conn, "hello")
+	state := readType(t, ctx, conn, "public_state")
+	summary := state["data"].(map[string]any)["summary"].(map[string]any)
+	if summary["feeds_access"] != "auth_required" {
+		t.Fatalf("summary = %#v", summary)
+	}
+	feeds := summary["feeds"].([]any)
+	if len(feeds) != 1 {
+		t.Fatalf("auth-required feeds with token = %#v", feeds)
+	}
+	feed := feeds[0].(map[string]any)
+	if feed["id"] != "sk-0001" {
+		t.Fatalf("feed = %#v", feed)
+	}
+	if _, ok := feed["clc_codes"]; ok {
+		t.Fatalf("public authenticated feed leaked admin-only field: %#v", feed)
+	}
+}
+
+func TestPublicWebSocketRejectsAdminCommandsEvenWithValidToken(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "auth_required")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, ".")
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/public/v1/panel/ws?feeds=1&token=" + url.QueryEscape(token)
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	readType(t, ctx, conn, "hello")
+	readType(t, ctx, conn, "public_state")
+
+	writeWS(t, ctx, conn, map[string]any{"type": "command", "request_id": "cmd", "command": "wx.packages"})
+	reply := readType(t, ctx, conn, "error")
+	if reply["reply_to"] != "cmd" {
+		t.Fatalf("reply_to = %v", reply["reply_to"])
+	}
+	if detail := fmt.Sprint(reply["detail"]); !strings.Contains(detail, "unsupported public message") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+func TestPublicWebSocketRejectsOversizedWebRTCOfferFields(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, ".")
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	tests := []struct {
+		name    string
+		message map[string]any
+		want    string
+	}{
+		{
+			name: "feed id",
+			message: map[string]any{
+				"type":       "webrtc_offer",
+				"request_id": "long-feed",
+				"feed_id":    strings.Repeat("x", webRTCOfferMaxFeedIDLength+1),
+				"sdp":        "v=0",
+			},
+			want: "feed_id is too long",
+		},
+		{
+			name: "sdp",
+			message: map[string]any{
+				"type":       "webrtc_offer",
+				"request_id": "long-sdp",
+				"feed_id":    "sk-0001",
+				"sdp":        strings.Repeat("v", webRTCOfferMaxSDPLength+1),
+			},
+			want: "sdp is too long",
+		},
+		{
+			name: "invalid feed id",
+			message: map[string]any{
+				"type":       "webrtc_offer",
+				"request_id": "bad-feed",
+				"feed_id":    "../config.yaml",
+				"sdp":        "v=0",
+			},
+			want: "feed_id is invalid",
+		},
+		{
+			name: "codec",
+			message: map[string]any{
+				"type":            "webrtc_offer",
+				"request_id":      "long-codec",
+				"feed_id":         "sk-0001",
+				"sdp":             "v=0",
+				"preferred_codec": strings.Repeat("x", webRTCOfferMaxCodecLength+1),
+			},
+			want: "codec is too long",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/public/v1/panel/ws?feeds=1"
+			conn, _, err := websocket.Dial(ctx, wsURL, nil)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer conn.CloseNow()
+			readType(t, ctx, conn, "hello")
+
+			writeWS(t, ctx, conn, tc.message)
+			reply := readType(t, ctx, conn, "webrtc_error")
+			if detail := fmt.Sprint(reply["detail"]); detail != tc.want {
+				t.Fatalf("detail = %q, want %q", detail, tc.want)
+			}
+		})
+	}
+}
+
+func TestPublicFeedAudioHEADValidatesFeedAndCodec(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, ".")
+	server.media = newMemoryMediaHub()
+
+	okResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(okResponse, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=sk-0001&codec=pcm16", nil))
+	if okResponse.Code != http.StatusOK {
+		t.Fatalf("valid public audio HEAD status = %d", okResponse.Code)
+	}
+	if got := okResponse.Header().Get("Content-Type"); !strings.Contains(got, "audio/wav") {
+		t.Fatalf("content type = %q", got)
+	}
+
+	missingFeed := httptest.NewRecorder()
+	server.Handler().ServeHTTP(missingFeed, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=missing&codec=pcm16", nil))
+	if missingFeed.Code != http.StatusForbidden {
+		t.Fatalf("missing feed status = %d", missingFeed.Code)
+	}
+
+	badCodec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(badCodec, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=sk-0001&codec=not-real", nil))
+	if badCodec.Code != http.StatusBadRequest {
+		t.Fatalf("bad codec status = %d", badCodec.Code)
+	}
+
+	overlongFeed := httptest.NewRecorder()
+	server.Handler().ServeHTTP(overlongFeed, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed="+strings.Repeat("x", httpAudioMaxFeedID+1)+"&codec=pcm16", nil))
+	if overlongFeed.Code != http.StatusBadRequest {
+		t.Fatalf("overlong feed status = %d", overlongFeed.Code)
+	}
+
+	invalidFeed := httptest.NewRecorder()
+	server.Handler().ServeHTTP(invalidFeed, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=..%2Fconfig.yaml&codec=pcm16", nil))
+	if invalidFeed.Code != http.StatusBadRequest {
+		t.Fatalf("invalid feed status = %d", invalidFeed.Code)
+	}
+
+	overlongCodec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(overlongCodec, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=sk-0001&codec="+strings.Repeat("x", httpAudioMaxCodecID+1), nil))
+	if overlongCodec.Code != http.StatusBadRequest {
+		t.Fatalf("overlong codec status = %d", overlongCodec.Code)
+	}
+
+	wrongMethod := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wrongMethod, httptest.NewRequest(http.MethodPost, "/api/public/v1/feed/audio?feed=sk-0001&codec=pcm16", nil))
+	if wrongMethod.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("wrong method status = %d", wrongMethod.Code)
+	}
+	if allow := wrongMethod.Header().Get("Allow"); allow != "GET, HEAD" {
+		t.Fatalf("Allow = %q", allow)
+	}
+}
+
+func TestPublicFeedAudioValidationPrecedesMediaAvailability(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, ".")
+	server.media = nil
+
+	for _, item := range []struct {
+		name string
+		path string
+	}{
+		{name: "invalid feed", path: "/api/public/v1/feed/audio?feed=..%2Fconfig.yaml&codec=pcm16"},
+		{name: "bad codec", path: "/api/public/v1/feed/audio?feed=sk-0001&codec=not-real"},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodHead, item.path, nil))
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+func TestDrainHTTPAudioUpdatesHandlesBufferedAndClosedChannels(t *testing.T) {
+	pcm := make([]byte, httpWAVFrameSamples*2)
+	updates := make(chan PCMChunk, 2)
+	updates <- PCMChunk{FeedID: "sk-0001", SampleRate: httpWAVSampleRate, Channels: 1, Data: pcm}
+	updates <- PCMChunk{FeedID: "sk-0001", SampleRate: httpWAVSampleRate, Channels: 1, Data: pcm}
+
+	queue, ok := drainHTTPAudioUpdates(updates, nil)
+	if !ok {
+		t.Fatal("open update channel should drain successfully")
+	}
+	if got := len(queue); got != httpWAVFrameSamples*2 {
+		t.Fatalf("queue samples = %d, want %d", got, httpWAVFrameSamples*2)
+	}
+
+	close(updates)
+	queue, ok = drainHTTPAudioUpdates(updates, queue)
+	if ok {
+		t.Fatal("closed update channel should return ok=false")
+	}
+	if got := len(queue); got != httpWAVFrameSamples*2 {
+		t.Fatalf("closed drain should preserve queued samples, got %d", got)
+	}
+}
+
+func TestValidPublicAudioFeedID(t *testing.T) {
+	tests := []struct {
+		feed string
+		want bool
+	}{
+		{feed: "sk-0001", want: true},
+		{feed: "CAP-IT-ALL", want: true},
+		{feed: "wx.feed:main_1", want: true},
+		{feed: "", want: false},
+		{feed: "../config.yaml", want: false},
+		{feed: "feed with spaces", want: false},
+		{feed: "feed\nid", want: false},
+	}
+	for _, test := range tests {
+		if got := validPublicAudioFeedID(test.feed); got != test.want {
+			t.Fatalf("validPublicAudioFeedID(%q) = %v, want %v", test.feed, got, test.want)
+		}
+	}
+}
+
+func TestPublicFeedAudioRequiresAuthWhenConfigured(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "auth_required")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, ".")
+	server.media = newMemoryMediaHub()
+
+	unauthorized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=sk-0001&codec=pcm16", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", unauthorized.Code)
+	}
+
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(authorized, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=sk-0001&codec=pcm16&token="+url.QueryEscape(token), nil))
+	if authorized.Code != http.StatusOK {
+		t.Fatalf("authorized status = %d", authorized.Code)
 	}
 }
 

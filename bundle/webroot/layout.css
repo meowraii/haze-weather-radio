@@ -192,6 +192,17 @@ a.alert-card-id:hover {
     color: var(--accent);
 }
 
+[hidden] {
+    display: none !important;
+}
+
+.brand-home-link {
+    align-items: center;
+    color: inherit;
+    display: inline-flex;
+    text-decoration: none;
+}
+
 .alert-card-actions a.btn-action {
     justify-content: center;
     min-height: 30px;
@@ -777,6 +788,7 @@ a.alert-card-id:hover {
 
 .public-home-floating .public-status-item,
 .public-home-floating .public-build-row span,
+.public-home-floating .public-tls-notice,
 .public-home-floating .public-project-strip {
     border: 1px solid var(--border-deep);
     border-radius: var(--radius-sm);
@@ -802,9 +814,64 @@ a.alert-card-id:hover {
     padding: 7px 10px;
 }
 
+.public-home-floating .public-tls-notice {
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.4;
+    padding: 9px 11px;
+}
+
+.public-home-floating .public-tls-notice p {
+    margin: 0;
+}
+
+.public-home-floating .public-project-block {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
 .public-home-floating .public-project-strip {
     width: 100%;
+    box-sizing: border-box;
     padding: 12px 14px;
+}
+
+.public-home-floating .public-oldweb-banner {
+    align-self: stretch;
+    display: block;
+    overflow: hidden;
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 0;
+}
+
+.public-home-floating .public-oldweb-banner img {
+    display: block;
+    image-rendering: auto;
+    max-width: none;
+    width: 100%;
+    height: auto;
+    min-width: 100%;
+}
+
+.public-audio-sink {
+    position: fixed;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.public-clipboard-scratch {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
 }
 
 @media (max-width: 1280px) {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -60,6 +61,7 @@ func run() error {
 			return err
 		}
 	}
+	pprofServer := startPprofServer()
 
 	config, err := webgateway.LoadConfig(*configPath)
 	if err != nil {
@@ -108,6 +110,11 @@ func run() error {
 				log.Printf("acme challenge shutdown failed: %v", err)
 			}
 		}
+		if pprofServer != nil {
+			if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+				log.Printf("pprof shutdown failed: %v", err)
+			}
+		}
 	}()
 
 	if tlsRuntime.Enabled {
@@ -119,4 +126,26 @@ func run() error {
 	}
 	log.Printf("haze-web %s listening on %s", *surface, *addr)
 	return server.ListenAndServe()
+}
+
+func startPprofServer() *http.Server {
+	if os.Getenv("HAZE_WEB_PPROF") == "" && os.Getenv("HAZE_WEB_PPROF_ADDR") == "" {
+		return nil
+	}
+	addr := os.Getenv("HAZE_WEB_PPROF_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:6060"
+	}
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           http.DefaultServeMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Printf("haze-web pprof listening on %s", addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("pprof listener failed: %v", err)
+		}
+	}()
+	return server
 }

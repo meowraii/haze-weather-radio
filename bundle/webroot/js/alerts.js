@@ -12,6 +12,7 @@ const feedSelect = document.getElementById('alertsArchiveFeedSelect');
 let bound = false;
 let activeTab = 'accepted';
 let activeFeedFilter = '';
+let archiveShiftDown = false;
 let archiveState = {
     accepted_by_feed: [],
     rejected: [],
@@ -151,11 +152,34 @@ function base64ToBlob(value, type) {
     return new Blob([bytes], { type });
 }
 
+function archiveActionButtonLabel(button, shiftDown = archiveShiftDown) {
+    if (!button) return '';
+    if (button.dataset.confirming === '1') return button.textContent || '';
+    return shiftDown && button.dataset.shiftLabel ? button.dataset.shiftLabel : button.dataset.label || button.textContent || '';
+}
+
+function renderArchiveActionButton(button, shiftDown = archiveShiftDown) {
+    if (!button || button.dataset.confirming === '1') return;
+    const icon = button.dataset.icon || 'radio';
+    const label = archiveActionButtonLabel(button, shiftDown);
+    button.innerHTML = `<i data-lucide="${escapeHtml(icon)}" width="13" height="13"></i>${escapeHtml(label)}`;
+}
+
+function updateArchiveShiftLabels(shiftDown) {
+    archiveShiftDown = shiftDown;
+    document.querySelectorAll('[data-shift-label]').forEach((button) => renderArchiveActionButton(button, shiftDown));
+    window.lucide?.createIcons();
+}
+
 function alertCard(record) {
     const id = record.id || '';
     const feedID = record.feed_id || '';
     const headline = record.headline || record.event || 'Weather Alert';
     const areas = Array.isArray(record.areas) ? record.areas.join('; ') : '';
+    const broadcastLabel = record.broadcast_action_label || (record.relayed ? 'Rebroadcast' : 'Force Broadcast');
+    const broadcastNoSameLabel = `${broadcastLabel} (No SAME)`;
+    const broadcastAction = record.relayed ? 'rebroadcast' : 'force_broadcast';
+    const broadcastNoSameAction = record.relayed ? 'rebroadcast_without_same' : 'force_broadcast_without_same';
     const identifier = record.cap_xml_url
         ? `<a class="alert-card-id" href="${escapeHtml(record.cap_xml_url)}" target="_blank" rel="noopener noreferrer" title="Open CAP XML">${escapeHtml(id)}</a>`
         : `<span class="alert-card-id">${escapeHtml(id)}</span>`;
@@ -203,13 +227,9 @@ function alertCard(record) {
             <div class="alert-card-actions">
                 ${capAudioButton}
                 ${samePreviewButton}
-                <button class="btn-action" type="button" data-archive-action="rebroadcast">
+                <button class="btn-action" type="button" data-archive-action="${escapeHtml(broadcastAction)}" data-archive-action-shift="${escapeHtml(broadcastNoSameAction)}" data-label="${escapeHtml(broadcastLabel)}" data-shift-label="${escapeHtml(broadcastNoSameLabel)}" data-icon="radio">
                     <i data-lucide="radio" width="13" height="13"></i>
-                    Rebroadcast
-                </button>
-                <button class="btn-action" type="button" data-archive-action="rebroadcast_without_same">
-                    <i data-lucide="volume-2" width="13" height="13"></i>
-                    No SAME
+                    ${escapeHtml(broadcastLabel)}
                 </button>
                 <button class="btn-danger" type="button" data-archive-action="delete">
                     <i data-lucide="trash-2" width="13" height="13"></i>
@@ -252,6 +272,7 @@ function renderArchive() {
             : `<article class="alert-empty">No ${escapeHtml(activeTab)} alerts are archived.</article>`;
     }
     window.lucide?.createIcons();
+    updateArchiveShiftLabels(archiveShiftDown);
 }
 
 async function loadArchive() {
@@ -361,7 +382,8 @@ function bindActionDelegates() {
         const button = event.target.closest('[data-archive-action]');
         if (!button) return;
         const card = button.closest('.alert-card');
-        const action = button.dataset.archiveAction;
+        const shiftedAction = button.dataset.archiveActionShift || '';
+        const action = event.shiftKey && shiftedAction ? shiftedAction : button.dataset.archiveAction;
         const id = card?.dataset.alertId || '';
         const feedID = card?.dataset.feedId || '';
         if (!id) return;
@@ -380,25 +402,30 @@ function bindActionDelegates() {
             return;
         }
         if (button.dataset.confirming === '1') {
+            const pendingAction = button.dataset.pendingAction || action;
             button.dataset.confirming = '0';
             button.disabled = true;
-            runAction(action, { id, feed_id: feedID }).catch((error) => {
+            runAction(pendingAction, { id, feed_id: feedID }).catch((error) => {
                 setStatus(error.message || 'Alert archive command failed.', 'err');
             }).finally(() => {
                 button.disabled = false;
                 delete button.dataset.confirming;
+                delete button.dataset.pendingAction;
                 renderArchive();
             });
             return;
         }
         button.dataset.confirming = '1';
+        button.dataset.pendingAction = action;
         const original = button.innerHTML;
         button.dataset.originalHtml = original;
         button.textContent = 'Click again';
         window.setTimeout(() => {
             if (button.dataset.confirming === '1') {
                 button.dataset.confirming = '0';
+                delete button.dataset.pendingAction;
                 button.innerHTML = button.dataset.originalHtml || original;
+                renderArchiveActionButton(button);
                 window.lucide?.createIcons();
             }
         }, 2600);
@@ -425,6 +452,13 @@ export function initAlertsArchiveView() {
         renderArchive();
     });
     bindActionDelegates();
+    window.addEventListener('keydown', (event) => {
+        if (event.key === 'Shift') updateArchiveShiftLabels(true);
+    });
+    window.addEventListener('keyup', (event) => {
+        if (event.key === 'Shift') updateArchiveShiftLabels(false);
+    });
+    window.addEventListener('blur', () => updateArchiveShiftLabels(false));
     makeDoubleClickConfirm(clearExpiredButton, () => runAction('clear_expired'));
     makeDoubleClickConfirm(clearAllButton, () => runAction('clear_all'));
     makeDoubleClickConfirm(expireAllButton, () => runAction('expire_all'));

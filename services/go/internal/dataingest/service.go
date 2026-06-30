@@ -26,7 +26,7 @@ import (
 )
 
 const serviceID = "haze-data-ingest"
-const thunderstormOutlookNearbyKM = 175.0
+const thunderstormOutlookCoverageToleranceKM = 0.5
 
 type Options struct {
 	ConfigPath string
@@ -1534,9 +1534,9 @@ func fetchThunderstormOutlookProduct(ctx context.Context, client *http.Client, f
 		}
 		distanceKM := 0.0
 		if hasReference {
-			var near bool
-			distanceKM, near = geoFeatureDistanceToPointKM(feature, refLon, refLat)
-			if !near || distanceKM > thunderstormOutlookNearbyKM {
+			var coversPoint bool
+			distanceKM, coversPoint = geoFeatureDistanceToPointKM(feature, refLon, refLat)
+			if !coversPoint || distanceKM > thunderstormOutlookCoverageToleranceKM {
 				continue
 			}
 		}
@@ -1560,11 +1560,6 @@ func fetchThunderstormOutlookProduct(ctx context.Context, client *http.Client, f
 		}
 		if hasReference {
 			item["distance_km"] = math.Round(distanceKM)
-			if distanceKM > 0.5 {
-				if direction, ok := geoFeatureDirectionFromPoint(feature, refLon, refLat); ok {
-					item["direction"] = direction
-				}
-			}
 		}
 		items = append(items, item)
 	}

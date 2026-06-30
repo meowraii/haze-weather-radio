@@ -149,3 +149,31 @@ func TestSynthesisQueuePrioritizesRealtimeJobs(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderCandidatesIncludesSpeakyAPIAsAutoFallback(t *testing.T) {
+	providers := map[string]tts.Provider{
+		"piper":     &fakeProvider{id: "piper"},
+		"speakyapi": &fakeProvider{id: "speakyapi"},
+	}
+	candidates, err := providerCandidates(providers, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 2 || candidates[0].ID() != "piper" || candidates[1].ID() != "speakyapi" {
+		t.Fatalf("candidates = %#v", candidates)
+	}
+}
+
+func TestProviderCandidatesSelectsSpeakyAPIExplicitly(t *testing.T) {
+	providers := map[string]tts.Provider{
+		"piper":     &fakeProvider{id: "piper"},
+		"speakyapi": &fakeProvider{id: "speakyapi"},
+	}
+	candidates, err := providerCandidates(providers, "speaky-api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ID() != "speakyapi" {
+		t.Fatalf("candidates = %#v", candidates)
+	}
+}

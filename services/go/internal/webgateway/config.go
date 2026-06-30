@@ -13,6 +13,8 @@ type Config struct {
 	Version  string                  `yaml:"version"`
 	Storage  datastore.StorageConfig `yaml:"storage"`
 	Webpanel struct {
+		Host   string `yaml:"host"`
+		Port   int    `yaml:"port"`
 		Public struct {
 			SiteName      string `yaml:"site_name"`
 			AlertsArchive struct {

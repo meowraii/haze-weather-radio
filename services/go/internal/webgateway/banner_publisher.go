@@ -11,6 +11,7 @@ import (
 )
 
 const bannerStatePublishInterval = 750 * time.Millisecond
+const bannerStateFeedRefreshInterval = 15 * time.Second
 
 func (s *Server) startBannerStatePublisher(bridgeAddr string) {
 	bridgeAddr = strings.TrimSpace(bridgeAddr)
@@ -23,8 +24,15 @@ func (s *Server) startBannerStatePublisher(bridgeAddr string) {
 		ticker := time.NewTicker(bannerStatePublishInterval)
 		defer ticker.Stop()
 		last := map[string]string{}
+		feedIDs := []string{"*"}
+		nextFeedRefresh := time.Time{}
 		for {
-			for _, feedID := range s.bannerStateFeedIDs() {
+			now := time.Now()
+			if now.After(nextFeedRefresh) {
+				feedIDs = s.bannerStateFeedIDs()
+				nextFeedRefresh = now.Add(bannerStateFeedRefreshInterval)
+			}
+			for _, feedID := range feedIDs {
 				payload := buildBannerPayload(s.configPath, feedID, s.bannerHub)
 				if last[feedID] == payload.Signature {
 					continue
@@ -56,10 +64,8 @@ func (s *Server) bannerStateFeedIDs() []string {
 		seen[feedID] = struct{}{}
 		out = append(out, feedID)
 	}
-	if feeds, err := loadFeedSummaries(s.configPath); err == nil {
-		for _, feed := range feeds {
-			add(stringValue(feed, "id"))
-		}
+	for _, feedID := range bannerFeedIDsFromConfig(s.configPath, time.Now().UTC()) {
+		add(feedID)
 	}
 	for _, feedID := range loadCgenFeedIDs(s.configPath) {
 		add(feedID)

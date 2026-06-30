@@ -36,7 +36,7 @@ func main() {
 func run() error {
 	readersPath := flag.String("readers", filepath.Join("managed", "configs", "readers.xml"), "readers.xml path")
 	dictionaryPath := flag.String("dictionary", envOrDefault("HAZE_TTS_DICTIONARY", filepath.Join("managed", "dictionary.json")), "dictionary.json path")
-	providerID := flag.String("provider", "auto", "provider to use: auto, piper, kokoro, sapi5, espeak, f5tts, or chatterbox")
+	providerID := flag.String("provider", "auto", "provider to use: auto, piper, kokoro, sapi5, espeak, f5tts, chatterbox, or speakyapi")
 	readerID := flag.String("reader-id", "", "reader id from readers.xml")
 	lang := flag.String("lang", "en-CA", "requested language")
 	timezone := flag.String("timezone", envOrDefault("HAZE_TTS_TIMEZONE", "Local"), "timezone for spoken timestamps")
@@ -51,6 +51,7 @@ func run() error {
 	kokoroThreads := flag.Int("kokoro-threads", envIntOrDefault("HAZE_KOKORO_THREADS", 0), "Kokoro neural network worker threads")
 	kokoroSpeed := flag.Float64("kokoro-speed", envFloatOrDefault("HAZE_KOKORO_SPEED", 1.0), "Kokoro default generation speed")
 	kokoroLengthScale := flag.Float64("kokoro-length-scale", envFloatOrDefault("HAZE_KOKORO_LENGTH_SCALE", 1.0), "Kokoro model length scale")
+	speakyAPIURL := flag.String("speakyapi-url", envOrDefault("HAZE_SPEAKYAPI_URL", ""), "SpeakyAPI server base URL, for example http://127.0.0.1:5000")
 	text := flag.String("text", "", "text to synthesize")
 	out := flag.String("out", "", "output WAV path")
 	listVoices := flag.Bool("list-voices", false, "list provider voices as JSON")
@@ -84,6 +85,7 @@ func run() error {
 			Timeout:      *timeout,
 			PiperPrewarm: *piperPrewarm,
 			Workers:      1,
+			SpeakyAPIURL: *speakyAPIURL,
 		})
 	}
 
@@ -91,6 +93,7 @@ func run() error {
 	defer cancel()
 
 	providers := tts.DefaultProviders()
+	configureSpeakyAPIProvider(providers, *speakyAPIURL)
 	if *listVoices {
 		voices, err := listVoicesForProvider(ctx, providers, *providerID)
 		if err != nil {
@@ -154,6 +157,7 @@ type serviceConfig struct {
 	Timeout      time.Duration
 	PiperPrewarm bool
 	Workers      int
+	SpeakyAPIURL string
 }
 
 type serviceState struct {
@@ -363,6 +367,7 @@ func synthesisPriority(message map[string]any) string {
 
 func newServiceState(ctx context.Context, cfg serviceConfig) (*serviceState, error) {
 	providers := tts.DefaultProviders()
+	configureSpeakyAPIProvider(providers, cfg.SpeakyAPIURL)
 	if piper, ok := providers["piper"].(*tts.PiperProvider); ok {
 		piper.ConfigureRuntime(tts.PiperRuntimeOptions{
 			Prewarm: cfg.PiperPrewarm,
@@ -383,6 +388,13 @@ func newServiceState(ctx context.Context, cfg serviceConfig) (*serviceState, err
 		state.prewarmPiper(ctx)
 	}
 	return state, nil
+}
+
+func configureSpeakyAPIProvider(providers map[string]tts.Provider, baseURL string) {
+	if strings.TrimSpace(baseURL) == "" {
+		return
+	}
+	providers["speakyapi"] = tts.NewSpeakyAPIProvider(baseURL)
 }
 
 func (s *serviceState) prewarmPiper(ctx context.Context) {
@@ -848,7 +860,7 @@ func providerCandidates(providers map[string]tts.Provider, providerID string) ([
 	normalized := tts.NormalizeProvider(providerID)
 	if normalized == "fast" {
 		candidates := make([]tts.Provider, 0, 3)
-		for _, id := range []string{"sapi5", "espeak", "piper"} {
+		for _, id := range []string{"sapi5", "espeak", "piper", "speakyapi"} {
 			if provider := providers[id]; provider != nil {
 				candidates = append(candidates, provider)
 			}
@@ -860,7 +872,7 @@ func providerCandidates(providers map[string]tts.Provider, providerID string) ([
 	}
 	if normalized == "" || normalized == "auto" {
 		candidates := make([]tts.Provider, 0, 4)
-		for _, id := range []string{"piper", "kokoro", "sapi5", "espeak"} {
+		for _, id := range []string{"piper", "kokoro", "sapi5", "espeak", "speakyapi"} {
 			if provider := providers[id]; provider != nil {
 				candidates = append(candidates, provider)
 			}

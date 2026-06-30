@@ -229,6 +229,44 @@ function Initialize-Clang64RsmpegBuildEnvironment {
     $env:FFMPEG_BINDING_PATH = $BindingPath
 }
 
+function Assert-Clang64GStreamerBuildEnvironment {
+    if (-not (Test-RunningOnWindows)) {
+        return
+    }
+
+    $MsysRoot = Get-MsysRoot
+    $Clang64Root = Join-Path $MsysRoot "clang64"
+    $Clang64Bin = Join-Path $Clang64Root "bin"
+    $Clang64Lib = Join-Path $Clang64Root "lib"
+    $PkgConfig = Join-Path $Clang64Bin "pkg-config.exe"
+    foreach ($Package in @("gstreamer-1.0", "gstreamer-app-1.0", "gstreamer-audio-1.0", "gstreamer-video-1.0")) {
+        & $PkgConfig --exists $Package
+        if ($LASTEXITCODE -ne 0) {
+            throw "required MSYS2 CLANG64 GStreamer pkg-config package not found: $Package. Install mingw-w64-clang-x86_64-gstreamer and mingw-w64-clang-x86_64-gst-plugins-base."
+        }
+    }
+
+    foreach ($RequiredPath in @(
+        (Join-Path $Clang64Bin "libgstreamer-1.0-0.dll"),
+        (Join-Path $Clang64Bin "libgstapp-1.0-0.dll"),
+        (Join-Path $Clang64Bin "libgstaudio-1.0-0.dll"),
+        (Join-Path $Clang64Bin "libgstvideo-1.0-0.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstcoreelements.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstplayback.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstmpegtsdemux.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstmpegtsmux.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstlibav.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstpango.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstaudiotestsrc.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstvideotestsrc.dll"),
+        (Join-Path $Clang64Root "libexec\gstreamer-1.0\gst-plugin-scanner.exe")
+    )) {
+        if (-not (Test-Path -LiteralPath $RequiredPath)) {
+            throw "required MSYS2 CLANG64 GStreamer runtime file not found: $RequiredPath"
+        }
+    }
+}
+
 function Get-PeImportedDllNames {
     param(
         [Parameter(Mandatory = $true)][string] $Path
@@ -303,6 +341,42 @@ function Copy-Clang64RuntimeDependencies {
     }
 }
 
+function Copy-Clang64GStreamerPlugins {
+    param(
+        [Parameter(Mandatory = $true)][string] $DestinationDir
+    )
+
+    if (-not (Test-RunningOnWindows)) {
+        return
+    }
+
+    $MsysRoot = Get-MsysRoot
+    $Clang64Root = Join-Path $MsysRoot "clang64"
+    $PluginSource = Join-Path $Clang64Root "lib\gstreamer-1.0"
+    if (-not (Test-Path -LiteralPath $PluginSource -PathType Container)) {
+        throw "GStreamer plugin directory not found: $PluginSource"
+    }
+
+    $PluginTarget = Join-Path $DestinationDir "gstreamer-1.0"
+    if (Test-Path -LiteralPath $PluginTarget) {
+        Remove-Item -LiteralPath $PluginTarget -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $PluginTarget | Out-Null
+    Copy-Item -Path (Join-Path $PluginSource "*") -Destination $PluginTarget -Recurse -Force
+    $PluginEntryPoints = @(Get-ChildItem -LiteralPath $PluginTarget -Filter "*.dll" -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    if ($PluginEntryPoints.Count -gt 0) {
+        Copy-Clang64RuntimeDependencies -EntryPoints $PluginEntryPoints -DestinationDir $DestinationDir
+    }
+
+    $ScannerSource = Join-Path $Clang64Root "libexec\gstreamer-1.0\gst-plugin-scanner.exe"
+    if (-not (Test-Path -LiteralPath $ScannerSource -PathType Leaf)) {
+        throw "GStreamer plugin scanner not found: $ScannerSource"
+    }
+    $ScannerTarget = Join-Path $PluginTarget "gst-plugin-scanner.exe"
+    Copy-Item -LiteralPath $ScannerSource -Destination $ScannerTarget -Force
+    Copy-Clang64RuntimeDependencies -EntryPoints @($ScannerTarget) -DestinationDir $DestinationDir
+}
+
 function Test-WindowsSystemDll {
     param(
         [Parameter(Mandatory = $true)][string] $Name
@@ -370,6 +444,7 @@ try {
         } else {
             Initialize-Clang64BuildEnvironment
         }
+        Assert-Clang64GStreamerBuildEnvironment
     }
 
     if (-not $SkipCargoBuild) {
@@ -380,9 +455,10 @@ try {
         if ($MediaBackend -eq "rsmpeg") {
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-playout --features ffmpeg-rsmpeg
-            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cgen --features "ffmpeg-rsmpeg gpu-wgpu"
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cgen --features "gpu-wgpu"
         } else {
-            cargo build @CargoProfileArgs @CargoTargetArgs -p haze -p haze-playout -p haze-cgen
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze -p haze-playout
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cgen --features "gpu-wgpu"
         }
     }
 
@@ -482,6 +558,7 @@ try {
         }
         if ($ServiceEntryPoints.Count -gt 0) {
             Copy-Clang64RuntimeDependencies -EntryPoints $ServiceEntryPoints -DestinationDir $BinFull
+            Copy-Clang64GStreamerPlugins -DestinationDir $BinFull
         }
         Assert-PortableRuntimeDependencies -Directories @($BinFull)
     }
@@ -524,6 +601,9 @@ try {
 @echo off
 set "HAZE_HOME=%~dp0."
 set "PATH=%~dp0bin;%PATH%"
+set "GST_PLUGIN_PATH=%~dp0bin\gstreamer-1.0"
+set "GST_PLUGIN_SYSTEM_PATH_1_0=%~dp0bin\gstreamer-1.0"
+set "GST_PLUGIN_SCANNER=%~dp0bin\gstreamer-1.0\gst-plugin-scanner.exe"
 "%~dp0bin\haze.exe" %*
 set "HAZE_EXIT=%ERRORLEVEL%"
 if not "%HAZE_EXIT%"=="0" (

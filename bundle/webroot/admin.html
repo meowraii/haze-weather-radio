@@ -719,7 +719,7 @@
                                     <label class="daemon-field">
                                         <span>Mode</span>
                                         <select id="cgenMode">
-                                            <option value="release">Release / passthrough</option>
+                                            <option value="release">Release overlay</option>
                                             <option value="overlay">Overlay active</option>
                                         </select>
                                     </label>
@@ -735,9 +735,17 @@
                                         <span>Priority feed input</span>
                                         <input id="cgenPriorityFeed" type="text" placeholder="CAP-IT-ALL">
                                     </label>
-                                    <label class="daemon-field cgen-wide">
-                                        <span>Priority input URL</span>
-                                        <input id="cgenPriorityInput" type="text" placeholder="blank = Haze priority alert events/audio">
+                                    <label class="daemon-field">
+                                        <span>Audio source</span>
+                                        <select id="cgenAudioSource">
+                                            <option value="priority">Priority only</option>
+                                            <option value="routine">Routine only</option>
+                                            <option value="both">Priority + routine</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field check-row">
+                                        <input id="cgenMuteStandbyRoutine" type="checkbox" checked>
+                                        <span>Mute routine audio during standby</span>
                                     </label>
                                     <label class="daemon-field cgen-wide">
                                         <span>Program output</span>
@@ -851,27 +859,7 @@
                                         <input id="cgenScrollSpeed" type="number" min="1" max="64" value="8">
                                     </label>
                                     <label class="daemon-field">
-                                        <span>Text X</span>
-                                        <input id="cgenTextX" type="number" value="48">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>Text Y</span>
-                                        <input id="cgenTextY" type="number" value="128">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>Banner X</span>
-                                        <input id="cgenBannerX" type="number" value="0">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>Banner Y</span>
-                                        <input id="cgenBannerY" type="number" value="0">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>Banner width</span>
-                                        <input id="cgenBannerWidth" type="number" value="1280">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>Banner height</span>
+                                        <span>Ticker height</span>
                                         <input id="cgenBannerHeight" type="number" value="128">
                                     </label>
                                     <label class="daemon-field">
@@ -881,6 +869,26 @@
                                             <option value="ticker">Ticker</option>
                                             <option value="fullscreen">Fullscreen</option>
                                         </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Standby output</span>
+                                        <select id="cgenStandbyMode">
+                                            <option value="banner">Standby screen</option>
+                                            <option value="smpte">SMPTE bars</option>
+                                            <option value="black">Black screen</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field cgen-wide">
+                                        <span>Standby text</span>
+                                        <input id="cgenStandbyText" type="text" value="EAS Details Channel">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Standby text size</span>
+                                        <input id="cgenStandbyFontSize" type="number" min="8" max="220" value="58">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Standby Y %</span>
+                                        <input id="cgenStandbyYPercent" type="number" min="0" max="100" value="10">
                                     </label>
                                 </div>
                             </section>
@@ -955,6 +963,9 @@
                                         <div><dt>Program Input</dt><dd id="cgenProgramInputMeta">-</dd></div>
                                         <div><dt>Priority Source</dt><dd id="cgenPriorityMeta">-</dd></div>
                                         <div><dt>UDP Output</dt><dd id="cgenOutputMeta">-</dd></div>
+                                        <div><dt>Runtime</dt><dd id="cgenRuntimeMeta">-</dd></div>
+                                        <div><dt>Pipeline</dt><dd id="cgenDriftMeta">-</dd></div>
+                                        <div><dt>Visual</dt><dd id="cgenVisualMeta">-</dd></div>
                                     </dl>
                                 </div>
                             </section>

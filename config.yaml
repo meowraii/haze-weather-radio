@@ -25,8 +25,6 @@ services:
     cgen:
       enabled: true
       config: "managed/configs/cgen.xml"
-      ffmpeg: "ffmpeg"
-      graphics_backend: "auto"
   go:
     enabled: true
     web_gateway:
@@ -59,6 +57,7 @@ services:
       kokoro_threads: 1
       kokoro_speed: 1.0
       kokoro_length_scale: 1.0
+      speakyapi_url: "" # optional, e.g. http://127.0.0.1:5000
     product_render:
       enabled: true
       refresh: "5m"

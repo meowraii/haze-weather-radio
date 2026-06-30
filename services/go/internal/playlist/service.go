@@ -828,7 +828,7 @@ func metadataText(metadata map[string]string, key string) string {
 func (p *feedPlanner) staticProduct(pkgID string, now time.Time) (renderedProduct, error) {
 	switch strings.ToLower(strings.TrimSpace(pkgID)) {
 	case "station_id":
-		onAirName := displayText(p.cfg.Root.Operator.OnAirName)
+		onAirName := spokenText(p.cfg.Root.Operator.OnAirName)
 		if onAirName == "" {
 			onAirName = "Haze Weather Radio"
 		}
@@ -885,7 +885,7 @@ func replacementStationStatement(feed feedXML) string {
 	if callsign == "" && site == "" {
 		return ""
 	}
-	network := strings.TrimSpace(transmitter.Network.Name)
+	network := strings.TrimSpace(spokenNetworkName(transmitter.Network))
 	if network == "" {
 		network = "Weatheradio Canada"
 	}
@@ -1244,6 +1244,9 @@ func priorityAlertRequestStale(data map[string]any, now time.Time) bool {
 	if strings.Contains(header, "ended") || strings.Contains(header, "cancelled") || strings.Contains(header, "canceled") {
 		return true
 	}
+	if boolAny(firstValue(nil, data, "force_broadcast", "force", "rebroadcast")) {
+		return false
+	}
 	if expires := parseTime(firstText(nil, data, "alert_expires_at", "expires")); !expires.IsZero() && now.After(expires) {
 		return true
 	}
@@ -1271,9 +1274,37 @@ func cleanupSupersededAlertQueueParts(baseDir string, feedID string, alertID str
 		if id == "" || id == keepID {
 			continue
 		}
-		_ = os.Remove(filepath.Join(baseDir, "runtime", "queues", "alerts", id+".json"))
+		manifestPath := filepath.Join(baseDir, "runtime", "queues", "alerts", id+".json")
+		if preserveInFlightAlertManifest(manifestPath) {
+			continue
+		}
+		_ = os.Remove(manifestPath)
 		_ = os.Remove(filepath.Join(baseDir, "runtime", "audio", "alerts", id+".pcm16le"))
 	}
+}
+
+func preserveInFlightAlertManifest(path string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var manifest struct {
+		Status    string `json:"status"`
+		ClaimedAt string `json:"claimed_at"`
+		PlayedAt  string `json:"played_at"`
+		FailedAt  string `json:"failed_at"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return false
+	}
+	if strings.TrimSpace(manifest.PlayedAt) != "" || strings.TrimSpace(manifest.FailedAt) != "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(manifest.Status)) {
+	case "queued", "claimed", "event_queued", "playing":
+		return true
+	}
+	return strings.TrimSpace(manifest.ClaimedAt) != ""
 }
 
 func (p *feedPlanner) downloadAndConvertAlertAudio(ctx context.Context, sourceURL string, outputPath string, sampleRate int, channels int) error {

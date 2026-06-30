@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -27,6 +28,52 @@ type bannerPayload struct {
 	PrimaryColor    string                      `json:"primary_color"`
 	PrimaryGradient []string                    `json:"primary_gradient"`
 	Alerts          []alerttext.SerializedAlert `json:"alerts"`
+}
+
+const bannerArchiveCacheTTL = 5 * time.Second
+const bannerFeedMetaCacheTTL = 15 * time.Second
+const bannerQueueCacheTTL = 1 * time.Second
+
+type bannerArchiveCacheEntry struct {
+	expires time.Time
+	records []archiveCAPRecord
+}
+
+type bannerFeedMeta struct {
+	Name     string
+	Timezone string
+}
+
+type bannerFeedMetaCacheEntry struct {
+	expires time.Time
+	feeds   map[string]bannerFeedMeta
+}
+
+type bannerQueueCacheEntry struct {
+	expires time.Time
+	items   []sameQueueItem
+	err     error
+}
+
+var bannerArchiveCache = struct {
+	sync.Mutex
+	entries map[string]bannerArchiveCacheEntry
+}{
+	entries: map[string]bannerArchiveCacheEntry{},
+}
+
+var bannerFeedMetaCache = struct {
+	sync.Mutex
+	entry map[string]bannerFeedMetaCacheEntry
+}{
+	entry: map[string]bannerFeedMetaCacheEntry{},
+}
+
+var bannerQueueCache = struct {
+	sync.Mutex
+	entry map[string]bannerQueueCacheEntry
+}{
+	entry: map[string]bannerQueueCacheEntry{},
 }
 
 func (s *Server) bannerStream(writer http.ResponseWriter, request *http.Request) {
@@ -141,7 +188,15 @@ func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Req
 }
 
 func (s *Server) feedWebRTCEnabled(feedID string) bool {
-	feeds, err := loadFeedSummaries(s.configPath)
+	return feedAudioOutputEnabled(s.configPath, feedID)
+}
+
+func feedAudioOutputEnabled(configPath string, feedID string) bool {
+	feedID = strings.TrimSpace(feedID)
+	if feedID == "" {
+		return false
+	}
+	feeds, err := loadBasicFeedSummaries(configPath)
 	if err != nil {
 		return false
 	}
@@ -232,7 +287,7 @@ func bannerVisualEvent(info capingest.AlertInfo, record archiveCAPRecord) string
 }
 
 func activeBannerRecords(configPath string, feedID string, now time.Time) []archiveCAPRecord {
-	rows := archiveStoreRecords(configPath, "accepted", time.Time{})
+	rows := cachedBannerArchiveRecords(configPath, "accepted", time.Time{}, now)
 	out := make([]archiveCAPRecord, 0, len(rows))
 	for _, record := range rows {
 		if feedID != "" && feedID != "*" && record.FeedID != feedID {
@@ -259,15 +314,15 @@ func onAirBannerRecords(configPath string, feedID string, hub *BannerHub, now ti
 	}
 	out := make([]archiveCAPRecord, 0, len(active))
 	for _, item := range active {
-		record, ok := findArchiveAlert(configPath, item.AlertID, item.FeedID)
+		record, ok := findCachedBannerArchiveAlert(configPath, item.AlertID, item.FeedID, now)
 		if !ok {
-			record, ok = findArchiveAlert(configPath, item.AlertID, "")
+			record, ok = findCachedBannerArchiveAlert(configPath, item.AlertID, "", now)
 			if ok {
 				record.FeedID = item.FeedID
 			}
 		}
 		if !ok {
-			record, ok = findArchiveAlertByQueueHint(configPath, item)
+			record, ok = findArchiveAlertByQueueHint(configPath, item, now)
 		}
 		if !ok {
 			record = bannerRecordFromOnAirAlert(item, now)
@@ -290,7 +345,7 @@ func onAirBannerRecords(configPath string, feedID string, hub *BannerHub, now ti
 }
 
 func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []bannerOnAirAlert {
-	items, err := loadAlertQueueItems(configPath)
+	items, err := cachedBannerQueueItems(configPath, now)
 	if err != nil {
 		return nil
 	}
@@ -340,7 +395,7 @@ func activeQueueBannerAlerts(configPath string, feedID string, now time.Time) []
 
 func bannerQueueItemOnAir(item sameQueueItem) bool {
 	switch strings.ToLower(strings.TrimSpace(item.Status)) {
-	case "playing", "claimed", "queued", "pending":
+	case "playing":
 		return true
 	default:
 		return false
@@ -379,9 +434,9 @@ func parseQueueTimestamp(raw string) time.Time {
 	return time.Time{}
 }
 
-func findArchiveAlertByQueueHint(configPath string, item bannerOnAirAlert) (archiveCAPRecord, bool) {
+func findArchiveAlertByQueueHint(configPath string, item bannerOnAirAlert, now time.Time) (archiveCAPRecord, bool) {
 	hint := strings.ToLower(strings.Join([]string{item.AlertID, item.Event, item.Header, item.QueueID}, " "))
-	for _, record := range archiveStoreRecords(configPath, "accepted", time.Time{}) {
+	for _, record := range cachedBannerArchiveRecords(configPath, "accepted", time.Time{}, now) {
 		if item.FeedID != "" && item.FeedID != "*" && record.FeedID != item.FeedID {
 			continue
 		}
@@ -403,6 +458,69 @@ func findArchiveAlertByQueueHint(configPath string, item bannerOnAirAlert) (arch
 		}
 	}
 	return archiveCAPRecord{}, false
+}
+
+func cachedBannerArchiveRecords(configPath string, bucket string, since time.Time, now time.Time) []archiveCAPRecord {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	key := strings.Join([]string{
+		filepath.Clean(configPath),
+		strings.TrimSpace(bucket),
+		since.UTC().Format(time.RFC3339Nano),
+	}, "\x00")
+
+	bannerArchiveCache.Lock()
+	if entry, ok := bannerArchiveCache.entries[key]; ok && now.Before(entry.expires) {
+		records := cloneArchiveCAPRecords(entry.records)
+		bannerArchiveCache.Unlock()
+		return records
+	}
+	bannerArchiveCache.Unlock()
+
+	records := archiveStoreRecords(configPath, bucket, since)
+	bannerArchiveCache.Lock()
+	bannerArchiveCache.entries[key] = bannerArchiveCacheEntry{
+		expires: now.Add(bannerArchiveCacheTTL),
+		records: cloneArchiveCAPRecords(records),
+	}
+	for existingKey, entry := range bannerArchiveCache.entries {
+		if !now.Before(entry.expires) {
+			delete(bannerArchiveCache.entries, existingKey)
+		}
+	}
+	bannerArchiveCache.Unlock()
+	return records
+}
+
+func findCachedBannerArchiveAlert(configPath string, id string, feedID string, now time.Time) (archiveCAPRecord, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return archiveCAPRecord{}, false
+	}
+	for _, record := range cachedBannerArchiveRecords(configPath, "accepted", time.Time{}, now) {
+		if (record.ID == id || record.Alert.Identifier == id) && (feedID == "" || record.FeedID == feedID) {
+			if record.FeedID == "" {
+				record.FeedID = feedID
+			}
+			return record, true
+		}
+	}
+	return archiveCAPRecord{}, false
+}
+
+func cloneArchiveCAPRecords(records []archiveCAPRecord) []archiveCAPRecord {
+	return append([]archiveCAPRecord(nil), records...)
+}
+
+func clearBannerArchiveCache() {
+	bannerArchiveCache.Lock()
+	bannerArchiveCache.entries = map[string]bannerArchiveCacheEntry{}
+	bannerArchiveCache.Unlock()
+
+	bannerQueueCache.Lock()
+	bannerQueueCache.entry = map[string]bannerQueueCacheEntry{}
+	bannerQueueCache.Unlock()
 }
 
 func bannerRecordFromOnAirAlert(item bannerOnAirAlert, now time.Time) archiveCAPRecord {
@@ -500,14 +618,8 @@ func bannerFeedName(configPath string, feedID string) string {
 	if feedID == "" {
 		return ""
 	}
-	feeds, err := loadFeedSummaries(configPath)
-	if err != nil {
-		return feedID
-	}
-	for _, feed := range feeds {
-		if stringValue(feed, "id") == feedID {
-			return fallbackString(stringValue(feed, "name"), feedID)
-		}
+	if meta, ok := cachedBannerFeedMetas(configPath, time.Now().UTC())[feedID]; ok {
+		return fallbackString(meta.Name, feedID)
 	}
 	return feedID
 }
@@ -516,16 +628,116 @@ func bannerFeedTimezone(configPath string, feedID string) string {
 	if feedID == "" {
 		return "Local"
 	}
-	feeds, err := loadFeedSummaries(configPath)
-	if err != nil {
-		return "Local"
-	}
-	for _, feed := range feeds {
-		if stringValue(feed, "id") == feedID {
-			return fallbackString(stringValue(feed, "timezone"), "Local")
-		}
+	if meta, ok := cachedBannerFeedMetas(configPath, time.Now().UTC())[feedID]; ok {
+		return fallbackString(meta.Timezone, "Local")
 	}
 	return "Local"
+}
+
+func bannerFeedIDsFromConfig(configPath string, now time.Time) []string {
+	metas := cachedBannerFeedMetas(configPath, now)
+	ids := make([]string, 0, len(metas))
+	for id := range metas {
+		if strings.TrimSpace(id) != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func cachedBannerFeedMetas(configPath string, now time.Time) map[string]bannerFeedMeta {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	key := filepath.Clean(configPath)
+	bannerFeedMetaCache.Lock()
+	if entry, ok := bannerFeedMetaCache.entry[key]; ok && now.Before(entry.expires) {
+		feeds := cloneBannerFeedMetas(entry.feeds)
+		bannerFeedMetaCache.Unlock()
+		return feeds
+	}
+	bannerFeedMetaCache.Unlock()
+
+	feeds := loadBannerFeedMetas(configPath)
+	bannerFeedMetaCache.Lock()
+	bannerFeedMetaCache.entry[key] = bannerFeedMetaCacheEntry{
+		expires: now.Add(bannerFeedMetaCacheTTL),
+		feeds:   cloneBannerFeedMetas(feeds),
+	}
+	for existingKey, entry := range bannerFeedMetaCache.entry {
+		if !now.Before(entry.expires) {
+			delete(bannerFeedMetaCache.entry, existingKey)
+		}
+	}
+	bannerFeedMetaCache.Unlock()
+	return feeds
+}
+
+func loadBannerFeedMetas(configPath string) map[string]bannerFeedMeta {
+	root, err := loadYAMLMap(configPath)
+	if err != nil {
+		return map[string]bannerFeedMeta{}
+	}
+	parsed, err := loadFeedsXML(configPath, root)
+	if err != nil {
+		return map[string]bannerFeedMeta{}
+	}
+	out := make(map[string]bannerFeedMeta, len(parsed.Feeds))
+	for _, feed := range parsed.Feeds {
+		id := strings.TrimSpace(feed.ID)
+		if id == "" {
+			continue
+		}
+		station := stationTransmitter(feed)
+		out[id] = bannerFeedMeta{
+			Name:     fallbackText(station.SiteName, id),
+			Timezone: fallbackText(feed.Timezone, "Local"),
+		}
+	}
+	return out
+}
+
+func cloneBannerFeedMetas(feeds map[string]bannerFeedMeta) map[string]bannerFeedMeta {
+	out := make(map[string]bannerFeedMeta, len(feeds))
+	for id, meta := range feeds {
+		out[id] = meta
+	}
+	return out
+}
+
+func cachedBannerQueueItems(configPath string, now time.Time) ([]sameQueueItem, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	key := filepath.Clean(configPath)
+	bannerQueueCache.Lock()
+	if entry, ok := bannerQueueCache.entry[key]; ok && now.Before(entry.expires) {
+		items := cloneSameQueueItems(entry.items)
+		err := entry.err
+		bannerQueueCache.Unlock()
+		return items, err
+	}
+	bannerQueueCache.Unlock()
+
+	items, err := loadAlertQueueItems(configPath)
+	bannerQueueCache.Lock()
+	bannerQueueCache.entry[key] = bannerQueueCacheEntry{
+		expires: now.Add(bannerQueueCacheTTL),
+		items:   cloneSameQueueItems(items),
+		err:     err,
+	}
+	for existingKey, entry := range bannerQueueCache.entry {
+		if !now.Before(entry.expires) {
+			delete(bannerQueueCache.entry, existingKey)
+		}
+	}
+	bannerQueueCache.Unlock()
+	return items, err
+}
+
+func cloneSameQueueItems(items []sameQueueItem) []sameQueueItem {
+	return append([]sameQueueItem(nil), items...)
 }
 
 func bannerSignature(payload bannerPayload) string {

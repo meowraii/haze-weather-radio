@@ -109,6 +109,66 @@ func TestMatchFeedsFromEventReturnsAllTargetFeeds(t *testing.T) {
 	}
 }
 
+func TestCleanupSupersededAlertQueuePartsPreservesInFlightAlert(t *testing.T) {
+	dir := t.TempDir()
+	queueDir := filepath.Join(dir, "runtime", "queues", "alerts")
+	audioDir := filepath.Join(dir, "runtime", "audio", "alerts")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(audioDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id := safeID("000_CAP-IT-ALL_urn:test_same")
+	manifestPath := filepath.Join(queueDir, id+".json")
+	audioPath := filepath.Join(audioDir, id+".pcm16le")
+	if err := os.WriteFile(manifestPath, []byte(`{"id":"`+id+`","status":"playing","claimed_at":"2026-06-25T01:00:00Z"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(audioPath, []byte{0, 0, 0, 0}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupSupersededAlertQueueParts(dir, "CAP-IT-ALL", "urn:test", "")
+
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Fatalf("in-flight manifest was removed: %v", err)
+	}
+	if _, err := os.Stat(audioPath); err != nil {
+		t.Fatalf("in-flight audio was removed: %v", err)
+	}
+}
+
+func TestCleanupSupersededAlertQueuePartsRemovesPendingAlert(t *testing.T) {
+	dir := t.TempDir()
+	queueDir := filepath.Join(dir, "runtime", "queues", "alerts")
+	audioDir := filepath.Join(dir, "runtime", "audio", "alerts")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(audioDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id := safeID("000_CAP-IT-ALL_urn:test_same")
+	manifestPath := filepath.Join(queueDir, id+".json")
+	audioPath := filepath.Join(audioDir, id+".pcm16le")
+	if err := os.WriteFile(manifestPath, []byte(`{"id":"`+id+`","status":"pending"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(audioPath, []byte{0, 0, 0, 0}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupSupersededAlertQueueParts(dir, "CAP-IT-ALL", "urn:test", "")
+
+	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
+		t.Fatalf("pending manifest still exists, err=%v", err)
+	}
+	if _, err := os.Stat(audioPath); !os.IsNotExist(err) {
+		t.Fatalf("pending audio still exists, err=%v", err)
+	}
+}
+
 func TestCAPRegistryUpdateInvalidatesQueuedRoutineAlerts(t *testing.T) {
 	dir := t.TempDir()
 	planner := &feedPlanner{
@@ -435,14 +495,20 @@ func TestStaticProductFallbacks(t *testing.T) {
 						SiteName:     "Saskatoon",
 						Callsign:     "XLF322",
 						Relationship: "replaces",
-						Network:      transmitterNetworkXML{Name: "Weatheradio Canada"},
+						Network: transmitterNetworkXML{
+							Name:          "Weatheradio Canada",
+							Pronunciation: "weather radio canada",
+						},
 						FrequencyMHz: transmitterFrequencyXML{Value: "162.550"},
 					},
 				},
 			},
 		},
 	}
-	planner.cfg.Root.Operator.OnAirName = []any{map[string]any{"text": "Canada RadioMET"}}
+	planner.cfg.Root.Operator.OnAirName = []any{map[string]any{
+		"text":          "Canada RadioMET",
+		"pronunciation": "all hazards, canada radio met",
+	}}
 
 	stationID, err := planner.staticProduct("station_id", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -452,9 +518,9 @@ func TestStaticProductFallbacks(t *testing.T) {
 		t.Fatalf("station ID fallback = %#v", stationID)
 	}
 	for _, wanted := range []string{
-		"You are listening to Canada RadioMET.",
+		"You are listening to all hazards, canada radio met.",
 		"Broadcasting from Saskatoon on a frequency of 162.550 megahertz.",
-		"This station replaces former Weatheradio Canada station XLF322 in Saskatoon.",
+		"This station replaces former weather radio canada station XLF322 in Saskatoon.",
 	} {
 		if !strings.Contains(stationID.Text, wanted) {
 			t.Fatalf("station ID fallback missing %q: %s", wanted, stationID.Text)
@@ -1104,6 +1170,37 @@ func TestAlertAttentionToneEnabledIsIndependentOfSame(t *testing.T) {
 	}
 	if alertAttentionToneEnabled(map[string]any{"same_tone": "NONE", "include_same": false}) {
 		t.Fatal("NONE tone should disable attention tone")
+	}
+}
+
+func TestPriorityAlertRequestStaleAllowsForcedArchiveBroadcasts(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	expired := map[string]any{
+		"title":            "Severe Thunderstorm Warning",
+		"same_event":       "SVR",
+		"alert_sent_at":    now.Add(-2 * time.Hour).Format(time.RFC3339),
+		"alert_expires_at": now.Add(-time.Hour).Format(time.RFC3339),
+	}
+	if !priorityAlertRequestStale(expired, now) {
+		t.Fatal("ordinary expired alert should be stale")
+	}
+	forced := map[string]any{
+		"title":            "Severe Thunderstorm Warning",
+		"same_event":       "SVR",
+		"alert_sent_at":    now.Add(-2 * time.Hour).Format(time.RFC3339),
+		"alert_expires_at": now.Add(-time.Hour).Format(time.RFC3339),
+		"force_broadcast":  true,
+	}
+	if priorityAlertRequestStale(forced, now) {
+		t.Fatal("forced archive broadcast should bypass sent/expiry staleness")
+	}
+	cancel := map[string]any{
+		"title":           "Severe Thunderstorm Warning",
+		"message_type":    "Cancel",
+		"force_broadcast": true,
+	}
+	if !priorityAlertRequestStale(cancel, now) {
+		t.Fatal("forced cancellation should still be stale")
 	}
 }
 

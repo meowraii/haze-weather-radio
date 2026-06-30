@@ -37,7 +37,7 @@ const (
 	webrtcMaxQueuedFrames      = 10
 	webrtcPeerFrameMailbox     = 3
 	webrtcResumeQueuedFrames   = 2
-	webrtcConcealmentFrames    = 25
+	webrtcConcealmentFrames    = 5
 	feedIngressCapacity        = 4
 	g722FrameSamples           = g722SampleRate / 50
 	bridgeReconnectDelay       = 750 * time.Millisecond
@@ -47,7 +47,9 @@ const (
 	webrtcMediaStartFallback   = 750 * time.Millisecond
 	webrtcFrameSourceIdleGrace = 15 * time.Second
 	webrtcLateWriteThreshold   = 2 * webrtcFrameDuration
-	webrtcPeerSourceWait       = 15 * time.Millisecond
+	webrtcPeerSourceWait       = 0
+	webrtcFrameSourceResetGap  = 100 * time.Millisecond
+	webrtcPeerPacingResetGap   = 100 * time.Millisecond
 )
 
 type webRTCAudioCodec int
@@ -1191,6 +1193,8 @@ func (s *webRTCFrameSource) run() {
 	idleFrameIndex := 0
 	loggedFirstFrame := false
 	stats := webRTCFrameSourceStats{startedAt: time.Now(), lastReport: time.Now()}
+	lastEmitAt := time.Now()
+	lastStallResetLog := time.Time{}
 
 	appendChunk := func(chunk PCMChunk) {
 		compactQueuedFrames(&frameQueue, &frameHead)
@@ -1210,8 +1214,50 @@ func (s *webRTCFrameSource) run() {
 		}
 		return true
 	}
+	drainLatestUpdate := func() (PCMChunk, bool, bool) {
+		var latest PCMChunk
+		hasLatest := false
+		for {
+			select {
+			case chunk, ok := <-updates:
+				if !ok {
+					return PCMChunk{}, false, false
+				}
+				latest = chunk
+				hasLatest = true
+			default:
+				return latest, true, hasLatest
+			}
+		}
+	}
+	resetAfterStall := func(now time.Time) bool {
+		gap := now.Sub(lastEmitAt)
+		if gap < webrtcFrameSourceResetGap {
+			return true
+		}
+		frameHead = 0
+		frameQueue = frameQueue[:0]
+		concealer.reset()
+		chunk, ok, hasLatest := drainLatestUpdate()
+		if !ok {
+			return false
+		}
+		if hasLatest {
+			appendChunk(chunk)
+		}
+		if lastStallResetLog.IsZero() || now.Sub(lastStallResetLog) >= 10*time.Second {
+			log.Printf("media bridge WebRTC frame source reset after scheduler stall feed=%s codec=%s gap_ms=%d used_latest_pcm=%t", s.key.feedID, s.key.codec, gap.Milliseconds(), hasLatest)
+			lastStallResetLog = now
+		}
+		return true
+	}
 
 	emitFrame := func() bool {
+		now := time.Now()
+		if !resetAfterStall(now) {
+			return false
+		}
+		lastEmitAt = now
 		if !drainUpdates() {
 			return false
 		}
@@ -1526,6 +1572,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 	var lastPeerSourceFrame webRTCFrame
 	var peerConcealedFrames int
 	var fillerPhase int
+	fillerGenerator := newWebRTCFillerGenerator(codec)
 	writeSourceFrame := func(frame webRTCFrame, drainSkipped int) bool {
 		if len(frame.payload) == 0 {
 			return true
@@ -1551,7 +1598,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 			concealed = true
 			filler = false
 		} else {
-			frame = webRTCFrame{payload: webRTCFillerFrameWithPhase(codec, fillerPhase)}
+			frame = webRTCFrame{payload: fillerGenerator.next(fillerPhase)}
 			fillerPhase++
 		}
 		if len(frame.payload) == 0 {
@@ -1564,7 +1611,7 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 		return true
 	}
 	writeNextSourceFrame := func() bool {
-		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrameWithWait(frames, webrtcPeerSourceWait)
+		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
 		if !ok {
 			failPeer("frame_source_closed")
 			return false
@@ -1583,6 +1630,13 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 	for {
 		if ctx.Err() != nil {
 			return
+		}
+		now := time.Now()
+		if now.Sub(nextWriteAt) >= webrtcPeerPacingResetGap {
+			pendingSkipped = 0
+			fillerFramesSinceSource = 0
+			peerConcealedFrames = webrtcConcealmentFrames
+			nextWriteAt = now
 		}
 		if !writeNextSourceFrame() {
 			return
@@ -1607,7 +1661,74 @@ func webRTCFillerFrame(codec webRTCAudioCodec) []byte {
 }
 
 func webRTCFillerFrameWithPhase(codec webRTCAudioCodec, phase int) []byte {
-	return initialWebRTCFrameWithPhase(codec, phase)
+	return newWebRTCFillerGenerator(codec).next(phase)
+}
+
+type webRTCFillerGenerator struct {
+	codec      webRTCAudioCodec
+	opus       opusFrameEncoder
+	g722       *g722.Encoder
+	opusIdle   []int16
+	g722Idle   []int16
+	pcmuSilent []byte
+	pcmaSilent []byte
+}
+
+func newWebRTCFillerGenerator(codec webRTCAudioCodec) *webRTCFillerGenerator {
+	generator := &webRTCFillerGenerator{codec: codec}
+	switch codec {
+	case webRTCAudioOpus:
+		generator.opus, _ = newOpusFrameEncoder(opusSampleRate, opusEncoderChannels)
+		generator.opusIdle = opusIdleFrameSamples()
+	case webRTCAudioG722:
+		generator.g722 = g722.NewEncoder(g722.Rate64000, 0)
+		generator.g722Idle = g722IdleFrameSamples()
+	case webRTCAudioPCMU:
+		generator.pcmuSilent = pcmuIdleFrame()
+	case webRTCAudioPCMA:
+		generator.pcmaSilent = pcmaIdleFrame()
+	}
+	return generator
+}
+
+func (g *webRTCFillerGenerator) next(phase int) []byte {
+	if g == nil {
+		return nil
+	}
+	switch g.codec {
+	case webRTCAudioPCMU:
+		if len(g.pcmuSilent) == 0 {
+			g.pcmuSilent = pcmuIdleFrameWithPhase(phase)
+		}
+		return append([]byte(nil), g.pcmuSilent...)
+	case webRTCAudioPCMA:
+		if len(g.pcmaSilent) == 0 {
+			g.pcmaSilent = pcmaIdleFrame()
+		}
+		return append([]byte(nil), g.pcmaSilent...)
+	case webRTCAudioG722:
+		if g.g722 == nil {
+			g.g722 = g722.NewEncoder(g722.Rate64000, 0)
+		}
+		if len(g.g722Idle) == 0 {
+			g.g722Idle = g722IdleFrameSamples()
+		}
+		return encodeG722Frame(g.g722, g.g722Idle)
+	case webRTCAudioOpus:
+		if g.opus == nil {
+			return nil
+		}
+		if len(g.opusIdle) == 0 {
+			g.opusIdle = opusIdleFrameSamples()
+		}
+		encoded, err := g.opus.Encode(g.opusIdle)
+		if err != nil {
+			return nil
+		}
+		return encoded
+	default:
+		return nil
+	}
 }
 
 func initialWebRTCFrame(codec webRTCAudioCodec) []byte {
@@ -1961,6 +2082,12 @@ type frameConcealer struct {
 	last       []byte
 	repeated   int
 	needsPrime bool
+}
+
+func (c *frameConcealer) reset() {
+	c.last = nil
+	c.repeated = 0
+	c.needsPrime = false
 }
 
 func (c *frameConcealer) next(queue *[][]byte, head *int, silence func() []byte) []byte {

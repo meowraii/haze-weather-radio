@@ -401,6 +401,10 @@ func fallbackText(value string, fallback string) string {
 }
 
 func displayText(value any) string {
+	return spokenText(value)
+}
+
+func spokenText(value any) string {
 	switch typed := value.(type) {
 	case string:
 		return strings.TrimSpace(typed)
@@ -413,14 +417,14 @@ func displayText(value any) string {
 				}
 			}
 		}
-		for _, key := range []string{"pronunciation", "text", "name"} {
-			if text := displayText(merged[key]); text != "" {
+		for _, key := range []string{"pronunciation", "pronounciation", "text", "name"} {
+			if text := spokenText(merged[key]); text != "" {
 				return text
 			}
 		}
 	case map[string]any:
-		for _, key := range []string{"pronunciation", "text", "name"} {
-			if text := displayText(typed[key]); text != "" {
+		for _, key := range []string{"pronunciation", "pronounciation", "text", "name"} {
+			if text := spokenText(typed[key]); text != "" {
 				return text
 			}
 		}
@@ -428,6 +432,15 @@ func displayText(value any) string {
 		return ""
 	default:
 		return strings.TrimSpace(fmt.Sprint(value))
+	}
+	return ""
+}
+
+func spokenNetworkName(network transmitterNetworkXML) string {
+	for _, value := range []string{network.Pronunciation, network.Pronounciation, network.Name} {
+		if text := strings.TrimSpace(value); text != "" {
+			return text
+		}
 	}
 	return ""
 }

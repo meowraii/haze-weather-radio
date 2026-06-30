@@ -81,6 +81,14 @@ func TestNormalizeProviderKokoroAliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeProviderSpeakyAPIAliases(t *testing.T) {
+	for _, provider := range []string{"speaky", "speaky-api", "speakyapi"} {
+		if got := NormalizeProvider(provider); got != "speakyapi" {
+			t.Fatalf("NormalizeProvider(%q) = %q", provider, got)
+		}
+	}
+}
+
 func TestSelectReaderPrefersExplicitReaderID(t *testing.T) {
 	readers := []Reader{
 		{ID: "00", Provider: "auto", Gender: "male", Language: "en-ca"},

@@ -70,6 +70,24 @@ if [[ "$media_backend" != "builtin" && "$media_backend" != "rsmpeg" ]]; then
   exit 2
 fi
 
+require_gstreamer_build_environment() {
+  if ! command -v pkg-config >/dev/null 2>&1; then
+    echo "pkg-config is required to build haze-cgen with gstreamer-rs" >&2
+    exit 1
+  fi
+  local missing=()
+  local package
+  for package in gstreamer-1.0 gstreamer-app-1.0 gstreamer-audio-1.0 gstreamer-video-1.0; do
+    if ! pkg-config --exists "$package"; then
+      missing+=("$package")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    printf 'Missing GStreamer pkg-config package(s) required for haze-cgen: %s\n' "${missing[*]}" >&2
+    exit 1
+  fi
+}
+
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd -- "$script_dir/.." && pwd)"
 dist_root="$root/dist"
@@ -171,7 +189,89 @@ copy_bundle_dir() {
   fi
 }
 
+copy_linux_runtime_dependencies() {
+  local destination="$1"
+  shift
+  if ! command -v ldd >/dev/null 2>&1; then
+    return
+  fi
+  mkdir -p "$destination"
+  local queue=()
+  local seen=" "
+  local entry dep
+  for entry in "$@"; do
+    [[ -e "$entry" ]] || continue
+    case "$seen" in
+      *" $entry "*) ;;
+      *)
+        seen="$seen$entry "
+        queue+=("$entry")
+        ;;
+    esac
+  done
+  local index=0
+  while (( index < ${#queue[@]} )); do
+    entry="${queue[$index]}"
+    index=$((index + 1))
+    while IFS= read -r dep; do
+      [[ -n "$dep" && -f "$dep" ]] || continue
+      local name
+      name="$(basename -- "$dep")"
+      case "$name" in
+        libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|ld-linux*.so.*)
+          continue
+          ;;
+      esac
+      cp -p -- "$dep" "$destination/$name"
+      case "$seen" in
+        *" $dep "*) ;;
+        *)
+          seen="$seen$dep "
+          queue+=("$dep")
+          ;;
+      esac
+    done < <(ldd "$entry" 2>/dev/null | awk '
+      /=>/ && $3 ~ /^\// { print $3 }
+      /^[[:space:]]*\// { print $1 }
+    ')
+  done
+}
+
+copy_gstreamer_runtime() {
+  local destination="$1"
+  if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists gstreamer-1.0; then
+    echo "GStreamer pkg-config metadata is required to bundle haze-cgen" >&2
+    exit 1
+  fi
+  local gst_plugin_source
+  gst_plugin_source="$(pkg-config --variable=pluginsdir gstreamer-1.0 || true)"
+  if [[ -n "$gst_plugin_source" && -d "$gst_plugin_source" ]]; then
+    rm -rf "$destination/gstreamer-1.0"
+    mkdir -p "$destination/gstreamer-1.0"
+    cp -R "$gst_plugin_source"/. "$destination/gstreamer-1.0"/
+    mapfile -d '' gst_plugin_files < <(find "$destination/gstreamer-1.0" -type f \( -name '*.so' -o -name '*.dylib' \) -print0)
+    if (( ${#gst_plugin_files[@]} > 0 )); then
+      copy_linux_runtime_dependencies "$destination" "${gst_plugin_files[@]}"
+    fi
+  else
+    echo "GStreamer plugin directory was not found; cannot bundle haze-cgen runtime" >&2
+    exit 1
+  fi
+  local scanner_source
+  scanner_source="$(pkg-config --variable=pluginscannerdir gstreamer-1.0 2>/dev/null || true)"
+  if [[ -n "$scanner_source" && -d "$scanner_source" && -f "$scanner_source/gst-plugin-scanner" ]]; then
+    mkdir -p "$destination/gstreamer-1.0"
+    cp -p -- "$scanner_source/gst-plugin-scanner" "$destination/gstreamer-1.0/gst-plugin-scanner"
+    chmod +x "$destination/gstreamer-1.0/gst-plugin-scanner"
+    copy_linux_runtime_dependencies "$destination" "$destination/gstreamer-1.0/gst-plugin-scanner"
+  else
+    echo "GStreamer plugin scanner was not found; cannot bundle haze-cgen runtime" >&2
+    exit 1
+  fi
+}
+
 if [[ "$skip_cargo_build" -eq 0 ]]; then
+  require_gstreamer_build_environment
   cargo_profile_args=()
   if [[ "$profile" == "release" ]]; then
     cargo_profile_args=(--release)
@@ -179,9 +279,10 @@ if [[ "$skip_cargo_build" -eq 0 ]]; then
   if [[ "$media_backend" == "rsmpeg" ]]; then
     cargo build "${cargo_profile_args[@]}" -p haze
     cargo build "${cargo_profile_args[@]}" -p haze-playout --features ffmpeg-rsmpeg
-    cargo build "${cargo_profile_args[@]}" -p haze-cgen --features ffmpeg-rsmpeg
+    cargo build "${cargo_profile_args[@]}" -p haze-cgen --features "gpu-wgpu"
   else
-    cargo build "${cargo_profile_args[@]}" -p haze -p haze-playout -p haze-cgen
+    cargo build "${cargo_profile_args[@]}" -p haze -p haze-playout
+    cargo build "${cargo_profile_args[@]}" -p haze-cgen --features "gpu-wgpu"
   fi
 fi
 
@@ -241,6 +342,9 @@ chmod +x "$bin_full/haze-playout-rs"
 cp "$cgen_exe_path" "$bin_full/haze-cgen"
 chmod +x "$bin_full/haze-cgen"
 
+copy_linux_runtime_dependencies "$bin_full" "$out_full/haze" "$bin_full/haze-playout-rs" "$bin_full/haze-cgen"
+copy_gstreamer_runtime "$bin_full"
+
 if [[ "$skip_go_services" -eq 0 ]]; then
   bash "$script_dir/build-go-services.sh" --output-dir "$output_dir"
 fi
@@ -275,6 +379,10 @@ cat > "$out_full/haze.sh" <<'SH'
 #!/usr/bin/env sh
 set -eu
 bundle_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+export GST_PLUGIN_PATH="$bundle_dir/bin/gstreamer-1.0${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"
+export GST_PLUGIN_SYSTEM_PATH_1_0="$bundle_dir/bin/gstreamer-1.0${GST_PLUGIN_SYSTEM_PATH_1_0:+:$GST_PLUGIN_SYSTEM_PATH_1_0}"
+export GST_PLUGIN_SCANNER="$bundle_dir/bin/gstreamer-1.0/gst-plugin-scanner"
+export LD_LIBRARY_PATH="$bundle_dir/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$bundle_dir/haze" "$@"
 SH
 chmod +x "$out_full/haze.sh"

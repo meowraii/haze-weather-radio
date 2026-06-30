@@ -12,6 +12,9 @@ const preview = document.getElementById('cgenPreview');
 const metaProgramInput = document.getElementById('cgenProgramInputMeta');
 const metaPriority = document.getElementById('cgenPriorityMeta');
 const metaOutput = document.getElementById('cgenOutputMeta');
+const metaRuntime = document.getElementById('cgenRuntimeMeta');
+const metaDrift = document.getElementById('cgenDriftMeta');
+const metaVisual = document.getElementById('cgenVisualMeta');
 
 const fields = {
     id: document.getElementById('cgenID'),
@@ -21,7 +24,8 @@ const fields = {
     programInput: document.getElementById('cgenProgramInput'),
     programInputFormat: document.getElementById('cgenProgramInputFormat'),
     priorityFeed: document.getElementById('cgenPriorityFeed'),
-    priorityInput: document.getElementById('cgenPriorityInput'),
+    audioSource: document.getElementById('cgenAudioSource'),
+    muteStandbyRoutine: document.getElementById('cgenMuteStandbyRoutine'),
     programOutput: document.getElementById('cgenProgramOutput'),
     outputFormat: document.getElementById('cgenOutputFormat'),
     vcodec: document.getElementById('cgenVCodec'),
@@ -49,13 +53,12 @@ const fields = {
     standard: document.getElementById('cgenStandard'),
     font: document.getElementById('cgenFont'),
     fontSize: document.getElementById('cgenFontSize'),
-    textX: document.getElementById('cgenTextX'),
-    textY: document.getElementById('cgenTextY'),
-    bannerX: document.getElementById('cgenBannerX'),
-    bannerY: document.getElementById('cgenBannerY'),
-    bannerWidth: document.getElementById('cgenBannerWidth'),
     bannerHeight: document.getElementById('cgenBannerHeight'),
     bannerMode: document.getElementById('cgenBannerMode'),
+    standbyMode: document.getElementById('cgenStandbyMode'),
+    standbyText: document.getElementById('cgenStandbyText'),
+    standbyFontSize: document.getElementById('cgenStandbyFontSize'),
+    standbyYPercent: document.getElementById('cgenStandbyYPercent'),
     scrollSpeed: document.getElementById('cgenScrollSpeed'),
     text: document.getElementById('cgenText'),
     textEnabled: document.getElementById('cgenTextEnabled'),
@@ -72,10 +75,40 @@ let bound = false;
 let cgenEnabled = true;
 let feeds = [];
 let selectedID = '';
+let editorDirty = false;
+let renderScheduled = false;
+let previewDirty = false;
+let metaDirty = false;
 
 function setStatus(text, state = 'ok') {
-    statusBanner.textContent = text;
+    if (statusBanner.textContent !== text) {
+        statusBanner.textContent = text;
+    }
     statusBanner.dataset.state = state;
+}
+
+function setText(element, text) {
+    if (element && element.textContent !== text) {
+        element.textContent = text;
+    }
+}
+
+function scheduleRender({ preview: needsPreview = true, meta: needsMeta = true } = {}) {
+    previewDirty = previewDirty || needsPreview;
+    metaDirty = metaDirty || needsMeta;
+    if (renderScheduled) return;
+    renderScheduled = true;
+    window.requestAnimationFrame(() => {
+        renderScheduled = false;
+        if (previewDirty) {
+            previewDirty = false;
+            renderPreview();
+        }
+        if (metaDirty) {
+            metaDirty = false;
+            renderMeta();
+        }
+    });
 }
 
 function selected() {
@@ -115,12 +148,10 @@ function readEditor() {
         program_input_url: value('programInput'),
         program_input_format: value('programInputFormat', 'mpegts'),
         priority_feed_id: value('priorityFeed', id),
-        priority_input_url: value('priorityInput'),
+        audio_source: value('audioSource', 'priority'),
         priority_input_format: 'priority-audio',
         program_output_url: value('programOutput'),
         program_output_format: value('outputFormat', 'mpegts'),
-        alert_output_url: value('programOutput'),
-        alert_output_format: value('outputFormat', 'mpegts'),
         vcodec: value('vcodec', 'mpeg2video'),
         acodec: value('acodec', 'ac3'),
         video_bitrate_kbps: value('hdBitrate', '12000'),
@@ -143,22 +174,20 @@ function readEditor() {
         standard: value('standard', 'atsc'),
         audio_idle: 'source',
         audio_alert_mode: 'replace',
-        duck_db: '0',
+        mute_standby_routine: value('muteStandbyRoutine', true),
         banner_mode: value('bannerMode', 'auto'),
         ticker_height: value('bannerHeight', '128'),
         font: value('font', 'Arial'),
         font_size: value('fontSize', '58'),
         scroll_speed: value('scrollSpeed', '8'),
-        background_color: '#000000',
         banner_background_enabled: true,
-        banner_x: value('bannerX', '0'),
-        banner_y: value('bannerY', '0'),
-        banner_width: value('bannerWidth', value('width', '1920')),
         banner_height: value('bannerHeight', '128'),
+        standby_mode: value('standbyMode', 'banner'),
+        standby_text: value('standbyText', 'EAS Details Channel'),
+        standby_font_size: value('standbyFontSize', value('fontSize', '58')),
+        standby_y_percent: value('standbyYPercent', '10'),
         text_enabled: value('textEnabled'),
         text: fields.text.value,
-        text_x: value('textX', '48'),
-        text_y: value('textY', '128'),
         text_font_size: value('textFontSize', '58'),
         text_color: '#ffffff',
         clock_enabled: value('clockEnabled'),
@@ -168,11 +197,11 @@ function readEditor() {
         clock_font_size: value('clockFontSize', '30'),
         clock_color: '#ffffff',
         sync_hard_reset_ms: value('syncHardReset', '250'),
-        sync_max_audio_frames_per_video: value('syncMaxAudioFrames', '4'),
-        sync_source_buffer_ms: value('syncSourceBuffer', '120'),
+        sync_max_audio_frames_per_video: value('syncMaxAudioFrames', '8'),
+        sync_source_buffer_ms: value('syncSourceBuffer', '240'),
         sync_reconnect_initial_ms: value('syncReconnectInitial', '500'),
         sync_reconnect_max_ms: value('syncReconnectMax', '10000'),
-        sync_status_interval_ms: value('syncStatusInterval', '1000'),
+        sync_status_interval_ms: value('syncStatusInterval', '750'),
     };
 }
 
@@ -186,9 +215,10 @@ function writeEditor(feed) {
     setValue('programInput', feed.program_input_url || '');
     setValue('programInputFormat', feed.program_input_format || 'mpegts');
     setValue('priorityFeed', feed.priority_feed_id || feed.id);
-    setValue('priorityInput', feed.priority_input_url || '');
+    setValue('audioSource', feed.audio_source || 'priority');
+    setValue('muteStandbyRoutine', feed.mute_standby_routine !== false);
     setValue('programOutput', feed.program_output_url || '');
-    setValue('outputFormat', feed.program_output_format || feed.alert_output_format || 'mpegts');
+    setValue('outputFormat', feed.program_output_format || 'mpegts');
     setValue('vcodec', feed.vcodec || 'mpeg2video');
     setValue('acodec', feed.acodec || 'ac3');
     setValue('hdBitrate', feed.hd_bitrate_kbps || feed.video_bitrate_kbps || '12000');
@@ -201,11 +231,11 @@ function writeEditor(feed) {
     setValue('stereoEnabled', feed.stereo_enabled !== false);
     setValue('stereoBitrate', feed.stereo_bitrate_kbps || feed.audio_bitrate_kbps || '192');
     setValue('syncHardReset', feed.sync_hard_reset_ms || '250');
-    setValue('syncMaxAudioFrames', feed.sync_max_audio_frames_per_video || '4');
-    setValue('syncSourceBuffer', feed.sync_source_buffer_ms || '120');
+    setValue('syncMaxAudioFrames', feed.sync_max_audio_frames_per_video || '8');
+    setValue('syncSourceBuffer', feed.sync_source_buffer_ms || '240');
     setValue('syncReconnectInitial', feed.sync_reconnect_initial_ms || '500');
     setValue('syncReconnectMax', feed.sync_reconnect_max_ms || '10000');
-    setValue('syncStatusInterval', feed.sync_status_interval_ms || '1000');
+    setValue('syncStatusInterval', feed.sync_status_interval_ms || '750');
     setValue('width', feed.width || '1920');
     setValue('height', feed.height || '1080');
     setValue('fps', feed.fps || '30000/1001');
@@ -215,13 +245,12 @@ function writeEditor(feed) {
     setValue('font', feed.font || 'Arial');
     setValue('fontSize', feed.font_size || '58');
     setValue('scrollSpeed', feed.scroll_speed || '8');
-    setValue('textX', feed.text_x || '48');
-    setValue('textY', feed.text_y || '128');
-    setValue('bannerX', feed.banner_x || '0');
-    setValue('bannerY', feed.banner_y || '0');
-    setValue('bannerWidth', feed.banner_width || feed.width || '1920');
     setValue('bannerHeight', feed.banner_height || feed.ticker_height || '128');
     setValue('bannerMode', feed.banner_mode || 'auto');
+    setValue('standbyMode', feed.standby_mode || 'banner');
+    setValue('standbyText', feed.standby_text || 'EAS Details Channel');
+    setValue('standbyFontSize', feed.standby_font_size || feed.font_size || '58');
+    setValue('standbyYPercent', feed.standby_y_percent || '10');
     setValue('text', feed.text || '');
     setValue('textEnabled', Boolean(feed.text_enabled));
     setValue('textFontSize', feed.text_font_size || '58');
@@ -230,14 +259,15 @@ function writeEditor(feed) {
     setValue('clockX', feed.clock_x || '48');
     setValue('clockY', feed.clock_y || '48');
     setValue('clockFontSize', feed.clock_font_size || '30');
-    renderPreview();
-    renderMeta();
+    scheduleRender();
+    editorDirty = false;
 }
 
 function upsertEditor() {
     const edited = readEditor();
     const index = feeds.findIndex((feed) => feed.id === selectedID);
     if (index >= 0) {
+        edited.runtime = feeds[index].runtime || {};
         feeds[index] = edited;
     } else {
         feeds.push(edited);
@@ -253,15 +283,74 @@ function renderInstances() {
         selectedID = feeds[0].id;
         instanceSelect.value = selectedID;
     }
-    countMetric.textContent = String(feeds.length);
-    modeMetric.textContent = selected()?.mode || 'release';
+    setText(countMetric, String(feeds.length));
+    setText(modeMetric, selected()?.mode || 'release');
 }
 
 function renderMeta() {
     const feed = readEditor();
-    metaProgramInput.textContent = feed.program_input_url || '-';
-    metaPriority.textContent = feed.priority_feed_id || '-';
-    metaOutput.textContent = feed.program_output_url || '-';
+    const runtime = selected()?.runtime || {};
+    const inputHealth = runtime.input_health && typeof runtime.input_health === 'object' ? runtime.input_health : {};
+    const diagnostics = runtime.pipeline_diagnostics && typeof runtime.pipeline_diagnostics === 'object' ? runtime.pipeline_diagnostics : {};
+    setText(metaProgramInput, feed.program_input_url || '-');
+    const standbyMute = feed.mute_standby_routine === false ? 'standby routine live' : 'standby routine muted';
+    setText(metaPriority, `${feed.priority_feed_id || feed.id || '-'} / ${feed.audio_source || 'priority'} / ${standbyMute}`);
+    setText(metaOutput, feed.program_output_url || '-');
+    if (metaRuntime) {
+        const videoLive = runtime.input_video_connected === true || inputHealth.video_connected === true;
+        const audioLive = runtime.input_audio_connected === true || inputHealth.audio_connected === true;
+        const videoTimedOut = inputHealth.video_timed_out === true;
+        const audioTimedOut = inputHealth.audio_timed_out === true;
+        const connected = `${formatStreamHealth('video', videoLive, videoTimedOut, inputHealth.last_video_frame_age_ms || inputHealth.last_program_frame_age_ms)}, ${formatStreamHealth('audio', audioLive, audioTimedOut, inputHealth.last_audio_frame_age_ms)}`;
+        const output = runtime.output_active === true ? 'output active' : 'output idle';
+        const backend = runtime.media_backend || 'cgen';
+        const gstState = runtime.gst_state ? `, ${runtime.gst_state}` : '';
+        setText(metaRuntime, `${backend}: ${connected}, ${output}${gstState}`);
+    }
+    if (metaDrift) {
+        setText(metaDrift, formatPipelineDiagnostics(diagnostics));
+    }
+    if (metaVisual) {
+        const visual = runtime.visual_lifecycle || runtime.visual_mode || feed.mode || 'release';
+        const video = runtime.video_selector || 'video?';
+        const audio = runtime.audio_selector || 'audio?';
+        setText(metaVisual, `${visual} / ${video} video / ${audio} audio`);
+    }
+}
+
+function formatStreamHealth(label, live, timedOut, ageValue) {
+    const state = live ? 'live' : timedOut ? 'timeout' : 'waiting';
+    return `${label} ${state}${formatRuntimeAge(ageValue)}`;
+}
+
+function formatRuntimeAge(value) {
+    const age = Number(value);
+    if (!Number.isFinite(age)) return '';
+    if (age < 1000) return ` ${Math.round(age)} ms`;
+    return ` ${(age / 1000).toFixed(1)} s`;
+}
+
+function formatPipelineDiagnostics(diagnostics) {
+    const parts = [];
+    const warnings = Number(diagnostics.warning_count);
+    const qos = Number(diagnostics.qos_count);
+    const latency = Number(diagnostics.latency_recalculation_count);
+    if (Number.isFinite(latency)) parts.push(`${latency} latency recalcs`);
+    if (Number.isFinite(qos)) parts.push(`${qos} QoS`);
+    if (Number.isFinite(warnings)) parts.push(`${warnings} warnings`);
+    if (diagnostics.last_latency_error) parts.push(`latency: ${diagnostics.last_latency_error}`);
+    if (diagnostics.last_qos && typeof diagnostics.last_qos === 'object') {
+        const q = diagnostics.last_qos;
+        const jitter = Number(q.jitter_ns);
+        const proportion = Number(q.proportion);
+        const qosParts = [];
+        if (Number.isFinite(jitter)) qosParts.push(`${(jitter / 1000000).toFixed(1)} ms jitter`);
+        if (Number.isFinite(proportion)) qosParts.push(`${proportion.toFixed(3)}x`);
+        if (q.dropped) qosParts.push(`dropped ${q.dropped}`);
+        if (qosParts.length) parts.push(`last QoS ${qosParts.join(' ')}`);
+    }
+    if (diagnostics.last_warning) parts.push(`warn: ${diagnostics.last_warning}`);
+    return parts.join(', ') || '-';
 }
 
 function drawSmpte(ctx, width, height) {
@@ -285,36 +374,123 @@ function drawSmpte(ctx, width, height) {
     });
 }
 
+function clampNumber(value, min, max, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+}
+
+function drawStandby(ctx, width, height, feed) {
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, '#111827');
+    gradient.addColorStop(0.5, '#000000');
+    gradient.addColorStop(1, '#111827');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    const outputHeight = clampNumber(feed.height, 1, 4320, 1080);
+    const sy = height / outputHeight;
+    const fontSize = Math.max(8, clampNumber(feed.standby_font_size || feed.font_size, 8, 220, 58) * sy);
+    const yPercent = clampNumber(feed.standby_y_percent, 0, 100, 10);
+    const text = feed.standby_text || 'EAS Details Channel';
+    const font = feed.font || 'Arial';
+    ctx.font = `700 ${fontSize}px ${font}, Arial, sans-serif`;
+    ctx.textBaseline = 'top';
+    const x = Math.max(0, (width - ctx.measureText(text).width) / 2);
+    const y = height * (yPercent / 100);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fillText(text, x + 2, y + 3);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, x, y);
+}
+
+function drawProgramPlaceholder(ctx, width, height, feed, runtime) {
+    const live = runtime.input_connected === true && runtime.no_signal !== true;
+    const gradient = ctx.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(0, live ? '#12324b' : '#111827');
+    gradient.addColorStop(0.5, live ? '#1b5f7a' : '#050505');
+    gradient.addColorStop(1, live ? '#14301f' : '#111827');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = 'rgba(255,255,255,.12)';
+    ctx.lineWidth = 1;
+    for (let y = 0; y < height; y += 18) {
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(width, y + 0.5);
+        ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(0,0,0,.42)';
+    ctx.fillRect(14, 14, Math.min(width - 28, 420), 74);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `700 ${Math.max(13, width / 38)}px Arial, sans-serif`;
+    ctx.textBaseline = 'top';
+    ctx.fillText(live ? 'PROGRAM INPUT LIVE' : 'NO PROGRAM INPUT', 28, 26);
+    ctx.font = `500 ${Math.max(10, width / 58)}px Arial, sans-serif`;
+    const label = `${feed.width || 1920}x${feed.height || 1080} ${feed.interlaced ? 'interlaced' : 'progressive'}  ${feed.vcodec || 'mpeg2video'} / ${feed.acodec || 'ac3'}`;
+    ctx.fillText(label, 28, 58);
+}
+
+function drawCompositorTicker(ctx, width, height, feed, runtime, text) {
+    const outputWidth = clampNumber(feed.width, 1, 7680, 1920);
+    const outputHeight = clampNumber(feed.height, 1, 4320, 1080);
+    const sx = width / outputWidth;
+    const sy = height / outputHeight;
+    const y = clampNumber(runtime.ticker_y, 0, outputHeight, Math.round(outputHeight * 0.08)) * sy;
+    const h = clampNumber(runtime.ticker_height ?? feed.banner_height, 24, outputHeight, 128) * sy;
+    const gradientStops = Array.isArray(runtime.ticker_gradient) && runtime.ticker_gradient.length >= 3
+        ? runtime.ticker_gradient
+        : ['#111827', runtime.ticker_color || '#019310', '#111827'];
+    const gradient = ctx.createLinearGradient(0, y, 0, y + h);
+    gradient.addColorStop(0, gradientStops[0]);
+    gradient.addColorStop(0.5, gradientStops[1]);
+    gradient.addColorStop(1, gradientStops[2]);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, y, width, h);
+    const fontSize = Math.max(10, clampNumber(runtime.font_size ?? feed.font_size, 8, 220, 58) * sy);
+    const font = runtime.font || feed.font || 'Arial';
+    ctx.font = `700 ${fontSize}px ${font}, Arial, sans-serif`;
+    ctx.textBaseline = 'middle';
+    const textY = y + h / 2;
+    ctx.fillStyle = 'rgba(0,0,0,.9)';
+    ctx.fillText(text, width * 0.03 + 3, textY + 4);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, width * 0.03, textY);
+}
+
 function renderPreview() {
     if (!preview) return;
     const ctx = preview.getContext('2d');
     const width = preview.width;
     const height = preview.height;
     const feed = readEditor();
-    if (feed.smpte_bars) {
+    const runtime = selected()?.runtime || {};
+    const liveNoSignal = runtime.no_signal === true || runtime.input_connected === false || runtime.visual_lifecycle === 'standby';
+    const visualMode = String(runtime.visual_mode || '').toLowerCase();
+    const activeText = String(runtime.overlay_text || '').trim();
+    const isSmpte = feed.smpte_bars || visualMode === 'smpte' || (!runtime.input_connected && feed.standby_mode === 'smpte');
+    if (isSmpte) {
         drawSmpte(ctx, width, height);
-    } else {
+    } else if (liveNoSignal && activeText) {
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, width, height);
+    } else if (liveNoSignal && !activeText && feed.standby_mode === 'black') {
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, width, height);
+    } else if (liveNoSignal && !activeText) {
+        drawStandby(ctx, width, height, feed);
+    } else {
+        drawProgramPlaceholder(ctx, width, height, feed, runtime);
     }
-    const sx = width / Number(feed.width || 1280);
-    const sy = height / Number(feed.height || 720);
-    if (feed.mode !== 'release') {
-        const bx = Number(feed.banner_x || 0) * sx;
-        const by = Number(feed.banner_y || 0) * sy;
-        const bw = Number(feed.banner_width || feed.width || 1280) * sx;
-        const bh = Number(feed.banner_height || 128) * sy;
-        const gradient = ctx.createLinearGradient(0, by, 0, by + bh);
-        gradient.addColorStop(0, '#111827');
-        gradient.addColorStop(0.5, '#374151');
-        gradient.addColorStop(1, '#111827');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(bx, by, bw, bh);
+    if (activeText) {
+        drawCompositorTicker(ctx, width, height, feed, runtime, activeText);
     }
     ctx.fillStyle = '#ffffff';
+    const sx = width / Number(feed.width || 1280);
+    const sy = height / Number(feed.height || 720);
     ctx.font = `${Math.max(8, Number(feed.text_font_size || feed.font_size || 58) * sy)}px sans-serif`;
-    if (feed.text_enabled && feed.text) {
-        ctx.fillText(feed.text.slice(0, 80), Number(feed.text_x || 48) * sx, Number(feed.text_y || 96) * sy);
+    if (feed.text_enabled && feed.text && !activeText) {
+        ctx.fillText(feed.text.slice(0, 80), 48 * sx, 96 * sy);
     }
     if (feed.clock_enabled) {
         ctx.fillStyle = '#ffffff';
@@ -347,6 +523,24 @@ async function loadCgen() {
     setStatus('CGEN config loaded.', 'ok');
 }
 
+async function refreshRuntime() {
+    const payload = await panelClient.command('cgen.get', {}, 10000);
+    const latest = Array.isArray(payload.feeds) ? payload.feeds : [];
+    for (const next of latest) {
+        const index = feeds.findIndex((feed) => feed.id === next.id);
+        if (index >= 0) {
+            feeds[index].runtime = next.runtime || {};
+            if (!editorDirty && next.id === selectedID) {
+                feeds[index] = next;
+            }
+        }
+    }
+    if (!editorDirty) {
+        renderInstances();
+    }
+    scheduleRender();
+}
+
 async function saveCgen() {
     upsertEditor();
     const payload = await panelClient.command('cgen.save', { enabled: globalEnabled.checked, feeds }, 12000);
@@ -364,10 +558,12 @@ function defaultFeed() {
         name: 'CAP-IT-ALL CGEN',
         enabled: true,
         mode: 'release',
-        program_input_url: 'udp://239.0.0.1:9000?overrun_nonfatal=1&reuse=1',
+        program_input_url: 'udp://239.0.0.1:9000?fifo_size=2000000&overrun_nonfatal=1&reuse=1&buffer_size=1048576',
         program_input_format: 'mpegts',
         priority_feed_id: '*',
-        program_output_url: 'udp://239.0.0.2:9001?pkt_size=1316',
+        audio_source: 'priority',
+        mute_standby_routine: true,
+        program_output_url: 'udp://239.0.0.2:9001?pkt_size=1316&buffer_size=1048576&reuse=1',
         program_output_format: 'mpegts',
         vcodec: 'mpeg2video',
         acodec: 'ac3',
@@ -384,11 +580,11 @@ function defaultFeed() {
         stereo_enabled: true,
         stereo_bitrate_kbps: '192',
         sync_hard_reset_ms: '250',
-        sync_max_audio_frames_per_video: '4',
-        sync_source_buffer_ms: '120',
+        sync_max_audio_frames_per_video: '8',
+        sync_source_buffer_ms: '240',
         sync_reconnect_initial_ms: '500',
         sync_reconnect_max_ms: '10000',
-        sync_status_interval_ms: '1000',
+        sync_status_interval_ms: '750',
         width: '1920',
         height: '1080',
         fps: '30000/1001',
@@ -397,14 +593,13 @@ function defaultFeed() {
         standard: 'atsc',
         banner_mode: 'auto',
         scroll_speed: '8',
-        banner_x: '0',
-        banner_y: '0',
-        banner_width: '1920',
         banner_height: '128',
+        standby_mode: 'banner',
+        standby_text: 'EAS Details Channel',
+        standby_font_size: '58',
+        standby_y_percent: '10',
         font: 'Arial',
         font_size: '58',
-        text_x: '48',
-        text_y: '128',
         text_font_size: '58',
         clock_x: '48',
         clock_y: '48',
@@ -445,12 +640,12 @@ export function initCgenView() {
     });
     Object.values(fields).forEach((field) => {
         field?.addEventListener('input', () => {
-            renderPreview();
-            renderMeta();
+            editorDirty = true;
+            scheduleRender();
         });
         field?.addEventListener('change', () => {
-            renderPreview();
-            renderMeta();
+            editorDirty = true;
+            scheduleRender();
         });
     });
     document.getElementById('cgenReleaseButton')?.addEventListener('click', () => runAction('release').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
@@ -459,6 +654,8 @@ export function initCgenView() {
     document.getElementById('cgenClockButton')?.addEventListener('click', () => runAction('clock', { enabled: !fields.clockEnabled.checked }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenInsertTextButton')?.addEventListener('click', () => runAction('insert_text', { text: fields.text.value }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenClearTextButton')?.addEventListener('click', () => runAction('clear_text').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
-    window.setInterval(renderPreview, 1000);
+    window.setInterval(() => {
+        refreshRuntime().catch(() => scheduleRender({ preview: true, meta: false }));
+    }, 1500);
     loadCgen().catch((error) => setStatus(error.message || 'Unable to load CGEN config.', 'err'));
 }

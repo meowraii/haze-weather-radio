@@ -268,7 +268,7 @@ func productBase(cfg loadedConfig, feed feedXML, pkgID string, telephone bool) P
 }
 
 func (r renderer) stationIDProduct(base Product, feed feedXML) Product {
-	onAirName := displayText(r.cfg.Root.Operator.OnAirName)
+	onAirName := spokenText(r.cfg.Root.Operator.OnAirName)
 	if onAirName == "" {
 		onAirName = "Haze Weather Radio"
 	}
@@ -311,7 +311,7 @@ func replacementStationStatement(feed feedXML) string {
 	if callsign == "" && site == "" {
 		return ""
 	}
-	network := strings.TrimSpace(transmitter.Network.Name)
+	network := strings.TrimSpace(spokenNetworkName(transmitter.Network))
 	if network == "" {
 		network = "Weatheradio Canada"
 	}
@@ -653,6 +653,9 @@ func (r renderer) thunderstormOutlookProduct(base Product, feed feedXML) (Produc
 		if !specialtyItemCurrent(item, now) || specialtyString(item, "thunderstorm", base.Language) == "" {
 			continue
 		}
+		if !thunderstormItemCoversSite(item) {
+			continue
+		}
 		if hazard := thunderstormHazardText(item, site, base.Language, feed.Timezone, now); hazard != "" {
 			segments = append(segments, Segment{Kind: "package", Label: "convective_hazard", Text: hazard})
 		}
@@ -862,17 +865,7 @@ func thunderstormHazardText(item map[string]any, site string, lang string, timez
 		return sentence(period + " no hazardous weather is expected.")
 	}
 	risk := fallbackText(thunderstormRiskLabel(item["risk"]), "minor")
-	text := ""
-	if thunderstormNearbyRisk(item) {
-		direction := specialtyString(item, "direction", lang)
-		directionText := "near the area"
-		if direction != "" {
-			directionText = direction + " of the area"
-		}
-		text = fmt.Sprintf("%s however, %s is within close proximity to a %s convective risk %s.", period, thunderstormAreaPhrase(site), risk, directionText)
-	} else {
-		text = fmt.Sprintf("%s a %s convective risk is anticipated.", period, risk)
-	}
+	text := fmt.Sprintf("%s a %s convective risk is anticipated.", period, risk)
 	if specialtyBool(item, "tornado") {
 		text += " A tornado risk is also indicated."
 	}
@@ -897,9 +890,9 @@ func thunderstormAreaPhrase(site string) string {
 	return "the " + site + " area"
 }
 
-func thunderstormNearbyRisk(item map[string]any) bool {
+func thunderstormItemCoversSite(item map[string]any) bool {
 	distance, ok := numberFromAny(item["distance_km"])
-	return ok && distance > 0.5
+	return !ok || distance <= 0.5
 }
 
 func thunderstormNoHazardExpected(item map[string]any, lang string) bool {

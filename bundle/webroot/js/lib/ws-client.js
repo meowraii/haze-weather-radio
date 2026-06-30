@@ -7,11 +7,12 @@ const RECONNECT_JITTER = 0.35;
 const MAX_OUTBOX_MESSAGES = 100;
 
 export class PanelClient extends EventTarget {
-    constructor({ base = API_BASE, stream = true, params = {} } = {}) {
+    constructor({ base = API_BASE, stream = true, params = {}, includeSessionToken = true } = {}) {
         super();
         this.base = base;
         this.stream = stream;
         this.params = params;
+        this.includeSessionToken = includeSessionToken;
         this.socket = null;
         this.connected = false;
         this.reconnectTimer = null;
@@ -34,7 +35,7 @@ export class PanelClient extends EventTarget {
         url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const params = { ...this.params, ...extra };
         if (!this.stream) params.mode = params.mode || 'control';
-        if (session.token) params.token = session.token;
+        if (this.includeSessionToken && session.token) params.token = session.token;
         Object.entries(params).forEach(([key, value]) => {
             if (value !== undefined && value !== null && value !== '') {
                 url.searchParams.set(key, String(value));

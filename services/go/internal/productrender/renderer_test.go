@@ -91,7 +91,7 @@ func TestStationIDAndDateTimeUseLegacyShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, wanted := range []string{
-		"You are listening to Canada RadioMET.",
+		"You are listening to all hazards, canada radio met.",
 		"Callsign X L F 3 2 2.",
 		"Broadcasting from Saskatoon on a frequency of 162.550 megahertz.",
 	} {
@@ -779,28 +779,45 @@ func TestThunderstormPeriodLabelUsesNaturalBroadcastWording(t *testing.T) {
 	}
 }
 
-func TestThunderstormHazardTextDistinguishesNearbyPolygon(t *testing.T) {
-	loc, err := time.LoadLocation("America/Regina")
+func TestThunderstormOutlookSkipsNearbyPolygonRows(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeProductPayloadJSON(t, cfg.Store, "thunderstorm_outlook", "eccc", "sk-0001", `{
+  "source": "eccc",
+  "title": "Thunderstorm Outlook",
+  "updated_at": "2026-06-20T18:00:00Z",
+  "items": [{
+    "area": "Prairies",
+    "thunderstorm": "isolated",
+    "risk": 1,
+    "gust_kmh": 80,
+    "hail_cm": 1,
+    "valid_at": "2026-06-20T18:00:00Z",
+    "expires_at": "2099-06-21T06:00:00Z",
+    "distance_km": 90,
+    "direction": "south west"
+  }, {
+    "area": "Prairies",
+    "thunderstorm": "none",
+    "risk": 0,
+    "valid_at": "2026-06-20T18:00:00Z",
+    "expires_at": "2099-06-21T06:00:00Z",
+    "distance_km": 0
+  }]
+}`)
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "thunderstorm_outlook"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := map[string]any{
-		"thunderstorm": "isolated",
-		"risk":         1,
-		"gust_kmh":     80,
-		"hail_cm":      1,
-		"valid_at":     "2026-06-20T18:00:00Z",
-		"expires_at":   "2026-06-21T06:00:00Z",
-		"distance_km":  90,
-		"direction":    "south west",
+	if !strings.Contains(product.Text, "no hazardous weather is expected") {
+		t.Fatalf("product did not render covered no-hazard row:\n%s", product.Text)
 	}
-	got := thunderstormHazardText(item, "Saskatoon", "en-CA", "America/Regina", time.Date(2026, 6, 19, 10, 0, 0, 0, loc))
-	want := "For Saturday afternoon, however, the City of Saskatoon area is within close proximity to a minor convective risk south west of the area."
-	if !strings.Contains(got, want) {
-		t.Fatalf("hazard text missing %q:\n%s", want, got)
-	}
-	if !strings.Contains(got, "Wind gusts up to 80 kilometers per hour, and 1 centimeter of hail are associated with this convective risk.") {
-		t.Fatalf("hazard text has wrong hazard wording:\n%s", got)
+	for _, unwanted := range []string{"close proximity", "south west", "80 kilometers", "1 centimeter of hail"} {
+		if strings.Contains(product.Text, unwanted) {
+			t.Fatalf("product rendered nearby row text %q:\n%s", unwanted, product.Text)
+		}
 	}
 }
 
@@ -1425,6 +1442,7 @@ feeds_file: managed/configs/feeds.xml
 operator:
   on_air_name:
     - text: Canada RadioMET
+    - pronunciation: all hazards, canada radio met
 services:
   go:
     product_render:

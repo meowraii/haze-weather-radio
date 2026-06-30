@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -77,8 +78,8 @@ func NewServerWithSurface(config Config, configPath string, webroot string, surf
 // Handler builds the HTTP route tree.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/public/v1/health", s.health)
 	if s.surface.allowsPublic() {
+		mux.HandleFunc("/api/public/v1/health", s.publicHealth)
 		mux.HandleFunc("/", s.publicIndex)
 		mux.HandleFunc("/feeds", s.publicIndex)
 		mux.HandleFunc("/listen", s.publicIndex)
@@ -86,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/alerts/archive", s.publicIndex)
 		mux.HandleFunc("/api/public/v1/panel/ws", s.websocket)
 		mux.HandleFunc("/api/public/v1/feed/audio", s.publicFeedAudio)
+		mux.HandleFunc("/api/public/v1/alerts/archive/cap.xml", s.publicAlertsArchiveCAPXML)
 	}
 	if s.surface.allowsAdmin() {
 		if !s.surface.allowsPublic() {
@@ -101,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/wx-on-demand/generate", s.wxOnDemandGenerate)
 		mux.HandleFunc("/api/v1/wx-on-demand/packages", s.wxOnDemandPackages)
 		mux.HandleFunc("/api/v1/wx-on-demand/readers", s.wxOnDemandReaders)
+		mux.HandleFunc("/api/v1/health", s.adminHealth)
 		mux.HandleFunc("/login", s.login)
 		mux.HandleFunc("/api/v1/panel/ws", s.websocket)
 	}
@@ -109,13 +112,16 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(base+"/session", s.receiver.HandleSession)
 		mux.HandleFunc(base+"/ws", s.receiver.HandleWebSocket)
 	}
-	mux.Handle("/assets/", noStore(http.StripPrefix("/assets/", http.FileServer(http.Dir(s.webroot)))))
+	mux.HandleFunc("/assets/", s.staticAsset)
 	return s.withSecurityHeaders(mux)
 }
 
 func (s *Server) publicIndex(writer http.ResponseWriter, request *http.Request) {
 	if request.URL.Path != "/" && request.URL.Path != "/feeds" && request.URL.Path != "/listen" && request.URL.Path != "/alerts" && request.URL.Path != "/alerts/archive" {
 		http.NotFound(writer, request)
+		return
+	}
+	if !requestMethodGETOrHEAD(writer, request) {
 		return
 	}
 	if (request.URL.Path == "/feeds" || request.URL.Path == "/listen") && !s.publicFeedsAvailable() {
@@ -138,10 +144,16 @@ func (s *Server) adminRoot(writer http.ResponseWriter, request *http.Request) {
 		http.NotFound(writer, request)
 		return
 	}
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
 	http.Redirect(writer, request, "/admin", http.StatusSeeOther)
 }
 
 func (s *Server) admin(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
 	if token := strings.TrimSpace(request.URL.Query().Get("token")); token != "" && s.auth.ValidToken(token) {
 		s.auth.SetCookie(writer, token)
 		cleanURL := *request.URL
@@ -160,10 +172,16 @@ func (s *Server) admin(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) banner(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
 	s.serveHTML(writer, request, "banner.html")
 }
 
 func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
 	s.serveHTML(writer, request, "login.html")
 }
 
@@ -173,7 +191,93 @@ func (s *Server) serveHTML(writer http.ResponseWriter, request *http.Request, na
 	http.ServeFile(writer, request, path)
 }
 
-func (s *Server) health(writer http.ResponseWriter, request *http.Request) {
+func (s *Server) staticAsset(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
+	assetPath := strings.TrimPrefix(request.URL.Path, "/assets/")
+	clean := path.Clean("/" + assetPath)
+	if clean == "/" || strings.HasSuffix(clean, "/") {
+		http.NotFound(writer, request)
+		return
+	}
+	ext := strings.ToLower(path.Ext(clean))
+	if ext == "" || ext == ".html" || ext == ".htm" || ext == ".map" || assetPathHasHiddenSegment(clean) {
+		http.NotFound(writer, request)
+		return
+	}
+	assetFile, ok := s.staticAssetPath(clean)
+	if !ok {
+		http.NotFound(writer, request)
+		return
+	}
+	if ext == ".webmanifest" {
+		writer.Header().Set("Content-Type", "application/manifest+json")
+	}
+	writer.Header().Set("Cache-Control", staticAssetCacheControl(ext))
+	http.ServeFile(writer, request, assetFile)
+}
+
+func assetPathHasHiddenSegment(cleanURLPath string) bool {
+	for _, segment := range strings.Split(strings.Trim(cleanURLPath, "/"), "/") {
+		if strings.HasPrefix(segment, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+func staticAssetCacheControl(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".gif", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico", ".woff", ".woff2":
+		return "public, max-age=86400"
+	case ".js", ".css", ".webmanifest", ".json":
+		return "public, max-age=3600, must-revalidate"
+	default:
+		return "public, max-age=3600"
+	}
+}
+
+func (s *Server) staticAssetPath(cleanURLPath string) (string, bool) {
+	localPath := filepath.FromSlash(strings.TrimPrefix(cleanURLPath, "/"))
+	if localPath == "" || filepath.IsAbs(localPath) || filepath.VolumeName(localPath) != "" {
+		return "", false
+	}
+	root, err := filepath.Abs(s.webroot)
+	if err != nil {
+		return "", false
+	}
+	target, err := filepath.Abs(filepath.Join(root, localPath))
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return target, true
+}
+
+func (s *Server) publicHealth(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
+	writeJSON(writer, map[string]any{
+		"ok":           true,
+		"service":      "haze-web",
+		"started_at":   s.startedAt,
+		"capabilities": WebRTCAudioCapabilities(),
+	})
+}
+
+func (s *Server) adminHealth(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
+	if !s.auth.Authenticated(request) {
+		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	webrtcPeers := s.media.WebRTCPeerSnapshots()
 	webrtcSources := s.media.WebRTCFrameSourceSnapshots()
 	writeJSON(writer, map[string]any{
@@ -295,7 +399,16 @@ type wsSession struct {
 	media              *MediaHub
 	server             *Server
 	breakIns           map[string]struct{}
+	publicStateCache   map[string]any
+	publicStateCacheAt time.Time
 }
+
+const (
+	webRTCOfferMaxFeedIDLength = 128
+	webRTCOfferMaxSDPLength    = 256 * 1024
+	webRTCOfferMaxCodecLength  = 32
+	publicAlertStateCacheTTL   = 15 * time.Second
+)
 
 func (s *wsSession) send(ctx context.Context, messageType string, data map[string]any) error {
 	return s.sendEnvelope(ctx, map[string]any{
@@ -321,6 +434,16 @@ func (s *wsSession) handle(ctx context.Context, raw []byte) error {
 		return s.reply(ctx, message, "error", map[string]any{"detail": "invalid json"})
 	}
 	msgType := stringValue(message, "type")
+	if strings.HasPrefix(s.request.URL.Path, "/api/public/") {
+		switch msgType {
+		case "ping":
+			return s.reply(ctx, message, "pong", map[string]any{})
+		case "webrtc_offer":
+			return s.handleWebRTCOffer(ctx, message)
+		default:
+			return s.reply(ctx, message, "error", map[string]any{"detail": "unsupported public message type"})
+		}
+	}
 	switch msgType {
 	case "auth_check":
 		return s.reply(ctx, message, "auth_state", map[string]any{
@@ -367,6 +490,23 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 	if feedID == "" {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed_id is required"})
 	}
+	if len(feedID) > webRTCOfferMaxFeedIDLength {
+		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed_id is too long"})
+	}
+	if !validPublicAudioFeedID(feedID) {
+		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed_id is invalid"})
+	}
+	offerSDP := strings.TrimSpace(stringValue(message, "sdp"))
+	if offerSDP == "" {
+		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "sdp is required"})
+	}
+	if len(offerSDP) > webRTCOfferMaxSDPLength {
+		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "sdp is too long"})
+	}
+	preferredCodec := firstNonBlank(stringValue(message, "codec"), stringValue(message, "preferred_codec"))
+	if len(strings.TrimSpace(preferredCodec)) > webRTCOfferMaxCodecLength {
+		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "codec is too long"})
+	}
 	if !s.media.Available() || !s.config.Webpanel.Public.Feeds.WebRTC.Enabled {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed streaming is not available"})
 	}
@@ -384,10 +524,10 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 	if !s.feedWebRTCEnabled(feedID) {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed streaming is not configured or disabled"})
 	}
-	answer, err := s.media.AnswerWithOptions(ctx, feedID, stringValue(message, "sdp"), WebRTCAnswerOptions{
+	answer, err := s.media.AnswerWithOptions(ctx, feedID, offerSDP, WebRTCAnswerOptions{
 		DisableG722:    boolValue(message, "disable_g722"),
 		RequireOpus:    boolValue(message, "require_opus"),
-		PreferredCodec: firstNonBlank(stringValue(message, "codec"), stringValue(message, "preferred_codec")),
+		PreferredCodec: preferredCodec,
 	})
 	if err != nil {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": err.Error()})
@@ -403,19 +543,7 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 }
 
 func (s *wsSession) feedWebRTCEnabled(feedID string) bool {
-	feeds, err := loadFeedSummaries(s.configPath)
-	if err != nil {
-		return false
-	}
-	for _, feed := range feeds {
-		if stringValue(feed, "id") != feedID {
-			continue
-		}
-		enabled, _ := feed["enabled"].(bool)
-		webrtc, _ := feed["webrtc_enabled"].(bool)
-		return enabled && webrtc
-	}
-	return false
+	return feedAudioOutputEnabled(s.configPath, feedID)
 }
 
 func (s *wsSession) handleCommand(command string, payload map[string]any) (any, error) {
@@ -640,15 +768,48 @@ func (s *wsSession) panelState() (map[string]any, error) {
 }
 
 func (s *wsSession) publicState() (map[string]any, error) {
-	return publicStatePayload(s.config, s.configPath, s.startedAt, s.request, s.auth, s.media.Available())
+	if s.publicAlertStateCacheable() && s.publicStateCache != nil && time.Since(s.publicStateCacheAt) < publicAlertStateCacheTTL {
+		return s.publicStateCache, nil
+	}
+	state, err := publicStatePayload(s.config, s.configPath, s.startedAt, s.request, s.auth, s.media.Available())
+	if err != nil {
+		return nil, err
+	}
+	if s.publicAlertStateCacheable() {
+		s.publicStateCache = state
+		s.publicStateCacheAt = time.Now()
+	}
+	return state, nil
+}
+
+func (s *wsSession) publicAlertStateCacheable() bool {
+	return publicRequestWantsAlerts(s.request) && !publicRequestWantsFeeds(s.request)
 }
 
 func (s *Server) publicFeedsAvailable() bool {
-	feeds, err := loadFeedSummaries(s.configPath)
+	feeds, err := loadBasicFeedSummaries(s.configPath)
 	if err != nil {
 		return false
 	}
-	return publicWebRTCAvailable(s.config, feeds)
+	return publicFeedPagesAvailable(s.config, feeds)
+}
+
+func publicFeedPagesAvailable(config Config, feeds []map[string]any) bool {
+	if publicFeedAccess(config) == "disabled" {
+		return false
+	}
+	for _, feed := range feeds {
+		if enabled, _ := feed["enabled"].(bool); !enabled {
+			continue
+		}
+		if httpStream, _ := feed["http_stream_enabled"].(bool); httpStream {
+			return true
+		}
+		if webrtc, _ := feed["webrtc_enabled"].(bool); webrtc && config.Webpanel.Public.Feeds.WebRTC.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *wsSession) shouldSendState(state map[string]any) bool {
@@ -676,10 +837,11 @@ func (s *wsSession) reply(ctx context.Context, request map[string]any, messageTy
 
 func writeJSON(writer http.ResponseWriter, value any) {
 	writer.Header().Set("Content-Type", "application/json")
-	encoder := json.NewEncoder(writer)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		http.Error(writer, fmt.Sprintf("json encode failed: %v", err), http.StatusInternalServerError)
+	if writer.Header().Get("Cache-Control") == "" {
+		writer.Header().Set("Cache-Control", "no-store")
+	}
+	if err := json.NewEncoder(writer).Encode(value); err != nil {
+		http.Error(writer, "json encode failed", http.StatusInternalServerError)
 	}
 }
 
@@ -690,6 +852,9 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=(), payment=()")
 		writer.Header().Set("Content-Security-Policy", contentSecurityPolicy(request.URL.Path))
+		if publicNoStorePath(request.URL.Path) && writer.Header().Get("Cache-Control") == "" {
+			writer.Header().Set("Cache-Control", "no-store")
+		}
 		if s.config.Webpanel.TLS.HSTS && requestIsHTTPS(request) {
 			writer.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
@@ -697,15 +862,28 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+func requestMethodGETOrHEAD(writer http.ResponseWriter, request *http.Request) bool {
+	if request.Method == http.MethodGet || request.Method == http.MethodHead {
+		return true
+	}
+	writer.Header().Set("Allow", "GET, HEAD")
+	http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+	return false
+}
+
 func contentSecurityPolicy(path string) string {
 	scriptSrc := "script-src 'self' https://unpkg.com"
-	if path == "/banner" {
+	styleSrc := "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com"
+	if publicSecurityPolicyPath(path) {
+		scriptSrc = "script-src 'self'"
+		styleSrc = "style-src 'self' https://fonts.googleapis.com"
+	} else if path == "/banner" {
 		scriptSrc = "script-src 'self' 'unsafe-inline'"
 	}
 	return strings.Join([]string{
 		"default-src 'self'",
 		scriptSrc,
-		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+		styleSrc,
 		"font-src 'self' https://fonts.gstatic.com",
 		"img-src 'self' data:",
 		"connect-src 'self' ws: wss: stun: stuns: turn: turns:",
@@ -717,11 +895,16 @@ func contentSecurityPolicy(path string) string {
 	}, "; ")
 }
 
-func noStore(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Cache-Control", "no-store")
-		next.ServeHTTP(writer, request)
-	})
+func publicHTMLPath(path string) bool {
+	return path == "/" || path == "/feeds" || path == "/listen" || publicAlertsPath(path)
+}
+
+func publicSecurityPolicyPath(path string) bool {
+	return publicHTMLPath(path) || strings.HasPrefix(path, "/api/public/") || strings.HasPrefix(path, "/assets/")
+}
+
+func publicNoStorePath(path string) bool {
+	return publicHTMLPath(path) || strings.HasPrefix(path, "/api/public/")
 }
 
 func sameOriginPatterns(request *http.Request) []string {

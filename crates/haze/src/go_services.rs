@@ -56,8 +56,6 @@ struct RustCgenConfig {
     enabled: Option<bool>,
     executable: Option<PathBuf>,
     config: Option<PathBuf>,
-    ffmpeg: Option<String>,
-    graphics_backend: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -151,6 +149,7 @@ struct TtsConfig {
     kokoro_threads: Option<usize>,
     kokoro_speed: Option<f32>,
     kokoro_length_scale: Option<f32>,
+    speakyapi_url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -938,6 +937,13 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                         length_scale.to_string(),
                     ]);
                 }
+                if let Some(url) = tts
+                    .speakyapi_url
+                    .as_ref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    args.extend(["--speakyapi-url".to_string(), url.to_string()]);
+                }
                 specs.push(ServiceSpec {
                     id: "aux:tts",
                     kind: "managed",
@@ -1106,7 +1112,7 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
         });
     }
     if let Some(cgen) = rust_cgen.filter(|cgen| cgen.enabled.unwrap_or(false)) {
-        let mut args = vec![
+        let args = vec![
             "--config".to_string(),
             host.config_path.to_string_lossy().into_owned(),
             "--cgen".to_string(),
@@ -1118,20 +1124,6 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
             "--bridge".to_string(),
             std::env::var("HAZE_HOST_BRIDGE_ADDR").unwrap_or_default(),
         ];
-        if let Some(ffmpeg) = cgen
-            .ffmpeg
-            .as_ref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            args.extend(["--ffmpeg".to_string(), ffmpeg.to_string()]);
-        }
-        if let Some(backend) = cgen
-            .graphics_backend
-            .as_ref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            args.extend(["--graphics-backend".to_string(), backend.to_string()]);
-        }
         specs.push(ServiceSpec {
             id: "svc:cgen",
             kind: "managed",
@@ -1933,8 +1925,6 @@ services:
     cgen:
       enabled: true
       config: managed/configs/cgen.xml
-      ffmpeg: ffmpeg
-      graphics_backend: auto
 "#,
         )
         .expect("config");
@@ -1948,7 +1938,17 @@ services:
         assert!(specs[0]
             .args
             .contains(&"managed/configs/cgen.xml".to_string()));
-        assert!(specs[0].args.contains(&"--graphics-backend".to_string()));
+        assert_eq!(
+            specs[0].args,
+            vec![
+                "--config".to_string(),
+                test_host().config_path.to_string_lossy().into_owned(),
+                "--cgen".to_string(),
+                "managed/configs/cgen.xml".to_string(),
+                "--bridge".to_string(),
+                String::new(),
+            ]
+        );
     }
 
     #[test]

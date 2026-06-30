@@ -1,11 +1,15 @@
 package webgateway
 
 import (
+	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,12 +26,9 @@ type cgenFeedXML struct {
 	ID            string               `xml:"id,attr"`
 	Name          string               `xml:"name,attr,omitempty"`
 	Enabled       string               `xml:"enabled,attr,omitempty"`
-	LegacyInput   cgenEndpointXML      `xml:"input,omitempty"`
-	LegacyOutput  cgenEndpointXML      `xml:"output,omitempty"`
 	ProgramInput  cgenEndpointXML      `xml:"programInput"`
 	PriorityInput cgenPriorityInputXML `xml:"priorityInput"`
 	ProgramOutput cgenEndpointXML      `xml:"programOutput"`
-	AlertOutput   cgenEndpointXML      `xml:"alertOutput"`
 	Video         cgenVideoXML         `xml:"video"`
 	Audio         cgenAudioXML         `xml:"audio"`
 	Ladder        cgenLadderXML        `xml:"ladder"`
@@ -36,6 +37,7 @@ type cgenFeedXML struct {
 	Clock         cgenClockXML         `xml:"clock"`
 	Text          cgenTextXML          `xml:"text"`
 	State         cgenStateXML         `xml:"state"`
+	Standby       cgenStandbyXML       `xml:"standby"`
 	Sync          cgenSyncXML          `xml:"sync"`
 	UpdatedAt     string               `xml:"updated_at,attr,omitempty"`
 }
@@ -80,9 +82,9 @@ type cgenAudioRenditionXML struct {
 }
 
 type cgenPriorityInputXML struct {
-	FeedID string `xml:"feed_id,attr,omitempty"`
-	URL    string `xml:"url,attr,omitempty"`
-	Format string `xml:"format,attr,omitempty"`
+	FeedID      string `xml:"feed_id,attr,omitempty"`
+	AudioSource string `xml:"audio_source,attr,omitempty"`
+	Format      string `xml:"format,attr,omitempty"`
 }
 
 type cgenVideoXML struct {
@@ -95,9 +97,9 @@ type cgenVideoXML struct {
 }
 
 type cgenAudioXML struct {
-	Idle      string `xml:"idle,attr,omitempty"`
-	AlertMode string `xml:"alert_mode,attr,omitempty"`
-	DuckDB    string `xml:"duck_db,attr,omitempty"`
+	Idle               string `xml:"idle,attr,omitempty"`
+	AlertMode          string `xml:"alert_mode,attr,omitempty"`
+	MuteStandbyRoutine string `xml:"mute_standby_routine,attr,omitempty"`
 }
 
 type cgenBannerXML struct {
@@ -106,21 +108,13 @@ type cgenBannerXML struct {
 	Font              string `xml:"font,attr,omitempty"`
 	FontSize          string `xml:"font_size,attr,omitempty"`
 	ScrollSpeed       string `xml:"scroll_speed,attr,omitempty"`
-	X                 string `xml:"x,attr,omitempty"`
-	Y                 string `xml:"y,attr,omitempty"`
 	BackgroundEnabled string `xml:"background_enabled,attr,omitempty"`
 }
 
 type cgenGraphicsXML struct {
-	BackgroundColor string `xml:"background_color,attr,omitempty"`
-	Font            string `xml:"font,attr,omitempty"`
-	FontSize        string `xml:"font_size,attr,omitempty"`
-	TextX           string `xml:"text_x,attr,omitempty"`
-	TextY           string `xml:"text_y,attr,omitempty"`
-	BannerX         string `xml:"banner_x,attr,omitempty"`
-	BannerY         string `xml:"banner_y,attr,omitempty"`
-	BannerWidth     string `xml:"banner_width,attr,omitempty"`
-	BannerHeight    string `xml:"banner_height,attr,omitempty"`
+	Font         string `xml:"font,attr,omitempty"`
+	FontSize     string `xml:"font_size,attr,omitempty"`
+	BannerHeight string `xml:"banner_height,attr,omitempty"`
 }
 
 type cgenClockXML struct {
@@ -134,8 +128,6 @@ type cgenClockXML struct {
 
 type cgenTextXML struct {
 	Enabled  string `xml:"enabled,attr,omitempty"`
-	X        string `xml:"x,attr,omitempty"`
-	Y        string `xml:"y,attr,omitempty"`
 	FontSize string `xml:"font_size,attr,omitempty"`
 	Color    string `xml:"color,attr,omitempty"`
 	Content  string `xml:",chardata"`
@@ -145,6 +137,13 @@ type cgenStateXML struct {
 	Mode      string `xml:"mode,attr,omitempty"`
 	SMPTEBars string `xml:"smpte_bars,attr,omitempty"`
 	UpdatedAt string `xml:"updated_at,attr,omitempty"`
+}
+
+type cgenStandbyXML struct {
+	Mode     string `xml:"mode,attr,omitempty"`
+	Text     string `xml:"text,attr,omitempty"`
+	FontSize string `xml:"font_size,attr,omitempty"`
+	YPercent string `xml:"y_percent,attr,omitempty"`
 }
 
 type cgenSyncXML struct {
@@ -162,7 +161,7 @@ func loadCgenPayload(configPath string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cgenPayload(path, config), nil
+	return cgenPayload(configPath, path, config), nil
 }
 
 func saveCgenPayload(configPath string, payload map[string]any) (map[string]any, error) {
@@ -253,11 +252,60 @@ func readCgenXML(path string) (cgenXML, error) {
 		}
 		return cgenXML{}, err
 	}
+	if err := rejectLegacyCgenXML(raw, path); err != nil {
+		return cgenXML{}, err
+	}
 	var config cgenXML
 	if err := xml.Unmarshal(raw, &config); err != nil {
 		return cgenXML{}, fmt.Errorf("parse cgen XML: %w", err)
 	}
 	return normalizeCgen(config)
+}
+
+func rejectLegacyCgenXML(raw []byte, path string) error {
+	decoder := xml.NewDecoder(bytes.NewReader(raw))
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("scan cgen XML %s: %w", path, err)
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		name := start.Name.Local
+		switch name {
+		case "input", "output", "alertOutput":
+			return fmt.Errorf("legacy cgen <%s> element is no longer supported in %s; use programInput, priorityInput, and programOutput", name, path)
+		}
+		for _, attr := range start.Attr {
+			if legacyCgenAttribute(name, attr.Name.Local) {
+				return fmt.Errorf("legacy cgen %s @%s attribute is no longer supported in %s", name, attr.Name.Local, path)
+			}
+		}
+	}
+}
+
+func legacyCgenAttribute(element string, attr string) bool {
+	switch element {
+	case "cgen":
+		return attr == "graphics_backend" || attr == "ffmpeg"
+	case "priorityInput":
+		return attr == "url"
+	case "audio":
+		return attr == "duck_db"
+	case "banner":
+		return attr == "x" || attr == "y"
+	case "graphics":
+		switch attr {
+		case "background_color", "text_x", "text_y", "banner_x", "banner_y", "banner_width":
+			return true
+		}
+	}
+	return false
 }
 
 func writeCgenXML(path string, config cgenXML) error {
@@ -301,22 +349,10 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 			feed.Name = feed.ID
 		}
 		feed.Enabled = boolText(xmlBool(feed.Enabled, false))
-		if feed.ProgramInput.URL == "" {
-			feed.ProgramInput = feed.LegacyInput
-		}
-		if feed.ProgramOutput.URL == "" {
-			feed.ProgramOutput = feed.LegacyOutput
-		}
-		feed.LegacyInput = cgenEndpointXML{}
-		feed.LegacyOutput = cgenEndpointXML{}
 		feed.ProgramInput = cleanCgenEndpoint(feed.ProgramInput)
 		feed.ProgramOutput = cleanCgenEndpoint(feed.ProgramOutput)
-		feed.AlertOutput = cleanCgenEndpoint(feed.AlertOutput)
-		if feed.AlertOutput.URL == "" {
-			feed.AlertOutput = feed.ProgramOutput
-		}
 		feed.PriorityInput.FeedID = fallbackText(cleanCgenID(feed.PriorityInput.FeedID), feed.ID)
-		feed.PriorityInput.URL = strings.TrimSpace(feed.PriorityInput.URL)
+		feed.PriorityInput.AudioSource = normalizeCgenAudioSource(feed.PriorityInput.AudioSource)
 		feed.PriorityInput.Format = fallbackText(strings.TrimSpace(feed.PriorityInput.Format), "priority-audio")
 		feed.Video.Width = cleanPositive(feed.Video.Width, "1280")
 		feed.Video.Height = cleanPositive(feed.Video.Height, "720")
@@ -326,24 +362,16 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Video.Standard = normalizeCgenStandard(feed.Video.Standard)
 		feed.Audio.Idle = fallbackText(strings.TrimSpace(feed.Audio.Idle), "source")
 		feed.Audio.AlertMode = fallbackText(strings.TrimSpace(feed.Audio.AlertMode), "replace")
-		feed.Audio.DuckDB = "0"
+		feed.Audio.MuteStandbyRoutine = boolText(xmlBool(feed.Audio.MuteStandbyRoutine, true))
 		normalizeCgenLadder(feed)
 		feed.Banner.Mode = fallbackText(strings.TrimSpace(feed.Banner.Mode), "auto")
 		feed.Banner.TickerHeight = cleanPositive(feed.Banner.TickerHeight, "128")
 		feed.Banner.Font = fallbackText(strings.TrimSpace(feed.Banner.Font), "Arial")
 		feed.Banner.FontSize = cleanPositive(feed.Banner.FontSize, "58")
 		feed.Banner.ScrollSpeed = cleanPositive(feed.Banner.ScrollSpeed, "8")
-		feed.Banner.X = cleanNumber(feed.Banner.X, "0")
-		feed.Banner.Y = cleanNumber(feed.Banner.Y, "0")
 		feed.Banner.BackgroundEnabled = boolText(xmlBool(feed.Banner.BackgroundEnabled, true))
-		feed.Graphics.BackgroundColor = cleanColor(feed.Graphics.BackgroundColor, "#000000")
 		feed.Graphics.Font = fallbackText(strings.TrimSpace(feed.Graphics.Font), feed.Banner.Font)
 		feed.Graphics.FontSize = cleanPositive(feed.Graphics.FontSize, feed.Banner.FontSize)
-		feed.Graphics.TextX = cleanNumber(feed.Graphics.TextX, "48")
-		feed.Graphics.TextY = cleanNumber(feed.Graphics.TextY, "128")
-		feed.Graphics.BannerX = cleanNumber(feed.Graphics.BannerX, "0")
-		feed.Graphics.BannerY = cleanNumber(feed.Graphics.BannerY, "0")
-		feed.Graphics.BannerWidth = cleanPositive(feed.Graphics.BannerWidth, feed.Video.Width)
 		feed.Graphics.BannerHeight = cleanPositive(feed.Graphics.BannerHeight, feed.Banner.TickerHeight)
 		feed.Clock.Enabled = boolText(xmlBool(feed.Clock.Enabled, false))
 		feed.Clock.Format = fallbackText(strings.TrimSpace(feed.Clock.Format), "Jan 02 15:04:05")
@@ -352,20 +380,22 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Clock.FontSize = cleanPositive(feed.Clock.FontSize, "30")
 		feed.Clock.Color = cleanColor(feed.Clock.Color, "#ffffff")
 		feed.Text.Enabled = boolText(xmlBool(feed.Text.Enabled, false))
-		feed.Text.X = cleanNumber(feed.Text.X, feed.Graphics.TextX)
-		feed.Text.Y = cleanNumber(feed.Text.Y, feed.Graphics.TextY)
 		feed.Text.FontSize = cleanPositive(feed.Text.FontSize, feed.Graphics.FontSize)
 		feed.Text.Color = cleanColor(feed.Text.Color, "#ffffff")
 		feed.Text.Content = strings.TrimSpace(feed.Text.Content)
 		feed.State.Mode = normalizeCgenMode(feed.State.Mode)
 		feed.State.SMPTEBars = boolText(xmlBool(feed.State.SMPTEBars, false))
 		feed.State.UpdatedAt = strings.TrimSpace(feed.State.UpdatedAt)
+		feed.Standby.Mode = normalizeCgenStandbyMode(feed.Standby.Mode)
+		feed.Standby.Text = fallbackText(strings.TrimSpace(feed.Standby.Text), "EAS Details Channel")
+		feed.Standby.FontSize = cleanPositive(feed.Standby.FontSize, feed.Banner.FontSize)
+		feed.Standby.YPercent = cleanPercent(feed.Standby.YPercent, "10")
 		feed.Sync.HardResetMS = cleanPositive(feed.Sync.HardResetMS, "250")
-		feed.Sync.MaxAudioFramesPerVideo = cleanPositive(feed.Sync.MaxAudioFramesPerVideo, "4")
-		feed.Sync.SourceBufferMS = cleanPositive(feed.Sync.SourceBufferMS, "120")
+		feed.Sync.MaxAudioFramesPerVideo = cleanPositive(feed.Sync.MaxAudioFramesPerVideo, "8")
+		feed.Sync.SourceBufferMS = cleanPositive(feed.Sync.SourceBufferMS, "240")
 		feed.Sync.ReconnectInitialMS = cleanPositive(feed.Sync.ReconnectInitialMS, "500")
 		feed.Sync.ReconnectMaxMS = cleanPositive(feed.Sync.ReconnectMaxMS, "10000")
-		feed.Sync.StatusIntervalMS = cleanPositive(feed.Sync.StatusIntervalMS, "1000")
+		feed.Sync.StatusIntervalMS = cleanPositive(feed.Sync.StatusIntervalMS, "750")
 		feed.UpdatedAt = strings.TrimSpace(feed.UpdatedAt)
 	}
 	sort.SliceStable(config.Feeds, func(i, j int) bool { return strings.ToLower(config.Feeds[i].ID) < strings.ToLower(config.Feeds[j].ID) })
@@ -453,11 +483,10 @@ func normalizeCgenLadder(feed *cgenFeedXML) {
 	})
 	feed.Ladder = cgenLadderXML{
 		Videos: []cgenVideoRenditionXML{hd, p720, sd},
-		Audios: []cgenAudioRenditionXML{surround, stereo},
+		Audios: []cgenAudioRenditionXML{stereo, surround},
 	}
 	feed.ProgramOutput.VideoBitrateKbps = hd.BitrateKbps
 	feed.ProgramOutput.AudioBitrateKbps = stereo.BitrateKbps
-	feed.AlertOutput = feed.ProgramOutput
 }
 
 func normalizeVideoRendition(value cgenVideoRenditionXML, fallback cgenVideoRenditionXML) cgenVideoRenditionXML {
@@ -512,19 +541,11 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			Format: stringFromAny(source["program_input_format"]),
 		},
 		PriorityInput: cgenPriorityInputXML{
-			FeedID: stringFromAny(source["priority_feed_id"]),
-			URL:    stringFromAny(source["priority_input_url"]),
-			Format: stringFromAny(source["priority_input_format"]),
+			FeedID:      stringFromAny(source["priority_feed_id"]),
+			AudioSource: stringFromAny(source["audio_source"]),
+			Format:      stringFromAny(source["priority_input_format"]),
 		},
 		ProgramOutput: cgenEndpointXML{
-			URL:              stringFromAny(source["program_output_url"]),
-			Format:           stringFromAny(source["program_output_format"]),
-			VCodec:           stringFromAny(source["vcodec"]),
-			ACodec:           stringFromAny(source["acodec"]),
-			VideoBitrateKbps: firstStringFromAny(source, "hd_bitrate_kbps", "video_bitrate_kbps"),
-			AudioBitrateKbps: firstStringFromAny(source, "stereo_bitrate_kbps", "audio_bitrate_kbps"),
-		},
-		AlertOutput: cgenEndpointXML{
 			URL:              stringFromAny(source["program_output_url"]),
 			Format:           stringFromAny(source["program_output_format"]),
 			VCodec:           stringFromAny(source["vcodec"]),
@@ -541,9 +562,9 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			Standard:   stringFromAny(source["standard"]),
 		},
 		Audio: cgenAudioXML{
-			Idle:      stringFromAny(source["audio_idle"]),
-			AlertMode: stringFromAny(source["audio_alert_mode"]),
-			DuckDB:    "0",
+			Idle:               stringFromAny(source["audio_idle"]),
+			AlertMode:          stringFromAny(source["audio_alert_mode"]),
+			MuteStandbyRoutine: boolText(boolFromAny(source["mute_standby_routine"], true)),
 		},
 		Ladder: cgenLadderXML{
 			Videos: []cgenVideoRenditionXML{
@@ -595,19 +616,19 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			},
 			Audios: []cgenAudioRenditionXML{
 				{
-					ID:          "surround_51",
-					Enabled:     boolText(boolFromAny(source["surround_enabled"], true)),
-					Channels:    "6",
-					ACodec:      stringFromAny(source["acodec"]),
-					BitrateKbps: fallbackText(stringFromAny(source["surround_bitrate_kbps"]), "384"),
-					Language:    "eng",
-				},
-				{
 					ID:          "stereo",
 					Enabled:     boolText(boolFromAny(source["stereo_enabled"], true)),
 					Channels:    "2",
 					ACodec:      stringFromAny(source["acodec"]),
 					BitrateKbps: firstStringFromAny(source, "stereo_bitrate_kbps", "audio_bitrate_kbps"),
+					Language:    "eng",
+				},
+				{
+					ID:          "surround_51",
+					Enabled:     boolText(boolFromAny(source["surround_enabled"], true)),
+					Channels:    "6",
+					ACodec:      stringFromAny(source["acodec"]),
+					BitrateKbps: fallbackText(stringFromAny(source["surround_bitrate_kbps"]), "384"),
 					Language:    "eng",
 				},
 			},
@@ -618,20 +639,12 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			Font:              stringFromAny(source["font"]),
 			FontSize:          stringFromAny(source["font_size"]),
 			ScrollSpeed:       stringFromAny(source["scroll_speed"]),
-			X:                 stringFromAny(source["banner_x"]),
-			Y:                 stringFromAny(source["banner_y"]),
 			BackgroundEnabled: boolText(boolFromAny(source["banner_background_enabled"], true)),
 		},
 		Graphics: cgenGraphicsXML{
-			BackgroundColor: stringFromAny(source["background_color"]),
-			Font:            stringFromAny(source["font"]),
-			FontSize:        stringFromAny(source["font_size"]),
-			TextX:           stringFromAny(source["text_x"]),
-			TextY:           stringFromAny(source["text_y"]),
-			BannerX:         stringFromAny(source["banner_x"]),
-			BannerY:         stringFromAny(source["banner_y"]),
-			BannerWidth:     stringFromAny(source["banner_width"]),
-			BannerHeight:    stringFromAny(source["banner_height"]),
+			Font:         stringFromAny(source["font"]),
+			FontSize:     stringFromAny(source["font_size"]),
+			BannerHeight: stringFromAny(source["ticker_height"]),
 		},
 		Clock: cgenClockXML{
 			Enabled:  boolText(boolFromAny(source["clock_enabled"], false)),
@@ -643,8 +656,6 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 		},
 		Text: cgenTextXML{
 			Enabled:  boolText(boolFromAny(source["text_enabled"], false)),
-			X:        stringFromAny(source["text_x"]),
-			Y:        stringFromAny(source["text_y"]),
 			FontSize: stringFromAny(source["text_font_size"]),
 			Color:    stringFromAny(source["text_color"]),
 			Content:  stringFromAny(source["text"]),
@@ -652,6 +663,12 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 		State: cgenStateXML{
 			Mode:      stringFromAny(source["mode"]),
 			SMPTEBars: boolText(boolFromAny(source["smpte_bars"], false)),
+		},
+		Standby: cgenStandbyXML{
+			Mode:     stringFromAny(source["standby_mode"]),
+			Text:     stringFromAny(source["standby_text"]),
+			FontSize: stringFromAny(source["standby_font_size"]),
+			YPercent: stringFromAny(source["standby_y_percent"]),
 		},
 		Sync: cgenSyncXML{
 			HardResetMS:            stringFromAny(source["sync_hard_reset_ms"]),
@@ -670,24 +687,27 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 	return config.Feeds[0], nil
 }
 
-func cgenPayload(path string, config cgenXML) map[string]any {
+func cgenPayload(configPath string, path string, config cgenXML) map[string]any {
 	rows := make([]map[string]any, 0, len(config.Feeds))
 	for _, feed := range config.Feeds {
+		runtime := loadCgenRuntimeStatus(configPath, feed.ID)
 		rows = append(rows, map[string]any{
 			"id":                              feed.ID,
 			"name":                            feed.Name,
 			"enabled":                         xmlBool(feed.Enabled, false),
 			"mode":                            feed.State.Mode,
 			"smpte_bars":                      xmlBool(feed.State.SMPTEBars, false),
+			"standby_mode":                    feed.Standby.Mode,
+			"standby_text":                    feed.Standby.Text,
+			"standby_font_size":               feed.Standby.FontSize,
+			"standby_y_percent":               feed.Standby.YPercent,
 			"program_input_url":               feed.ProgramInput.URL,
 			"program_input_format":            feed.ProgramInput.Format,
 			"priority_feed_id":                feed.PriorityInput.FeedID,
-			"priority_input_url":              feed.PriorityInput.URL,
+			"audio_source":                    feed.PriorityInput.AudioSource,
 			"priority_input_format":           feed.PriorityInput.Format,
 			"program_output_url":              feed.ProgramOutput.URL,
 			"program_output_format":           feed.ProgramOutput.Format,
-			"alert_output_url":                feed.AlertOutput.URL,
-			"alert_output_format":             feed.AlertOutput.Format,
 			"vcodec":                          feed.ProgramOutput.VCodec,
 			"acodec":                          feed.ProgramOutput.ACodec,
 			"video_bitrate_kbps":              feed.ProgramOutput.VideoBitrateKbps,
@@ -710,22 +730,16 @@ func cgenPayload(path string, config cgenXML) map[string]any {
 			"standard":                        feed.Video.Standard,
 			"audio_idle":                      feed.Audio.Idle,
 			"audio_alert_mode":                feed.Audio.AlertMode,
-			"duck_db":                         feed.Audio.DuckDB,
+			"mute_standby_routine":            xmlBool(feed.Audio.MuteStandbyRoutine, true),
 			"banner_mode":                     feed.Banner.Mode,
 			"ticker_height":                   feed.Banner.TickerHeight,
 			"scroll_speed":                    feed.Banner.ScrollSpeed,
 			"font":                            feed.Graphics.Font,
 			"font_size":                       feed.Graphics.FontSize,
-			"background_color":                feed.Graphics.BackgroundColor,
 			"banner_background_enabled":       xmlBool(feed.Banner.BackgroundEnabled, true),
-			"banner_x":                        feed.Graphics.BannerX,
-			"banner_y":                        feed.Graphics.BannerY,
-			"banner_width":                    feed.Graphics.BannerWidth,
 			"banner_height":                   feed.Graphics.BannerHeight,
 			"text_enabled":                    xmlBool(feed.Text.Enabled, false),
 			"text":                            feed.Text.Content,
-			"text_x":                          feed.Text.X,
-			"text_y":                          feed.Text.Y,
 			"text_font_size":                  feed.Text.FontSize,
 			"text_color":                      feed.Text.Color,
 			"clock_enabled":                   xmlBool(feed.Clock.Enabled, false),
@@ -741,6 +755,7 @@ func cgenPayload(path string, config cgenXML) map[string]any {
 			"sync_reconnect_max_ms":           feed.Sync.ReconnectMaxMS,
 			"sync_status_interval_ms":         feed.Sync.StatusIntervalMS,
 			"updated_at":                      fallbackText(feed.State.UpdatedAt, feed.UpdatedAt),
+			"runtime":                         runtime,
 		})
 	}
 	return map[string]any{
@@ -751,6 +766,28 @@ func cgenPayload(path string, config cgenXML) map[string]any {
 			"count": len(rows),
 		},
 	}
+}
+
+func loadCgenRuntimeStatus(configPath string, feedID string) map[string]any {
+	path := resolveConfigPath(configPath, filepath.Join("runtime", "cgen", safeCgenRuntimeID(feedID)+".status.json"))
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+func safeCgenRuntimeID(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, strings.TrimSpace(value))
 }
 
 func cleanCgenEndpoint(value cgenEndpointXML) cgenEndpointXML {
@@ -781,6 +818,17 @@ func normalizeCgenStandard(value string) string {
 	}
 }
 
+func normalizeCgenAudioSource(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "routine", "feed", "program_feed":
+		return "routine"
+	case "both", "priority+routine", "priority_routine", "routine_priority":
+		return "both"
+	default:
+		return "priority"
+	}
+}
+
 func cleanCgenID(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "*" {
@@ -803,6 +851,17 @@ func normalizeCgenMode(value string) string {
 	}
 }
 
+func normalizeCgenStandbyMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "smpte", "bars", "color_bars", "colour_bars":
+		return "smpte"
+	case "black", "blank", "off", "disabled":
+		return "black"
+	default:
+		return "banner"
+	}
+}
+
 func cleanPositive(value string, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -814,6 +873,24 @@ func cleanPositive(value string, fallback string) string {
 		}
 	}
 	return value
+}
+
+func cleanPercent(value string, fallback string) string {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		text = strings.TrimSpace(fallback)
+	}
+	n, err := strconv.Atoi(text)
+	if err != nil {
+		n, _ = strconv.Atoi(strings.TrimSpace(fallback))
+	}
+	if n < 0 {
+		n = 0
+	}
+	if n > 100 {
+		n = 100
+	}
+	return strconv.Itoa(n)
 }
 
 func cleanOptionalPositive(value string) string {

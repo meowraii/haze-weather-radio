@@ -1,26 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <cgen enabled="true">
-  <feed id="CAP-IT-ALL" name="CAP-IT-ALL CGEN" enabled="true" updated_at="2026-06-23T20:47:07Z">
-    <input></input>
-    <output></output>
-    <programInput url="http://172.16.1.31:8866/live?channel_id=10798" format="mpegts"></programInput>
-    <priorityInput feed_id="*" format="priority-audio"></priorityInput>
-    <programOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="mpeg2video" acodec="ac3" video_bitrate_kbps="12000" audio_bitrate_kbps="192"></programOutput>
-    <alertOutput url="udp://239.0.0.2:9001?pkt_size=1316" format="mpegts" vcodec="mpeg2video" acodec="ac3" video_bitrate_kbps="12000" audio_bitrate_kbps="192"></alertOutput>
+  <feed id="CAP-IT-ALL" name="CAP-IT-ALL CGEN" enabled="true" updated_at="2026-06-24T01:24:12Z">
+    <programInput url="udp://172.16.1.30:9098?fifo_size=2000000&amp;overrun_nonfatal=1&amp;reuse=1&amp;buffer_size=1048576" format="mpegts"></programInput>
+    <priorityInput feed_id="*" audio_source="both" format="priority-audio"></priorityInput>
+    <programOutput url="udp://239.0.0.2:9001?pkt_size=1316&amp;buffer_size=1048576&amp;reuse=1" format="mpegts" vcodec="mpeg2video" acodec="ac3" video_bitrate_kbps="12000" audio_bitrate_kbps="192"></programOutput>
     <video width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc"></video>
-    <audio idle="source" alert_mode="replace" duck_db="0"></audio>
+    <audio idle="source" alert_mode="replace" mute_standby_routine="true"></audio>
     <ladder>
       <video id="hd" enabled="auto" width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc" vcodec="mpeg2video" bitrate_kbps="12000" program="1" video_pid="256" pmt_pid="4096"></video>
       <video id="p720" enabled="false" width="1280" height="720" fps="30000/1001" interlaced="false" field_order="tff" standard="atsc" vcodec="mpeg2video" bitrate_kbps="8000" program="2" video_pid="288" pmt_pid="4097"></video>
       <video id="sd" enabled="false" width="720" height="480" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc" vcodec="mpeg2video" bitrate_kbps="5000" program="3" video_pid="320" pmt_pid="4098"></video>
-      <audio id="surround_51" enabled="true" channels="6" acodec="ac3" bitrate_kbps="384" language="eng"></audio>
       <audio id="stereo" enabled="true" channels="2" acodec="ac3" bitrate_kbps="192" language="eng"></audio>
+      <audio id="surround_51" enabled="false" channels="6" acodec="ac3" bitrate_kbps="384" language="eng"></audio>
     </ladder>
-    <banner mode="ticker" ticker_height="72" font="Arial" font_size="54" scroll_speed="8" x="0" y="0" background_enabled="true"></banner>
-    <graphics background_color="#000000" font="Arial" font_size="54" text_x="48" text_y="128" banner_x="0" banner_y="0" banner_width="1920" banner_height="72"></graphics>
+    <banner mode="ticker" ticker_height="72" font="Arial" font_size="54" scroll_speed="8" background_enabled="true"></banner>
+    <graphics font="Arial" font_size="54" banner_height="72"></graphics>
     <clock enabled="false" format="Jan 02 15:04:05" x="48" y="48" font_size="30" color="#ffffff"></clock>
-    <text enabled="false" x="48" y="128" font_size="58" color="#ffffff"></text>
+    <text enabled="false" font_size="58" color="#ffffff"></text>
     <state mode="release" smpte_bars="false"></state>
-    <sync hard_reset_ms="250" max_audio_frames_per_video="4" source_buffer_ms="120" reconnect_initial_ms="500" reconnect_max_ms="10000" status_interval_ms="1000"></sync>
+    <standby mode="banner" text="EAS Details Channel" font_size="54" y_percent="10"></standby>
+    <sync hard_reset_ms="250" max_audio_frames_per_video="8" source_buffer_ms="240" reconnect_initial_ms="500" reconnect_max_ms="10000" status_interval_ms="750"></sync>
   </feed>
 </cgen>

@@ -42,6 +42,23 @@ func TestTLSStatusDoesNotPromptForLocalhost(t *testing.T) {
 	}
 }
 
+func TestPublicTLSNoticeTreatsLocalhostSubdomainAsActualDomain(t *testing.T) {
+	request, err := http.NewRequest(http.MethodGet, "http://localhost.example.com/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "localhost.example.com"
+
+	status := tlsStatePayload(Config{}, request)
+
+	if status["actual_domain"] != true {
+		t.Fatalf("actual_domain = %v", status["actual_domain"])
+	}
+	if status["needs_setup"] != true {
+		t.Fatalf("needs_setup = %v", status["needs_setup"])
+	}
+}
+
 func TestACMERuntimeRequiresWhitelistedDomains(t *testing.T) {
 	var config Config
 	config.Webpanel.TLS.Enabled = true

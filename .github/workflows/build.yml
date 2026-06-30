@@ -33,7 +33,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libopus-dev pkg-config
+          sudo apt-get install -y libasound2-dev libopus-dev pkg-config \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-libav gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -78,6 +82,12 @@ jobs:
           install: >-
             mingw-w64-clang-x86_64-clang
             mingw-w64-clang-x86_64-ffmpeg
+            mingw-w64-clang-x86_64-gstreamer
+            mingw-w64-clang-x86_64-gst-libav
+            mingw-w64-clang-x86_64-gst-plugins-base
+            mingw-w64-clang-x86_64-gst-plugins-good
+            mingw-w64-clang-x86_64-gst-plugins-bad
+            mingw-w64-clang-x86_64-gst-plugins-ugly
             mingw-w64-clang-x86_64-libunwind
             mingw-w64-clang-x86_64-opus
             mingw-w64-clang-x86_64-opusfile
@@ -152,7 +162,11 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libopus-dev pkg-config
+          sudo apt-get install -y libasound2-dev libopus-dev pkg-config \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-libav gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -208,7 +222,7 @@ jobs:
           release: "14.2"
           usesh: true
           prepare: |
-            pkg install -y bash ca_root_nss curl rust pkgconf
+            pkg install -y bash ca_root_nss curl rust pkgconf gstreamer1 gstreamer1-plugins gstreamer1-libav
             GO_VERSION="$(awk '/^go / { print $2; exit }' services/go/go.mod)"
             fetch -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.freebsd-amd64.tar.gz"
             rm -rf /usr/local/go

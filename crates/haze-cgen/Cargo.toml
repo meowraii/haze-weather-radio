@@ -11,7 +11,6 @@ path = "src/main.rs"
 
 [features]
 default = []
-ffmpeg-rsmpeg = ["haze-media/ffmpeg-rsmpeg", "dep:rsmpeg", "rsmpeg/link_system_ffmpeg"]
 gpu-wgpu = ["dep:bytemuck", "dep:fontdb", "dep:fontdue", "dep:pollster", "dep:wgpu"]
 
 [dependencies]
@@ -31,9 +30,10 @@ fontdb = { version = "0.23", optional = true }
 fontdue = { version = "0.9", optional = true }
 pollster = { version = "0.4", optional = true }
 wgpu = { version = "26", optional = true }
-rsmpeg = { version = "0.18.0", default-features = false, features = ["ffmpeg8"], optional = true }
-
-haze-media = { path = "../haze-media" }
+gstreamer = "0.25.3"
+gstreamer-app = "0.25.2"
+gstreamer-audio = "0.25.3"
+gstreamer-video = "0.25.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

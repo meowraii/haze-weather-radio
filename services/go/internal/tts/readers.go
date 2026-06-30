@@ -88,6 +88,8 @@ func NormalizeProvider(provider string) string {
 		return "chatterbox"
 	case "kokoro", "kokoro-tts", "kokorotts", "sherpa", "sherpa-onnx":
 		return "kokoro"
+	case "speaky", "speaky-api", "speakyapi":
+		return "speakyapi"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
 	}

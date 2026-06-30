@@ -630,6 +630,52 @@ func displayText(value any) string {
 	return strings.TrimSpace(fmt.Sprint(value))
 }
 
+func spokenText(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		merged := map[string]any{}
+		for _, item := range typed {
+			if child, ok := item.(map[string]any); ok {
+				for key, value := range child {
+					merged[key] = value
+				}
+			} else if text := spokenText(item); text != "" {
+				return text
+			}
+		}
+		for _, key := range []string{"pronunciation", "pronounciation", "text", "name", "value", "address"} {
+			if text := spokenText(merged[key]); text != "" {
+				return text
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"pronunciation", "pronounciation", "text", "name", "value", "address"} {
+			if text := spokenText(typed[key]); text != "" {
+				return text
+			}
+		}
+		for _, child := range typed {
+			if text := spokenText(child); text != "" {
+				return text
+			}
+		}
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func spokenNetworkName(network transmitterNetworkXML) string {
+	for _, value := range []string{network.Pronunciation, network.Pronounciation, network.Name} {
+		if text := strings.TrimSpace(value); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
 func xmlBool(raw string, fallback bool) bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "":

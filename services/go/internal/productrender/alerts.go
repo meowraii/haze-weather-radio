@@ -506,7 +506,8 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 		entries = pruneCAPEntries(entries, now)
 		priorEntries := append([]capRegistryEntry(nil), entries...)
 		hadAcceptedArchive := capAcceptedArchiveContains(s.cfg.Store, feed.ID, alert.Identifier)
-		if hadAcceptedArchive && !capEntryExists(priorEntries, alert.Identifier) {
+		hadPriorityQueue := capPriorityQueueContains(s.cfg.BaseDir, feed.ID, alert.Identifier)
+		if hadAcceptedArchive && hadPriorityQueue && !capEntryExists(priorEntries, alert.Identifier) {
 			priorEntries = append(priorEntries, capRegistryEntry{ID: alert.Identifier})
 		}
 		if isExplicitCAPEnd(alert) {
@@ -642,7 +643,11 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 		}
 		audio := alertBroadcastAudio(alert, feedLanguage(feed))
 		broadcastImmediate := info != nil && isBroadcastImmediateInfo(*info)
-		broadcast := capPriorityBroadcastAllowedWithPrior(alert, feed, s.cfg.BaseDir, now, priorEntries)
+		broadcastPriorEntries := priorEntries
+		if !hadPriorityQueue {
+			broadcastPriorEntries = removeCAPIDs(broadcastPriorEntries, []string{alert.Identifier})
+		}
+		broadcast := capPriorityBroadcastAllowedWithPrior(alert, feed, s.cfg.BaseDir, now, broadcastPriorEntries)
 		if broadcast && !s.claimCAPPriorityBroadcast(feed.ID, alert.Identifier) {
 			broadcast = false
 		}
@@ -782,9 +787,90 @@ func capPriorityBroadcastAllowedWithPrior(alert capingest.Alert, feed feedXML, b
 		return true
 	}
 	if capMessageTypeIsUpdate(alert) && !capUpdateAddsFeedLocations(alert, *info, feed, baseDir) {
-		return false
+		if feedUsesAlertCoverage(feed, alert) {
+			return false
+		}
 	}
 	return sameAlertFreshForTone(alert, *info, sameEventForCAP(alert, *info, baseDir), now)
+}
+
+type capPriorityQueueManifest struct {
+	ID      string   `json:"id"`
+	AlertID string   `json:"alert_id"`
+	FeedID  string   `json:"feed_id"`
+	FeedIDs []string `json:"feed_ids"`
+	Status  string   `json:"status"`
+	QueueID string   `json:"queue_id"`
+	Subject string   `json:"subject"`
+}
+
+func capPriorityQueueContains(baseDir string, feedID string, alertID string) bool {
+	alertID = strings.TrimSpace(alertID)
+	if alertID == "" || strings.TrimSpace(baseDir) == "" {
+		return false
+	}
+	queuePath := filepath.Join(baseDir, "runtime", "queues", "alerts")
+	entries, err := os.ReadDir(queuePath)
+	if err != nil {
+		return false
+	}
+	safeAlertID := safeID(alertID)
+	safeFeedID := safeID(feedID)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		manifestPath := filepath.Join(queuePath, entry.Name())
+		raw, err := os.ReadFile(manifestPath)
+		if err != nil {
+			continue
+		}
+		var manifest capPriorityQueueManifest
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			continue
+		}
+		if strings.TrimSpace(feedID) != "" && !capQueueTargetsFeed(manifest, feedID) {
+			continue
+		}
+		if capQueueMatchesAlert(manifest, entry.Name(), alertID, safeAlertID, safeFeedID) {
+			return true
+		}
+	}
+	return false
+}
+
+func capQueueTargetsFeed(manifest capPriorityQueueManifest, feedID string) bool {
+	if strings.TrimSpace(manifest.FeedID) == feedID {
+		return true
+	}
+	for _, id := range manifest.FeedIDs {
+		if strings.TrimSpace(id) == feedID {
+			return true
+		}
+	}
+	return false
+}
+
+func capQueueMatchesAlert(manifest capPriorityQueueManifest, filename string, alertID string, safeAlertID string, safeFeedID string) bool {
+	for _, value := range []string{manifest.AlertID, manifest.Subject} {
+		if strings.TrimSpace(value) == alertID {
+			return true
+		}
+	}
+	name := strings.TrimSuffix(filename, filepath.Ext(filename))
+	if safeAlertID == "" {
+		return false
+	}
+	for _, value := range []string{manifest.ID, manifest.QueueID, name} {
+		value = strings.TrimSpace(value)
+		if value == "" || !strings.Contains(value, safeAlertID) {
+			continue
+		}
+		if safeFeedID == "" || strings.Contains(value, safeFeedID) {
+			return true
+		}
+	}
+	return false
 }
 
 func capEntryExists(entries []capRegistryEntry, id string) bool {
