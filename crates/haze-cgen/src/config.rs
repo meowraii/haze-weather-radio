@@ -29,6 +29,15 @@ pub(crate) struct FeedConfig {
     pub(crate) priority_input: PriorityInputConfig,
     #[serde(rename = "programOutput", default)]
     pub(crate) program_output: EndpointConfig,
+    #[serde(default)]
+    pub(crate) program: ProgramSectionConfig,
+    #[serde(default)]
+    pub(crate) priority: PrioritySectionConfig,
+    #[serde(default)]
+    pub(crate) media: MediaSectionConfig,
+    #[serde(default)]
+    pub(crate) presentation: PresentationSectionConfig,
+    #[serde(default)]
     pub(crate) video: VideoConfig,
     #[serde(default)]
     pub(crate) audio: AudioConfig,
@@ -66,6 +75,17 @@ pub(crate) struct EndpointConfig {
     pub(crate) audio_bitrate_kbps: Option<u32>,
 }
 
+impl EndpointConfig {
+    fn has_values(&self) -> bool {
+        !self.url.trim().is_empty()
+            || !self.format.trim().is_empty()
+            || !self.vcodec.trim().is_empty()
+            || !self.acodec.trim().is_empty()
+            || self.video_bitrate_kbps.is_some()
+            || self.audio_bitrate_kbps.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct PriorityInputConfig {
     #[serde(rename = "@feed_id", default)]
@@ -92,11 +112,11 @@ impl PriorityInputConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct VideoConfig {
-    #[serde(rename = "@width")]
+    #[serde(rename = "@width", default)]
     pub(crate) width: u32,
-    #[serde(rename = "@height")]
+    #[serde(rename = "@height", default)]
     pub(crate) height: u32,
     #[serde(rename = "@fps", default)]
     pub(crate) fps: String,
@@ -180,10 +200,18 @@ pub(crate) struct BannerConfig {
     pub(crate) ticker_height: u32,
     #[serde(rename = "@font", default)]
     pub(crate) font: String,
+    #[serde(rename = "@font_weight", default = "regular_font_weight")]
+    pub(crate) font_weight: String,
     #[serde(rename = "@font_size", default = "default_font_size")]
     pub(crate) font_size: u32,
     #[serde(rename = "@scroll_speed", default = "default_scroll_speed")]
     pub(crate) scroll_speed: u32,
+    #[serde(rename = "@scroll_repeat_mode", default = "default_scroll_repeat_mode")]
+    pub(crate) scroll_repeat_mode: String,
+    #[serde(rename = "@after_eom_repeats", default)]
+    pub(crate) after_eom_repeats: u32,
+    #[serde(rename = "@fixed_repeats", default = "default_fixed_repeats")]
+    pub(crate) fixed_repeats: u32,
     #[serde(rename = "@background_enabled", default = "default_true")]
     pub(crate) background_enabled: bool,
 }
@@ -192,6 +220,8 @@ pub(crate) struct BannerConfig {
 pub(crate) struct GraphicsConfig {
     #[serde(rename = "@font", default)]
     pub(crate) font: String,
+    #[serde(rename = "@font_weight", default = "regular_font_weight")]
+    pub(crate) font_weight: String,
     #[serde(rename = "@font_size", default = "default_font_size")]
     pub(crate) font_size: u32,
     #[serde(rename = "@banner_height", default = "default_ticker_height")]
@@ -274,7 +304,101 @@ pub(crate) struct SyncConfig {
     pub(crate) status_interval_ms: u32,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct ProgramSectionConfig {
+    #[serde(default)]
+    input: EndpointConfig,
+    #[serde(default)]
+    output: EndpointConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct PrioritySectionConfig {
+    #[serde(default)]
+    input: PriorityInputConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct MediaSectionConfig {
+    #[serde(default)]
+    video: Option<VideoConfig>,
+    #[serde(default)]
+    audio: Option<AudioConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct PresentationSectionConfig {
+    #[serde(default)]
+    banner: Option<PresentationBannerSectionConfig>,
+    #[serde(default)]
+    graphics: Option<PresentationGraphicsSectionConfig>,
+    #[serde(default)]
+    clock: Option<ClockConfig>,
+    #[serde(default)]
+    text: Option<TextConfig>,
+    #[serde(default)]
+    standby: Option<StandbyConfig>,
+    #[serde(default)]
+    state: Option<StateConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PresentationBannerSectionConfig {
+    #[serde(rename = "@mode", default)]
+    mode: String,
+    #[serde(rename = "@background_enabled", default)]
+    background_enabled: Option<bool>,
+    #[serde(default)]
+    font: FontSectionConfig,
+    #[serde(default)]
+    ticker: TickerSectionConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PresentationGraphicsSectionConfig {
+    #[serde(default)]
+    font: FontSectionConfig,
+    #[serde(rename = "@banner_height", default)]
+    banner_height: u32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct FontSectionConfig {
+    #[serde(rename = "@family", default)]
+    family: String,
+    #[serde(rename = "@weight", default)]
+    weight: String,
+    #[serde(rename = "@size", default)]
+    size: u32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TickerSectionConfig {
+    #[serde(rename = "@height", default)]
+    height: u32,
+    #[serde(rename = "@speed", default)]
+    speed: u32,
+    #[serde(default)]
+    repeat: TickerRepeatSectionConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TickerRepeatSectionConfig {
+    #[serde(rename = "@mode", default)]
+    mode_name: String,
+    #[serde(rename = "@after_eom", default)]
+    after_eom: u32,
+    #[serde(rename = "@count", default)]
+    count: u32,
+}
+
 impl CgenConfig {
+    fn apply_nested_sections(&mut self) {
+        for feed in &mut self.feeds {
+            feed.apply_nested_sections();
+        }
+    }
+
     pub(crate) fn enabled_feeds(&self) -> Result<Vec<FeedConfig>> {
         if !self.enabled {
             return Ok(Vec::new());
@@ -292,6 +416,90 @@ impl CgenConfig {
 }
 
 impl FeedConfig {
+    fn apply_nested_sections(&mut self) {
+        if self.program.input.has_values() {
+            self.program_input = self.program.input.clone();
+        }
+        if self.program.output.has_values() {
+            self.program_output = self.program.output.clone();
+        }
+        if !self.priority.input.feed_id.trim().is_empty()
+            || !self.priority.input.audio_source.trim().is_empty()
+            || !self.priority.input.format.trim().is_empty()
+        {
+            self.priority_input = self.priority.input.clone();
+        }
+        if let Some(video) = self.media.video.as_ref() {
+            self.video = video.clone();
+        }
+        if let Some(audio) = self.media.audio.as_ref() {
+            self.audio = audio.clone();
+        }
+        self.apply_presentation_section();
+    }
+
+    fn apply_presentation_section(&mut self) {
+        if let Some(banner) = self.presentation.banner.as_ref() {
+            if !banner.mode.trim().is_empty() {
+                self.banner.mode = banner.mode.clone();
+            }
+            if let Some(background_enabled) = banner.background_enabled {
+                self.banner.background_enabled = background_enabled;
+            }
+            if banner.ticker.height > 0 {
+                self.banner.ticker_height = banner.ticker.height;
+            }
+            if banner.ticker.speed > 0 {
+                self.banner.scroll_speed = banner.ticker.speed;
+            }
+            if !banner.ticker.repeat.mode_name.trim().is_empty() {
+                self.banner.scroll_repeat_mode = banner.ticker.repeat.mode_name.clone();
+            }
+            if banner.ticker.repeat.after_eom > 0 {
+                self.banner.after_eom_repeats = banner.ticker.repeat.after_eom;
+            }
+            if banner.ticker.repeat.count > 0 {
+                self.banner.fixed_repeats = banner.ticker.repeat.count;
+            }
+            if !banner.font.family.trim().is_empty() {
+                self.banner.font = banner.font.family.clone();
+            }
+            if !banner.font.weight.trim().is_empty() {
+                self.banner.font_weight = banner.font.weight.clone();
+            }
+            if banner.font.size > 0 {
+                self.banner.font_size = banner.font.size;
+            }
+        }
+
+        if let Some(graphics) = self.presentation.graphics.as_ref() {
+            if !graphics.font.family.trim().is_empty() {
+                self.graphics.font = graphics.font.family.clone();
+            }
+            if !graphics.font.weight.trim().is_empty() {
+                self.graphics.font_weight = graphics.font.weight.clone();
+            }
+            if graphics.font.size > 0 {
+                self.graphics.font_size = graphics.font.size;
+            }
+            if graphics.banner_height > 0 {
+                self.graphics.banner_height = graphics.banner_height;
+            }
+        }
+        if let Some(clock) = self.presentation.clock.as_ref() {
+            self.clock = clock.clone();
+        }
+        if let Some(text) = self.presentation.text.as_ref() {
+            self.text = text.clone();
+        }
+        if let Some(standby) = self.presentation.standby.as_ref() {
+            self.standby = standby.clone();
+        }
+        if let Some(state) = self.presentation.state.as_ref() {
+            self.state = state.clone();
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn matches_feed(&self, feed_id: &str) -> bool {
         self.id.trim() == "*" || self.id.trim() == feed_id.trim()
@@ -455,42 +663,49 @@ pub(crate) fn load_config(path: &Path) -> Result<CgenConfig> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     reject_legacy_cgen_xml(path, &raw)?;
-    let config: CgenConfig = quick_xml::de::from_str(&raw)
+    let mut config: CgenConfig = quick_xml::de::from_str(&raw)
         .with_context(|| format!("failed to parse {}", path.display()))?;
+    config.apply_nested_sections();
     Ok(config)
 }
 
 fn reject_legacy_cgen_xml(path: &Path, raw: &str) -> Result<()> {
     let mut reader = Reader::from_str(raw);
     reader.config_mut().trim_text(true);
+    let mut stack: Vec<String> = Vec::new();
     loop {
         match reader.read_event() {
-            Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
+            Ok(Event::Start(event)) => {
                 let element_name = event.name();
                 let name_bytes = element_name.as_ref();
                 let name = std::str::from_utf8(name_bytes).unwrap_or_default();
-                if matches!(name, "input" | "output" | "alertOutput") {
+                let parent = stack.last().map(String::as_str).unwrap_or_default();
+                if legacy_element(parent, name) {
                     bail!(
                         "legacy cgen <{}> element is no longer supported in {}; use programInput, priorityInput, and programOutput",
                         name,
                         path.display()
                     );
                 }
-                for attr in event.attributes() {
-                    let attr = attr.with_context(|| {
-                        format!("failed to read cgen XML attribute in {}", path.display())
-                    })?;
-                    let key_bytes = attr.key.as_ref();
-                    let key = std::str::from_utf8(key_bytes).unwrap_or_default();
-                    if legacy_attribute(name, key) {
-                        bail!(
-                            "legacy cgen {} @{} attribute is no longer supported in {}",
-                            name,
-                            key,
-                            path.display()
-                        );
-                    }
+                reject_legacy_attrs(path, name, event.attributes())?;
+                stack.push(name.to_string());
+            }
+            Ok(Event::Empty(event)) => {
+                let element_name = event.name();
+                let name_bytes = element_name.as_ref();
+                let name = std::str::from_utf8(name_bytes).unwrap_or_default();
+                let parent = stack.last().map(String::as_str).unwrap_or_default();
+                if legacy_element(parent, name) {
+                    bail!(
+                        "legacy cgen <{}> element is no longer supported in {}; use programInput, priorityInput, and programOutput",
+                        name,
+                        path.display()
+                    );
                 }
+                reject_legacy_attrs(path, name, event.attributes())?;
+            }
+            Ok(Event::End(_)) => {
+                stack.pop();
             }
             Ok(Event::Eof) => return Ok(()),
             Ok(_) => {}
@@ -500,6 +715,34 @@ fn reject_legacy_cgen_xml(path: &Path, raw: &str) -> Result<()> {
             }
         }
     }
+}
+
+fn reject_legacy_attrs<'a>(
+    path: &Path,
+    name: &str,
+    attributes: quick_xml::events::attributes::Attributes<'a>,
+) -> Result<()> {
+    for attr in attributes {
+        let attr = attr
+            .with_context(|| format!("failed to read cgen XML attribute in {}", path.display()))?;
+        let key_bytes = attr.key.as_ref();
+        let key = std::str::from_utf8(key_bytes).unwrap_or_default();
+        if legacy_attribute(name, key) {
+            bail!(
+                "legacy cgen {} @{} attribute is no longer supported in {}",
+                name,
+                key,
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn legacy_element(parent: &str, element: &str) -> bool {
+    (element == "output" && parent != "program")
+        || element == "alertOutput"
+        || (element == "input" && !matches!(parent, "program" | "priority"))
 }
 
 fn legacy_attribute(element: &str, attr: &str) -> bool {
@@ -571,8 +814,20 @@ fn default_font_size() -> u32 {
     58
 }
 
+fn regular_font_weight() -> String {
+    "regular".to_string()
+}
+
 fn default_scroll_speed() -> u32 {
     8
+}
+
+fn default_scroll_repeat_mode() -> String {
+    "until_audio_end".to_string()
+}
+
+fn default_fixed_repeats() -> u32 {
+    1
 }
 
 fn default_text_x() -> i32 {
@@ -752,6 +1007,54 @@ mod tests {
     }
 
     #[test]
+    fn load_config_accepts_nested_cgen_shape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cgen.xml");
+        std::fs::write(
+            &path,
+            r#"
+<cgen enabled="true">
+  <feed id="CAP-IT-ALL" enabled="true">
+    <program>
+      <input url="udp://127.0.0.1:5000" format="mpegts"/>
+      <output url="udp://127.0.0.1:5001" format="mpegts" vcodec="mpeg2video" acodec="ac3"/>
+    </program>
+    <priority>
+      <input feed_id="*" audio_source="both" format="priority-audio"/>
+    </priority>
+    <media>
+      <video width="1280" height="720" fps="30000/1001"/>
+      <audio idle="source" alert_mode="replace" mute_standby_routine="true"/>
+    </media>
+    <ladder>
+      <video id="p720" enabled="true" width="1280" height="720" fps="30000/1001"/>
+      <audio id="stereo" enabled="true" channels="2"/>
+    </ladder>
+    <presentation>
+      <banner mode="ticker" background_enabled="true">
+        <font family="Arial" weight="regular" size="58"/>
+        <ticker height="96" speed="12">
+          <repeat mode="until_audio_end" after_eom="2" count="1"/>
+        </ticker>
+      </banner>
+    </presentation>
+  </feed>
+</cgen>"#,
+        )
+        .expect("write config");
+
+        let config = load_config(&path).expect("nested config");
+        let feeds = config.enabled_feeds().expect("feeds");
+        assert_eq!(feeds[0].program_input_url(), "udp://127.0.0.1:5000");
+        assert_eq!(feeds[0].priority_input.feed_id, "*");
+        assert_eq!(feeds[0].video.width, 1280);
+        assert_eq!(feeds[0].banner.ticker_height, 96);
+        assert_eq!(feeds[0].banner.scroll_speed, 12);
+        assert_eq!(feeds[0].banner.scroll_repeat_mode, "until_audio_end");
+        assert_eq!(feeds[0].banner.after_eom_repeats, 2);
+    }
+
+    #[test]
     fn validates_supported_sizes() {
         assert!(allowed_video_size(720, 480));
         assert!(allowed_video_size(720, 576));
@@ -774,8 +1077,8 @@ mod tests {
       <video id="hd" enabled="auto" width="1920" height="1080" fps="30000/1001" interlaced="true" field_order="tff" standard="atsc" vcodec="mpeg2video" bitrate_kbps="12000" program="1" video_pid="256" pmt_pid="4096"/>
       <audio id="stereo" enabled="true" channels="2" acodec="ac3" bitrate_kbps="192" language="eng"/>
     </ladder>
-    <banner mode="auto" ticker_height="128" font="Arial" font_size="58" scroll_speed="5" background_enabled="true"/>
-    <graphics font="Arial" font_size="58"/>
+    <banner mode="auto" ticker_height="128" font="Arial" font_weight="regular" font_size="58" scroll_speed="5" background_enabled="true"/>
+    <graphics font="Arial" font_weight="regular" font_size="58"/>
     <clock enabled="true" x="48" y="48"/>
     <text enabled="true" x="48" y="96">Hello</text>
     <state mode="overlay" smpte_bars="true"/>
@@ -801,6 +1104,8 @@ mod tests {
         assert_eq!(feeds[0].video.field_order, "tff");
         assert_eq!(feeds[0].video.standard, "atsc");
         assert_eq!(feeds[0].banner.scroll_speed, 5);
+        assert_eq!(feeds[0].banner.font_weight, "regular");
+        assert_eq!(feeds[0].graphics.font_weight, "regular");
         assert!(feeds[0].clock.enabled);
         assert!(feeds[0].state.smpte_bars);
         assert_eq!(feeds[0].sync.hard_reset_ms, 500);
@@ -834,6 +1139,10 @@ mod tests {
                 video_bitrate_kbps: None,
                 audio_bitrate_kbps: None,
             },
+            program: Default::default(),
+            priority: Default::default(),
+            media: Default::default(),
+            presentation: Default::default(),
             video: VideoConfig {
                 width: 1280,
                 height: 720,
@@ -980,8 +1289,12 @@ impl Default for BannerConfig {
             mode: auto_mode(),
             ticker_height: default_ticker_height(),
             font: String::new(),
+            font_weight: regular_font_weight(),
             font_size: default_font_size(),
             scroll_speed: default_scroll_speed(),
+            scroll_repeat_mode: default_scroll_repeat_mode(),
+            after_eom_repeats: 0,
+            fixed_repeats: default_fixed_repeats(),
             background_enabled: true,
         }
     }
@@ -1001,6 +1314,7 @@ impl Default for GraphicsConfig {
     fn default() -> Self {
         Self {
             font: String::new(),
+            font_weight: regular_font_weight(),
             font_size: default_font_size(),
             banner_height: default_ticker_height(),
         }

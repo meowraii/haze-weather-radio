@@ -39,7 +39,11 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 				"field_order":                     "bff",
 				"standard":                        "atsc",
 				"banner_background_enabled":       true,
+				"font_weight":                     "regular",
 				"scroll_speed":                    "6",
+				"scroll_repeat_mode":              "until_audio_end",
+				"after_eom_repeats":               "2",
+				"fixed_repeats":                   "3",
 				"standby_mode":                    "smpte",
 				"standby_text":                    "EAS Details Channel",
 				"standby_font_size":               "64",
@@ -74,6 +78,30 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 	}
 	if feeds[0]["scroll_speed"] != "6" {
 		t.Fatalf("banner controls = %#v", feeds[0])
+	}
+	if feeds[0]["scroll_repeat_mode"] != "until_audio_end" ||
+		feeds[0]["after_eom_repeats"] != "2" ||
+		feeds[0]["fixed_repeats"] != "3" {
+		t.Fatalf("scroll repeat controls = %#v", feeds[0])
+	}
+	if feeds[0]["font_weight"] != "regular" {
+		t.Fatalf("font weight = %#v", feeds[0])
+	}
+	rawXML, err := os.ReadFile(filepath.Join(dir, defaultCgenFile))
+	if err != nil {
+		t.Fatalf("read cgen xml: %v", err)
+	}
+	for _, want := range []string{
+		"<program>",
+		"<priority>",
+		"<media>",
+		"<presentation>",
+		"<ticker height=\"128\" speed=\"6\">",
+		"<repeat mode=\"until_audio_end\" after_eom=\"2\" count=\"3\"></repeat>",
+	} {
+		if !strings.Contains(string(rawXML), want) {
+			t.Fatalf("written XML missing %q:\n%s", want, rawXML)
+		}
 	}
 	if feeds[0]["standby_mode"] != "smpte" ||
 		feeds[0]["standby_text"] != "EAS Details Channel" ||

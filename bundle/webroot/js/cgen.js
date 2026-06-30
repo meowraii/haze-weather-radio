@@ -52,9 +52,13 @@ const fields = {
     fieldOrder: document.getElementById('cgenFieldOrder'),
     standard: document.getElementById('cgenStandard'),
     font: document.getElementById('cgenFont'),
+    fontWeight: document.getElementById('cgenFontWeight'),
     fontSize: document.getElementById('cgenFontSize'),
     bannerHeight: document.getElementById('cgenBannerHeight'),
     bannerMode: document.getElementById('cgenBannerMode'),
+    scrollRepeatMode: document.getElementById('cgenScrollRepeatMode'),
+    afterEomRepeats: document.getElementById('cgenAfterEomRepeats'),
+    fixedRepeats: document.getElementById('cgenFixedRepeats'),
     standbyMode: document.getElementById('cgenStandbyMode'),
     standbyText: document.getElementById('cgenStandbyText'),
     standbyFontSize: document.getElementById('cgenStandbyFontSize'),
@@ -178,8 +182,12 @@ function readEditor() {
         banner_mode: value('bannerMode', 'auto'),
         ticker_height: value('bannerHeight', '128'),
         font: value('font', 'Arial'),
+        font_weight: value('fontWeight', 'regular'),
         font_size: value('fontSize', '58'),
         scroll_speed: value('scrollSpeed', '8'),
+        scroll_repeat_mode: value('scrollRepeatMode', 'until_audio_end'),
+        after_eom_repeats: value('afterEomRepeats', '0'),
+        fixed_repeats: value('fixedRepeats', '1'),
         banner_background_enabled: true,
         banner_height: value('bannerHeight', '128'),
         standby_mode: value('standbyMode', 'banner'),
@@ -243,8 +251,12 @@ function writeEditor(feed) {
     setValue('fieldOrder', feed.field_order || 'tff');
     setValue('standard', feed.standard || 'atsc');
     setValue('font', feed.font || 'Arial');
+    setValue('fontWeight', feed.font_weight || 'regular');
     setValue('fontSize', feed.font_size || '58');
     setValue('scrollSpeed', feed.scroll_speed || '8');
+    setValue('scrollRepeatMode', feed.scroll_repeat_mode || 'until_audio_end');
+    setValue('afterEomRepeats', feed.after_eom_repeats || '0');
+    setValue('fixedRepeats', feed.fixed_repeats || '1');
     setValue('bannerHeight', feed.banner_height || feed.ticker_height || '128');
     setValue('bannerMode', feed.banner_mode || 'auto');
     setValue('standbyMode', feed.standby_mode || 'banner');
@@ -394,7 +406,7 @@ function drawStandby(ctx, width, height, feed) {
     const yPercent = clampNumber(feed.standby_y_percent, 0, 100, 10);
     const text = feed.standby_text || 'EAS Details Channel';
     const font = feed.font || 'Arial';
-    ctx.font = `700 ${fontSize}px ${font}, Arial, sans-serif`;
+    ctx.font = `${canvasFontWeight(feed.font_weight, 'regular')} ${fontSize}px ${font}, Arial, sans-serif`;
     ctx.textBaseline = 'top';
     const x = Math.max(0, (width - ctx.measureText(text).width) / 2);
     const y = height * (yPercent / 100);
@@ -449,7 +461,7 @@ function drawCompositorTicker(ctx, width, height, feed, runtime, text) {
     ctx.fillRect(0, y, width, h);
     const fontSize = Math.max(10, clampNumber(runtime.font_size ?? feed.font_size, 8, 220, 58) * sy);
     const font = runtime.font || feed.font || 'Arial';
-    ctx.font = `700 ${fontSize}px ${font}, Arial, sans-serif`;
+    ctx.font = `${canvasFontWeight(runtime.font_weight || feed.font_weight, 'regular')} ${fontSize}px ${font}, Arial, sans-serif`;
     ctx.textBaseline = 'middle';
     const textY = y + h / 2;
     ctx.fillStyle = 'rgba(0,0,0,.9)';
@@ -593,18 +605,56 @@ function defaultFeed() {
         standard: 'atsc',
         banner_mode: 'auto',
         scroll_speed: '8',
+        scroll_repeat_mode: 'until_audio_end',
+        after_eom_repeats: '0',
+        fixed_repeats: '1',
         banner_height: '128',
         standby_mode: 'banner',
         standby_text: 'EAS Details Channel',
         standby_font_size: '58',
         standby_y_percent: '10',
         font: 'Arial',
+        font_weight: 'regular',
         font_size: '58',
         text_font_size: '58',
         clock_x: '48',
         clock_y: '48',
         clock_font_size: '30',
     };
+}
+
+function canvasFontWeight(value, fallback = 'regular') {
+    switch (String(value || fallback).trim().toLowerCase()) {
+        case 'thin':
+        case '100':
+            return '100';
+        case 'extra-light':
+        case 'extralight':
+        case '200':
+            return '200';
+        case 'light':
+        case '300':
+            return '300';
+        case 'medium':
+        case '500':
+            return '500';
+        case 'semibold':
+        case 'semi-bold':
+        case '600':
+            return '600';
+        case 'bold':
+        case '700':
+            return '700';
+        case 'extra-bold':
+        case 'extrabold':
+        case '800':
+            return '800';
+        case 'black':
+        case '900':
+            return '900';
+        default:
+            return '400';
+    }
 }
 
 async function runAction(action, extra = {}) {

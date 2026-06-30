@@ -26,18 +26,18 @@ type cgenFeedXML struct {
 	ID            string               `xml:"id,attr"`
 	Name          string               `xml:"name,attr,omitempty"`
 	Enabled       string               `xml:"enabled,attr,omitempty"`
-	ProgramInput  cgenEndpointXML      `xml:"programInput"`
-	PriorityInput cgenPriorityInputXML `xml:"priorityInput"`
-	ProgramOutput cgenEndpointXML      `xml:"programOutput"`
-	Video         cgenVideoXML         `xml:"video"`
-	Audio         cgenAudioXML         `xml:"audio"`
+	ProgramInput  cgenEndpointXML      `xml:"program>input"`
+	PriorityInput cgenPriorityInputXML `xml:"priority>input"`
+	ProgramOutput cgenEndpointXML      `xml:"program>output"`
+	Video         cgenVideoXML         `xml:"media>video"`
+	Audio         cgenAudioXML         `xml:"media>audio"`
 	Ladder        cgenLadderXML        `xml:"ladder"`
-	Banner        cgenBannerXML        `xml:"banner"`
-	Graphics      cgenGraphicsXML      `xml:"graphics"`
-	Clock         cgenClockXML         `xml:"clock"`
-	Text          cgenTextXML          `xml:"text"`
-	State         cgenStateXML         `xml:"state"`
-	Standby       cgenStandbyXML       `xml:"standby"`
+	Banner        cgenBannerXML        `xml:"presentation>banner"`
+	Graphics      cgenGraphicsXML      `xml:"presentation>graphics"`
+	Clock         cgenClockXML         `xml:"presentation>clock"`
+	Text          cgenTextXML          `xml:"presentation>text"`
+	State         cgenStateXML         `xml:"presentation>state"`
+	Standby       cgenStandbyXML       `xml:"presentation>standby"`
 	Sync          cgenSyncXML          `xml:"sync"`
 	UpdatedAt     string               `xml:"updated_at,attr,omitempty"`
 }
@@ -106,13 +106,128 @@ type cgenBannerXML struct {
 	Mode              string `xml:"mode,attr,omitempty"`
 	TickerHeight      string `xml:"ticker_height,attr,omitempty"`
 	Font              string `xml:"font,attr,omitempty"`
+	FontWeight        string `xml:"font_weight,attr,omitempty"`
 	FontSize          string `xml:"font_size,attr,omitempty"`
 	ScrollSpeed       string `xml:"scroll_speed,attr,omitempty"`
+	ScrollRepeatMode  string `xml:"scroll_repeat_mode,attr,omitempty"`
+	AfterEOMRepeats   string `xml:"after_eom_repeats,attr,omitempty"`
+	FixedRepeats      string `xml:"fixed_repeats,attr,omitempty"`
 	BackgroundEnabled string `xml:"background_enabled,attr,omitempty"`
+}
+
+type cgenBannerFontXML struct {
+	Family string `xml:"family,attr,omitempty"`
+	Weight string `xml:"weight,attr,omitempty"`
+	Size   string `xml:"size,attr,omitempty"`
+}
+
+type cgenBannerTickerXML struct {
+	Height string              `xml:"height,attr,omitempty"`
+	Speed  string              `xml:"speed,attr,omitempty"`
+	Repeat cgenTickerRepeatXML `xml:"repeat"`
+}
+
+type cgenTickerRepeatXML struct {
+	Mode     string `xml:"mode,attr,omitempty"`
+	AfterEOM string `xml:"after_eom,attr,omitempty"`
+	Count    string `xml:"count,attr,omitempty"`
+}
+
+func (b cgenBannerXML) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	start.Attr = append(start.Attr, xml.Attr{Name: xml.Name{Local: "mode"}, Value: b.Mode})
+	start.Attr = append(start.Attr, xml.Attr{Name: xml.Name{Local: "background_enabled"}, Value: b.BackgroundEnabled})
+	if err := e.EncodeToken(start); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(cgenBannerFontXML{
+		Family: b.Font,
+		Weight: b.FontWeight,
+		Size:   b.FontSize,
+	}, xml.StartElement{Name: xml.Name{Local: "font"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(cgenBannerTickerXML{
+		Height: b.TickerHeight,
+		Speed:  b.ScrollSpeed,
+		Repeat: cgenTickerRepeatXML{
+			Mode:     b.ScrollRepeatMode,
+			AfterEOM: b.AfterEOMRepeats,
+			Count:    b.FixedRepeats,
+		},
+	}, xml.StartElement{Name: xml.Name{Local: "ticker"}}); err != nil {
+		return err
+	}
+	return e.EncodeToken(start.End())
+}
+
+func (b *cgenBannerXML) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	for _, attr := range start.Attr {
+		switch attr.Name.Local {
+		case "mode":
+			b.Mode = attr.Value
+		case "ticker_height":
+			b.TickerHeight = attr.Value
+		case "font":
+			b.Font = attr.Value
+		case "font_weight":
+			b.FontWeight = attr.Value
+		case "font_size":
+			b.FontSize = attr.Value
+		case "scroll_speed":
+			b.ScrollSpeed = attr.Value
+		case "scroll_repeat_mode":
+			b.ScrollRepeatMode = attr.Value
+		case "after_eom_repeats":
+			b.AfterEOMRepeats = attr.Value
+		case "fixed_repeats":
+			b.FixedRepeats = attr.Value
+		case "background_enabled":
+			b.BackgroundEnabled = attr.Value
+		}
+	}
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return err
+		}
+		switch tok := tok.(type) {
+		case xml.StartElement:
+			switch tok.Name.Local {
+			case "font":
+				var font cgenBannerFontXML
+				if err := d.DecodeElement(&font, &tok); err != nil {
+					return err
+				}
+				b.Font = fallbackText(font.Family, b.Font)
+				b.FontWeight = fallbackText(font.Weight, b.FontWeight)
+				b.FontSize = fallbackText(font.Size, b.FontSize)
+			case "ticker":
+				var ticker cgenBannerTickerXML
+				if err := d.DecodeElement(&ticker, &tok); err != nil {
+					return err
+				}
+				b.TickerHeight = fallbackText(ticker.Height, b.TickerHeight)
+				b.ScrollSpeed = fallbackText(ticker.Speed, b.ScrollSpeed)
+				b.ScrollRepeatMode = fallbackText(ticker.Repeat.Mode, b.ScrollRepeatMode)
+				b.AfterEOMRepeats = fallbackText(ticker.Repeat.AfterEOM, b.AfterEOMRepeats)
+				b.FixedRepeats = fallbackText(ticker.Repeat.Count, b.FixedRepeats)
+			default:
+				var discard struct{}
+				if err := d.DecodeElement(&discard, &tok); err != nil {
+					return err
+				}
+			}
+		case xml.EndElement:
+			if tok.Name.Local == start.Name.Local {
+				return nil
+			}
+		}
+	}
 }
 
 type cgenGraphicsXML struct {
 	Font         string `xml:"font,attr,omitempty"`
+	FontWeight   string `xml:"font_weight,attr,omitempty"`
 	FontSize     string `xml:"font_size,attr,omitempty"`
 	BannerHeight string `xml:"banner_height,attr,omitempty"`
 }
@@ -264,6 +379,7 @@ func readCgenXML(path string) (cgenXML, error) {
 
 func rejectLegacyCgenXML(raw []byte, path string) error {
 	decoder := xml.NewDecoder(bytes.NewReader(raw))
+	stack := []string{}
 	for {
 		token, err := decoder.Token()
 		if err == io.EOF {
@@ -272,21 +388,36 @@ func rejectLegacyCgenXML(raw []byte, path string) error {
 		if err != nil {
 			return fmt.Errorf("scan cgen XML %s: %w", path, err)
 		}
-		start, ok := token.(xml.StartElement)
-		if !ok {
+		switch tok := token.(type) {
+		case xml.StartElement:
+			name := tok.Name.Local
+			parent := ""
+			if len(stack) > 0 {
+				parent = stack[len(stack)-1]
+			}
+			if legacyCgenElement(parent, name) {
+				return fmt.Errorf("legacy cgen <%s> element is no longer supported in %s; use programInput, priorityInput, and programOutput", name, path)
+			}
+			for _, attr := range tok.Attr {
+				if legacyCgenAttribute(name, attr.Name.Local) {
+					return fmt.Errorf("legacy cgen %s @%s attribute is no longer supported in %s", name, attr.Name.Local, path)
+				}
+			}
+			stack = append(stack, name)
+		case xml.EndElement:
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		default:
 			continue
 		}
-		name := start.Name.Local
-		switch name {
-		case "input", "output", "alertOutput":
-			return fmt.Errorf("legacy cgen <%s> element is no longer supported in %s; use programInput, priorityInput, and programOutput", name, path)
-		}
-		for _, attr := range start.Attr {
-			if legacyCgenAttribute(name, attr.Name.Local) {
-				return fmt.Errorf("legacy cgen %s @%s attribute is no longer supported in %s", name, attr.Name.Local, path)
-			}
-		}
 	}
+}
+
+func legacyCgenElement(parent string, element string) bool {
+	return (element == "output" && parent != "program") ||
+		element == "alertOutput" ||
+		(element == "input" && parent != "program" && parent != "priority")
 }
 
 func legacyCgenAttribute(element string, attr string) bool {
@@ -367,10 +498,15 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Banner.Mode = fallbackText(strings.TrimSpace(feed.Banner.Mode), "auto")
 		feed.Banner.TickerHeight = cleanPositive(feed.Banner.TickerHeight, "128")
 		feed.Banner.Font = fallbackText(strings.TrimSpace(feed.Banner.Font), "Arial")
+		feed.Banner.FontWeight = normalizeCgenFontWeight(feed.Banner.FontWeight)
 		feed.Banner.FontSize = cleanPositive(feed.Banner.FontSize, "58")
 		feed.Banner.ScrollSpeed = cleanPositive(feed.Banner.ScrollSpeed, "8")
+		feed.Banner.ScrollRepeatMode = normalizeCgenScrollRepeatMode(feed.Banner.ScrollRepeatMode)
+		feed.Banner.AfterEOMRepeats = cleanNonNegative(feed.Banner.AfterEOMRepeats, "0")
+		feed.Banner.FixedRepeats = cleanPositive(feed.Banner.FixedRepeats, "1")
 		feed.Banner.BackgroundEnabled = boolText(xmlBool(feed.Banner.BackgroundEnabled, true))
 		feed.Graphics.Font = fallbackText(strings.TrimSpace(feed.Graphics.Font), feed.Banner.Font)
+		feed.Graphics.FontWeight = normalizeCgenFontWeight(fallbackText(feed.Graphics.FontWeight, feed.Banner.FontWeight))
 		feed.Graphics.FontSize = cleanPositive(feed.Graphics.FontSize, feed.Banner.FontSize)
 		feed.Graphics.BannerHeight = cleanPositive(feed.Graphics.BannerHeight, feed.Banner.TickerHeight)
 		feed.Clock.Enabled = boolText(xmlBool(feed.Clock.Enabled, false))
@@ -637,12 +773,17 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			Mode:              stringFromAny(source["banner_mode"]),
 			TickerHeight:      stringFromAny(source["ticker_height"]),
 			Font:              stringFromAny(source["font"]),
+			FontWeight:        fallbackText(stringFromAny(source["font_weight"]), "regular"),
 			FontSize:          stringFromAny(source["font_size"]),
 			ScrollSpeed:       stringFromAny(source["scroll_speed"]),
+			ScrollRepeatMode:  stringFromAny(source["scroll_repeat_mode"]),
+			AfterEOMRepeats:   stringFromAny(source["after_eom_repeats"]),
+			FixedRepeats:      stringFromAny(source["fixed_repeats"]),
 			BackgroundEnabled: boolText(boolFromAny(source["banner_background_enabled"], true)),
 		},
 		Graphics: cgenGraphicsXML{
 			Font:         stringFromAny(source["font"]),
+			FontWeight:   fallbackText(stringFromAny(source["font_weight"]), "regular"),
 			FontSize:     stringFromAny(source["font_size"]),
 			BannerHeight: stringFromAny(source["ticker_height"]),
 		},
@@ -734,7 +875,11 @@ func cgenPayload(configPath string, path string, config cgenXML) map[string]any 
 			"banner_mode":                     feed.Banner.Mode,
 			"ticker_height":                   feed.Banner.TickerHeight,
 			"scroll_speed":                    feed.Banner.ScrollSpeed,
+			"scroll_repeat_mode":              feed.Banner.ScrollRepeatMode,
+			"after_eom_repeats":               feed.Banner.AfterEOMRepeats,
+			"fixed_repeats":                   feed.Banner.FixedRepeats,
 			"font":                            feed.Graphics.Font,
+			"font_weight":                     fallbackText(fallbackText(feed.Graphics.FontWeight, feed.Banner.FontWeight), "regular"),
 			"font_size":                       feed.Graphics.FontSize,
 			"banner_background_enabled":       xmlBool(feed.Banner.BackgroundEnabled, true),
 			"banner_height":                   feed.Graphics.BannerHeight,
@@ -862,7 +1007,52 @@ func normalizeCgenStandbyMode(value string) string {
 	}
 }
 
+func normalizeCgenFontWeight(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "thin", "100":
+		return "thin"
+	case "extra-light", "extralight", "ultra-light", "ultralight", "200":
+		return "extra-light"
+	case "light", "300":
+		return "light"
+	case "medium", "500":
+		return "medium"
+	case "semi-bold", "semibold", "demi-bold", "demibold", "600":
+		return "semibold"
+	case "bold", "700":
+		return "bold"
+	case "extra-bold", "extrabold", "ultra-bold", "ultrabold", "800":
+		return "extra-bold"
+	case "black", "heavy", "900":
+		return "black"
+	default:
+		return "regular"
+	}
+}
+
+func normalizeCgenScrollRepeatMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fixed", "fixed_repeats", "count", "count_only":
+		return "fixed"
+	default:
+		return "until_audio_end"
+	}
+}
+
 func cleanPositive(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return fallback
+		}
+	}
+	return value
+}
+
+func cleanNonNegative(value string, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return fallback

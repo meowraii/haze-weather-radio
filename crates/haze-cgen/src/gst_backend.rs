@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -18,12 +18,14 @@ use tracing::{info, warn};
 
 use crate::config::FeedConfig;
 use crate::state::RuntimeState;
+use crate::wgpu_renderer::{OverlayRenderState, WgpuFrameRenderer};
 
 use gst::prelude::*;
 use gstreamer as gst;
 use gstreamer_app as gst_app;
 
 const DEFAULT_UDP_BUFFER_BYTES: u32 = 4 * 1024 * 1024;
+const PRIORITY_AUDIO_RESTART_SUPPRESS: Duration = Duration::from_secs(300);
 
 pub(crate) async fn run_supervised(
     feed: FeedConfig,
@@ -102,37 +104,6 @@ fn sync_status_value(feed: &FeedConfig) -> Value {
     })
 }
 
-fn wgpu_fatal_error_message() -> &'static str {
-    if cfg!(feature = "gpu-wgpu") {
-        "HAZE CGEN FATAL GRAPHICS ERROR\n\nHaze CGEN could not create a valid WGPU compositor.\n\nPossible reasons:\n1. The WGPU renderer path is not wired into this CGEN build yet.\n2. Your GPU driver is missing, too old, or currently crashed.\n3. The selected graphics backend is unavailable for this session.\n4. This system does not expose a compatible D3D12, Vulkan, Metal, or GL backend.\n\nCairo fallback is disabled on purpose because it causes unstable broadcast timing."
-    } else {
-        "HAZE CGEN FATAL GRAPHICS ERROR\n\nHaze CGEN could not create a valid WGPU compositor.\n\nPossible reasons:\n1. haze-cgen was built without the gpu-wgpu feature.\n2. Your GPU driver is missing, too old, or currently crashed.\n3. The selected graphics backend is unavailable for this session.\n4. This system does not expose a compatible D3D12, Vulkan, Metal, or GL backend.\n\nCairo fallback is disabled on purpose because it causes unstable broadcast timing."
-    }
-}
-
-fn ensure_wgpu_graphics_available(
-    status_tx: &Option<mpsc::UnboundedSender<Value>>,
-    feed: &FeedConfig,
-    state_rx: &watch::Receiver<RuntimeState>,
-) -> Result<()> {
-    let message = wgpu_fatal_error_message();
-    publish_status(
-        status_tx,
-        feed,
-        state_rx,
-        json!({
-            "media_backend": "gstreamer-rs",
-            "graphics_backend": "wgpu",
-            "input_connected": false,
-            "output_active": false,
-            "fatal": true,
-            "last_error": message,
-            "sync": sync_status_value(feed),
-        }),
-    );
-    bail!("{message}")
-}
-
 fn run_pipeline_once(
     feed: FeedConfig,
     mut state_rx: watch::Receiver<RuntimeState>,
@@ -166,7 +137,6 @@ fn run_pipeline_once(
             "sync": sync_status_value(&feed),
         }),
     );
-    ensure_wgpu_graphics_available(&status_tx, &feed, &state_rx)?;
     if let Err(err) = validate_gstreamer_elements(&plan.required_elements) {
         publish_status(
             &status_tx,
@@ -194,16 +164,45 @@ fn run_pipeline_once(
     let input_health = Arc::new(Mutex::new(InputHealth::default()));
     install_program_video_probe(&pipeline, Arc::clone(&input_health))?;
     install_program_audio_probe(&pipeline, Arc::clone(&input_health))?;
-    let mut priority_feeder =
-        PriorityAudioFeeder::new(priority_appsrc, base_dir.clone(), feed.id.clone());
+    let priority_drain = Duration::from_millis(
+        u64::from(feed.sync.source_buffer_ms.clamp(40, 5_000)).saturating_add(1_000),
+    );
+    let mut priority_feeder = PriorityAudioFeeder::new(
+        priority_appsrc,
+        base_dir.clone(),
+        feed.id.clone(),
+        priority_drain,
+    );
     let mut text_overlay = TextOverlayController::default();
+    let wgpu_compositors =
+        match install_wgpu_overlay_probes(&pipeline, &feed, &plan, text_overlay.shared_state()) {
+            Ok(compositors) => compositors,
+            Err(err) => {
+                publish_status(
+                    &status_tx,
+                    &feed,
+                    &state_rx,
+                    json!({
+                        "media_backend": "gstreamer-rs",
+                        "graphics_backend": "wgpu",
+                        "input_connected": false,
+                        "output_active": false,
+                        "fatal": true,
+                        "last_error": err.to_string(),
+                        "sync": sync_status_value(&feed),
+                    }),
+                );
+                return Err(err);
+            }
+        };
     let (initial_audio_mode, initial_video_mode) = {
         let state = state_rx.borrow();
         let video_connected = input_video_connected(&input_health, &feed);
         let audio_connected = input_audio_connected(&input_health, &feed);
         let feeder_status = priority_feeder.update(priority_audio_for_feed(&feed, &state));
         let video_mode = desired_video_selector_mode(&feed, video_connected);
-        text_overlay.sync(&pipeline, &feed, &state, video_mode.no_signal())?;
+        let audio_live = feeder_status.is_live_priority();
+        text_overlay.sync(&pipeline, &feed, &state, video_mode.no_signal(), audio_live)?;
         (
             desired_audio_selector_mode_with_status(&feed, audio_connected, &feeder_status),
             video_mode,
@@ -234,6 +233,7 @@ fn run_pipeline_once(
             "audio_selector": initial_audio_mode.as_str(),
             "video_selector": initial_video_mode.as_str(),
             "text_overlay": text_overlay.status_value(),
+            "graphics_renderer": wgpu_compositors.status_value(),
             "input_health": input_health_status(&input_health, &feed),
             "pipeline_diagnostics": diagnostics.status_value(),
             "output_ladder": plan.status_value(),
@@ -318,7 +318,22 @@ fn run_pipeline_once(
                 set_video_selector_mode(&pipeline, video_mode)?;
                 current_video_mode = video_mode;
             }
-            text_overlay.sync(&pipeline, &feed, &state, video_mode.no_signal())?;
+            let priority_audio = priority_audio_for_feed(&feed, &state);
+            let feeder_status = priority_feeder.update(priority_audio);
+            let audio_connected = input_audio_connected(&input_health, &feed);
+            let audio_mode =
+                desired_audio_selector_mode_with_status(&feed, audio_connected, &feeder_status);
+            if current_audio_mode != audio_mode {
+                set_audio_selector_mode(&pipeline, audio_mode)?;
+                current_audio_mode = audio_mode;
+            }
+            text_overlay.sync(
+                &pipeline,
+                &feed,
+                &state,
+                video_mode.no_signal(),
+                feeder_status.is_live_priority(),
+            )?;
         }
         if shutdown_rx.has_changed().unwrap_or(false) && *shutdown_rx.borrow_and_update() {
             pipeline
@@ -371,6 +386,7 @@ fn run_pipeline_once(
                     "priority_audio_queue_id": feeder_status.queue_id,
                     "priority_audio_error": feeder_status.error,
                     "text_overlay": text_overlay.status_value(),
+                    "graphics_renderer": wgpu_compositors.status_value(),
                     "visual_lifecycle": visual_lifecycle,
                     "input_connected": video_connected && audio_connected,
                     "input_video_connected": video_connected,
@@ -387,28 +403,18 @@ fn run_pipeline_once(
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct TextOverlayRenderState {
-    source_text: String,
-    visual_mode: String,
-    font_size: u32,
-    speed_px_per_frame: u32,
-    frame_width: u32,
-    draw_fps: f64,
-    text_width_px: f64,
-    started_at: Instant,
-    text: String,
-    font_desc: String,
-    ypos: f64,
-    x_absolute: f64,
-    silent: bool,
-}
+type TextOverlayRenderState = OverlayRenderState;
 
 #[derive(Debug, Default)]
 struct TextOverlayController {
     key: Option<String>,
     started_at: Option<Instant>,
+    pass_index: u32,
+    completed_passes: u32,
+    audio_was_live: bool,
+    post_audio_repeats_started: u32,
     last: Option<TextOverlayRenderState>,
+    shared: Arc<Mutex<Option<TextOverlayRenderState>>>,
 }
 
 impl TextOverlayController {
@@ -418,10 +424,14 @@ impl TextOverlayController {
         feed: &FeedConfig,
         state: &RuntimeState,
         no_signal: bool,
+        audio_live: bool,
     ) -> Result<()> {
-        let next = self.next_state(feed, state, no_signal);
+        let next = self.next_state(feed, state, no_signal, audio_live);
         if self.last.as_ref() == Some(&next) {
             return Ok(());
+        }
+        if let Ok(mut guard) = self.shared.lock() {
+            *guard = Some(next.clone());
         }
         self.last = Some(next);
         Ok(())
@@ -432,18 +442,33 @@ impl TextOverlayController {
         feed: &FeedConfig,
         state: &RuntimeState,
         no_signal: bool,
+        audio_live: bool,
     ) -> TextOverlayRenderState {
+        self.update_audio_lifecycle(audio_live);
         let snapshot = crate::graphics::presentation_snapshot(feed, state, no_signal);
         let text = snapshot.overlay_text.trim().to_string();
         let font_desc = format!("{} {}", snapshot.font, snapshot.font_size.max(16));
         let ypos = overlay_ypos(feed, snapshot.ticker_y);
         if text.is_empty() {
-            self.key = None;
-            self.started_at = None;
+            if let Some(last) = self.last.clone() {
+                if last.visual_mode == "ticker_alert" {
+                    if !ticker_state_done(&last) {
+                        return last;
+                    }
+                    if self.should_repeat_ticker(feed, audio_live) {
+                        return self.restart_ticker_pass(last);
+                    }
+                }
+            }
+            self.reset_ticker_lifecycle();
             return TextOverlayRenderState {
                 source_text: text.clone(),
+                visual_id: String::new(),
                 visual_mode: snapshot.visual_mode,
+                font_family: snapshot.font,
+                font_weight: snapshot.font_weight,
                 font_size: snapshot.font_size.max(16),
+                banner_height: snapshot.ticker_height,
                 speed_px_per_frame: snapshot.ticker_speed_px_per_frame.max(1),
                 frame_width: feed.video.width.max(1),
                 draw_fps: render_draw_fps(feed),
@@ -454,29 +479,55 @@ impl TextOverlayController {
                 ypos,
                 x_absolute: 1.0,
                 silent: true,
+                gradient: snapshot.ticker_gradient,
             };
         }
 
+        let visual_id = if snapshot.visual_id.trim().is_empty() {
+            text.clone()
+        } else {
+            snapshot.visual_id.clone()
+        };
+        let source_text = snapshot.overlay_text.trim().to_string();
         let key = format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
             snapshot.visual_mode,
-            snapshot.active_alert_queue_id.as_deref().unwrap_or(""),
+            visual_id,
             snapshot.font,
-            text
+            snapshot.font_weight,
+            snapshot.font_size,
+            snapshot.ticker_height,
+            snapshot.ticker_speed_px_per_frame,
+            feed.banner.scroll_repeat_mode,
+            source_text
         );
         if self.key.as_deref() != Some(key.as_str()) {
-            self.key = Some(key);
-            self.started_at = Some(Instant::now());
+            self.start_ticker_lifecycle(key);
+        } else if let Some(last) = self.last.clone() {
+            if snapshot.visual_mode == "ticker_alert" && ticker_state_done(&last) {
+                if self.should_repeat_ticker(feed, audio_live) {
+                    return self.restart_ticker_pass(last);
+                }
+                return self.silent_state(feed, snapshot, text, font_desc, ypos);
+            }
         }
-        let started_at = self.started_at.unwrap_or_else(Instant::now);
-        let (text, x_absolute, silent) = ticker_overlay_window(feed, &snapshot, &text, started_at);
-        let source_text = snapshot.overlay_text.trim().to_string();
         let font_size = snapshot.font_size.max(16);
+        let started_at = self.started_at.unwrap_or_else(Instant::now);
+        let (text, x_absolute, silent) = if snapshot.visual_mode == "ticker_alert" {
+            let (x_absolute, _) = ticker_x_absolute(feed, &snapshot, &source_text, started_at);
+            (source_text.clone(), x_absolute, false)
+        } else {
+            ticker_overlay_window(feed, &snapshot, &source_text, started_at)
+        };
         TextOverlayRenderState {
             text_width_px: estimated_text_width_px(&source_text, font_size),
+            visual_id: self.render_visual_id(&visual_id),
             source_text,
             visual_mode: snapshot.visual_mode,
+            font_family: snapshot.font,
+            font_weight: snapshot.font_weight,
             font_size,
+            banner_height: snapshot.ticker_height,
             speed_px_per_frame: snapshot.ticker_speed_px_per_frame.max(1),
             frame_width: feed.video.width.max(1),
             draw_fps: render_draw_fps(feed),
@@ -486,6 +537,100 @@ impl TextOverlayController {
             ypos,
             x_absolute,
             silent,
+            gradient: snapshot.ticker_gradient,
+        }
+    }
+
+    fn update_audio_lifecycle(&mut self, audio_live: bool) {
+        if audio_live {
+            self.audio_was_live = true;
+            self.post_audio_repeats_started = 0;
+        } else if self.audio_was_live {
+            self.audio_was_live = false;
+            self.post_audio_repeats_started = 0;
+        }
+    }
+
+    fn start_ticker_lifecycle(&mut self, key: String) {
+        self.key = Some(key);
+        self.started_at = Some(Instant::now());
+        self.pass_index = 0;
+        self.completed_passes = 0;
+        self.post_audio_repeats_started = 0;
+    }
+
+    fn reset_ticker_lifecycle(&mut self) {
+        self.key = None;
+        self.started_at = None;
+        self.pass_index = 0;
+        self.completed_passes = 0;
+        self.post_audio_repeats_started = 0;
+    }
+
+    fn restart_ticker_pass(&mut self, mut state: TextOverlayRenderState) -> TextOverlayRenderState {
+        self.completed_passes = self.completed_passes.saturating_add(1);
+        self.pass_index = self.pass_index.saturating_add(1);
+        let now = Instant::now();
+        self.started_at = Some(now);
+        state.started_at = now;
+        state.x_absolute = 1.0;
+        state.silent = false;
+        state.text = state.source_text.clone();
+        state.visual_id = self.render_visual_id(&base_visual_id(&state.visual_id));
+        state
+    }
+
+    fn should_repeat_ticker(&mut self, feed: &FeedConfig, audio_live: bool) -> bool {
+        if fixed_scroll_repeats_enabled(feed) {
+            let total = feed.banner.fixed_repeats.max(1);
+            return self.completed_passes.saturating_add(1) < total;
+        }
+        if audio_live {
+            return true;
+        }
+        if self.post_audio_repeats_started < feed.banner.after_eom_repeats {
+            self.post_audio_repeats_started = self.post_audio_repeats_started.saturating_add(1);
+            return true;
+        }
+        false
+    }
+
+    fn render_visual_id(&self, visual_id: &str) -> String {
+        if self.pass_index == 0 {
+            visual_id.to_string()
+        } else {
+            format!("{}#pass{}", visual_id, self.pass_index.saturating_add(1))
+        }
+    }
+
+    fn silent_state(
+        &mut self,
+        feed: &FeedConfig,
+        snapshot: crate::graphics::PresentationSnapshot,
+        text: String,
+        font_desc: String,
+        ypos: f64,
+    ) -> TextOverlayRenderState {
+        self.reset_ticker_lifecycle();
+        TextOverlayRenderState {
+            source_text: text.clone(),
+            visual_id: String::new(),
+            visual_mode: snapshot.visual_mode,
+            font_family: snapshot.font,
+            font_weight: snapshot.font_weight,
+            font_size: snapshot.font_size.max(16),
+            banner_height: snapshot.ticker_height,
+            speed_px_per_frame: snapshot.ticker_speed_px_per_frame.max(1),
+            frame_width: feed.video.width.max(1),
+            draw_fps: render_draw_fps(feed),
+            text_width_px: 0.0,
+            started_at: Instant::now(),
+            text,
+            font_desc,
+            ypos,
+            x_absolute: 1.0,
+            silent: true,
+            gradient: snapshot.ticker_gradient,
         }
     }
 
@@ -498,6 +643,11 @@ impl TextOverlayController {
                 "ypos": state.ypos,
                 "silent": state.silent,
                 "font_desc": state.font_desc,
+                "font_weight": state.font_weight,
+                "pass_index": self.pass_index,
+                "completed_passes": self.completed_passes,
+                "audio_was_live": self.audio_was_live,
+                "post_audio_repeats_started": self.post_audio_repeats_started,
             })
         } else {
             json!({
@@ -507,14 +657,120 @@ impl TextOverlayController {
                 "ypos": 0.08,
                 "silent": true,
                 "font_desc": "",
+                "pass_index": self.pass_index,
+                "completed_passes": self.completed_passes,
             })
         }
     }
+
+    fn shared_state(&self) -> Arc<Mutex<Option<TextOverlayRenderState>>> {
+        Arc::clone(&self.shared)
+    }
+}
+
+struct WgpuCompositorSet {
+    renderers: Vec<Arc<Mutex<WgpuFrameRenderer>>>,
+    _probe_ids: Vec<gst::PadProbeId>,
+}
+
+impl WgpuCompositorSet {
+    fn status_value(&self) -> Value {
+        json!({
+            "graphics_backend": "wgpu",
+            "renditions": self.renderers.iter().filter_map(|renderer| {
+                renderer.lock().ok().map(|renderer| renderer.status_value())
+            }).collect::<Vec<_>>(),
+        })
+    }
+}
+
+fn install_wgpu_overlay_probes(
+    pipeline: &gst::Pipeline,
+    feed: &FeedConfig,
+    plan: &GstPipelinePlan,
+    state: Arc<Mutex<Option<TextOverlayRenderState>>>,
+) -> Result<WgpuCompositorSet> {
+    let mut renderers = Vec::new();
+    let mut probe_ids = Vec::new();
+    for (index, video) in plan.videos.iter().enumerate() {
+        let overlay_name = gst_element_name("cgen_overlay", &video.id, index);
+        let overlay = pipeline
+            .by_name(&overlay_name)
+            .with_context(|| format!("GStreamer CGEN pipeline is missing {overlay_name}"))?;
+        let src_pad = overlay
+            .static_pad("src")
+            .with_context(|| format!("GStreamer CGEN overlay {overlay_name} has no src pad"))?;
+        let renderer = Arc::new(Mutex::new(WgpuFrameRenderer::new(
+            video.id.clone(),
+            video.width,
+            video.height,
+            video.interlaced,
+        )?));
+        let renderer_for_probe = Arc::clone(&renderer);
+        let state_for_probe = Arc::clone(&state);
+        let feed_id = feed.id.clone();
+        let overlay_for_probe = overlay_name.clone();
+        let probe_id = src_pad
+            .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+                let state = state_for_probe.lock().ok().and_then(|guard| guard.clone());
+                if let Some(buffer) = info.buffer_mut() {
+                    let frame_pts_ns = buffer.pts().map(|pts| pts.nseconds());
+                    let buffer = buffer.make_mut();
+                    match buffer.map_writable() {
+                        Ok(mut map) => {
+                            if let Ok(mut renderer) = renderer_for_probe.lock() {
+                                if let Err(err) = renderer.composite_bgrx(map.as_mut_slice(), frame_pts_ns, state.as_ref()) {
+                                    warn!(feed_id = %feed_id, overlay = %overlay_for_probe, "wgpu compositor failed: {err:#}");
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            warn!(feed_id = %feed_id, overlay = %overlay_for_probe, "failed to map video buffer for wgpu compositor: {err}");
+                        }
+                    }
+                }
+                gst::PadProbeReturn::Ok
+            })
+            .with_context(|| format!("failed to add WGPU probe to {overlay_name}"))?;
+        renderers.push(renderer);
+        probe_ids.push(probe_id);
+    }
+    Ok(WgpuCompositorSet {
+        renderers,
+        _probe_ids: probe_ids,
+    })
+}
+
+fn ticker_state_done(state: &TextOverlayRenderState) -> bool {
+    let frame_width = f64::from(state.frame_width.max(1));
+    let pixels_per_second = f64::from(state.speed_px_per_frame.max(1)) * state.draw_fps.max(1.0);
+    let elapsed = state.started_at.elapsed().as_secs_f64();
+    let x_px = frame_width + 1.0 - (elapsed * pixels_per_second);
+    x_px < -state.text_width_px.max(1.0)
+}
+
+fn fixed_scroll_repeats_enabled(feed: &FeedConfig) -> bool {
+    matches!(
+        feed.banner
+            .scroll_repeat_mode
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "fixed" | "fixed_repeats" | "count" | "count_only"
+    )
+}
+
+fn base_visual_id(value: &str) -> String {
+    value
+        .split_once("#pass")
+        .map(|(base, _)| base)
+        .unwrap_or(value)
+        .to_string()
 }
 
 #[cfg(test)]
 fn text_overlay_state(feed: &FeedConfig, state: &RuntimeState) -> TextOverlayRenderState {
-    TextOverlayController::default().next_state(feed, state, false)
+    TextOverlayController::default().next_state(feed, state, false, false)
 }
 
 fn ticker_x_absolute(
@@ -529,13 +785,23 @@ fn ticker_x_absolute(
     let frame_width = f64::from(feed.video.width.max(1));
     let text_width = estimated_text_width_px(text, snapshot.font_size);
     let pixels_per_second = f64::from(snapshot.ticker_speed_px_per_frame.max(1)) * feed_fps(feed);
-    let elapsed = started_at.elapsed().as_secs_f64();
+    let elapsed = ticker_elapsed_seconds(feed, started_at);
     let x_px = frame_width + 1.0 - (elapsed * pixels_per_second);
     let done = x_px < -text_width;
     if done {
         return (-1.0, true);
     }
     (x_px / frame_width, done)
+}
+
+fn ticker_elapsed_seconds(feed: &FeedConfig, started_at: Instant) -> f64 {
+    let elapsed = started_at.elapsed().as_secs_f64();
+    if !feed.video.interlaced {
+        return elapsed;
+    }
+    let output_fps = (feed_fps(feed) / 2.0).max(1.0);
+    let output_frame = (elapsed * output_fps).floor();
+    output_frame / output_fps
 }
 
 fn ticker_overlay_window(
@@ -884,6 +1150,8 @@ fn desired_audio_selector_mode_with_status(
 ) -> AudioSelectorMode {
     if feeder_status.is_live_priority() {
         AudioSelectorMode::Priority
+    } else if feeder_status.forces_silence() {
+        AudioSelectorMode::Silence
     } else if !input_connected || mute_standby_routine_applies(feed) {
         AudioSelectorMode::Silence
     } else {
@@ -973,7 +1241,14 @@ struct PriorityAudioSourceStatus {
 
 impl PriorityAudioSourceStatus {
     fn is_live_priority(&self) -> bool {
-        self.status == "active"
+        matches!(self.status, "active" | "padding")
+    }
+
+    fn forces_silence(&self) -> bool {
+        matches!(
+            self.status,
+            "silence" | "missing-path" | "finished" | "error"
+        )
     }
 }
 
@@ -981,30 +1256,51 @@ struct PriorityAudioFeeder {
     appsrc: gst_app::AppSrc,
     base_dir: PathBuf,
     feed_id: String,
+    eof_drain: Duration,
     active: Option<ActivePriorityAudioFeeder>,
+    completed: BTreeMap<String, Instant>,
 }
 
 struct ActivePriorityAudioFeeder {
     queue_id: String,
+    source_status: &'static str,
+    started_at: Instant,
+    release_after: Duration,
     stop: Arc<AtomicBool>,
     reached_eof: Arc<AtomicBool>,
+    reached_eof_at: Arc<Mutex<Option<Instant>>>,
     finished: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
 impl PriorityAudioFeeder {
-    fn new(appsrc: gst_app::AppSrc, base_dir: PathBuf, feed_id: String) -> Self {
+    fn new(
+        appsrc: gst_app::AppSrc,
+        base_dir: PathBuf,
+        feed_id: String,
+        eof_drain: Duration,
+    ) -> Self {
         Self {
             appsrc,
             base_dir,
             feed_id,
+            eof_drain,
             active: None,
+            completed: BTreeMap::new(),
         }
     }
 
     fn update(&mut self, audio: Option<&crate::state::PriorityAudio>) -> PriorityAudioSourceStatus {
+        self.prune_completed();
         let Some(audio) = audio else {
+            if self
+                .active
+                .as_ref()
+                .is_some_and(|active| !self.active_ready_to_release(active))
+            {
+                return self.active_status();
+            }
             self.stop();
             return PriorityAudioSourceStatus {
                 status: "idle",
@@ -1017,20 +1313,52 @@ impl PriorityAudioFeeder {
             .as_ref()
             .is_some_and(|active| active.queue_id == audio.queue_id)
         {
+            if self
+                .active
+                .as_ref()
+                .is_some_and(|active| self.active_ready_to_release(active))
+            {
+                self.completed
+                    .insert(audio.queue_id.clone(), Instant::now());
+                self.stop();
+                return PriorityAudioSourceStatus {
+                    status: "idle",
+                    queue_id: None,
+                    error: None,
+                };
+            }
             return self.active_status();
+        }
+        if self.completed.contains_key(&audio.queue_id) {
+            return PriorityAudioSourceStatus {
+                status: "idle",
+                queue_id: None,
+                error: None,
+            };
         }
         self.stop();
         let Some(path) = audio.audio_path.as_ref() else {
-            return PriorityAudioSourceStatus {
-                status: "missing-path",
-                queue_id: Some(audio.queue_id.clone()),
-                error: Some("priority audio event has no audio_path".to_string()),
-            };
+            self.active = Some(self.silence_active(
+                audio.queue_id.clone(),
+                "priority audio event has no audio_path",
+            ));
+            return self.active_status();
         };
 
         let sample_rate = audio.sample_rate.max(8_000);
         let channels = audio.channels.clamp(1, 6);
         let path = resolve_media_path(&self.base_dir, path);
+        if !path.is_file() {
+            warn!(
+                feed_id = %self.feed_id,
+                queue_id = %audio.queue_id,
+                path = %path.display(),
+                "priority audio file is missing; forcing alert silence"
+            );
+            self.active =
+                Some(self.silence_active(audio.queue_id.clone(), "priority audio file is missing"));
+            return self.active_status();
+        }
         let caps = gst::Caps::builder("audio/x-raw")
             .field("format", "S16LE")
             .field("rate", i32::try_from(sample_rate).unwrap_or(48_000))
@@ -1043,8 +1371,17 @@ impl PriorityAudioFeeder {
 
         let stop = Arc::new(AtomicBool::new(false));
         let reached_eof = Arc::new(AtomicBool::new(false));
+        let reached_eof_at = Arc::new(Mutex::new(None));
         let finished = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
+        let release_after = Duration::from_millis(
+            audio
+                .duration_ms
+                .unwrap_or(0)
+                .saturating_add(self.eof_drain.as_millis().try_into().unwrap_or(u64::MAX))
+                .saturating_add(1_000),
+        )
+        .max(self.eof_drain.saturating_add(Duration::from_secs(2)));
         let worker = spawn_priority_audio_feeder(
             self.appsrc.clone(),
             self.feed_id.clone(),
@@ -1054,18 +1391,56 @@ impl PriorityAudioFeeder {
             channels,
             Arc::clone(&stop),
             Arc::clone(&reached_eof),
+            Arc::clone(&reached_eof_at),
             Arc::clone(&finished),
             Arc::clone(&error),
         );
         self.active = Some(ActivePriorityAudioFeeder {
             queue_id: audio.queue_id.clone(),
+            source_status: "active",
+            started_at: Instant::now(),
+            release_after,
             stop,
             reached_eof,
+            reached_eof_at,
             finished,
             error,
             worker: Some(worker),
         });
         self.active_status()
+    }
+
+    fn silence_active(&self, queue_id: String, reason: &str) -> ActivePriorityAudioFeeder {
+        ActivePriorityAudioFeeder {
+            queue_id,
+            source_status: "silence",
+            started_at: Instant::now(),
+            release_after: Duration::ZERO,
+            stop: Arc::new(AtomicBool::new(false)),
+            reached_eof: Arc::new(AtomicBool::new(false)),
+            reached_eof_at: Arc::new(Mutex::new(None)),
+            finished: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(Some(reason.to_string()))),
+            worker: None,
+        }
+    }
+
+    fn active_ready_to_release(&self, active: &ActivePriorityAudioFeeder) -> bool {
+        if active.source_status == "silence" {
+            return true;
+        }
+        if active.finished.load(Ordering::Relaxed) {
+            return true;
+        }
+        if active.started_at.elapsed() >= active.release_after {
+            return true;
+        }
+        active
+            .reached_eof_at
+            .lock()
+            .ok()
+            .and_then(|guard| *guard)
+            .is_some_and(|at| at.elapsed() >= self.eof_drain)
     }
 
     fn stop(&mut self) {
@@ -1083,6 +1458,13 @@ impl PriorityAudioFeeder {
         }
     }
 
+    fn prune_completed(&mut self) {
+        let now = Instant::now();
+        self.completed.retain(|_, completed_at| {
+            now.duration_since(*completed_at) < PRIORITY_AUDIO_RESTART_SUPPRESS
+        });
+    }
+
     fn active_status(&self) -> PriorityAudioSourceStatus {
         let Some(active) = self.active.as_ref() else {
             return PriorityAudioSourceStatus {
@@ -1093,13 +1475,17 @@ impl PriorityAudioFeeder {
         };
         let error = active.error.lock().ok().and_then(|guard| guard.clone());
         let status = if error.is_some() {
-            "error"
+            if active.source_status == "silence" {
+                "silence"
+            } else {
+                "error"
+            }
         } else if active.reached_eof.load(Ordering::Relaxed) {
             "padding"
         } else if active.finished.load(Ordering::Relaxed) {
             "finished"
         } else {
-            "active"
+            active.source_status
         };
         PriorityAudioSourceStatus {
             status,
@@ -1125,6 +1511,7 @@ fn spawn_priority_audio_feeder(
     channels: u16,
     stop: Arc<AtomicBool>,
     reached_eof: Arc<AtomicBool>,
+    reached_eof_at: Arc<Mutex<Option<Instant>>>,
     finished: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
 ) -> thread::JoinHandle<()> {
@@ -1136,6 +1523,7 @@ fn spawn_priority_audio_feeder(
             channels,
             Arc::clone(&stop),
             Arc::clone(&reached_eof),
+            Arc::clone(&reached_eof_at),
         ) {
             warn!(
                 feed_id = %feed_id,
@@ -1158,12 +1546,15 @@ fn run_priority_audio_feeder(
     channels: u16,
     stop: Arc<AtomicBool>,
     reached_eof: Arc<AtomicBool>,
+    reached_eof_at: Arc<Mutex<Option<Instant>>>,
 ) -> Result<()> {
     let mut file = File::open(path)
         .with_context(|| format!("failed to open priority audio {}", path.display()))?;
     let chunk_bytes = pcm_chunk_bytes(sample_rate, channels, 20);
     let mut chunk = vec![0u8; chunk_bytes];
     let mut eof = false;
+    let chunk_period = Duration::from_millis(20);
+    let mut next_deadline = Instant::now() + chunk_period;
     while !stop.load(Ordering::Relaxed) {
         let count = if eof {
             0
@@ -1172,6 +1563,11 @@ fn run_priority_audio_feeder(
                 Ok(0) => {
                     eof = true;
                     reached_eof.store(true, Ordering::Relaxed);
+                    if let Ok(mut guard) = reached_eof_at.lock() {
+                        if guard.is_none() {
+                            *guard = Some(Instant::now());
+                        }
+                    }
                     0
                 }
                 Ok(count) => count,
@@ -1195,7 +1591,13 @@ fn run_priority_audio_feeder(
             Err(gst::FlowError::Flushing | gst::FlowError::Eos) => return Ok(()),
             Err(err) => bail!("failed to push priority audio to appsrc: {err:?}"),
         }
-        thread::sleep(Duration::from_millis(20));
+        let now = Instant::now();
+        if now < next_deadline {
+            thread::sleep(next_deadline - now);
+        }
+        while next_deadline <= Instant::now() {
+            next_deadline += chunk_period;
+        }
     }
     Ok(())
 }
@@ -1619,7 +2021,11 @@ fn audio_rendition_branch(
     audio: &PlannedAudioRendition,
     index: usize,
 ) -> String {
-    let name = gst_element_name("audio", &audio.id, index);
+    let name = gst_element_name(
+        "audio",
+        &format!("{}_p{}_pid{}", audio.id, audio.program, audio.audio_pid),
+        index,
+    );
     let encoder = audio_encoder_fragment_bps(audio.codec.as_str(), audio.bitrate_bps);
     let queue = queue_fragment(feed, QueueLeak::None);
     let leaky_queue = queue_fragment(feed, QueueLeak::Downstream);
@@ -2244,7 +2650,7 @@ mod tests {
 
     #[test]
     fn graphics_fatal_error_rejects_cairo_fallback() {
-        let message = wgpu_fatal_error_message();
+        let message = crate::wgpu_renderer::fatal_error_message();
 
         assert!(message.contains("HAZE CGEN FATAL GRAPHICS ERROR"));
         assert!(message.contains("WGPU"));
@@ -2489,19 +2895,26 @@ mod tests {
             .downcast::<gst_app::AppSrc>()
             .expect("appsrc type");
         let reached_eof = Arc::new(AtomicBool::new(false));
+        let reached_eof_at = Arc::new(Mutex::new(None));
         let error = Arc::new(Mutex::new(None));
         let feeder = PriorityAudioFeeder {
             appsrc,
             base_dir: PathBuf::new(),
             feed_id: "CAP-IT-ALL".to_string(),
+            eof_drain: Duration::from_millis(1_000),
             active: Some(ActivePriorityAudioFeeder {
                 queue_id: "q1".to_string(),
+                source_status: "active",
+                started_at: Instant::now(),
+                release_after: Duration::from_secs(60),
                 stop: Arc::new(AtomicBool::new(false)),
                 reached_eof: Arc::clone(&reached_eof),
+                reached_eof_at,
                 finished: Arc::new(AtomicBool::new(false)),
                 error: Arc::clone(&error),
                 worker: None,
             }),
+            completed: BTreeMap::new(),
         };
 
         assert_eq!(feeder.active_status().status, "active");
@@ -2517,8 +2930,8 @@ mod tests {
     fn completed_priority_audio_restores_program_audio() {
         let feed = test_feed();
         let status = PriorityAudioSourceStatus {
-            status: "padding",
-            queue_id: Some("q1".to_string()),
+            status: "idle",
+            queue_id: None,
             error: None,
         };
 
@@ -2529,7 +2942,22 @@ mod tests {
     }
 
     #[test]
-    fn priority_audio_without_path_leaves_program_audio_on() {
+    fn active_priority_padding_keeps_priority_selected_for_drain() {
+        let feed = test_feed();
+        let status = PriorityAudioSourceStatus {
+            status: "padding",
+            queue_id: Some("q1".to_string()),
+            error: None,
+        };
+
+        assert_eq!(
+            desired_audio_selector_mode_with_status(&feed, true, &status),
+            AudioSelectorMode::Priority
+        );
+    }
+
+    #[test]
+    fn priority_audio_without_path_forces_silence() {
         let mut feed = test_feed();
         feed.audio.mute_standby_routine = false;
         let mut state = RuntimeState::default();
@@ -2544,7 +2972,7 @@ mod tests {
         })));
         assert_eq!(
             desired_audio_selector_mode(&feed, &state, true),
-            AudioSelectorMode::Program
+            AudioSelectorMode::Silence
         );
         assert!(priority_audio_active(&feed, &state));
     }
@@ -2581,7 +3009,7 @@ mod tests {
     }
 
     #[test]
-    fn text_overlay_state_tracks_priority_alert_presentation() {
+    fn text_overlay_state_does_not_start_visual_from_priority_audio_alone() {
         let feed = test_feed();
         let mut state = RuntimeState::default();
         assert!(state.apply_event(&json!({
@@ -2597,9 +3025,119 @@ mod tests {
         })));
 
         let active = text_overlay_state(&feed, &state);
+        assert!(active.silent);
+        assert_eq!(active.text, "");
+    }
+
+    #[test]
+    fn ticker_visual_finishes_after_banner_clears() {
+        let feed = test_feed();
+        let mut state = RuntimeState::default();
+        let mut controller = TextOverlayController::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "signature": "crawl-1",
+                "feed_id": "CAP-IT-ALL",
+                "alerts": [{"message": "Native CGEN crawl should finish"}]
+            }
+        })));
+        let active = controller.next_state(&feed, &state, false, true);
         assert!(!active.silent);
-        assert_eq!(active.text, "Priority alert crawl");
-        assert!(active.x_absolute > 1.0);
+        assert_eq!(active.visual_id, "crawl-1");
+        controller.last = Some(active);
+
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": false,
+                "signature": "crawl-1",
+                "feed_id": "CAP-IT-ALL",
+                "alerts": []
+            }
+        })));
+        let retained = controller.next_state(&feed, &state, false, true);
+        assert!(!retained.silent);
+        assert_eq!(retained.source_text, "Native CGEN crawl should finish");
+        assert_eq!(retained.visual_id, "crawl-1");
+    }
+
+    #[test]
+    fn ticker_repeats_while_priority_audio_is_live() {
+        let feed = test_feed();
+        let mut state = RuntimeState::default();
+        let mut controller = TextOverlayController::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "feed_id": "CAP-IT-ALL",
+                "alerts": [{"queue_id": "q1", "message": "Repeat crawl"}]
+            }
+        })));
+
+        let mut active = controller.next_state(&feed, &state, false, true);
+        active.started_at = Instant::now() - Duration::from_secs(120);
+        controller.last = Some(active);
+        let repeated = controller.next_state(&feed, &state, false, true);
+
+        assert!(!repeated.silent);
+        assert!(repeated.visual_id.ends_with("#pass2"));
+        assert_eq!(repeated.source_text, "Repeat crawl");
+    }
+
+    #[test]
+    fn ticker_runs_configured_extra_passes_after_audio_release() {
+        let mut feed = test_feed();
+        feed.banner.after_eom_repeats = 1;
+        let mut state = RuntimeState::default();
+        let mut controller = TextOverlayController::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "feed_id": "CAP-IT-ALL",
+                "alerts": [{"queue_id": "q1", "message": "Post EOM crawl"}]
+            }
+        })));
+
+        let mut active = controller.next_state(&feed, &state, false, true);
+        active.started_at = Instant::now() - Duration::from_secs(120);
+        controller.last = Some(active);
+        let post_eom = controller.next_state(&feed, &state, false, false);
+
+        assert!(!post_eom.silent);
+        assert!(post_eom.visual_id.ends_with("#pass2"));
+    }
+
+    #[test]
+    fn fixed_ticker_repeats_ignore_audio_lifetime() {
+        let mut feed = test_feed();
+        feed.banner.scroll_repeat_mode = "fixed".to_string();
+        feed.banner.fixed_repeats = 1;
+        let mut state = RuntimeState::default();
+        let mut controller = TextOverlayController::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "feed_id": "CAP-IT-ALL",
+                "alerts": [{"queue_id": "q1", "message": "One pass only"}]
+            }
+        })));
+
+        let mut active = controller.next_state(&feed, &state, false, true);
+        active.started_at = Instant::now() - Duration::from_secs(120);
+        controller.last = Some(active);
+        let cleared = controller.next_state(&feed, &state, false, true);
+
+        assert!(cleared.silent);
     }
 
     #[test]
@@ -2686,6 +3224,10 @@ mod tests {
                 video_bitrate_kbps: Some(12_000),
                 audio_bitrate_kbps: Some(192),
             },
+            program: Default::default(),
+            priority: Default::default(),
+            media: Default::default(),
+            presentation: Default::default(),
             video: VideoConfig {
                 width: 1920,
                 height: 1080,

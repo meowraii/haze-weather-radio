@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-gpu-wgpu = ["dep:bytemuck", "dep:fontdb", "dep:fontdue", "dep:pollster", "dep:wgpu"]
+gpu-wgpu = ["dep:bytemuck", "dep:glyphon", "dep:pollster", "dep:wgpu"]
 
 [dependencies]
 anyhow = "1"
@@ -26,10 +26,9 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 bytemuck = { version = "1", features = ["derive"], optional = true }
-fontdb = { version = "0.23", optional = true }
-fontdue = { version = "0.9", optional = true }
+glyphon = { version = "0.11", optional = true }
 pollster = { version = "0.4", optional = true }
-wgpu = { version = "26", optional = true }
+wgpu = { version = "29.0.3", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"], optional = true }
 gstreamer = "0.25.3"
 gstreamer-app = "0.25.2"
 gstreamer-audio = "0.25.3"

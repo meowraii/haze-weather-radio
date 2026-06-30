@@ -4,6 +4,7 @@ mod graphics;
 mod gst_backend;
 mod pipeline;
 mod state;
+mod wgpu_renderer;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

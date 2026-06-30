@@ -851,12 +851,36 @@
                                         <input id="cgenFont" type="text" value="Arial">
                                     </label>
                                     <label class="daemon-field">
+                                        <span>Font weight</span>
+                                        <select id="cgenFontWeight">
+                                            <option value="regular">Regular</option>
+                                            <option value="medium">Medium</option>
+                                            <option value="semibold">Semibold</option>
+                                            <option value="bold">Bold</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
                                         <span>Font size</span>
                                         <input id="cgenFontSize" type="number" min="8" max="220" value="58">
                                     </label>
                                     <label class="daemon-field">
                                         <span>Scroll px/frame</span>
                                         <input id="cgenScrollSpeed" type="number" min="1" max="64" value="8">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Scroll repeat</span>
+                                        <select id="cgenScrollRepeatMode">
+                                            <option value="until_audio_end">Until audio ends</option>
+                                            <option value="fixed">Fixed passes</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>After EOM passes</span>
+                                        <input id="cgenAfterEomRepeats" type="number" min="0" max="20" value="0">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Fixed passes</span>
+                                        <input id="cgenFixedRepeats" type="number" min="1" max="50" value="1">
                                     </label>
                                     <label class="daemon-field">
                                         <span>Ticker height</span>

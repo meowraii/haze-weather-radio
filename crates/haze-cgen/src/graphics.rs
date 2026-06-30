@@ -14,7 +14,9 @@ pub(crate) struct PresentationSnapshot {
     pub(crate) ticker_height: u32,
     pub(crate) ticker_speed_px_per_frame: u32,
     pub(crate) font: String,
+    pub(crate) font_weight: String,
     pub(crate) font_size: u32,
+    pub(crate) visual_id: String,
     pub(crate) active_alert_queue_id: Option<String>,
 }
 
@@ -27,7 +29,7 @@ pub(crate) fn presentation_snapshot(
     let banner_feed_id = banner_feed_id(feed, priority_feed_id);
     let banner = state.banner_for(banner_feed_id);
     let audio = state.priority_audio_for(priority_feed_id);
-    let has_visual_input = banner.is_some() || audio.is_some();
+    let has_visual_input = banner.is_some();
     let overlay_text = if has_visual_input {
         overlay_text(feed, banner, audio)
     } else if no_signal && feed.standby.mode.eq_ignore_ascii_case("banner") {
@@ -63,7 +65,12 @@ pub(crate) fn presentation_snapshot(
             .max(48),
         ticker_speed_px_per_frame: feed.banner.scroll_speed.max(1),
         font: ticker_font_family(feed).to_string(),
+        font_weight: ticker_font_weight(feed).to_string(),
         font_size: feed.banner.font_size.max(feed.graphics.font_size).max(16),
+        visual_id: banner
+            .map(banner_visual_id)
+            .or_else(|| audio.map(|audio| audio.queue_id.clone()))
+            .unwrap_or_default(),
         active_alert_queue_id: audio.map(|audio| audio.queue_id.clone()),
     }
 }
@@ -81,8 +88,13 @@ pub(crate) fn compositor_status(feed: &FeedConfig, state: &RuntimeState, no_sign
         "ticker_y": snapshot.ticker_y,
         "ticker_height": snapshot.ticker_height,
         "ticker_speed_px_per_frame": snapshot.ticker_speed_px_per_frame,
+        "scroll_repeat_mode": feed.banner.scroll_repeat_mode,
+        "after_eom_repeats": feed.banner.after_eom_repeats,
+        "fixed_repeats": feed.banner.fixed_repeats,
         "font": snapshot.font,
+        "font_weight": snapshot.font_weight,
         "font_size": snapshot.font_size,
+        "visual_id": snapshot.visual_id,
         "clock_enabled": feed.clock.enabled,
         "clock_format": feed.clock.format,
         "clock_x": feed.clock.x,
@@ -118,6 +130,32 @@ fn banner_feed_id<'a>(feed: &'a FeedConfig, priority_feed_id: &'a str) -> &'a st
     } else {
         feed.id.as_str()
     }
+}
+
+fn banner_visual_id(banner: &BannerPayload) -> String {
+    let mut parts = Vec::new();
+    for alert in &banner.alerts {
+        for key in [
+            "queue_id",
+            "identifier",
+            "id",
+            "alert_id",
+            "event",
+            "message",
+        ] {
+            if let Some(text) = alert.fields.get(key).and_then(Value::as_str) {
+                let text = text.trim();
+                if !text.is_empty() {
+                    parts.push(text.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    if !parts.is_empty() {
+        return parts.join("|");
+    }
+    banner.signature.trim().to_string()
 }
 
 fn visual_mode(feed: &FeedConfig, has_visual_input: bool, no_signal: bool) -> &str {
@@ -193,6 +231,12 @@ fn ticker_font_family(feed: &FeedConfig) -> &str {
     non_empty_ref(&feed.banner.font)
         .or_else(|| non_empty_ref(&feed.graphics.font))
         .unwrap_or("Arial")
+}
+
+fn ticker_font_weight(feed: &FeedConfig) -> &str {
+    non_empty_ref(&feed.banner.font_weight)
+        .or_else(|| non_empty_ref(&feed.graphics.font_weight))
+        .unwrap_or("regular")
 }
 
 fn ticker_y(feed: &FeedConfig, frame_height: i32, no_signal: bool) -> i32 {
@@ -515,6 +559,10 @@ mod tests {
                 format: "mpegts".to_string(),
                 ..Default::default()
             },
+            program: Default::default(),
+            priority: Default::default(),
+            media: Default::default(),
+            presentation: Default::default(),
             video: VideoConfig {
                 width: 1280,
                 height: 720,
