@@ -352,6 +352,7 @@ pub(crate) fn load_config(config_path: &Path) -> Result<LoadedConfig> {
     let config_path = dunce::simplified(config_path).to_path_buf();
     let raw = fs::read_to_string(&config_path)
         .with_context(|| format!("failed to read config {}", config_path.display()))?;
+    let raw = expand_env_vars(&raw);
     let mut root: RootConfig = serde_yaml::from_str(&raw)
         .with_context(|| format!("failed to parse config {}", config_path.display()))?;
     if root.playout.sample_rate == 0 {
@@ -394,6 +395,7 @@ pub(crate) fn load_config(config_path: &Path) -> Result<LoadedConfig> {
 fn load_feeds(path: &Path) -> Result<Vec<FeedConfig>> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read feeds XML {}", path.display()))?;
+    let raw = expand_env_vars(&raw);
     let parsed: FeedsXml = quick_xml::de::from_str(&raw)
         .with_context(|| format!("failed to parse feeds XML {}", path.display()))?;
     Ok(parsed.feeds)
@@ -402,6 +404,7 @@ fn load_feeds(path: &Path) -> Result<Vec<FeedConfig>> {
 fn load_outputs(path: &Path) -> Result<BTreeMap<String, OutputConfig>> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read outputs XML {}", path.display()))?;
+    let raw = expand_env_vars(&raw);
     let parsed: OutputsXml = quick_xml::de::from_str(&raw)
         .with_context(|| format!("failed to parse outputs XML {}", path.display()))?;
     let mut outputs = BTreeMap::new();
@@ -434,6 +437,7 @@ fn load_packages(path: &Path) -> Result<BTreeMap<String, PackageConfig>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(err) => return Err(err).with_context(|| format!("failed to read {}", path.display())),
     };
+    let raw = expand_env_vars(&raw);
     let parsed: PackagesXml = quick_xml::de::from_str(&raw)
         .with_context(|| format!("failed to parse packages XML {}", path.display()))?;
     let default_enabled = xml_bool(&parsed.defaults.enabled, true);
@@ -462,6 +466,44 @@ fn load_packages(path: &Path) -> Result<BTreeMap<String, PackageConfig>> {
         );
     }
     Ok(packages)
+}
+
+fn expand_env_vars(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '$' {
+            out.push(ch);
+            continue;
+        }
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            let mut name = String::new();
+            for next in chars.by_ref() {
+                if next == '}' {
+                    break;
+                }
+                name.push(next);
+            }
+            out.push_str(&std::env::var(name).unwrap_or_default());
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(next) = chars.peek().copied() {
+            if next == '_' || next.is_ascii_alphanumeric() {
+                name.push(next);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if name.is_empty() {
+            out.push('$');
+        } else {
+            out.push_str(&std::env::var(name).unwrap_or_default());
+        }
+    }
+    out
 }
 
 impl LoadedConfig {

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 )
 
 // EventResolution explains how a CAP alert was mapped to a SAME/EAS event code.
@@ -128,7 +128,7 @@ var hazardRules = []hazardRule{
 }
 
 // ResolveEvent maps a CAP alert info block to the best SAME/EAS event code.
-func ResolveEvent(alert capingest.Alert, info capingest.AlertInfo, baseDir string) EventResolution {
+func ResolveEvent(alert capmodel.Alert, info capmodel.AlertInfo, baseDir string) EventResolution {
 	_ = alert
 	if resolution := explicitCAPEvent(info); resolution.Event != "" {
 		return resolution
@@ -179,7 +179,7 @@ func ResolveEvent(alert capingest.Alert, info capingest.AlertInfo, baseDir strin
 	}
 }
 
-func explicitCAPEvent(info capingest.AlertInfo) EventResolution {
+func explicitCAPEvent(info capmodel.AlertInfo) EventResolution {
 	for _, code := range info.EventCodes {
 		if event := explicitEventCode(code.Name, code.Value); event != "" {
 			return EventResolution{
@@ -253,7 +253,7 @@ func originatorCode(value string) bool {
 	}
 }
 
-func classifiedEvent(info capingest.AlertInfo, alertClass string, classEvidence []string) EventResolution {
+func classifiedEvent(info capmodel.AlertInfo, alertClass string, classEvidence []string) EventResolution {
 	if alertClass == "" {
 		alertClass, classEvidence = detectAlertClass(info)
 	}
@@ -319,7 +319,7 @@ func (rule hazardRule) eventForClass(alertClass string) string {
 	}
 }
 
-func detectAlertClass(info capingest.AlertInfo) (string, []string) {
+func detectAlertClass(info capmodel.AlertInfo) (string, []string) {
 	fields := []namedText{
 		{Name: "Alert_Type", Value: alertParamContaining(info, "alert_type")},
 		{Name: "Alert_Name", Value: alertParamContaining(info, "alert_name")},
@@ -336,7 +336,7 @@ func detectAlertClass(info capingest.AlertInfo) (string, []string) {
 	return "", nil
 }
 
-func capTextFields(info capingest.AlertInfo) []namedText {
+func capTextFields(info capmodel.AlertInfo) []namedText {
 	fields := []namedText{
 		{Name: "Alert_Name", Value: alertParamContaining(info, "alert_name")},
 		{Name: "headline", Value: info.Headline},
@@ -349,7 +349,7 @@ func capTextFields(info capingest.AlertInfo) []namedText {
 	return fields
 }
 
-func capTextEvidence(info capingest.AlertInfo) []string {
+func capTextEvidence(info capmodel.AlertInfo) []string {
 	out := []string{}
 	for _, field := range capTextFields(info) {
 		out = append(out, evidenceText(field.Name, field.Value))
@@ -357,7 +357,7 @@ func capTextEvidence(info capingest.AlertInfo) []string {
 	return out
 }
 
-func alertParamContaining(info capingest.AlertInfo, token string) string {
+func alertParamContaining(info capmodel.AlertInfo, token string) string {
 	token = strings.ToLower(strings.TrimSpace(token))
 	for _, param := range info.Parameters {
 		if strings.Contains(strings.ToLower(strings.TrimSpace(param.Name)), token) {

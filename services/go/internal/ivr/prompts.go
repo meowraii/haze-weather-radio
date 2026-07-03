@@ -110,6 +110,7 @@ func loadPromptConfig(path string) (PromptConfig, error) {
 		}
 		return PromptConfig{}, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var parsed promptConfigXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
 		return PromptConfig{}, fmt.Errorf("parse IVR XML: %w", err)

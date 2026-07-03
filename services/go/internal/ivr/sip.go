@@ -79,24 +79,29 @@ type sipMediaOffer struct {
 }
 
 type sipCall struct {
-	service      *Service
-	ctx          context.Context
-	cancel       context.CancelFunc
-	callID       string
-	localTag     string
-	rtpConn      *net.UDPConn
-	remoteRTP    *net.UDPAddr
-	audioCodec   sipAudioCodec
-	audioPayload int
-	dtmfPayload  int
-	digits       chan string
-	done         chan struct{}
-	sendMu       sync.Mutex
-	seq          uint16
-	timestamp    uint32
-	ssrc         uint32
-	sentRTPLog   bool
-	recvRTPLog   bool
+	service       *Service
+	ctx           context.Context
+	cancel        context.CancelFunc
+	callID        string
+	localTag      string
+	sipConn       *net.UDPConn
+	sipRemote     *net.UDPAddr
+	sipHeaders    map[string]string
+	sipRequestURI string
+	rtpConn       *net.UDPConn
+	remoteRTP     *net.UDPAddr
+	audioCodec    sipAudioCodec
+	audioPayload  int
+	dtmfPayload   int
+	digits        chan string
+	done          chan struct{}
+	sendMu        sync.Mutex
+	byeOnce       sync.Once
+	seq           uint16
+	timestamp     uint32
+	ssrc          uint32
+	sentRTPLog    bool
+	recvRTPLog    bool
 }
 
 func (s *Service) runSIP(ctx context.Context) error {
@@ -180,7 +185,7 @@ func (s *Service) runSIP(ctx context.Context) error {
 				continue
 			}
 			callsMu.Unlock()
-			call, response := s.acceptSIPInvite(ctx, request, remote, conn.LocalAddr())
+			call, response := s.acceptSIPInvite(ctx, request, remote, conn, conn.LocalAddr())
 			_, _ = conn.WriteToUDP([]byte(response), remote)
 			if call == nil {
 				continue
@@ -225,7 +230,7 @@ func (s *Service) runSIP(ctx context.Context) error {
 	}
 }
 
-func (s *Service) acceptSIPInvite(ctx context.Context, request sipRequest, remote *net.UDPAddr, local net.Addr) (*sipCall, string) {
+func (s *Service) acceptSIPInvite(ctx context.Context, request sipRequest, remote *net.UDPAddr, conn *net.UDPConn, local net.Addr) (*sipCall, string) {
 	offer, err := parseSDPOffer(request.Body, remote)
 	if err != nil {
 		log.Printf("IVR SIP rejected INVITE from %s: %v", remote, err)
@@ -244,21 +249,25 @@ func (s *Service) acceptSIPInvite(ctx context.Context, request sipRequest, remot
 	}
 	audioCodec, audioPayload := s.selectSIPAudioCodec(offer)
 	call := &sipCall{
-		service:      s,
-		ctx:          callCtx,
-		cancel:       cancel,
-		callID:       sipHeader(request.Headers, "call-id"),
-		localTag:     randomHex(6),
-		rtpConn:      rtpConn,
-		remoteRTP:    &net.UDPAddr{IP: net.ParseIP(offer.Host), Port: offer.Port},
-		audioCodec:   audioCodec,
-		audioPayload: audioPayload,
-		dtmfPayload:  offer.DTMFPayload,
-		digits:       make(chan string, 16),
-		done:         make(chan struct{}),
-		seq:          uint16(time.Now().UnixNano()),
-		timestamp:    uint32(time.Now().UnixNano()),
-		ssrc:         randomUint32(),
+		service:       s,
+		ctx:           callCtx,
+		cancel:        cancel,
+		callID:        sipHeader(request.Headers, "call-id"),
+		localTag:      randomHex(6),
+		sipConn:       conn,
+		sipRemote:     cloneUDPAddr(remote),
+		sipHeaders:    cloneSIPHeaders(request.Headers),
+		sipRequestURI: firstNonBlank(sipContactURI(sipHeader(request.Headers, "contact")), request.URI),
+		rtpConn:       rtpConn,
+		remoteRTP:     &net.UDPAddr{IP: net.ParseIP(offer.Host), Port: offer.Port},
+		audioCodec:    audioCodec,
+		audioPayload:  audioPayload,
+		dtmfPayload:   offer.DTMFPayload,
+		digits:        make(chan string, 16),
+		done:          make(chan struct{}),
+		seq:           uint16(time.Now().UnixNano()),
+		timestamp:     uint32(time.Now().UnixNano()),
+		ssrc:          randomUint32(),
 	}
 	if call.dtmfPayload <= 0 {
 		call.dtmfPayload = sipDefaultDTMFPayload
@@ -629,6 +638,55 @@ func (c *sipCall) close() {
 	}
 }
 
+func (c *sipCall) timeoutHangup() {
+	c.playPrompt("error", "timeout", nil)
+	c.hangup()
+}
+
+func (c *sipCall) hangup() {
+	c.sendBYE()
+	c.close()
+}
+
+func (c *sipCall) sendBYE() {
+	if c == nil || c.sipConn == nil || c.sipRemote == nil {
+		return
+	}
+	c.byeOnce.Do(func() {
+		requestURI := strings.TrimSpace(c.sipRequestURI)
+		if requestURI == "" {
+			requestURI = "sip:unknown"
+		}
+		localHost, localPort := sipAddrHostPort(c.sipConn.LocalAddr())
+		if localHost == "" {
+			localHost = "0.0.0.0"
+		}
+		from := sipHeader(c.sipHeaders, "to")
+		if from == "" {
+			from = "<sip:haze@" + localHost + ">"
+		}
+		if !strings.Contains(strings.ToLower(from), "tag=") {
+			from += ";tag=" + c.localTag
+		}
+		to := sipHeader(c.sipHeaders, "from")
+		if to == "" {
+			to = "<sip:caller@" + c.sipRemote.IP.String() + ">"
+		}
+		userAgent := firstNonBlank(c.service.cfg.IVR.SIP.Registration.UserAgent, "Haze Weather Radio IVR")
+		var builder strings.Builder
+		builder.WriteString("BYE " + requestURI + " SIP/2.0\r\n")
+		builder.WriteString(fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-%s;rport\r\n", localHost, localPort, randomHex(8)))
+		builder.WriteString("Max-Forwards: 70\r\n")
+		builder.WriteString("From: " + from + "\r\n")
+		builder.WriteString("To: " + to + "\r\n")
+		builder.WriteString("Call-ID: " + c.callID + "\r\n")
+		builder.WriteString("CSeq: 2 BYE\r\n")
+		builder.WriteString("User-Agent: " + userAgent + "\r\n")
+		builder.WriteString("Content-Length: 0\r\n\r\n")
+		_, _ = c.sipConn.WriteToUDP([]byte(builder.String()), c.sipRemote)
+	})
+}
+
 func (c *sipCall) menuLoop() {
 	language := c.service.cfg.IVR.DefaultLanguage
 	for c.ctx.Err() == nil {
@@ -645,7 +703,7 @@ func (c *sipCall) menuLoop() {
 		}
 		digit, ok := c.promptAndWaitDigit("entry", lineKey, c.service.promptValues(nil), entry.Timeout)
 		if !ok {
-			c.playPrompt("error", "timeout", nil)
+			c.timeoutHangup()
 			return
 		}
 		option, ok := c.service.cfg.Prompts.Option("entry", digit)
@@ -716,7 +774,7 @@ func (c *sipCall) collectLocationWithPrompt(language string, menuID string, line
 			code, geophysical, ok = c.collectLocationInput(timeout, "")
 		}
 		if !ok {
-			c.playPrompt("error", "timeout", nil)
+			c.timeoutHangup()
 			return ResolvedLocation{}, false
 		}
 		if geophysical {
@@ -756,7 +814,7 @@ func (c *sipCall) collectLocationNumber(language string, province string) (Resol
 		}
 		number, search, ok := c.collectLocationNumberInput(menu.Timeout, province, initial)
 		if !ok {
-			c.playPrompt("error", "timeout", nil)
+			c.timeoutHangup()
 			return ResolvedLocation{}, false
 		}
 		if search {
@@ -781,8 +839,16 @@ func (c *sipCall) collectLocationNumber(language string, province string) (Resol
 
 func (c *sipCall) locationMenu(location ResolvedLocation) {
 	menu, _ := c.service.cfg.Prompts.Menu("location_menu")
+	autoAlertMenu := true
 	for c.ctx.Err() == nil {
 		alerts := c.service.activeIVRAlerts(c.ctx, location)
+		if autoAlertMenu {
+			autoAlertMenu = false
+			if len(alerts) > 0 {
+				c.alertMenu(location)
+				continue
+			}
+		}
 		var digit string
 		var ok bool
 		if len(alerts) > 0 {
@@ -792,7 +858,7 @@ func (c *sipCall) locationMenu(location ResolvedLocation) {
 			digit, ok = c.promptAndWaitDigit("location_menu", lineKey, c.service.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID}), menu.Timeout)
 		}
 		if !ok {
-			c.playPrompt("error", "timeout", nil)
+			c.timeoutHangup()
 			return
 		}
 		if digit == "#" {
@@ -844,7 +910,7 @@ func (c *sipCall) alertMenu(location ResolvedLocation) {
 		}
 		digit, ok := c.promptTextAndWaitDigit("alert_menu_"+firstNonBlank(location.FeedID, location.Code, "default"), c.service.alertMenuText(location, alerts), menu.Timeout)
 		if !ok {
-			c.playPrompt("error", "timeout", nil)
+			c.timeoutHangup()
 			return
 		}
 		if digit == "#" {
@@ -869,7 +935,7 @@ func (c *sipCall) configuredMenu(location ResolvedLocation, menuID string) {
 	for c.ctx.Err() == nil {
 		digit, ok := c.promptAndWaitDigit(menuID, "main", map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID}, menu.Timeout)
 		if !ok {
-			c.playPrompt("error", "timeout", nil)
+			c.timeoutHangup()
 			return
 		}
 		if digit == "#" {
@@ -1552,6 +1618,63 @@ func sipAddrPort(addr net.Addr) int {
 		return udp.Port
 	}
 	return 5060
+}
+
+func sipAddrHostPort(addr net.Addr) (string, int) {
+	if udp, ok := addr.(*net.UDPAddr); ok {
+		host := ""
+		if udp.IP != nil {
+			host = udp.IP.String()
+		}
+		return host, sipAddrPort(addr)
+	}
+	if addr == nil {
+		return "", 5060
+	}
+	host, portText, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String(), 5060
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 {
+		port = 5060
+	}
+	return host, port
+}
+
+func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	return &net.UDPAddr{
+		IP:   append(net.IP(nil), addr.IP...),
+		Port: addr.Port,
+		Zone: addr.Zone,
+	}
+}
+
+func cloneSIPHeaders(headers map[string]string) map[string]string {
+	out := make(map[string]string, len(headers))
+	for key, value := range headers {
+		out[key] = value
+	}
+	return out
+}
+
+func sipContactURI(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if start := strings.Index(value, "<"); start >= 0 {
+		if end := strings.Index(value[start+1:], ">"); end >= 0 {
+			return strings.TrimSpace(value[start+1 : start+1+end])
+		}
+	}
+	if semi := strings.Index(value, ";"); semi >= 0 {
+		value = value[:semi]
+	}
+	return strings.Trim(value, "<> ")
 }
 
 func sipResponseExpires(response sipResponse, fallback int) int {

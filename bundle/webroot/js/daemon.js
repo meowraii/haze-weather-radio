@@ -19,7 +19,6 @@ const SECTIONS = [
             ['services.go.enabled', 'Enable service host', 'Allow Haze to extract and run bundled Go services.'],
             ['services.go.web_gateway.enabled', 'Web gateway', 'Serve the public/admin gateway process.'],
             ['services.go.data_ingest.enabled', 'Weather data ingest', 'Refresh routine weather data caches.'],
-            ['services.go.cap_ingest.enabled', 'CAP ingest', 'Poll configured CAP sources.'],
             ['services.go.tts.enabled', 'TTS renderer', 'Render speech audio through configured SAPI5, SpeakyAPI, eSpeak, or native readers.'],
             ['services.go.product_render.enabled', 'Product renderer', 'Build feed-aware TTS products for the dynamic playlist.'],
             ['services.go.playlist.enabled', 'Dynamic playlist', 'Predict, queue, and schedule product playback per feed.'],
@@ -32,13 +31,8 @@ const SECTIONS = [
             ]],
         ],
         fields: [
-            ['services.go.cap_ingest.source_id', 'CAP source ID', 'go-cap'],
             ['services.go.data_ingest.interval', 'Weather data interval', '45m'],
             ['services.go.data_ingest.timeout', 'Weather data timeout', '20s'],
-            ['services.go.cap_ingest.source', 'CAP source', 'naads'],
-            ['services.go.cap_ingest.url', 'CAP URL override', ''],
-            ['services.go.cap_ingest.interval', 'CAP interval', '30s'],
-            ['services.go.cap_ingest.timeout', 'CAP timeout', '15s'],
             ['services.go.tts.readers', 'Reader config', 'managed/configs/readers.xml'],
             ['services.go.tts.provider', 'Default TTS provider', 'auto'],
             ['services.go.tts.language', 'Default TTS language', 'en-CA'],
@@ -63,6 +57,36 @@ const SECTIONS = [
             ['services.go.ivr.cache.max_entries', 'IVR max cache entries', '5000'],
             ['services.go.ivr.max_concurrent_calls', 'IVR max calls', '256'],
             ['services.go.ivr.max_render_inflight', 'IVR render slots', '8'],
+        ],
+    },
+    {
+        title: 'Rust CAP Ingest',
+        items: [
+            ['services.rust.cap_ingest.enabled', 'CAP ingest', 'Run the native CAP ingest service.'],
+            ['services.rust.cap_ingest.shadow', 'Shadow only', 'Publish diagnostics without relaying CAP alert events.'],
+            ['services.rust.cap_ingest.startup_seed', 'Seed on startup', 'Suppress replay of already-current provider entries on startup.'],
+        ],
+        selects: [
+            ['services.rust.cap_ingest.source', 'CAP source', [
+                ['naads', 'NAADS / CAP-CP'],
+                ['nws', 'NWS CAP'],
+                ['custom', 'Custom'],
+            ]],
+            ['services.rust.cap_ingest.mode', 'Ingest mode', [
+                ['tcp', 'TCP streaming'],
+                ['atom', 'Atom polling'],
+                ['auto', 'Auto'],
+            ]],
+        ],
+        fields: [
+            ['services.rust.cap_ingest.source_id', 'CAP source ID', 'rust-cap'],
+            ['services.rust.cap_ingest.url', 'Primary URL', 'tcp://streaming1.naad-adna.pelmorex.com:8080'],
+            ['services.rust.cap_ingest.fallback_url', 'Fallback URL(s)', 'tcp://streaming2.naad-adna.pelmorex.com:8080'],
+            ['services.rust.cap_ingest.archive_url', 'Primary archive URL', 'http://capcp1.naad-adna.pelmorex.com'],
+            ['services.rust.cap_ingest.fallback_archive_url', 'Fallback archive URL', 'http://capcp2.naad-adna.pelmorex.com'],
+            ['services.rust.cap_ingest.interval', 'Atom poll interval', '5s'],
+            ['services.rust.cap_ingest.timeout', 'HTTP timeout', '15s'],
+            ['services.rust.cap_ingest.concurrency', 'CAP fetch concurrency', '8'],
         ],
     },
     {
@@ -296,19 +320,20 @@ function updateMetrics(pendingRestart = false) {
     const goEnabled = Boolean(getPath(currentSettings, 'services.go.enabled', false));
     const goWeb = Boolean(getPath(currentSettings, 'services.go.web_gateway.enabled', false));
     const goData = Boolean(getPath(currentSettings, 'services.go.data_ingest.enabled', false));
-    const goCap = Boolean(getPath(currentSettings, 'services.go.cap_ingest.enabled', false));
     const goTts = Boolean(getPath(currentSettings, 'services.go.tts.enabled', false));
     const goProduct = Boolean(getPath(currentSettings, 'services.go.product_render.enabled', false));
     const goPlaylist = Boolean(getPath(currentSettings, 'services.go.playlist.enabled', false));
     const goIvr = Boolean(getPath(currentSettings, 'services.go.ivr.enabled', false));
+    const rustCap = Boolean(getPath(currentSettings, 'services.rust.cap_ingest.enabled', false));
     const hostEnabled = Boolean(getPath(currentSettings, 'services.daemon.enabled', false));
     const hostScheduler = Boolean(getPath(currentSettings, 'services.daemon.scheduler.enabled', false));
     const hostAlerts = Boolean(getPath(currentSettings, 'services.daemon.alert_queue.enabled', false));
     const hostPlaylist = Boolean(getPath(currentSettings, 'services.daemon.playlist.enabled', false));
     settingsStateEl.textContent = pendingRestart ? 'pending restart' : 'loaded';
-    const goText = goEnabled ? `${[goWeb && 'web', goData && 'data', goCap && 'cap', goTts && 'tts', goProduct && 'products', goPlaylist && 'playlist', goIvr && 'ivr'].filter(Boolean).join(' + ') || 'service host'}` : '';
+    const goText = goEnabled ? `${[goWeb && 'web', goData && 'data', goTts && 'tts', goProduct && 'products', goPlaylist && 'playlist', goIvr && 'ivr'].filter(Boolean).join(' + ') || 'service host'}` : '';
+    const rustText = rustCap ? 'rust cap' : '';
     const hostText = hostEnabled ? `${[hostScheduler && 'sched', hostAlerts && 'alerts', hostPlaylist && 'playlist'].filter(Boolean).join(' + ') || 'host loop'}` : '';
-    goStateEl.textContent = [goText, hostText].filter(Boolean).join(' / ') || 'disabled';
+    goStateEl.textContent = [goText, rustText, hostText].filter(Boolean).join(' / ') || 'disabled';
 }
 
 function collectSettings() {

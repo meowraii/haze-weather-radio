@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
 )
 
@@ -154,8 +154,8 @@ type SAMERequest struct {
 
 // CAPMessageRequest describes a CAP alert speech request.
 type CAPMessageRequest struct {
-	Alert          capingest.Alert
-	Info           capingest.AlertInfo
+	Alert          capmodel.Alert
+	Info           capmodel.AlertInfo
 	AreaText       string
 	Sender         string
 	EventName      string
@@ -559,7 +559,7 @@ func LoadLocationLabels(configPath string) map[string]string {
 }
 
 // SerializeCAPAlert builds a Python banner-style public alert payload.
-func SerializeCAPAlert(alert capingest.Alert, info capingest.AlertInfo, feedID string, areaNames []string, timezone string, sourceKind string, now time.Time) SerializedAlert {
+func SerializeCAPAlert(alert capmodel.Alert, info capmodel.AlertInfo, feedID string, areaNames []string, timezone string, sourceKind string, now time.Time) SerializedAlert {
 	headline := NormalizeHeadline(fallbackText(info.Headline, info.Event, "Alert"))
 	issuer := fallbackText(info.SenderName, CAPSenderName(alert, ""))
 	message := BuildCAPAlertText(CAPMessageRequest{
@@ -648,7 +648,7 @@ func PickBannerColor(alerts []AlertVisualInput) string {
 }
 
 // IsBroadcastImmediateInfo reports whether a CAP info block requests immediate broadcast handling.
-func IsBroadcastImmediateInfo(info capingest.AlertInfo) bool {
+func IsBroadcastImmediateInfo(info capmodel.AlertInfo) bool {
 	for _, param := range info.Parameters {
 		name := strings.ToLower(strings.TrimSpace(param.Name))
 		if !strings.Contains(name, "broadcast_immediately") && !strings.Contains(name, "wirelessimmediate") {
@@ -675,7 +675,7 @@ func NormalizeHeadline(value string) string {
 }
 
 // AlertSubject resolves the public alert subject from CAP fields.
-func AlertSubject(info capingest.AlertInfo) string {
+func AlertSubject(info capmodel.AlertInfo) string {
 	name := CAPParam(info, "layer:EC-MSC-SMC:1.0:Alert_Name")
 	if name == "" {
 		name = stripAlertHeadlineState(info.Headline)
@@ -761,7 +761,7 @@ func startsWithAWIPSID(value string) bool {
 }
 
 // CAPParam returns a CAP parameter by case-insensitive name.
-func CAPParam(info capingest.AlertInfo, name string) string {
+func CAPParam(info capmodel.AlertInfo, name string) string {
 	for _, param := range info.Parameters {
 		if strings.EqualFold(strings.TrimSpace(param.Name), name) {
 			return strings.TrimSpace(param.Value)
@@ -771,7 +771,7 @@ func CAPParam(info capingest.AlertInfo, name string) string {
 }
 
 // IsCAPEnded returns true for explicit or time-expired CAP end states.
-func IsCAPEnded(alert capingest.Alert, now time.Time) bool {
+func IsCAPEnded(alert capmodel.Alert, now time.Time) bool {
 	if strings.EqualFold(alert.MessageType, "Cancel") {
 		return true
 	}
@@ -796,7 +796,7 @@ func IsCAPEnded(alert capingest.Alert, now time.Time) bool {
 }
 
 // AlertExpiresAt returns the first CAP info expiry timestamp.
-func AlertExpiresAt(alert capingest.Alert) time.Time {
+func AlertExpiresAt(alert capmodel.Alert) time.Time {
 	for _, info := range alert.Infos {
 		if expires := ParseCAPTime(info.Expires); !expires.IsZero() {
 			return expires
@@ -806,7 +806,7 @@ func AlertExpiresAt(alert capingest.Alert) time.Time {
 }
 
 // FirstCAPTime returns the best event anchor time.
-func FirstCAPTime(alert capingest.Alert, info capingest.AlertInfo) time.Time {
+func FirstCAPTime(alert capmodel.Alert, info capmodel.AlertInfo) time.Time {
 	for _, raw := range []string{alert.Sent, info.Effective, info.Onset, info.Expires} {
 		if parsed := ParseCAPTime(raw); !parsed.IsZero() {
 			return parsed
@@ -830,7 +830,7 @@ func ParseCAPTime(raw string) time.Time {
 }
 
 // DetectCAPSource identifies the likely CAP source family.
-func DetectCAPSource(alert capingest.Alert) string {
+func DetectCAPSource(alert capmodel.Alert) string {
 	for _, info := range alert.Infos {
 		for _, param := range info.Parameters {
 			if strings.HasPrefix(param.Name, "layer:EC-MSC-SMC") || strings.Contains(strings.ToLower(param.Name), "cap-cp") {
@@ -849,7 +849,7 @@ func DetectCAPSource(alert capingest.Alert) string {
 }
 
 // CAPSenderName returns a default sender for a CAP alert.
-func CAPSenderName(alert capingest.Alert, weatherService string) string {
+func CAPSenderName(alert capmodel.Alert, weatherService string) string {
 	if DetectCAPSource(alert) == "eccc" {
 		return fallbackText(weatherService, "Environment Canada")
 	}
@@ -999,7 +999,7 @@ func CleanLocationCode(raw string) string {
 }
 
 // MessageID mirrors the old banner short message id heuristic.
-func MessageID(alert capingest.Alert) string {
+func MessageID(alert capmodel.Alert) string {
 	if sent := ParseCAPTime(alert.Sent); !sent.IsZero() {
 		return "MSG" + sent.UTC().Format("150405")
 	}

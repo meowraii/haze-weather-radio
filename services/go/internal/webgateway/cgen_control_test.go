@@ -93,6 +93,8 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 	}
 	for _, want := range []string{
 		"<program>",
+		"<input url=\"udp://239.0.0.1:9000?overrun_nonfatal=1&amp;reuse=1\" format=\"mpegts\"></input>",
+		"<output url=\"udp://239.0.0.2:9001?pkt_size=1316\" format=\"mpegts\" vcodec=\"libx264\" acodec=\"aac\"",
 		"<priority>",
 		"<media>",
 		"<presentation>",
@@ -102,6 +104,9 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 		if !strings.Contains(string(rawXML), want) {
 			t.Fatalf("written XML missing %q:\n%s", want, rawXML)
 		}
+	}
+	if strings.Count(string(rawXML), "<program>") != 1 {
+		t.Fatalf("written XML must have one program section:\n%s", rawXML)
 	}
 	if feeds[0]["standby_mode"] != "smpte" ||
 		feeds[0]["standby_text"] != "EAS Details Channel" ||
@@ -129,6 +134,45 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 	feeds = acted["feeds"].([]map[string]any)
 	if feeds[0]["text"] != "Weather alert" || feeds[0]["text_enabled"] != true || feeds[0]["mode"] != "overlay" {
 		t.Fatalf("action feed = %#v", feeds[0])
+	}
+
+	acted, err = cgenActionPayload(configPath, map[string]any{
+		"feed_id":         "CAP-IT-ALL",
+		"action":          "clock",
+		"enabled":         true,
+		"clock_format":    "Jan 02 15:04:05",
+		"clock_x":         "96",
+		"clock_y":         "112",
+		"clock_font_size": "44",
+		"font":            "Arial",
+		"font_weight":     "regular",
+	})
+	if err != nil {
+		t.Fatalf("clock action: %v", err)
+	}
+	feeds = acted["feeds"].([]map[string]any)
+	if feeds[0]["clock_enabled"] != true ||
+		feeds[0]["clock_format"] != "Jan 02 15:04:05" ||
+		feeds[0]["clock_x"] != "96" ||
+		feeds[0]["clock_y"] != "112" ||
+		feeds[0]["clock_font_size"] != "44" ||
+		feeds[0]["mode"] != "overlay" {
+		t.Fatalf("clock action feed = %#v", feeds[0])
+	}
+
+	acted, err = cgenActionPayload(configPath, map[string]any{
+		"feed_id": "CAP-IT-ALL",
+		"action":  "release",
+	})
+	if err != nil {
+		t.Fatalf("release action: %v", err)
+	}
+	feeds = acted["feeds"].([]map[string]any)
+	if feeds[0]["clock_enabled"] != false ||
+		feeds[0]["text_enabled"] != false ||
+		feeds[0]["sunny_cat"] != false ||
+		feeds[0]["mode"] != "release" {
+		t.Fatalf("release action feed = %#v", feeds[0])
 	}
 }
 

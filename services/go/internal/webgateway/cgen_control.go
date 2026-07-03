@@ -87,6 +87,72 @@ type cgenPriorityInputXML struct {
 	Format      string `xml:"format,attr,omitempty"`
 }
 
+func (f cgenFeedXML) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	start.Name.Local = "feed"
+	start.Attr = append(start.Attr, xml.Attr{Name: xml.Name{Local: "id"}, Value: f.ID})
+	if f.Name != "" {
+		start.Attr = append(start.Attr, xml.Attr{Name: xml.Name{Local: "name"}, Value: f.Name})
+	}
+	if f.Enabled != "" {
+		start.Attr = append(start.Attr, xml.Attr{Name: xml.Name{Local: "enabled"}, Value: f.Enabled})
+	}
+	if f.UpdatedAt != "" {
+		start.Attr = append(start.Attr, xml.Attr{Name: xml.Name{Local: "updated_at"}, Value: f.UpdatedAt})
+	}
+	if err := e.EncodeToken(start); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(struct {
+		Input  cgenEndpointXML `xml:"input"`
+		Output cgenEndpointXML `xml:"output"`
+	}{
+		Input:  f.ProgramInput,
+		Output: f.ProgramOutput,
+	}, xml.StartElement{Name: xml.Name{Local: "program"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(struct {
+		Input cgenPriorityInputXML `xml:"input"`
+	}{
+		Input: f.PriorityInput,
+	}, xml.StartElement{Name: xml.Name{Local: "priority"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(struct {
+		Video cgenVideoXML `xml:"video"`
+		Audio cgenAudioXML `xml:"audio"`
+	}{
+		Video: f.Video,
+		Audio: f.Audio,
+	}, xml.StartElement{Name: xml.Name{Local: "media"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(f.Ladder, xml.StartElement{Name: xml.Name{Local: "ladder"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(struct {
+		Banner   cgenBannerXML   `xml:"banner"`
+		Graphics cgenGraphicsXML `xml:"graphics"`
+		Clock    cgenClockXML    `xml:"clock"`
+		Text     cgenTextXML     `xml:"text"`
+		State    cgenStateXML    `xml:"state"`
+		Standby  cgenStandbyXML  `xml:"standby"`
+	}{
+		Banner:   f.Banner,
+		Graphics: f.Graphics,
+		Clock:    f.Clock,
+		Text:     f.Text,
+		State:    f.State,
+		Standby:  f.Standby,
+	}, xml.StartElement{Name: xml.Name{Local: "presentation"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(f.Sync, xml.StartElement{Name: xml.Name{Local: "sync"}}); err != nil {
+		return err
+	}
+	return e.EncodeToken(start.End())
+}
+
 type cgenVideoXML struct {
 	Width      string `xml:"width,attr,omitempty"`
 	Height     string `xml:"height,attr,omitempty"`
@@ -251,6 +317,7 @@ type cgenTextXML struct {
 type cgenStateXML struct {
 	Mode      string `xml:"mode,attr,omitempty"`
 	SMPTEBars string `xml:"smpte_bars,attr,omitempty"`
+	SunnyCat  string `xml:"sunny_cat,attr,omitempty"`
 	UpdatedAt string `xml:"updated_at,attr,omitempty"`
 }
 
@@ -325,10 +392,14 @@ func cgenActionPayload(configPath string, payload map[string]any) (map[string]an
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	feed := config.Feeds[index]
+	applyCgenRuntimeFields(&feed, payload)
 	switch action {
 	case "release":
 		feed.State.Mode = "release"
 		feed.State.SMPTEBars = "false"
+		feed.State.SunnyCat = "false"
+		feed.Clock.Enabled = "false"
+		feed.Text.Enabled = "false"
 	case "overlay":
 		feed.State.Mode = "overlay"
 	case "smpte_bars":
@@ -336,6 +407,11 @@ func cgenActionPayload(configPath string, payload map[string]any) (map[string]an
 		feed.State.SMPTEBars = boolText(boolFromAny(payload["enabled"], true))
 	case "clock":
 		feed.Clock.Enabled = boolText(boolFromAny(payload["enabled"], true))
+	case "unleash_sunny":
+		feed.State.Mode = "overlay"
+		feed.State.SunnyCat = "true"
+	case "banish_sunny":
+		feed.State.SunnyCat = "false"
 	case "insert_text":
 		feed.State.Mode = "overlay"
 		feed.Text.Enabled = "true"
@@ -353,6 +429,52 @@ func cgenActionPayload(configPath string, payload map[string]any) (map[string]an
 		return nil, err
 	}
 	return loadCgenPayload(configPath)
+}
+
+func applyCgenRuntimeFields(feed *cgenFeedXML, source map[string]any) {
+	feed.Banner.Mode = fallbackText(stringFromAny(source["banner_mode"]), feed.Banner.Mode)
+	feed.Banner.TickerHeight = fallbackText(firstStringFromAny(source, "ticker_height", "banner_height"), feed.Banner.TickerHeight)
+	feed.Banner.Font = fallbackText(stringFromAny(source["font"]), feed.Banner.Font)
+	feed.Banner.FontWeight = fallbackText(stringFromAny(source["font_weight"]), feed.Banner.FontWeight)
+	feed.Banner.FontSize = fallbackText(stringFromAny(source["font_size"]), feed.Banner.FontSize)
+	feed.Banner.ScrollSpeed = fallbackText(stringFromAny(source["scroll_speed"]), feed.Banner.ScrollSpeed)
+	feed.Banner.ScrollRepeatMode = fallbackText(stringFromAny(source["scroll_repeat_mode"]), feed.Banner.ScrollRepeatMode)
+	feed.Banner.AfterEOMRepeats = fallbackText(stringFromAny(source["after_eom_repeats"]), feed.Banner.AfterEOMRepeats)
+	feed.Banner.FixedRepeats = fallbackText(stringFromAny(source["fixed_repeats"]), feed.Banner.FixedRepeats)
+	if _, ok := source["banner_background_enabled"]; ok {
+		feed.Banner.BackgroundEnabled = boolText(boolFromAny(source["banner_background_enabled"], true))
+	}
+	feed.Graphics.Font = fallbackText(stringFromAny(source["font"]), feed.Graphics.Font)
+	feed.Graphics.FontWeight = fallbackText(stringFromAny(source["font_weight"]), feed.Graphics.FontWeight)
+	feed.Graphics.FontSize = fallbackText(stringFromAny(source["font_size"]), feed.Graphics.FontSize)
+	feed.Graphics.BannerHeight = fallbackText(firstStringFromAny(source, "banner_height", "ticker_height"), feed.Graphics.BannerHeight)
+	if _, ok := source["clock_enabled"]; ok {
+		feed.Clock.Enabled = boolText(boolFromAny(source["clock_enabled"], false))
+	}
+	feed.Clock.Format = fallbackText(stringFromAny(source["clock_format"]), feed.Clock.Format)
+	feed.Clock.X = fallbackText(stringFromAny(source["clock_x"]), feed.Clock.X)
+	feed.Clock.Y = fallbackText(stringFromAny(source["clock_y"]), feed.Clock.Y)
+	feed.Clock.FontSize = fallbackText(stringFromAny(source["clock_font_size"]), feed.Clock.FontSize)
+	feed.Clock.Color = fallbackText(stringFromAny(source["clock_color"]), feed.Clock.Color)
+	if _, ok := source["text_enabled"]; ok {
+		feed.Text.Enabled = boolText(boolFromAny(source["text_enabled"], false))
+	}
+	if _, ok := source["text"]; ok {
+		feed.Text.Content = stringFromAny(source["text"])
+	}
+	feed.Text.FontSize = fallbackText(stringFromAny(source["text_font_size"]), feed.Text.FontSize)
+	feed.Text.Color = fallbackText(stringFromAny(source["text_color"]), feed.Text.Color)
+	feed.State.Mode = fallbackText(stringFromAny(source["mode"]), feed.State.Mode)
+	if _, ok := source["smpte_bars"]; ok {
+		feed.State.SMPTEBars = boolText(boolFromAny(source["smpte_bars"], false))
+	}
+	if _, ok := source["sunny_cat"]; ok {
+		feed.State.SunnyCat = boolText(boolFromAny(source["sunny_cat"], false))
+	}
+	feed.Standby.Mode = fallbackText(stringFromAny(source["standby_mode"]), feed.Standby.Mode)
+	feed.Standby.Text = fallbackText(stringFromAny(source["standby_text"]), feed.Standby.Text)
+	feed.Standby.FontSize = fallbackText(stringFromAny(source["standby_font_size"]), feed.Standby.FontSize)
+	feed.Standby.YPercent = fallbackText(stringFromAny(source["standby_y_percent"]), feed.Standby.YPercent)
 }
 
 func cgenPath(configPath string) string {
@@ -521,6 +643,7 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Text.Content = strings.TrimSpace(feed.Text.Content)
 		feed.State.Mode = normalizeCgenMode(feed.State.Mode)
 		feed.State.SMPTEBars = boolText(xmlBool(feed.State.SMPTEBars, false))
+		feed.State.SunnyCat = boolText(xmlBool(feed.State.SunnyCat, false))
 		feed.State.UpdatedAt = strings.TrimSpace(feed.State.UpdatedAt)
 		feed.Standby.Mode = normalizeCgenStandbyMode(feed.Standby.Mode)
 		feed.Standby.Text = fallbackText(strings.TrimSpace(feed.Standby.Text), "EAS Details Channel")
@@ -804,6 +927,7 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 		State: cgenStateXML{
 			Mode:      stringFromAny(source["mode"]),
 			SMPTEBars: boolText(boolFromAny(source["smpte_bars"], false)),
+			SunnyCat:  boolText(boolFromAny(source["sunny_cat"], false)),
 		},
 		Standby: cgenStandbyXML{
 			Mode:     stringFromAny(source["standby_mode"]),
@@ -838,6 +962,7 @@ func cgenPayload(configPath string, path string, config cgenXML) map[string]any 
 			"enabled":                         xmlBool(feed.Enabled, false),
 			"mode":                            feed.State.Mode,
 			"smpte_bars":                      xmlBool(feed.State.SMPTEBars, false),
+			"sunny_cat":                       xmlBool(feed.State.SunnyCat, false),
 			"standby_mode":                    feed.Standby.Mode,
 			"standby_text":                    feed.Standby.Text,
 			"standby_font_size":               feed.Standby.FontSize,

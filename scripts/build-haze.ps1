@@ -142,6 +142,7 @@ function Initialize-Clang64BuildEnvironment {
     $env:LIBCLANG_PATH = $Clang64Bin
     $env:PKG_CONFIG = Join-Path $Clang64Bin "pkg-config.exe"
     $env:PKG_CONFIG_PATH = "$(Join-Path $Clang64Lib "pkgconfig");$(Join-Path $Clang64Root "share\pkgconfig")"
+    $env:PKG_CONFIG_ALLOW_CROSS = "1"
 }
 
 function New-FFmpegIncludeOverlay {
@@ -256,7 +257,16 @@ function Assert-Clang64GStreamerBuildEnvironment {
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstmpegtsdemux.dll"),
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstmpegtsmux.dll"),
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstlibav.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstopus.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstopusparse.dll"),
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstpango.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstrtp.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstrtpmanager.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstudp.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstdtls.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstsrtp.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstnice.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstwebrtc.dll"),
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstaudiotestsrc.dll"),
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstvideotestsrc.dll"),
         (Join-Path $Clang64Root "libexec\gstreamer-1.0\gst-plugin-scanner.exe")
@@ -454,10 +464,14 @@ try {
         }
         if ($MediaBackend -eq "rsmpeg") {
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cap
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-easnet
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-playout --features ffmpeg-rsmpeg
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-media --features gstreamer-backend
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cgen --features "gpu-wgpu"
         } else {
-            cargo build @CargoProfileArgs @CargoTargetArgs -p haze -p haze-playout
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze -p haze-cap -p haze-easnet -p haze-playout
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-media --features gstreamer-backend
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cgen --features "gpu-wgpu"
         }
     }
@@ -465,13 +479,25 @@ try {
     $ProfileDir = if ($Profile -eq "release") { "release" } else { "debug" }
     $TargetProfileDir = if ($RunningOnWindows) { "target/x86_64-pc-windows-gnullvm/$ProfileDir" } else { "target/$ProfileDir" }
     $ExePath = Join-Path $Root "$TargetProfileDir/haze.exe"
+    $CapRustExePath = Join-Path $Root "$TargetProfileDir/haze-cap-ingest.exe"
+    $EasNetExePath = Join-Path $Root "$TargetProfileDir/haze-easnet.exe"
     $PlayoutExePath = Join-Path $Root "$TargetProfileDir/haze-playout-rs.exe"
+    $MediaExePath = Join-Path $Root "$TargetProfileDir/haze-media.exe"
     $CgenExePath = Join-Path $Root "$TargetProfileDir/haze-cgen.exe"
     if (-not (Test-Path -LiteralPath $ExePath)) {
         throw "Missing Haze executable: $ExePath"
     }
+    if (-not (Test-Path -LiteralPath $CapRustExePath)) {
+        throw "Missing Rust CAP ingest executable: $CapRustExePath"
+    }
+    if (-not (Test-Path -LiteralPath $EasNetExePath)) {
+        throw "Missing Rust EAS NET executable: $EasNetExePath"
+    }
     if (-not (Test-Path -LiteralPath $PlayoutExePath)) {
         throw "Missing Rust playout executable: $PlayoutExePath"
+    }
+    if (-not (Test-Path -LiteralPath $MediaExePath)) {
+        throw "Missing Rust media executable: $MediaExePath"
     }
     if (-not (Test-Path -LiteralPath $CgenExePath)) {
         throw "Missing Rust cgen executable: $CgenExePath"
@@ -485,6 +511,7 @@ try {
         "haze.cmd",
         "README-runtime.txt",
         "config.yaml",
+        ".env.example",
         ".haze-runtime"
     )
     $BundleOwnedBinFiles = @(
@@ -492,6 +519,7 @@ try {
         "haze-web.exe",
         "haze-data-ingest.exe",
         "haze-cap-ingest.exe",
+        "haze-easnet.exe",
         "haze-tts.exe",
         "haze-product-render.exe",
         "haze-playlist.exe",
@@ -499,6 +527,7 @@ try {
         "haze-ivr.exe",
         "haze-playout.exe",
         "haze-playout-rs.exe",
+        "haze-media.exe",
         "haze-cgen.exe",
         "avcodec-62.dll",
         "avdevice-62.dll",
@@ -514,6 +543,9 @@ try {
         "sherpa-onnx-cxx-api.dll",
         "swresample-6.dll",
         "swscale-9.dll"
+    )
+    $LegacyBundleBinFiles = @(
+        "haze-cap-ingest-rs.exe"
     )
     foreach ($File in $BundleOwnedFiles) {
         $Target = Join-Path $OutFull $File
@@ -531,6 +563,14 @@ try {
             Remove-Item -LiteralPath $LegacyTarget -Force
         }
     }
+    foreach ($File in $LegacyBundleBinFiles) {
+        foreach ($Dir in @($OutFull, $BinFull)) {
+            $Target = Join-Path $Dir $File
+            if (Test-Path -LiteralPath $Target) {
+                Remove-Item -LiteralPath $Target -Force
+            }
+        }
+    }
     foreach ($DllDir in @($OutFull, $BinFull)) {
         if (Test-Path -LiteralPath $DllDir -PathType Container) {
             Get-ChildItem -LiteralPath $DllDir -Filter "*.dll" -File -ErrorAction SilentlyContinue |
@@ -545,7 +585,10 @@ try {
     }
 
     Copy-Item -LiteralPath $ExePath -Destination (Join-Path $BinFull "haze.exe") -Force
+    Copy-Item -LiteralPath $CapRustExePath -Destination (Join-Path $BinFull "haze-cap-ingest.exe") -Force
+    Copy-Item -LiteralPath $EasNetExePath -Destination (Join-Path $BinFull "haze-easnet.exe") -Force
     Copy-Item -LiteralPath $PlayoutExePath -Destination (Join-Path $BinFull "haze-playout-rs.exe") -Force
+    Copy-Item -LiteralPath $MediaExePath -Destination (Join-Path $BinFull "haze-media.exe") -Force
     Copy-Item -LiteralPath $CgenExePath -Destination (Join-Path $BinFull "haze-cgen.exe") -Force
 
     if (-not $SkipGoServices) {
@@ -563,7 +606,7 @@ try {
         Assert-PortableRuntimeDependencies -Directories @($BinFull)
     }
 
-    foreach ($Item in @("config.yaml")) {
+    foreach ($Item in @("config.yaml", ".env.example")) {
         if (Test-Path -LiteralPath $Item) {
             Copy-Item -LiteralPath $Item -Destination $OutFull -Force
         }

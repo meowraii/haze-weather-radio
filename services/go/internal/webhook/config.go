@@ -3,6 +3,7 @@ package webhook
 import (
 	"encoding/xml"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -94,6 +95,7 @@ func loadConfig(options Options) (loadedConfig, error) {
 	if err != nil {
 		return loadedConfig{}, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var root rootConfig
 	if err := yaml.Unmarshal(raw, &root); err != nil {
 		return loadedConfig{}, err
@@ -126,6 +128,7 @@ func (c *configCache) load(path string) ([]WebhookConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var parsed webhooksXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("parse webhooks XML: %w", err)
@@ -198,9 +201,24 @@ func firstNonBlank(values ...string) string {
 }
 
 func loadDotEnv(path string) {
-	raw, err := os.ReadFile(filepath.Clean(path))
+	path = filepath.Clean(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return
+		if !os.IsNotExist(err) || filepath.Base(path) != ".env" {
+			return
+		}
+		examplePath := filepath.Join(filepath.Dir(path), ".env.example")
+		exampleRaw, readErr := os.ReadFile(examplePath)
+		if readErr != nil {
+			log.Printf("WARN .env file not found and no .env.example is available: %s", path)
+			return
+		}
+		if writeErr := os.WriteFile(path, exampleRaw, 0o600); writeErr != nil {
+			log.Printf("WARN .env file not found and could not create %s: %v", path, writeErr)
+			return
+		}
+		log.Printf("WARN .env file not found: created %s from %s", path, examplePath)
+		raw = exampleRaw
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)

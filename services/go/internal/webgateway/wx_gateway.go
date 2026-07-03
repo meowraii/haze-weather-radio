@@ -25,6 +25,11 @@ import (
 
 const wxGenerateTimeout = 90 * time.Second
 
+var wxOnDemandExcludedPackages = map[string]bool{
+	"station_id":    true,
+	"user_bulletin": true,
+}
+
 type wxGeneratePayload struct {
 	FeedID       string
 	Code         string
@@ -73,6 +78,8 @@ type wxSynthResult struct {
 	Format     string
 	SampleRate int
 	Channels   int
+	Provider   string
+	VoiceID    string
 	Err        error
 }
 
@@ -96,7 +103,7 @@ func (s *Server) wxOnDemandPackages(writer http.ResponseWriter, request *http.Re
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	packages, err := loadPackageIDs(s.configPath)
+	packages, err := loadWxOnDemandPackageIDs(s.configPath)
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 		return
@@ -221,12 +228,6 @@ func parseWxGeneratePayload(configPath string, raw map[string]any) (wxGeneratePa
 		}
 	}
 	feedID := strings.TrimSpace(firstNonBlank(stringAny(raw["feed_id"]), stringAny(raw["feed"])))
-	if feedID == "" {
-		feedID = firstEnabledFeedID(configPath)
-	}
-	if feedID == "" {
-		return wxGeneratePayload{}, fmt.Errorf("feed_id is required")
-	}
 	code := firstLocation(raw["locations"])
 	if code == "" {
 		code = firstLocation(raw["location"])
@@ -339,7 +340,7 @@ func (request *wxGeneratePayload) applyConfiguredLocation(configPath string, cod
 }
 
 func parseWxPackages(configPath string, value any) ([]string, error) {
-	available, err := loadPackageIDs(configPath)
+	available, err := loadWxOnDemandPackageIDs(configPath)
 	if err != nil {
 		return nil, err
 	}
@@ -380,6 +381,21 @@ func parseWxPackages(configPath string, value any) ([]string, error) {
 		return nil, fmt.Errorf("at least one package is required")
 	}
 	return uniqueStrings(out), nil
+}
+
+func loadWxOnDemandPackageIDs(configPath string) ([]string, error) {
+	packageIDs, err := loadPackageIDs(configPath)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(packageIDs))
+	for _, id := range packageIDs {
+		if wxOnDemandExcludedPackages[strings.TrimSpace(id)] {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 func firstEnabledFeedID(configPath string) string {
@@ -632,6 +648,8 @@ func (c *wxBridgeClient) handleSynthResult(message map[string]any) bool {
 		Format:     wxStringAt(data, "format"),
 		SampleRate: wxIntAt(data, "sample_rate"),
 		Channels:   wxIntAt(data, "channels"),
+		Provider:   wxStringAt(data, "provider"),
+		VoiceID:    wxStringAt(data, "voice_id"),
 	}
 	return true
 }

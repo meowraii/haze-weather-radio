@@ -278,24 +278,43 @@ if [[ "$skip_cargo_build" -eq 0 ]]; then
   fi
   if [[ "$media_backend" == "rsmpeg" ]]; then
     cargo build "${cargo_profile_args[@]}" -p haze
+    cargo build "${cargo_profile_args[@]}" -p haze-cap
+    cargo build "${cargo_profile_args[@]}" -p haze-easnet
     cargo build "${cargo_profile_args[@]}" -p haze-playout --features ffmpeg-rsmpeg
+    cargo build "${cargo_profile_args[@]}" -p haze-media --features gstreamer-backend
     cargo build "${cargo_profile_args[@]}" -p haze-cgen --features "gpu-wgpu"
   else
-    cargo build "${cargo_profile_args[@]}" -p haze -p haze-playout
+    cargo build "${cargo_profile_args[@]}" -p haze -p haze-cap -p haze-easnet -p haze-playout
+    cargo build "${cargo_profile_args[@]}" -p haze-media --features gstreamer-backend
     cargo build "${cargo_profile_args[@]}" -p haze-cgen --features "gpu-wgpu"
   fi
 fi
 
 profile_dir="$profile"
 exe_path="$root/target/$profile_dir/haze"
+cap_rust_exe_path="$root/target/$profile_dir/haze-cap-ingest"
+easnet_exe_path="$root/target/$profile_dir/haze-easnet"
 playout_exe_path="$root/target/$profile_dir/haze-playout-rs"
+media_exe_path="$root/target/$profile_dir/haze-media"
 cgen_exe_path="$root/target/$profile_dir/haze-cgen"
 if [[ ! -x "$exe_path" ]]; then
   echo "Missing Haze executable: $exe_path" >&2
   exit 1
 fi
+if [[ ! -x "$cap_rust_exe_path" ]]; then
+  echo "Missing Rust CAP ingest executable: $cap_rust_exe_path" >&2
+  exit 1
+fi
+if [[ ! -x "$easnet_exe_path" ]]; then
+  echo "Missing Rust EAS NET executable: $easnet_exe_path" >&2
+  exit 1
+fi
 if [[ ! -x "$playout_exe_path" ]]; then
   echo "Missing Rust playout executable: $playout_exe_path" >&2
+  exit 1
+fi
+if [[ ! -x "$media_exe_path" ]]; then
+  echo "Missing Rust media executable: $media_exe_path" >&2
   exit 1
 fi
 if [[ ! -x "$cgen_exe_path" ]]; then
@@ -309,11 +328,14 @@ rm -f \
   "$out_full/haze.sh" \
   "$out_full/README-runtime.txt" \
   "$out_full/config.yaml" \
+  "$out_full/.env.example" \
   "$out_full/.haze-runtime"
 rm -f \
   "$out_full/haze-web" \
   "$out_full/haze-data-ingest" \
   "$out_full/haze-cap-ingest" \
+  "$out_full/haze-cap-ingest-rs" \
+  "$out_full/haze-easnet" \
   "$out_full/haze-tts" \
   "$out_full/haze-product-render" \
   "$out_full/haze-playlist" \
@@ -321,10 +343,13 @@ rm -f \
   "$out_full/haze-ivr" \
   "$out_full/haze-playout" \
   "$out_full/haze-playout-rs" \
+  "$out_full/haze-media" \
   "$out_full/haze-cgen" \
   "$bin_full/haze-web" \
   "$bin_full/haze-data-ingest" \
   "$bin_full/haze-cap-ingest" \
+  "$bin_full/haze-cap-ingest-rs" \
+  "$bin_full/haze-easnet" \
   "$bin_full/haze-tts" \
   "$bin_full/haze-product-render" \
   "$bin_full/haze-playlist" \
@@ -332,17 +357,24 @@ rm -f \
   "$bin_full/haze-ivr" \
   "$bin_full/haze-playout" \
   "$bin_full/haze-playout-rs" \
+  "$bin_full/haze-media" \
   "$bin_full/haze-cgen"
 rm -rf "$out_full/webroot" "$out_full/audio"
 
 cp "$exe_path" "$out_full/haze"
 chmod +x "$out_full/haze"
+cp "$cap_rust_exe_path" "$bin_full/haze-cap-ingest"
+chmod +x "$bin_full/haze-cap-ingest"
+cp "$easnet_exe_path" "$bin_full/haze-easnet"
+chmod +x "$bin_full/haze-easnet"
 cp "$playout_exe_path" "$bin_full/haze-playout-rs"
 chmod +x "$bin_full/haze-playout-rs"
+cp "$media_exe_path" "$bin_full/haze-media"
+chmod +x "$bin_full/haze-media"
 cp "$cgen_exe_path" "$bin_full/haze-cgen"
 chmod +x "$bin_full/haze-cgen"
 
-copy_linux_runtime_dependencies "$bin_full" "$out_full/haze" "$bin_full/haze-playout-rs" "$bin_full/haze-cgen"
+copy_linux_runtime_dependencies "$bin_full" "$out_full/haze" "$bin_full/haze-cap-ingest" "$bin_full/haze-easnet" "$bin_full/haze-playout-rs" "$bin_full/haze-media" "$bin_full/haze-cgen"
 copy_gstreamer_runtime "$bin_full"
 
 if [[ "$skip_go_services" -eq 0 ]]; then
@@ -350,6 +382,7 @@ if [[ "$skip_go_services" -eq 0 ]]; then
 fi
 
 [[ -e config.yaml ]] && cp config.yaml "$out_full/"
+[[ -e .env.example ]] && cp .env.example "$out_full/"
 
 for bundled_dir in webroot managed audio; do
   copy_bundle_dir "$bundled_dir"

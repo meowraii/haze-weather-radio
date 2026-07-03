@@ -13,13 +13,14 @@ import re
 import secrets
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 
 import aiohttp
 try:
@@ -41,13 +42,12 @@ else:
 pifm_bin = "/home/rai/PiFmAdv/src/pi_fm_adv"
 DEFAULT_DEVIATION_HZ = 7000
 DEFAULT_AUDIO_FILTERS = (
-    'agate=threshold=-42dB:ratio=18:attack=4:release=110:makeup=1,'
     'highpass=f=30,'
     'lowpass=f=10000,'
     'equalizer=f=1800:t=q:w=1.1:g=2.5,'
-    'acompressor=threshold=-18dB:ratio=3:attack=5:release=120:makeup=2,'
-    'volume=14dB,'
-    'alimiter=limit=0.995:level=disabled'
+    'acompressor=threshold=-20dB:ratio=3.5:attack=5:release=120:makeup=5,'
+    'volume=16dB,'
+    'alimiter=limit=0.98:level=disabled'
 )
 
 log = logging.getLogger(__name__)
@@ -95,7 +95,17 @@ class ReceiverConfig:
     audio_frame_ms: int
     jitter_buffer_ms: int
     max_jitter_buffer_ms: int
+    max_pacing_lag_ms: int
     preferred_codecs: tuple[str, ...]
+    transport: str
+    allow_webrtc_fallback: bool
+    http_codec: str
+    http_reconnect_delay_max_s: int
+    http_read_timeout_s: float
+    metrics_interval_s: float
+    diagnose_audio: bool
+    diagnose_duration_s: float
+    diagnose_output: pathlib.Path | None
 
 
 def _safe_feed_name(feed_id: str) -> str:
@@ -105,6 +115,128 @@ def _safe_feed_name(feed_id: str) -> str:
 def _default_state_file(feed_id: str) -> pathlib.Path:
     base = pathlib.Path.home() / '.haze_receiver'
     return base / f'{_safe_feed_name(feed_id)}.json'
+
+
+def _streaming_wav_header(sample_rate: int, channels: int) -> bytes:
+    bits_per_sample = 16
+    byte_rate = int(sample_rate) * int(channels) * bits_per_sample // 8
+    block_align = int(channels) * bits_per_sample // 8
+    return b''.join((
+        b'RIFF',
+        struct.pack('<I', 0xFFFFFFFF),
+        b'WAVE',
+        b'fmt ',
+        struct.pack('<IHHIIHH', 16, 1, int(channels), int(sample_rate), byte_rate, block_align, bits_per_sample),
+        b'data',
+        struct.pack('<I', 0xFFFFFFFF),
+    ))
+
+
+def _drop_pcm_frames_evenly(data: bytes, target_bytes: int, sample_bytes: int) -> bytes:
+    """Return target_bytes by spreading dropped PCM sample frames across data."""
+    excess_bytes = len(data) - target_bytes
+    if excess_bytes <= 0:
+        return data[:target_bytes]
+    drop_frames = excess_bytes // sample_bytes
+    total_frames = len(data) // sample_bytes
+    target_frames = target_bytes // sample_bytes
+    if drop_frames <= 0 or total_frames <= target_frames:
+        return data[:target_bytes]
+    drop_points = {
+        min(total_frames - 1, max(0, int((index + 1) * total_frames / (drop_frames + 1))))
+        for index in range(drop_frames)
+    }
+    out = bytearray(target_bytes)
+    write_at = 0
+    for frame_index in range(total_frames):
+        if frame_index in drop_points:
+            continue
+        if write_at >= target_bytes:
+            break
+        start = frame_index * sample_bytes
+        out[write_at:write_at + sample_bytes] = data[start:start + sample_bytes]
+        write_at += sample_bytes
+    if write_at < target_bytes:
+        out[write_at:] = data[len(data) - (target_bytes - write_at):]
+    return bytes(out)
+
+
+def _pcm16_metrics(data: bytes, frame_samples: int = 960) -> dict[str, Any]:
+    sample_count = len(data) // 2
+    if sample_count <= 0:
+        return {
+            'samples': 0,
+            'frames': 0,
+            'peak': 0,
+            'peak_dbfs': -120.0,
+            'rms_avg_dbfs': -120.0,
+            'rms_min_dbfs': -120.0,
+            'rms_max_dbfs': -120.0,
+            'near_silent_frames': 0,
+            'repeated_frames': 0,
+            'repeated_non_silent_frames': 0,
+            'clipped_samples': 0,
+            'zero_ratio': 0.0,
+            'max_sample_jump': 0,
+        }
+    usable = sample_count * 2
+    samples = struct.unpack('<' + 'h' * sample_count, data[:usable])
+    frame_count = sample_count // frame_samples
+    peak = 0
+    clipped = 0
+    zeros = 0
+    max_jump = 0
+    near_silent_frames = 0
+    repeated_frames = 0
+    repeated_non_silent_frames = 0
+    rms_values: list[float] = []
+    previous_frame: tuple[int, ...] | None = None
+    previous_sample: int | None = None
+    for sample in samples:
+        abs_sample = abs(sample)
+        peak = max(peak, abs_sample)
+        if abs_sample >= 32760:
+            clipped += 1
+        if sample == 0:
+            zeros += 1
+        if previous_sample is not None:
+            max_jump = max(max_jump, abs(sample - previous_sample))
+        previous_sample = sample
+    for start in range(0, frame_count * frame_samples, frame_samples):
+        frame = tuple(samples[start:start + frame_samples])
+        frame_peak = max((abs(sample) for sample in frame), default=0)
+        if frame_peak <= 20:
+            near_silent_frames += 1
+        if previous_frame is not None and frame == previous_frame:
+            repeated_frames += 1
+            if frame_peak > 20:
+                repeated_non_silent_frames += 1
+        previous_frame = frame
+        if frame:
+            rms_values.append((sum(float(sample) * float(sample) for sample in frame) / len(frame)) ** 0.5)
+
+    def dbfs(value: float) -> float:
+        if value <= 0:
+            return -120.0
+        return 20.0 * math.log10(value / 32768.0)
+
+    import math
+    rms_avg = sum(rms_values) / len(rms_values) if rms_values else 0.0
+    return {
+        'samples': sample_count,
+        'frames': frame_count,
+        'peak': peak,
+        'peak_dbfs': round(dbfs(float(peak)), 2),
+        'rms_avg_dbfs': round(dbfs(rms_avg), 2),
+        'rms_min_dbfs': round(dbfs(min(rms_values) if rms_values else 0.0), 2),
+        'rms_max_dbfs': round(dbfs(max(rms_values) if rms_values else 0.0), 2),
+        'near_silent_frames': near_silent_frames,
+        'repeated_frames': repeated_frames,
+        'repeated_non_silent_frames': repeated_non_silent_frames,
+        'clipped_samples': clipped,
+        'zero_ratio': round(zeros / sample_count, 6),
+        'max_sample_jump': max_jump,
+    }
 
 
 def _normalize_server_url(raw: str, allow_insecure_dev: bool) -> str:
@@ -258,7 +390,7 @@ class ReceiverSupervisor:
                     self.last_transmitter = dict(transmitter)
                     self.state['last_transmitter'] = self.last_transmitter
                     _save_state(self.config.state_file, self.state)
-                return await self._run_webrtc_session(ws, transmitter)
+                return await self._run_audio_session(session, ws, transmitter)
 
     async def _start_receiver_session(self, session: aiohttp.ClientSession) -> dict[str, Any]:
         credential_id = str(self.state.get('credential_id') or '').strip()
@@ -309,6 +441,48 @@ class ReceiverSupervisor:
             )
             return transmitter
         raise RuntimeError(f'feed {self.config.feed_id} receiver metadata timed out')
+
+    async def _run_audio_session(
+        self,
+        session: aiohttp.ClientSession,
+        ws: aiohttp.ClientWebSocketResponse,
+        transmitter: dict[str, Any],
+    ) -> str:
+        transport = self.config.transport
+        if transport in {'auto', 'http'}:
+            if await self._http_audio_available(session):
+                log.info(
+                    'Receiver selected HTTP %s media transport for feed %s',
+                    self.config.http_codec,
+                    self.config.feed_id,
+                )
+                return await self._run_http_audio_session(session, ws, transmitter)
+            if transport == 'http' or not self.config.allow_webrtc_fallback:
+                return 'HTTP receiver audio stream is unavailable; WebRTC fallback is disabled'
+            log.warning('HTTP receiver stream unavailable; falling back to WebRTC because --allow-webrtc-fallback was set')
+        _ensure_webrtc_dependencies()
+        log.info('Receiver selected WebRTC media transport for feed %s', self.config.feed_id)
+        return await self._run_webrtc_session(ws, transmitter)
+
+    def _http_audio_url(self) -> str:
+        query = urlencode({
+            'feed': self.config.feed_id,
+            'codec': self.config.http_codec,
+        })
+        return f'{self.config.server_url}/api/public/v1/feed/audio?{query}'
+
+    async def _http_audio_available(self, session: aiohttp.ClientSession) -> bool:
+        url = self._http_audio_url()
+        try:
+            timeout = aiohttp.ClientTimeout(total=5, sock_connect=3, sock_read=3)
+            async with session.head(url, timeout=timeout) as response:
+                if response.status < 200 or response.status >= 300:
+                    log.warning('HTTP receiver stream returned HTTP %s', response.status)
+                    return False
+                return True
+        except Exception as exc:
+            log.warning('HTTP receiver stream probe failed: %s', exc)
+            return False
 
     async def _receiver_auth(self, session: aiohttp.ClientSession) -> dict[str, Any]:
         return await _post_json(session, _api_url(self.config, 'session'), {
@@ -486,6 +660,378 @@ class ReceiverSupervisor:
             await self._terminate_process(ffmpeg_proc, 'ffmpeg')
             await self._terminate_process(pifm_proc, 'piFmAdv')
 
+    async def _run_http_audio_session(
+        self,
+        session: aiohttp.ClientSession,
+        ws: aiohttp.ClientWebSocketResponse,
+        transmitter: dict[str, Any],
+    ) -> str:
+        if transmitter.get('frequency_mhz') is None:
+            return 'receiver transmitter parameters did not include frequency_mhz'
+        await self._stop_fallback_carrier()
+        pifm_proc: asyncio.subprocess.Process | None = None
+        ffmpeg_proc: asyncio.subprocess.Process | None = None
+        try:
+            pifm_proc = await self._start_pifmadv(transmitter)
+            if self._can_direct_http_raw_to_pifm():
+                assert pifm_proc.stdin is not None
+                assert pifm_proc.stderr is not None
+
+                self.last_audio_ts = time.monotonic()
+                pipe_task = asyncio.create_task(
+                    self._pump_http_raw_to_pifm(session, pifm_proc.stdin),
+                    name='http_raw_to_pifm',
+                )
+                pifm_wait_task = asyncio.create_task(self._wait_process(pifm_proc, 'piFmAdv'), name='http_raw_pifm_wait')
+                pifm_err_task = asyncio.create_task(self._log_stream(pifm_proc.stderr, 'piFmAdv'), name='http_raw_pifm_stderr')
+                monitor_task = asyncio.create_task(self._monitor_direct_http_health(pifm_proc), name='http_raw_monitor_health')
+                ws_task = asyncio.create_task(self._watch_control_ws(ws), name='receiver_ws')
+                ws_task.add_done_callback(self._log_http_control_ws_done)
+
+                done, pending = await asyncio.wait(
+                    {pipe_task, pifm_wait_task, monitor_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                await self._cancel_tasks((*pending, pifm_err_task, ws_task), timeout_s=2.0)
+                reason = 'HTTP raw receiver session stopped'
+                for task in done:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        result = await task
+                        if isinstance(result, str) and result:
+                            reason = result
+                return reason
+
+            ffmpeg_proc = await self._start_http_audio_processor(transmitter)
+            assert ffmpeg_proc.stdout is not None
+            assert ffmpeg_proc.stderr is not None
+            assert pifm_proc.stdin is not None
+            assert pifm_proc.stderr is not None
+
+            self.last_audio_ts = time.monotonic()
+            pipe_task = asyncio.create_task(
+                self._pump_processor_to_pifm(ffmpeg_proc.stdout, pifm_proc.stdin),
+                name='http_ffmpeg_to_pifm',
+            )
+            ffmpeg_wait_task = asyncio.create_task(self._wait_process(ffmpeg_proc, 'ffmpeg'), name='http_ffmpeg_wait')
+            pifm_wait_task = asyncio.create_task(self._wait_process(pifm_proc, 'piFmAdv'), name='http_pifm_wait')
+            ffmpeg_err_task = asyncio.create_task(self._log_stream(ffmpeg_proc.stderr, 'http_ffmpeg'), name='http_ffmpeg_stderr')
+            pifm_err_task = asyncio.create_task(self._log_stream(pifm_proc.stderr, 'piFmAdv'), name='http_pifm_stderr')
+            monitor_task = asyncio.create_task(self._monitor_http_health(ffmpeg_proc, pifm_proc), name='http_monitor_health')
+            ws_task = asyncio.create_task(self._watch_control_ws(ws), name='receiver_ws')
+            ws_task.add_done_callback(self._log_http_control_ws_done)
+
+            done, pending = await asyncio.wait(
+                {pipe_task, ffmpeg_wait_task, pifm_wait_task, monitor_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            await self._cancel_tasks((*pending, ffmpeg_err_task, pifm_err_task, ws_task), timeout_s=2.0)
+            reason = 'HTTP receiver session stopped'
+            for task in done:
+                with contextlib.suppress(asyncio.CancelledError):
+                    result = await task
+                    if isinstance(result, str) and result:
+                        reason = result
+            return reason
+        finally:
+            await self._terminate_process(ffmpeg_proc, 'http ffmpeg')
+            await self._terminate_process(pifm_proc, 'piFmAdv')
+
+    def _can_direct_http_raw_to_pifm(self) -> bool:
+        codec = self.config.http_codec.strip().lower().replace('-', '_')
+        filters = self.config.audio_filters.strip().lower()
+        return (
+            codec in {'raw', 'raw_pcm16', 's16le'}
+            and self.config.output_sample_rate == 48000
+            and self.config.channels == 1
+            and filters in {'', 'anull'}
+        )
+
+    async def _pump_http_raw_to_pifm(
+        self,
+        session: aiohttp.ClientSession,
+        pifm_stdin: asyncio.StreamWriter,
+    ) -> str:
+        queue_frames = max(
+            32,
+            int(self.config.max_jitter_buffer_ms / max(1, self.config.audio_frame_ms)) * 4,
+        )
+        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=queue_frames)
+        reader = asyncio.create_task(self._read_http_raw_audio(session, queue), name='http_raw_reader')
+        writer = asyncio.create_task(self._write_paced_raw_audio(queue, pifm_stdin), name='http_raw_writer')
+        try:
+            done, pending = await asyncio.wait({reader, writer}, return_when=asyncio.FIRST_COMPLETED)
+            await self._cancel_tasks(tuple(pending), timeout_s=1.0)
+            for task in done:
+                with contextlib.suppress(asyncio.CancelledError):
+                    result = await task
+                    if isinstance(result, str) and result:
+                        return result
+            return 'HTTP raw receiver session stopped'
+        finally:
+            await self._cancel_tasks((reader, writer), timeout_s=1.0)
+
+    async def _read_http_raw_audio(
+        self,
+        session: aiohttp.ClientSession,
+        queue: asyncio.Queue[bytes],
+    ) -> str:
+        url = self._http_audio_url()
+        timeout = aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=5,
+            sock_read=max(5.0, self.config.http_read_timeout_s),
+        )
+        try:
+            async with session.get(url, timeout=timeout) as response:
+                if response.status < 200 or response.status >= 300:
+                    detail = (await response.text())[:200]
+                    return f'HTTP raw receiver stream returned HTTP {response.status}: {detail}'
+                log.info(
+                    'Reading HTTP raw PCM for feed %s through paced receiver clock',
+                    self.config.feed_id,
+                )
+                last_chunk_at: float | None = None
+                async for chunk in response.content.iter_chunked(self.config.write_chunk_size):
+                    if not chunk:
+                        continue
+                    now = time.monotonic()
+                    if last_chunk_at is not None:
+                        gap_ms = (now - last_chunk_at) * 1000
+                        if gap_ms > self.config.max_pacing_lag_ms:
+                            log.warning('HTTP raw receiver chunk gap %.1f ms', gap_ms)
+                    last_chunk_at = now
+                    self.last_audio_ts = time.monotonic()
+                    self._push_audio_chunk(queue, bytes(chunk))
+        except asyncio.TimeoutError:
+            return 'HTTP raw receiver stream timed out'
+        except Exception as exc:
+            return f'HTTP raw receiver stream failed: {exc}'
+        return 'HTTP raw receiver stream ended'
+
+    async def _write_paced_raw_audio(
+        self,
+        queue: asyncio.Queue[bytes],
+        pifm_stdin: asyncio.StreamWriter,
+        label: str = 'HTTP raw receiver',
+    ) -> str:
+        frame_ms = max(10, min(100, self.config.audio_frame_ms))
+        sample_bytes = self.config.channels * 2
+        frame_bytes = max(
+            sample_bytes,
+            int(self.config.output_sample_rate * sample_bytes * frame_ms / 1000),
+        )
+        frame_bytes -= frame_bytes % sample_bytes
+        frame_sample_count = max(1, frame_bytes // sample_bytes)
+        byte_rate = self.config.output_sample_rate * sample_bytes
+        target_buffer_bytes = max(
+            frame_bytes,
+            int(byte_rate * max(0, self.config.jitter_buffer_ms) / 1000),
+        )
+        max_buffer_bytes = max(
+            target_buffer_bytes + frame_bytes,
+            int(byte_rate * max(self.config.max_jitter_buffer_ms, self.config.jitter_buffer_ms) / 1000),
+        )
+        target_buffer_bytes -= target_buffer_bytes % sample_bytes
+        max_buffer_bytes -= max_buffer_bytes % sample_bytes
+        soft_buffer_bytes = min(
+            max_buffer_bytes,
+            max(
+                target_buffer_bytes + frame_bytes,
+                target_buffer_bytes + int(byte_rate * 80 / 1000),
+            ),
+        )
+        soft_buffer_bytes -= soft_buffer_bytes % sample_bytes
+        soft_trim_bytes = max(sample_bytes, frame_bytes // 10)
+        soft_trim_bytes -= soft_trim_bytes % sample_bytes
+        smooth_trim_max_bytes = max(sample_bytes, max(1, frame_sample_count // 240) * sample_bytes)
+        max_pacing_lag_s = max(frame_ms * 2, self.config.max_pacing_lag_ms) / 1000
+        buffered = bytearray()
+        silence = b'\x00' * frame_bytes
+        primed = target_buffer_bytes <= frame_bytes
+        next_tick = time.monotonic()
+        underflows = 0
+        dropped_bytes = 0
+        last_underflow_log = 0.0
+        last_drop_log = 0.0
+        last_pacing_log = 0.0
+        trimmed_bytes = 0
+        smooth_trim_budget_bytes = 0
+        metrics_started_at = time.monotonic()
+        next_metrics_at = metrics_started_at + self.config.metrics_interval_s
+        bytes_written = 0
+        frames_written = 0
+        slow_drains = 0
+        max_drain_ms = 0.0
+        transport = getattr(pifm_stdin, 'transport', None)
+        if transport is not None:
+            with contextlib.suppress(Exception):
+                transport.set_write_buffer_limits(
+                    high=frame_bytes * 12,
+                    low=frame_bytes * 4,
+                )
+        log.info(
+            '%s pacing target=%dms max=%dms frame=%dms frame_bytes=%d',
+            label,
+            int(self.config.jitter_buffer_ms),
+            int(self.config.max_jitter_buffer_ms),
+            frame_ms,
+            frame_bytes,
+        )
+        try:
+            pifm_stdin.write(_streaming_wav_header(self.config.output_sample_rate, self.config.channels))
+            await pifm_stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            return 'piFmAdv stdin closed'
+        except Exception as exc:
+            return f'piFmAdv write failed: {exc}'
+
+        while not self.stop_event.is_set():
+            while True:
+                try:
+                    buffered.extend(queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+
+            if len(buffered) < frame_bytes:
+                try:
+                    buffered.extend(await asyncio.wait_for(queue.get(), timeout=frame_ms / 1000))
+                except asyncio.TimeoutError:
+                    pass
+                while True:
+                    try:
+                        buffered.extend(queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+
+            if not primed and len(buffered) > target_buffer_bytes:
+                drop_bytes = len(buffered) - target_buffer_bytes
+                drop_bytes -= drop_bytes % sample_bytes
+                if drop_bytes > 0:
+                    del buffered[:drop_bytes]
+                    dropped_bytes += drop_bytes
+                    trimmed_bytes += drop_bytes
+
+            if primed and len(buffered) > soft_buffer_bytes:
+                excess_bytes = max(0, len(buffered) - soft_buffer_bytes)
+                trim_bytes = min(
+                    len(buffered) - target_buffer_bytes,
+                    max(soft_trim_bytes, excess_bytes),
+                )
+                trim_bytes -= trim_bytes % sample_bytes
+                if trim_bytes > 0:
+                    smooth_trim_budget_bytes = max(smooth_trim_budget_bytes, trim_bytes)
+
+            if len(buffered) > max_buffer_bytes:
+                drop_bytes = len(buffered) - target_buffer_bytes
+                drop_bytes -= drop_bytes % sample_bytes
+                if drop_bytes > 0:
+                    del buffered[:drop_bytes]
+                    dropped_bytes += drop_bytes
+                    smooth_trim_budget_bytes = 0
+                    now = time.monotonic()
+                    if now - last_drop_log >= 5.0:
+                        log.warning(
+                            '%s buffer overflow; dropped %.0fms total buffered audio',
+                            label,
+                            dropped_bytes / byte_rate * 1000 if byte_rate else 0,
+                    )
+                        last_drop_log = now
+                    primed = len(buffered) >= target_buffer_bytes
+
+            if not primed and len(buffered) >= target_buffer_bytes:
+                primed = True
+                next_tick = time.monotonic()
+
+            if primed and len(buffered) >= frame_bytes:
+                trim_now = 0
+                if smooth_trim_budget_bytes > 0:
+                    trim_now = min(
+                        smooth_trim_budget_bytes,
+                        smooth_trim_max_bytes,
+                        max(0, len(buffered) - frame_bytes),
+                    )
+                    trim_now -= trim_now % sample_bytes
+                if trim_now > 0:
+                    source_len = frame_bytes + trim_now
+                    raw_chunk = bytes(buffered[:source_len])
+                    del buffered[:source_len]
+                    chunk = _drop_pcm_frames_evenly(raw_chunk, frame_bytes, sample_bytes)
+                    smooth_trim_budget_bytes -= trim_now
+                    trimmed_bytes += trim_now
+                    dropped_bytes += trim_now
+                else:
+                    chunk = bytes(buffered[:frame_bytes])
+                    del buffered[:frame_bytes]
+            else:
+                if primed:
+                    underflows += 1
+                    primed = False
+                    now = time.monotonic()
+                    if now - last_underflow_log >= 5.0:
+                        log.warning(
+                            '%s buffer underrun; outputting silence while rebuffering with %.0fms held audio after %d underrun(s)',
+                            label,
+                            len(buffered) / byte_rate * 1000 if byte_rate else 0,
+                            underflows,
+                        )
+                        last_underflow_log = now
+                chunk = silence
+            try:
+                pifm_stdin.write(chunk)
+                drain_started = time.monotonic()
+                await pifm_stdin.drain()
+                drain_ms = (time.monotonic() - drain_started) * 1000
+                max_drain_ms = max(max_drain_ms, drain_ms)
+                if drain_ms > self.config.max_pacing_lag_ms:
+                    slow_drains += 1
+                    log.warning('piFmAdv raw stdin drain took %.1f ms', drain_ms)
+                bytes_written += len(chunk)
+                frames_written += 1
+            except (BrokenPipeError, ConnectionResetError):
+                return 'piFmAdv stdin closed'
+            except Exception as exc:
+                return f'piFmAdv write failed: {exc}'
+
+            next_tick += frame_ms / 1000
+            now = time.monotonic()
+            sleep_for = next_tick - now
+            if sleep_for < -max_pacing_lag_s:
+                drop_bytes = max(0, len(buffered) - target_buffer_bytes)
+                drop_bytes -= drop_bytes % sample_bytes
+                if drop_bytes > 0:
+                    del buffered[:drop_bytes]
+                    dropped_bytes += drop_bytes
+                    smooth_trim_budget_bytes = 0
+                if now - last_pacing_log >= 5.0:
+                    log.warning(
+                        '%s writer lagged %.0fms; reset pacing clock and dropped %.0fms buffered audio',
+                        label,
+                        -sleep_for * 1000,
+                        drop_bytes / byte_rate * 1000 if byte_rate else 0,
+                    )
+                    last_pacing_log = now
+                next_tick = now
+                sleep_for = 0
+            if self.config.metrics_interval_s > 0 and now >= next_metrics_at:
+                elapsed = max(0.001, now - metrics_started_at)
+                log.info(
+                    '%s metrics feed=%s bytes=%d frames=%d elapsed=%.1fs '
+                    'buffered_ms=%.0f trimmed_ms=%.0f max_drain_ms=%.1f slow_drains=%d',
+                    label,
+                    self.config.feed_id,
+                    bytes_written,
+                    frames_written,
+                    elapsed,
+                    len(buffered) / byte_rate * 1000 if byte_rate else 0,
+                    trimmed_bytes / byte_rate * 1000 if byte_rate else 0,
+                    max_drain_ms,
+                    slow_drains,
+                )
+                next_metrics_at = time.monotonic() + self.config.metrics_interval_s
+            if sleep_for > 0:
+                await asyncio.sleep(sleep_for)
+        return 'shutdown requested'
+
     def _prefer_receiver_codecs(self, transceiver: Any) -> None:
         if RTCRtpSender is None or not hasattr(transceiver, 'setCodecPreferences'):
             return
@@ -514,6 +1060,9 @@ class ReceiverSupervisor:
             '-nostats',
             '-loglevel',
             self.config.ffmpeg_log_level,
+            '-filter_threads',
+            '1',
+            '-nostdin',
             '-f',
             's16le',
             '-ar',
@@ -528,6 +1077,8 @@ class ReceiverSupervisor:
             str(self.config.output_sample_rate),
             '-ac',
             str(self.config.channels),
+            '-acodec',
+            'pcm_s16le',
             '-f',
             'wav',
             'pipe:1',
@@ -546,6 +1097,67 @@ class ReceiverSupervisor:
             **self._process_kwargs(),
         )
 
+    async def _start_http_audio_processor(self, transmitter: dict[str, Any]) -> asyncio.subprocess.Process:
+        url = self._http_audio_url()
+        input_args = []
+        if self.config.http_codec.strip().lower().replace('-', '_') in {'raw', 'raw_pcm16', 's16le'}:
+            input_args = [
+                '-f',
+                's16le',
+                '-ar',
+                '48000',
+                '-ac',
+                '1',
+            ]
+        cmd = [
+            self.config.ffmpeg_bin,
+            '-hide_banner',
+            '-nostats',
+            '-loglevel',
+            self.config.ffmpeg_log_level,
+            '-filter_threads',
+            '1',
+            '-nostdin',
+            '-reconnect',
+            '1',
+            '-reconnect_streamed',
+            '1',
+            '-reconnect_at_eof',
+            '1',
+            '-reconnect_delay_max',
+            str(self.config.http_reconnect_delay_max_s),
+            '-rw_timeout',
+            str(int(self.config.http_read_timeout_s * 1_000_000)),
+            *input_args,
+            '-i',
+            url,
+            '-af',
+            self.config.audio_filters,
+            '-ar',
+            str(self.config.output_sample_rate),
+            '-ac',
+            str(self.config.channels),
+            '-acodec',
+            'pcm_s16le',
+            '-f',
+            'wav',
+            'pipe:1',
+        ]
+        log.info(
+            'Starting HTTP receiver audio processor for %s from %s (%d Hz -> %d Hz)',
+            _transmitter_label(transmitter),
+            url,
+            48000,
+            self.config.output_sample_rate,
+        )
+        return await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **self._process_kwargs(),
+        )
+
     async def _start_silence_processor(self, transmitter: dict[str, Any]) -> asyncio.subprocess.Process:
         layout = 'mono' if self.config.channels == 1 else 'stereo'
         cmd = [
@@ -554,6 +1166,9 @@ class ReceiverSupervisor:
             '-nostats',
             '-loglevel',
             self.config.ffmpeg_log_level,
+            '-filter_threads',
+            '1',
+            '-re',
             '-f',
             'lavfi',
             '-i',
@@ -564,6 +1179,8 @@ class ReceiverSupervisor:
             str(self.config.output_sample_rate),
             '-ac',
             str(self.config.channels),
+            '-acodec',
+            'pcm_s16le',
             '-f',
             'wav',
             'pipe:1',
@@ -738,23 +1355,40 @@ class ReceiverSupervisor:
         )
         target_buffer_bytes -= target_buffer_bytes % sample_bytes
         max_buffer_bytes -= max_buffer_bytes % sample_bytes
-        silence = b'\x00' * frame_bytes
+        soft_buffer_bytes = min(
+            max_buffer_bytes,
+            max(
+                target_buffer_bytes + frame_bytes,
+                target_buffer_bytes + int(byte_rate * 80 / 1000),
+            ),
+        )
+        soft_buffer_bytes -= soft_buffer_bytes % sample_bytes
+        soft_trim_bytes = max(sample_bytes, frame_bytes // 10)
+        soft_trim_bytes -= soft_trim_bytes % sample_bytes
+        smooth_trim_max_bytes = max(sample_bytes, max(1, frame_samples // 240) * sample_bytes)
+        max_pacing_lag_s = max(frame_ms * 2, self.config.max_pacing_lag_ms) / 1000
         buffered = bytearray()
         primed = target_buffer_bytes <= frame_bytes
         next_tick = time.monotonic()
         underflows = 0
         dropped_bytes = 0
+        smooth_trim_budget_bytes = 0
         last_underflow_log = 0.0
         last_drop_log = 0.0
+        last_pacing_log = 0.0
+        silence = b'\x00' * frame_bytes
+        min_partial_frame_bytes = max(sample_bytes, int(frame_bytes * 3 / 4))
+        min_partial_frame_bytes -= min_partial_frame_bytes % sample_bytes
         transport = getattr(ffmpeg_stdin, 'transport', None)
         if transport is not None:
             with contextlib.suppress(Exception):
-                transport.set_write_buffer_limits(high=frame_bytes * 50, low=frame_bytes * 10)
+                transport.set_write_buffer_limits(high=frame_bytes * 12, low=frame_bytes * 4)
         log.info(
-            'Receiver audio jitter buffer target=%dms max=%dms frame=%dms',
+            'Receiver audio jitter buffer target=%dms max=%dms frame=%dms pacing_reset=%dms',
             int(self.config.jitter_buffer_ms),
             int(self.config.max_jitter_buffer_ms),
             frame_ms,
+            self.config.max_pacing_lag_ms,
         )
         while not self.stop_event.is_set():
             while True:
@@ -774,40 +1408,75 @@ class ReceiverSupervisor:
                     except asyncio.QueueEmpty:
                         break
 
+            if not primed and len(buffered) > target_buffer_bytes:
+                drop_bytes = len(buffered) - target_buffer_bytes
+                drop_bytes -= drop_bytes % sample_bytes
+                if drop_bytes > 0:
+                    del buffered[:drop_bytes]
+                    dropped_bytes += drop_bytes
+
+            if primed and len(buffered) > soft_buffer_bytes:
+                excess_bytes = max(0, len(buffered) - soft_buffer_bytes)
+                trim_bytes = min(
+                    len(buffered) - target_buffer_bytes,
+                    max(soft_trim_bytes, excess_bytes),
+                )
+                trim_bytes -= trim_bytes % sample_bytes
+                if trim_bytes > 0:
+                    smooth_trim_budget_bytes = max(smooth_trim_budget_bytes, trim_bytes)
+
             if len(buffered) > max_buffer_bytes:
                 drop_bytes = len(buffered) - target_buffer_bytes
                 drop_bytes -= drop_bytes % sample_bytes
                 if drop_bytes > 0:
                     del buffered[:drop_bytes]
                     dropped_bytes += drop_bytes
+                    smooth_trim_budget_bytes = 0
                     now = time.monotonic()
                     if now - last_drop_log >= 5.0:
                         log.warning(
                             'Receiver audio jitter buffer overflow; dropped %.0fms total buffered audio',
                             dropped_bytes / byte_rate * 1000,
-                        )
+                    )
                         last_drop_log = now
                     primed = len(buffered) >= target_buffer_bytes
 
             if not primed and len(buffered) >= target_buffer_bytes:
                 primed = True
+                next_tick = time.monotonic()
 
             if primed and len(buffered) >= frame_bytes:
-                chunk = bytes(buffered[:frame_bytes])
-                del buffered[:frame_bytes]
+                trim_now = 0
+                if smooth_trim_budget_bytes > 0:
+                    trim_now = min(
+                        smooth_trim_budget_bytes,
+                        smooth_trim_max_bytes,
+                        max(0, len(buffered) - frame_bytes),
+                    )
+                    trim_now -= trim_now % sample_bytes
+                if trim_now > 0:
+                    source_len = frame_bytes + trim_now
+                    raw_chunk = bytes(buffered[:source_len])
+                    del buffered[:source_len]
+                    chunk = _drop_pcm_frames_evenly(raw_chunk, frame_bytes, sample_bytes)
+                    smooth_trim_budget_bytes -= trim_now
+                    dropped_bytes += trim_now
+                else:
+                    chunk = bytes(buffered[:frame_bytes])
+                    del buffered[:frame_bytes]
             else:
-                chunk = silence
-                if primed or len(buffered) < frame_bytes:
+                if primed:
                     underflows += 1
                     primed = False
                     now = time.monotonic()
                     if now - last_underflow_log >= 5.0:
                         log.warning(
-                            'Receiver audio jitter buffer underrun; holding %.0fms buffered audio after %d underrun frame(s)',
+                            'Receiver audio jitter buffer underrun; concealing while rebuffering with %.0fms held audio after %d underrun(s)',
                             len(buffered) / byte_rate * 1000,
                             underflows,
                         )
                         last_underflow_log = now
+                chunk = silence
             try:
                 ffmpeg_stdin.write(chunk)
                 await ffmpeg_stdin.drain()
@@ -816,9 +1485,23 @@ class ReceiverSupervisor:
             except Exception as exc:
                 return f'ffmpeg write failed: {exc}'
             next_tick += frame_ms / 1000
-            sleep_for = next_tick - time.monotonic()
-            if sleep_for < -0.5:
-                next_tick = time.monotonic()
+            now = time.monotonic()
+            sleep_for = next_tick - now
+            if sleep_for < -max_pacing_lag_s:
+                drop_bytes = max(0, len(buffered) - target_buffer_bytes)
+                drop_bytes -= drop_bytes % sample_bytes
+                if drop_bytes > 0:
+                    del buffered[:drop_bytes]
+                    dropped_bytes += drop_bytes
+                    smooth_trim_budget_bytes = 0
+                if now - last_pacing_log >= 5.0:
+                    log.warning(
+                        'Receiver audio writer lagged %.0fms; reset pacing clock and dropped %.0fms buffered audio',
+                        -sleep_for * 1000,
+                        drop_bytes / byte_rate * 1000 if byte_rate else 0,
+                    )
+                    last_pacing_log = now
+                next_tick = now
                 sleep_for = 0
             if sleep_for > 0:
                 await asyncio.sleep(sleep_for)
@@ -840,6 +1523,7 @@ class ReceiverSupervisor:
             chunk = await ffmpeg_stdout.read(self.config.write_chunk_size)
             if not chunk:
                 return 'ffmpeg output ended'
+            self.last_audio_ts = time.monotonic()
             try:
                 pifm_stdin.write(chunk)
                 await pifm_stdin.drain()
@@ -847,6 +1531,19 @@ class ReceiverSupervisor:
                 return 'piFmAdv stdin closed'
             except Exception as exc:
                 return f'piFmAdv write failed: {exc}'
+        return 'shutdown requested'
+
+    async def _read_processor_pcm(
+        self,
+        ffmpeg_stdout: asyncio.StreamReader,
+        queue: asyncio.Queue[bytes],
+    ) -> str:
+        while not self.stop_event.is_set():
+            chunk = await ffmpeg_stdout.read(self.config.write_chunk_size)
+            if not chunk:
+                return 'ffmpeg output ended'
+            self.last_audio_ts = time.monotonic()
+            self._push_audio_chunk(queue, chunk)
         return 'shutdown requested'
 
     async def _wait_process(self, proc: asyncio.subprocess.Process, name: str) -> str:
@@ -866,6 +1563,17 @@ class ReceiverSupervisor:
                         return f"receiver websocket reported error: {payload.get('detail')}"
         return 'receiver websocket ended'
 
+    def _log_http_control_ws_done(self, task: asyncio.Task[str]) -> None:
+        if task.cancelled():
+            return
+        try:
+            reason = task.result()
+        except Exception as exc:
+            log.warning('HTTP receiver control websocket failed while audio continues: %s', exc)
+            return
+        if reason:
+            log.warning('HTTP receiver control websocket ended while audio continues: %s', reason)
+
     async def _monitor_health(
         self,
         ffmpeg_proc: asyncio.subprocess.Process,
@@ -882,6 +1590,35 @@ class ReceiverSupervisor:
             idle_for = time.monotonic() - self.last_audio_ts
             if idle_for >= self.config.stream_stall_timeout_s:
                 return f'webrtc audio stalled for {idle_for:.1f}s'
+            await asyncio.sleep(1.0)
+        return 'shutdown requested'
+
+    async def _monitor_http_health(
+        self,
+        ffmpeg_proc: asyncio.subprocess.Process,
+        pifm_proc: asyncio.subprocess.Process,
+    ) -> str:
+        while not self.stop_event.is_set():
+            if ffmpeg_proc.returncode is not None:
+                return f'ffmpeg exited with code {ffmpeg_proc.returncode}'
+            if pifm_proc.returncode is not None:
+                return f'piFmAdv exited with code {pifm_proc.returncode}'
+            idle_for = time.monotonic() - self.last_audio_ts
+            if idle_for >= self.config.stream_stall_timeout_s:
+                return f'HTTP receiver audio stalled for {idle_for:.1f}s'
+            await asyncio.sleep(1.0)
+        return 'shutdown requested'
+
+    async def _monitor_direct_http_health(
+        self,
+        pifm_proc: asyncio.subprocess.Process,
+    ) -> str:
+        while not self.stop_event.is_set():
+            if pifm_proc.returncode is not None:
+                return f'piFmAdv exited with code {pifm_proc.returncode}'
+            idle_for = time.monotonic() - self.last_audio_ts
+            if idle_for >= self.config.stream_stall_timeout_s:
+                return f'HTTP raw receiver audio stalled for {idle_for:.1f}s'
             await asyncio.sleep(1.0)
         return 'shutdown requested'
 
@@ -1007,11 +1744,25 @@ def _parse_args() -> ReceiverConfig:
     parser.add_argument('--reconnect-initial-delay', type=float, default=1.0)
     parser.add_argument('--reconnect-max-delay', type=float, default=8.0)
     parser.add_argument('--reconnect-backoff', type=float, default=1.5)
-    parser.add_argument('--chunk-size', type=int, default=4096)
+    parser.add_argument('--chunk-size', type=int, default=8192)
     parser.add_argument('--audio-frame-ms', type=int, default=20)
-    parser.add_argument('--jitter-buffer-ms', type=int, default=160)
-    parser.add_argument('--max-jitter-buffer-ms', type=int, default=800)
-    parser.add_argument('--preferred-codecs', default='opus,g722,pcmu,pcma')
+    parser.add_argument('--jitter-buffer-ms', type=int, default=320)
+    parser.add_argument('--max-jitter-buffer-ms', type=int, default=1200)
+    parser.add_argument('--max-pacing-lag-ms', type=int, default=120)
+    parser.add_argument('--preferred-codecs', default='g722,opus,pcmu,pcma')
+    parser.add_argument('--transport', choices=['auto', 'http', 'webrtc'], default='http')
+    parser.add_argument(
+        '--allow-webrtc-fallback',
+        action='store_true',
+        help='Allow --transport auto to fall back to the older WebRTC path if HTTP audio probing fails.',
+    )
+    parser.add_argument('--http-codec', default='raw_pcm16')
+    parser.add_argument('--http-reconnect-delay-max', type=int, default=2)
+    parser.add_argument('--http-read-timeout', type=float, default=8.0)
+    parser.add_argument('--metrics-interval', type=float, default=10.0, help='Seconds between receiver pipe metric logs; set 0 to disable.')
+    parser.add_argument('--diagnose-audio', action='store_true', help='Fetch the HTTP raw PCM stream and print audio integrity metrics without starting piFmAdv.')
+    parser.add_argument('--diagnose-duration', type=float, default=60.0, help='Seconds of audio to sample in --diagnose-audio mode.')
+    parser.add_argument('--diagnose-output', default='', help='Optional WAV file path to write during --diagnose-audio mode.')
     args = parser.parse_args()
 
     pair_token = args.pair_token
@@ -1027,6 +1778,7 @@ def _parse_args() -> ReceiverConfig:
     audio_frame_ms = max(10, min(100, int(args.audio_frame_ms)))
     jitter_buffer_ms = max(0, int(args.jitter_buffer_ms))
     max_jitter_buffer_ms = max(jitter_buffer_ms + audio_frame_ms, int(args.max_jitter_buffer_ms))
+    max_pacing_lag_ms = max(audio_frame_ms * 2, int(args.max_pacing_lag_ms))
     preferred_codecs = tuple(
         codec
         for codec in (
@@ -1058,7 +1810,17 @@ def _parse_args() -> ReceiverConfig:
         audio_frame_ms=audio_frame_ms,
         jitter_buffer_ms=jitter_buffer_ms,
         max_jitter_buffer_ms=max_jitter_buffer_ms,
-        preferred_codecs=preferred_codecs or ('opus', 'g722', 'pcmu', 'pcma'),
+        max_pacing_lag_ms=max_pacing_lag_ms,
+        preferred_codecs=preferred_codecs or ('g722', 'opus', 'pcmu', 'pcma'),
+        transport=str(args.transport or 'auto'),
+        allow_webrtc_fallback=bool(args.allow_webrtc_fallback),
+        http_codec=str(args.http_codec or 'raw_pcm16'),
+        http_reconnect_delay_max_s=max(1, int(args.http_reconnect_delay_max)),
+        http_read_timeout_s=max(2.0, float(args.http_read_timeout)),
+        metrics_interval_s=max(0.0, float(args.metrics_interval)),
+        diagnose_audio=bool(args.diagnose_audio),
+        diagnose_duration_s=max(1.0, float(args.diagnose_duration)),
+        diagnose_output=pathlib.Path(args.diagnose_output).expanduser() if args.diagnose_output else None,
     )
 
 
@@ -1068,10 +1830,67 @@ def _configure_logging() -> None:
         logging.getLogger(name).setLevel(logging.ERROR)
 
 
+async def _diagnose_audio(config: ReceiverConfig) -> None:
+    codec = config.http_codec.strip().lower().replace('-', '_')
+    if codec not in {'raw', 'raw_pcm16', 's16le'}:
+        log.warning('--diagnose-audio uses raw PCM metrics; overriding HTTP codec %s with raw_pcm16', config.http_codec)
+        codec = 'raw_pcm16'
+    query = urlencode({'feed': config.feed_id, 'codec': codec})
+    url = f'{config.server_url}/api/public/v1/feed/audio?{query}'
+    timeout = aiohttp.ClientTimeout(
+        total=None,
+        sock_connect=5,
+        sock_read=max(5.0, config.http_read_timeout_s),
+    )
+    data = bytearray()
+    chunk_count = 0
+    max_chunk_gap_ms = 0.0
+    first_chunk_at: float | None = None
+    last_chunk_at: float | None = None
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, timeout=timeout) as response:
+            if response.status < 200 or response.status >= 300:
+                detail = (await response.text())[:300]
+                raise RuntimeError(f'{url} returned HTTP {response.status}: {detail}')
+            log.info('Diagnosing %s for %.1fs from %s', config.feed_id, config.diagnose_duration_s, url)
+            deadline = time.monotonic() + config.diagnose_duration_s
+            async for chunk in response.content.iter_chunked(config.write_chunk_size):
+                now = time.monotonic()
+                if first_chunk_at is None:
+                    first_chunk_at = now
+                if last_chunk_at is not None:
+                    max_chunk_gap_ms = max(max_chunk_gap_ms, (now - last_chunk_at) * 1000)
+                last_chunk_at = now
+                if chunk:
+                    data.extend(chunk)
+                    chunk_count += 1
+                if now >= deadline:
+                    break
+    if config.diagnose_output:
+        config.diagnose_output.parent.mkdir(parents=True, exist_ok=True)
+        config.diagnose_output.write_bytes(_streaming_wav_header(48000, 1) + bytes(data))
+        log.info('Wrote diagnostic WAV capture to %s', config.diagnose_output)
+    metrics = _pcm16_metrics(bytes(data))
+    metrics.update({
+        'feed_id': config.feed_id,
+        'codec': codec,
+        'bytes': len(data),
+        'chunks': chunk_count,
+        'wall_duration_s': round((last_chunk_at - first_chunk_at), 3) if first_chunk_at and last_chunk_at else 0.0,
+        'max_chunk_gap_ms': round(max_chunk_gap_ms, 2),
+        'expected_duration_s': config.diagnose_duration_s,
+    })
+    print(json.dumps(metrics, indent=2, sort_keys=True))
+
+
 async def _main() -> None:
     _configure_logging()
     config = _parse_args()
-    _ensure_webrtc_dependencies()
+    if config.diagnose_audio:
+        await _diagnose_audio(config)
+        return
+    if config.transport == 'webrtc':
+        _ensure_webrtc_dependencies()
     supervisor = ReceiverSupervisor(config)
     await supervisor.run_forever()
 

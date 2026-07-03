@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -354,9 +356,19 @@ func LoadDotEnv(path string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			if created, createErr := createDotEnvFromExample(path); createErr != nil {
+				return createErr
+			} else if !created {
+				log.Printf("WARN .env file not found: %s", path)
+				return nil
+			}
+			file, err = os.Open(path)
+			if err != nil {
+				return err
+			}
+		} else {
+			return err
 		}
-		return err
 	}
 	defer file.Close()
 
@@ -380,6 +392,26 @@ func LoadDotEnv(path string) error {
 		_ = os.Setenv(key, trimEnvValue(value))
 	}
 	return scanner.Err()
+}
+
+func createDotEnvFromExample(path string) (bool, error) {
+	if filepath.Base(path) != ".env" {
+		return false, nil
+	}
+	examplePath := filepath.Join(filepath.Dir(path), ".env.example")
+	raw, err := os.ReadFile(examplePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("WARN .env file not found and no .env.example is available: %s", path)
+			return false, nil
+		}
+		return false, err
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return false, err
+	}
+	log.Printf("WARN .env file not found: created %s from %s", path, examplePath)
+	return true, nil
 }
 
 func trimEnvValue(value string) string {

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,19 +27,111 @@ type broadcastPCMChunk struct {
 }
 
 type broadcastHub struct {
-	mu          sync.Mutex
-	subscribers map[string]map[chan broadcastPCMChunk]struct{}
-	last        map[string]broadcastPCMChunk
-	lastAt      map[string]time.Time
-	seenLogged  map[string]bool
+	mu            sync.Mutex
+	sourceBaseURL string
+	sourceFeeds   map[string]context.CancelFunc
+	subscribers   map[string]map[chan broadcastPCMChunk]struct{}
+	last          map[string]broadcastPCMChunk
+	lastAt        map[string]time.Time
+	seenLogged    map[string]bool
 }
 
 func newBroadcastHub() *broadcastHub {
 	return &broadcastHub{
 		subscribers: map[string]map[chan broadcastPCMChunk]struct{}{},
+		sourceFeeds: map[string]context.CancelFunc{},
 		last:        map[string]broadcastPCMChunk{},
 		lastAt:      map[string]time.Time{},
 		seenLogged:  map[string]bool{},
+	}
+}
+
+func (h *broadcastHub) SetHTTPSource(baseURL string) {
+	if h == nil {
+		return
+	}
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	h.mu.Lock()
+	h.sourceBaseURL = baseURL
+	if h.sourceFeeds == nil {
+		h.sourceFeeds = map[string]context.CancelFunc{}
+	}
+	h.mu.Unlock()
+}
+
+func (h *broadcastHub) ensureHTTPSource(feedID string) {
+	if h == nil {
+		return
+	}
+	feedID = strings.TrimSpace(feedID)
+	if feedID == "" {
+		return
+	}
+	h.mu.Lock()
+	baseURL := h.sourceBaseURL
+	if baseURL == "" {
+		h.mu.Unlock()
+		return
+	}
+	if h.sourceFeeds == nil {
+		h.sourceFeeds = map[string]context.CancelFunc{}
+	}
+	if h.sourceFeeds[feedID] != nil {
+		h.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	h.sourceFeeds[feedID] = cancel
+	h.mu.Unlock()
+	go h.runHTTPPCMSource(ctx, baseURL, feedID)
+}
+
+func (h *broadcastHub) runHTTPPCMSource(ctx context.Context, baseURL string, feedID string) {
+	endpoint, err := url.Parse(baseURL + "/api/v1/feed/audio")
+	if err != nil {
+		log.Printf("IVR live broadcast haze-media source disabled for feed %s: %v", feedID, err)
+		return
+	}
+	query := endpoint.Query()
+	query.Set("feed", feedID)
+	query.Set("codec", "raw")
+	endpoint.RawQuery = query.Encode()
+	client := &http.Client{Timeout: 0}
+	frameBytes := 48000 * 1 * 2 / 50
+	for ctx.Err() == nil {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			log.Printf("IVR live broadcast haze-media request failed for feed %s: %v", feedID, err)
+			return
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			sleepOrDone(ctx, 750*time.Millisecond)
+			continue
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			_ = response.Body.Close()
+			sleepOrDone(ctx, 750*time.Millisecond)
+			continue
+		}
+		log.Printf("IVR live broadcast sourcing paced PCM for feed %s from haze-media", feedID)
+		buffer := make([]byte, frameBytes)
+		for ctx.Err() == nil {
+			n, readErr := io.ReadFull(response.Body, buffer)
+			if n == frameBytes {
+				h.publish(broadcastPCMChunk{
+					FeedID:     feedID,
+					SampleRate: 48000,
+					Channels:   1,
+					Data:       append([]byte(nil), buffer[:n]...),
+				})
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		_ = response.Body.Close()
+		sleepOrDone(ctx, 750*time.Millisecond)
 	}
 }
 
@@ -59,6 +154,7 @@ func (h *broadcastHub) run(ctx context.Context, events <-chan map[string]any) {
 
 func (h *broadcastHub) Subscribe(feedID string) (<-chan broadcastPCMChunk, func()) {
 	feedID = strings.TrimSpace(feedID)
+	h.ensureHTTPSource(feedID)
 	ch := make(chan broadcastPCMChunk, 8)
 	h.mu.Lock()
 	if h.subscribers[feedID] == nil {
@@ -94,6 +190,15 @@ func (h *broadcastHub) HasRecent(feedID string, maxAge time.Duration) bool {
 	defer h.mu.Unlock()
 	lastAt, ok := h.lastAt[strings.TrimSpace(feedID)]
 	return ok && time.Since(lastAt) <= maxAge
+}
+
+func (h *broadcastHub) HasHTTPSource() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return strings.TrimSpace(h.sourceBaseURL) != ""
 }
 
 func (h *broadcastHub) publish(chunk broadcastPCMChunk) {

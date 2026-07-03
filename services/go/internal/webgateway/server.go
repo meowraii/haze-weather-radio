@@ -55,7 +55,9 @@ func NewServerWithConfigPath(config Config, configPath string, webroot string) *
 func NewServerWithSurface(config Config, configPath string, webroot string, surface string) *Server {
 	hostBridgeAddr := os.Getenv("HAZE_HOST_BRIDGE_ADDR")
 	mediaBridgeAddr := firstNonBlank(os.Getenv("HAZE_MEDIA_BRIDGE_ADDR"), hostBridgeAddr)
+	mediaServiceURL := mediaServiceBaseURL(config)
 	mediaHub := NewMediaHub(mediaBridgeAddr)
+	mediaHub.SetHTTPSource(mediaServiceURL)
 	bannerHub := NewBannerHub(configPath, hostBridgeAddr)
 	server := &Server{
 		startedAt:  time.Now().UTC(),
@@ -99,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/banner/stream", s.bannerStream)
 		mux.HandleFunc("/api/v1/banner/audio", s.bannerAudio)
 		mux.HandleFunc("/api/v1/banner/webrtc/offer", s.bannerWebRTCOffer)
+		mux.HandleFunc("/api/v1/cgen/preview", s.cgenPreview)
 		mux.HandleFunc("/api/v1/alerts/archive/cap.xml", s.alertsArchiveCAPXML)
 		mux.HandleFunc("/api/v1/wx-on-demand/generate", s.wxOnDemandGenerate)
 		mux.HandleFunc("/api/v1/wx-on-demand/packages", s.wxOnDemandPackages)
@@ -262,12 +265,16 @@ func (s *Server) publicHealth(writer http.ResponseWriter, request *http.Request)
 	if !requestMethodGETOrHEAD(writer, request) {
 		return
 	}
-	writeJSON(writer, map[string]any{
+	payload := map[string]any{
 		"ok":           true,
 		"service":      "haze-web",
 		"started_at":   s.startedAt,
 		"capabilities": WebRTCAudioCapabilities(),
-	})
+	}
+	if health, ok := mediaServiceHealth(request.Context(), s.config); ok {
+		payload["media_service"] = publicMediaServiceHealth(health)
+	}
+	writeJSON(writer, payload)
 }
 
 func (s *Server) adminHealth(writer http.ResponseWriter, request *http.Request) {
@@ -280,7 +287,7 @@ func (s *Server) adminHealth(writer http.ResponseWriter, request *http.Request) 
 	}
 	webrtcPeers := s.media.WebRTCPeerSnapshots()
 	webrtcSources := s.media.WebRTCFrameSourceSnapshots()
-	writeJSON(writer, map[string]any{
+	payload := map[string]any{
 		"ok":                  true,
 		"service":             "haze-web",
 		"started_at":          s.startedAt,
@@ -289,7 +296,54 @@ func (s *Server) adminHealth(writer http.ResponseWriter, request *http.Request) 
 		"webrtc_peer_count":   len(webrtcPeers),
 		"webrtc_sources":      webrtcSources,
 		"webrtc_source_count": len(webrtcSources),
-	})
+	}
+	if s.receiver != nil {
+		receivers := s.receiver.ActiveSnapshots()
+		payload["receiver_connections"] = receivers
+		payload["receiver_connection_count"] = len(receivers)
+	}
+	if health, ok := mediaServiceHealth(request.Context(), s.config); ok {
+		payload["media_service"] = health
+	}
+	writeJSON(writer, payload)
+}
+
+func publicMediaServiceHealth(health map[string]any) map[string]any {
+	out := map[string]any{
+		"ok":                  boolValue(health, "ok"),
+		"service":             stringValue(health, "service"),
+		"backend":             stringValue(health, "backend"),
+		"gstreamer_available": boolValue(health, "gstreamer_available"),
+	}
+	if capabilities, _ := health["capabilities"].(map[string]any); capabilities != nil {
+		out["capabilities"] = map[string]any{
+			"http_audio":         boolValue(capabilities, "http_audio"),
+			"encoded_http_audio": boolValue(capabilities, "encoded_http_audio"),
+			"webrtc":             boolValue(capabilities, "webrtc"),
+			"webrtc_reason":      stringValue(capabilities, "webrtc_reason"),
+		}
+	}
+	feeds, _ := health["feeds"].([]any)
+	allAudioOK := true
+	warningCount := 0
+	feedCount := 0
+	for _, item := range feeds {
+		feed, _ := item.(map[string]any)
+		if feed == nil {
+			continue
+		}
+		feedCount++
+		if !boolValue(feed, "audio_ok") {
+			allAudioOK = false
+		}
+		if warnings, _ := feed["audio_warnings"].([]any); warnings != nil {
+			warningCount += len(warnings)
+		}
+	}
+	out["feed_count"] = feedCount
+	out["audio_ok"] = allAudioOK
+	out["audio_warning_count"] = warningCount
+	return out
 }
 
 func (s *Server) websocket(writer http.ResponseWriter, request *http.Request) {
@@ -496,7 +550,10 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 	if !validPublicAudioFeedID(feedID) {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed_id is invalid"})
 	}
-	offerSDP := strings.TrimSpace(stringValue(message, "sdp"))
+	offerSDP := normalizeWebRTCOfferSDP(firstNonBlank(
+		stringValue(message, "sdp"),
+		stringValue(mapValue(message, "data"), "sdp"),
+	))
 	if offerSDP == "" {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "sdp is required"})
 	}
@@ -507,7 +564,9 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 	if len(strings.TrimSpace(preferredCodec)) > webRTCOfferMaxCodecLength {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "codec is too long"})
 	}
-	if !s.media.Available() || !s.config.Webpanel.Public.Feeds.WebRTC.Enabled {
+	legacyMediaAvailable := s.media != nil && s.media.Available()
+	mediaServiceConfigured := mediaServiceBaseURL(s.config) != ""
+	if (!legacyMediaAvailable && !mediaServiceConfigured) || !s.config.Webpanel.Public.Feeds.WebRTC.Enabled {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed streaming is not available"})
 	}
 	if strings.HasPrefix(s.request.URL.Path, "/api/public/") {
@@ -523,6 +582,25 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 	}
 	if !s.feedWebRTCEnabled(feedID) {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed streaming is not configured or disabled"})
+	}
+	if answer, ok := s.server.mediaServiceWebRTCAnswer(ctx, map[string]any{
+		"feed_id":         feedID,
+		"sdp":             offerSDP,
+		"disable_g722":    boolValue(message, "disable_g722"),
+		"require_opus":    boolValue(message, "require_opus"),
+		"preferred_codec": preferredCodec,
+	}); ok {
+		answer["feed_id"] = feedID
+		if _, ok := answer["sdp_type"]; !ok {
+			answer["sdp_type"] = "answer"
+		}
+		return s.reply(ctx, message, "webrtc_answer", answer)
+	}
+	if !legacyMediaAvailable {
+		if mediaServiceConfigured {
+			return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "haze-media WebRTC service is unavailable and legacy media bridge is not available"})
+		}
+		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "media bridge is not available"})
 	}
 	answer, err := s.media.AnswerWithOptions(ctx, feedID, offerSDP, WebRTCAnswerOptions{
 		DisableG722:    boolValue(message, "disable_g722"),
@@ -546,6 +624,28 @@ func (s *wsSession) feedWebRTCEnabled(feedID string) bool {
 	return feedAudioOutputEnabled(s.configPath, feedID)
 }
 
+func normalizeWebRTCOfferSDP(sdp string) string {
+	sdp = strings.TrimSpace(sdp)
+	if sdp == "" {
+		return ""
+	}
+	sdp = strings.ReplaceAll(sdp, "\r\n", "\n")
+	sdp = strings.ReplaceAll(sdp, "\r", "\n")
+	lines := strings.Split(sdp, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimRight(line, " \t")
+		if line == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, "\r\n") + "\r\n"
+}
+
 func (s *wsSession) handleCommand(command string, payload map[string]any) (any, error) {
 	switch command {
 	case "daemon.settings.get":
@@ -562,6 +662,18 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 		return loadDictionaryPayload(s.configPath)
 	case "dictionary.save":
 		return writeDictionaryPayload(s.configPath, payload)
+	case "tts.get":
+		return loadTTSPayload(s.configPath)
+	case "tts.save":
+		return saveTTSPayload(s.configPath, payload)
+	case "tts.preview":
+		return s.previewTTS(payload)
+	case "feeds.get":
+		return loadFeedsControlPayload(s.configPath)
+	case "feeds.save":
+		return saveFeedsControlPayload(s.configPath, payload)
+	case "feeds.control":
+		return s.publishFeedControl(payload)
 	case "bulletins.get":
 		return loadBulletinsPayload(s.configPath)
 	case "bulletins.save":
@@ -574,6 +686,8 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 		return uploadBulletinAudio(s.configPath, payload)
 	case "cgen.get":
 		return loadCgenPayload(s.configPath)
+	case "cgen.catalog":
+		return cgenCatalogPayload(s.configPath)
 	case "cgen.save":
 		result, err := saveCgenPayload(s.configPath, payload)
 		if err != nil {
@@ -586,12 +700,12 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 		if err != nil {
 			return nil, err
 		}
-		_ = s.publishCgenConfigUpdated(result)
+		_ = s.publishCgenControl(payload, result)
 		return result, nil
 	case "state":
 		return s.panelState()
 	case "wx.packages":
-		packageIDs, err := loadPackageIDs(s.configPath)
+		packageIDs, err := loadWxOnDemandPackageIDs(s.configPath)
 		if err != nil {
 			return nil, err
 		}
@@ -696,6 +810,45 @@ func (s *wsSession) publishCgenConfigUpdated(payload map[string]any) error {
 	})
 }
 
+func (s *wsSession) publishCgenControl(request map[string]any, result map[string]any) error {
+	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
+	if bridgeAddr == "" {
+		return nil
+	}
+	feedID := strings.TrimSpace(firstNonBlank(stringValue(request, "feed_id"), stringValue(request, "id")))
+	if feedID == "" {
+		return nil
+	}
+	feed, ok := cgenPayloadFeed(result, feedID)
+	if !ok {
+		return nil
+	}
+	data := cloneMap(feed)
+	data["feed_id"] = feedID
+	data["action"] = strings.ToLower(strings.TrimSpace(stringValue(request, "action")))
+	publisher := events.NewHostBridgePublisher(bridgeAddr)
+	defer publisher.Close()
+	return publisher.Publish(events.Event{
+		Type:    "cgen.control",
+		Source:  "haze-web",
+		Subject: feedID,
+		Data:    data,
+	})
+}
+
+func cgenPayloadFeed(payload map[string]any, feedID string) (map[string]any, bool) {
+	feeds, ok := payload["feeds"].([]map[string]any)
+	if !ok {
+		return nil, false
+	}
+	for _, feed := range feeds {
+		if strings.EqualFold(strings.TrimSpace(stringValue(feed, "id")), feedID) {
+			return feed, true
+		}
+	}
+	return nil, false
+}
+
 func (s *wsSession) publishPlaylistCommand(eventType string, payload map[string]any) (any, error) {
 	feedID := strings.TrimSpace(stringValue(payload, "feed_id"))
 	if feedID == "" {
@@ -727,6 +880,23 @@ func (s *wsSession) publishPlaylistCommand(eventType string, payload map[string]
 		result["playlist"] = playlist
 	}
 	return result, nil
+}
+
+func (s *wsSession) publishFeedControl(payload map[string]any) (any, error) {
+	action := strings.ToLower(strings.TrimSpace(stringValue(payload, "action")))
+	switch action {
+	case "pause":
+		payload["action"] = "pause"
+	case "unpause", "resume":
+		payload["action"] = "resume"
+	case "stop":
+		payload["action"] = "flush_stop"
+	case "restart", "start":
+		payload["action"] = "flush_restart"
+	default:
+		return nil, fmt.Errorf("unsupported feed action %q", action)
+	}
+	return s.publishPlaylistCommand("playlist.control", payload)
 }
 
 func (s *wsSession) publishServiceControl(payload map[string]any) (any, error) {

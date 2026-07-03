@@ -1,4 +1,4 @@
-version: 26.06.18
+version: 26.07.01
 daemon_settings_file: runtime/state/daemonSettings.json
 
 storage:
@@ -18,13 +18,54 @@ storage:
 
 services:
   rust:
+    media:
+      enabled: true
+      addr: "127.0.0.1:8097"
+      backend: "auto" # auto, gstreamer, or legacy
+      audio_processing:
+        loudness_enabled: true
+        gain_db: 3
+        compressor_threshold_dbfs: -18
+        compressor_ratio: 3
+        compressor_makeup_db: 1.5
+        limiter_ceiling: 0.98
+      scheduler:
+        windows_priority: high
+        nice: -10
     playout:
       enabled: true
       alert_poll: "500ms"
       ffmpeg: "ffmpeg"
+      scheduler:
+        windows_priority: high
+        nice: -10
     cgen:
       enabled: true
       config: "managed/configs/cgen.xml"
+      scheduler:
+        # Keep CGEN responsive without letting it starve playout, media, or drivers.
+        windows_priority: above_normal # normal, above_normal, high, realtime
+        nice: -2 # -20 highest priority, 19 lowest
+    cap_ingest:
+      enabled: true
+      shadow: false
+      source_id: "rust-cap"
+      source: "naads"
+      mode: "tcp"
+      url: "tcp://streaming1.naad-adna.pelmorex.com:8080"
+      fallback_url: "tcp://streaming2.naad-adna.pelmorex.com:8080"
+      archive_url: "http://capcp1.naad-adna.pelmorex.com"
+      fallback_archive_url: "http://capcp2.naad-adna.pelmorex.com"
+      interval: "5s" # only used by NWS/Atom polling mode; NAADS TCP mode is continuous
+      timeout: "15s"
+      startup_seed: true
+      concurrency: 8
+    easnet:
+      enabled: true
+      config: "managed/configs/easnet.xml"
+      scheduler:
+        windows_priority: normal
+        nice: 0
   go:
     enabled: true
     web_gateway:
@@ -33,14 +74,6 @@ services:
       enabled: true
       interval: "45m"
       timeout: "20s"
-    cap_ingest:
-      enabled: true
-      source_id: "go-cap"
-      source: "naads"
-      url: "http://rss1.naad-adna.pelmorex.com/"
-      fallback_url: "http://rss2.naad-adna.pelmorex.com/"
-      interval: "30s"
-      timeout: "15s"
     tts:
       enabled: true
       readers: "managed/configs/readers.xml"
@@ -87,7 +120,7 @@ services:
         addr: "127.0.0.1:8096"
       sip:
         enabled: true
-        listen: "0.0.0.0:42867"
+        listen: "0.0.0.0:5060"
         public_host: "71.17.68.130"
         allowed_sources: []
         auth:
@@ -147,7 +180,7 @@ services:
       broadcast_packages: ["alerts", "current_conditions", "air_quality", "forecast", "geophysical_alert"]
       max_call_seconds: 660
       digit_timeout_seconds: 8
-      render_timeout: "25s"
+      render_timeout: "60s"
       max_concurrent_calls: 256
       max_render_inflight: 8
   daemon:
@@ -260,7 +293,7 @@ webpanel:
     enabled: true
     host: "0.0.0.0"
     port: 8086
-    site_name: "Haze Weather Radio"
+    site_name: "${SITE_NAME}"
     alerts_archive:
       access: public # disabled, public
     feeds:
@@ -312,16 +345,6 @@ outputs_file: ./managed/configs/output.xml
 cap:
   cap_cp:
     enabled: true
-    sources:
-      - id: naads
-        rss: https://rss.naad-adna.pelmorex.com/
-        rss1: https://rss1.naad-adna.pelmorex.com/
-        rss2: https://rss2.naad-adna.pelmorex.com/
-    dedup:
-      window_seconds: 300
-      key_fields:
-        - identifier
-        - sent
   nws_cap:
     enabled: false
     sources:

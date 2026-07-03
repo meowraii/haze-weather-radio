@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +24,7 @@ const (
 	httpAudioMaxFeedID   = 128
 	httpAudioMaxCodecID  = 64
 	httpAudioDrainLimit  = 64
+	httpAudioProxyBuffer = httpWAVFrameSamples * httpWAVChannels * (httpWAVBitsPerSample / 8) * 16
 )
 
 type httpAudioFormat struct {
@@ -76,6 +79,27 @@ func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Reque
 		http.Error(writer, "unsupported HTTP audio codec", http.StatusBadRequest)
 		return
 	}
+	mediaServiceConfigured := mediaServiceBaseURL(s.config) != ""
+	mediaServiceNativeCodec := mediaServiceNativeHTTPCodec(format.ID)
+	if request.Method == http.MethodHead {
+		if mediaServiceConfigured && mediaServiceNativeCodec && !mediaServiceHTTPAudioAvailable(request.Context(), s.config) {
+			http.Error(writer, "haze-media HTTP audio is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		writeHTTPAudioHeaders(writer, format)
+		if mediaServiceConfigured && mediaServiceNativeCodec {
+			writer.Header().Set("X-Haze-Media-Backend", "haze-media")
+		}
+		writer.WriteHeader(http.StatusOK)
+		return
+	}
+	if s.proxyMediaServiceAudio(writer, request, feedID, format.ID) {
+		return
+	}
+	if mediaServiceConfigured && mediaServiceNativeCodec {
+		http.Error(writer, "haze-media HTTP audio is unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if s.media == nil || !s.media.Available() {
 		http.Error(writer, "media bridge is not available", http.StatusServiceUnavailable)
 		return
@@ -90,15 +114,7 @@ func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Reque
 		}
 	}
 
-	writer.Header().Set("Content-Type", format.ContentType)
-	writer.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="haze-feed.%s"`, format.Extension))
-	writer.Header().Set("Cache-Control", "no-store")
-	writer.Header().Set("X-Accel-Buffering", "no")
-	writer.Header().Set("Connection", "keep-alive")
-	if request.Method == http.MethodHead {
-		writer.WriteHeader(http.StatusOK)
-		return
-	}
+	writeHTTPAudioHeaders(writer, format)
 	var err error
 	if format.FFmpegFormat == "" {
 		err = s.media.StreamWAV(request.Context(), feedID, writer)
@@ -108,6 +124,122 @@ func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Reque
 	if err != nil && !errors.Is(err, http.ErrHandlerTimeout) && !errors.Is(err, context.Canceled) {
 		return
 	}
+}
+
+func writeHTTPAudioHeaders(writer http.ResponseWriter, format httpAudioFormat) {
+	writer.Header().Set("Content-Type", format.ContentType)
+	writer.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="haze-feed.%s"`, format.Extension))
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("X-Accel-Buffering", "no")
+	writer.Header().Set("Connection", "keep-alive")
+}
+
+func (s *Server) proxyMediaServiceAudio(writer http.ResponseWriter, request *http.Request, feedID string, codec string) bool {
+	baseURL := mediaServiceBaseURL(s.config)
+	if baseURL == "" {
+		return false
+	}
+	endpoint, err := url.Parse(baseURL + "/api/v1/feed/audio")
+	if err != nil {
+		return false
+	}
+	query := endpoint.Query()
+	query.Set("feed", feedID)
+	query.Set("codec", codec)
+	endpoint.RawQuery = query.Encode()
+	proxyRequest, err := http.NewRequestWithContext(request.Context(), http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return false
+	}
+	response, err := http.DefaultClient.Do(proxyRequest)
+	if err != nil {
+		log.Printf("haze-media HTTP audio unavailable, using legacy path: %v", err)
+		return false
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		log.Printf("haze-media HTTP audio returned %s, using legacy path", response.Status)
+		return false
+	}
+	for key, values := range response.Header {
+		if !proxyAudioResponseHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			writer.Header().Add(key, value)
+		}
+	}
+	writer.Header().Set("X-Haze-Media-Backend", "haze-media")
+	writer.WriteHeader(response.StatusCode)
+	copyErr := copyRealtimeHTTPAudio(writer, response.Body)
+	if copyErr != nil && !errors.Is(copyErr, context.Canceled) {
+		log.Printf("haze-media HTTP audio proxy ended: %v", copyErr)
+	}
+	return true
+}
+
+func copyRealtimeHTTPAudio(writer http.ResponseWriter, reader io.Reader) error {
+	flusher, _ := writer.(http.Flusher)
+	buffer := make([]byte, httpAudioProxyBuffer)
+	for {
+		n, readErr := reader.Read(buffer)
+		if n > 0 {
+			if _, writeErr := writer.Write(buffer[:n]); writeErr != nil {
+				return writeErr
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			return readErr
+		}
+	}
+}
+
+func proxyAudioResponseHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "content-type", "cache-control", "x-accel-buffering":
+		return true
+	default:
+		return false
+	}
+}
+
+func mediaServiceNativeHTTPCodec(codec string) bool {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "pcm16", "raw_pcm16", "opus", "aac":
+		return true
+	default:
+		return false
+	}
+}
+
+func mediaServiceHTTPAudioAvailable(ctx context.Context, config Config) bool {
+	health, ok := mediaServiceHealth(ctx, config)
+	if !ok {
+		return false
+	}
+	capabilities, _ := health["capabilities"].(map[string]any)
+	available, _ := capabilities["http_audio"].(bool)
+	return available
+}
+
+func mediaServiceBaseURL(config Config) string {
+	if !config.Services.Rust.Media.Enabled {
+		return ""
+	}
+	addr := strings.TrimSpace(firstNonBlank(config.Services.Rust.Media.Addr, config.Services.Rust.Media.Listen))
+	if addr == "" {
+		addr = "127.0.0.1:8097"
+	}
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return strings.TrimRight(addr, "/")
+	}
+	return "http://" + addr
 }
 
 func validPublicAudioFeedID(feedID string) bool {

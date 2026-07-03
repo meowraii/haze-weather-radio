@@ -9,8 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -32,7 +35,7 @@ const (
 	pcmuFrameSamples           = pcmuSampleRate / 50
 	webrtcChannels             = 1
 	opusRTPChannels            = 2
-	opusEncoderChannels        = 1
+	opusEncoderChannels        = opusRTPChannels
 	webrtcFrameDuration        = 20 * time.Millisecond
 	webrtcMaxQueuedFrames      = 10
 	webrtcPeerFrameMailbox     = 3
@@ -167,17 +170,19 @@ type PCMChunk struct {
 }
 
 type MediaHub struct {
-	addr         string
-	mu           sync.Mutex
-	peerStatsMu  sync.Mutex
-	subscribers  map[string]map[chan PCMChunk]struct{}
-	peers        map[string]*webrtc.PeerConnection
-	peerStats    map[string]webRTCPeerSnapshot
-	ingress      map[string]chan PCMChunk
-	frameSources map[webRTCFrameSourceKey]*webRTCFrameSource
-	last         map[string]PCMChunk
-	lastAt       map[string]time.Time
-	seenLogged   map[string]bool
+	addr          string
+	sourceBaseURL string
+	sourceFeeds   map[string]context.CancelFunc
+	mu            sync.Mutex
+	peerStatsMu   sync.Mutex
+	subscribers   map[string]map[chan PCMChunk]struct{}
+	peers         map[string]*webrtc.PeerConnection
+	peerStats     map[string]webRTCPeerSnapshot
+	ingress       map[string]chan PCMChunk
+	frameSources  map[webRTCFrameSourceKey]*webRTCFrameSource
+	last          map[string]PCMChunk
+	lastAt        map[string]time.Time
+	seenLogged    map[string]bool
 }
 
 func NewMediaHub(addr string) *MediaHub {
@@ -186,6 +191,7 @@ func NewMediaHub(addr string) *MediaHub {
 		subscribers:  map[string]map[chan PCMChunk]struct{}{},
 		peers:        map[string]*webrtc.PeerConnection{},
 		peerStats:    map[string]webRTCPeerSnapshot{},
+		sourceFeeds:  map[string]context.CancelFunc{},
 		ingress:      map[string]chan PCMChunk{},
 		frameSources: map[webRTCFrameSourceKey]*webRTCFrameSource{},
 		last:         map[string]PCMChunk{},
@@ -199,7 +205,104 @@ func NewMediaHub(addr string) *MediaHub {
 }
 
 func (h *MediaHub) Available() bool {
-	return h != nil && h.addr != ""
+	return h != nil && (h.addr != "" || h.sourceBaseURL != "")
+}
+
+func (h *MediaHub) SetHTTPSource(baseURL string) {
+	if h == nil {
+		return
+	}
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	h.mu.Lock()
+	h.sourceBaseURL = baseURL
+	if h.sourceFeeds == nil {
+		h.sourceFeeds = map[string]context.CancelFunc{}
+	}
+	h.mu.Unlock()
+}
+
+func (h *MediaHub) ensureHTTPSource(feedID string) {
+	if h == nil {
+		return
+	}
+	if strings.TrimSpace(h.addr) != "" {
+		return
+	}
+	feedID = strings.TrimSpace(feedID)
+	if feedID == "" {
+		return
+	}
+	h.mu.Lock()
+	baseURL := h.sourceBaseURL
+	if baseURL == "" {
+		h.mu.Unlock()
+		return
+	}
+	if h.sourceFeeds == nil {
+		h.sourceFeeds = map[string]context.CancelFunc{}
+	}
+	if h.sourceFeeds[feedID] != nil {
+		h.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	h.sourceFeeds[feedID] = cancel
+	h.mu.Unlock()
+	go h.runHTTPPCMSource(ctx, baseURL, feedID)
+}
+
+func (h *MediaHub) runHTTPPCMSource(ctx context.Context, baseURL string, feedID string) {
+	endpoint, err := url.Parse(baseURL + "/api/v1/feed/audio")
+	if err != nil {
+		log.Printf("haze-media PCM source disabled for feed %s: %v", feedID, err)
+		return
+	}
+	query := endpoint.Query()
+	query.Set("feed", feedID)
+	query.Set("codec", "raw")
+	endpoint.RawQuery = query.Encode()
+	client := &http.Client{Timeout: 0}
+	frameBytes := opusFrameSamples * webrtcChannels * 2
+	if frameBytes <= 0 {
+		frameBytes = 1920
+	}
+	for ctx.Err() == nil {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			log.Printf("haze-media PCM source request failed for feed %s: %v", feedID, err)
+			return
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			sleepMedia(ctx, bridgeReconnectDelay)
+			continue
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			_ = response.Body.Close()
+			sleepMedia(ctx, bridgeReconnectDelay)
+			continue
+		}
+		log.Printf("media hub sourcing paced PCM for feed %s from haze-media", feedID)
+		buffer := make([]byte, frameBytes)
+		for ctx.Err() == nil {
+			n, readErr := io.ReadFull(response.Body, buffer)
+			if n == frameBytes {
+				data := append([]byte(nil), buffer[:n]...)
+				h.publish(PCMChunk{
+					FeedID:     feedID,
+					SampleRate: opusSampleRate,
+					Channels:   webrtcChannels,
+					Duration:   webrtcFrameDuration,
+					Data:       data,
+				})
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		_ = response.Body.Close()
+		sleepMedia(ctx, bridgeReconnectDelay)
+	}
 }
 
 func (h *MediaHub) WebRTCPeerSnapshots() []map[string]any {
@@ -308,6 +411,7 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 	if strings.TrimSpace(offerSDP) == "" {
 		return WebRTCAnswer{}, errors.New("sdp is required")
 	}
+	h.ensureHTTPSource(feedID)
 
 	peerConnection, err := newWebRTCPeerConnection(webrtc.Configuration{})
 	if err != nil {
@@ -944,6 +1048,7 @@ func (h *MediaHub) HasRecentPCM(feedID string, maxAge time.Duration) bool {
 
 func (h *MediaHub) Subscribe(feedID string) (<-chan PCMChunk, func()) {
 	feedID = strings.TrimSpace(feedID)
+	h.ensureHTTPSource(feedID)
 	ch := make(chan PCMChunk, 8)
 	h.mu.Lock()
 	if h.subscribers[feedID] == nil {
@@ -1122,6 +1227,9 @@ func (s *webRTCFrameSource) subscribe() (<-chan webRTCFrame, func(), bool) {
 }
 
 func (h *MediaHub) removeWebRTCFrameSourceAfter(source *webRTCFrameSource, delay time.Duration, idleEpoch uint64) {
+	if h == nil || source == nil {
+		return
+	}
 	if delay <= 0 {
 		h.removeWebRTCFrameSourceIfIdle(source, idleEpoch)
 		return
@@ -1139,10 +1247,16 @@ func (h *MediaHub) removeWebRTCFrameSourceAfter(source *webRTCFrameSource, delay
 }
 
 func (h *MediaHub) removeWebRTCFrameSource(source *webRTCFrameSource) {
+	if h == nil || source == nil {
+		return
+	}
 	h.removeWebRTCFrameSourceIfIdle(source, 0)
 }
 
 func (h *MediaHub) removeWebRTCFrameSourceIfIdle(source *webRTCFrameSource, idleEpoch uint64) {
+	if h == nil || source == nil {
+		return
+	}
 	shouldStop := false
 	h.mu.Lock()
 	source.mu.Lock()
@@ -1193,7 +1307,7 @@ func (s *webRTCFrameSource) run() {
 	idleFrameIndex := 0
 	loggedFirstFrame := false
 	stats := webRTCFrameSourceStats{startedAt: time.Now(), lastReport: time.Now()}
-	lastEmitAt := time.Now()
+	lastTickAt := time.Now()
 	lastStallResetLog := time.Time{}
 
 	appendChunk := func(chunk PCMChunk) {
@@ -1214,58 +1328,8 @@ func (s *webRTCFrameSource) run() {
 		}
 		return true
 	}
-	drainLatestUpdate := func() (PCMChunk, bool, bool) {
-		var latest PCMChunk
-		hasLatest := false
-		for {
-			select {
-			case chunk, ok := <-updates:
-				if !ok {
-					return PCMChunk{}, false, false
-				}
-				latest = chunk
-				hasLatest = true
-			default:
-				return latest, true, hasLatest
-			}
-		}
-	}
-	resetAfterStall := func(now time.Time) bool {
-		gap := now.Sub(lastEmitAt)
-		if gap < webrtcFrameSourceResetGap {
-			return true
-		}
-		frameHead = 0
-		frameQueue = frameQueue[:0]
-		concealer.reset()
-		chunk, ok, hasLatest := drainLatestUpdate()
-		if !ok {
-			return false
-		}
-		if hasLatest {
-			appendChunk(chunk)
-		}
-		if lastStallResetLog.IsZero() || now.Sub(lastStallResetLog) >= 10*time.Second {
-			log.Printf("media bridge WebRTC frame source reset after scheduler stall feed=%s codec=%s gap_ms=%d used_latest_pcm=%t", s.key.feedID, s.key.codec, gap.Milliseconds(), hasLatest)
-			lastStallResetLog = now
-		}
-		return true
-	}
 
-	emitFrame := func() bool {
-		now := time.Now()
-		if !resetAfterStall(now) {
-			return false
-		}
-		lastEmitAt = now
-		if !drainUpdates() {
-			return false
-		}
-		frame, kind := concealer.nextWithKind(&frameQueue, &frameHead, func() []byte {
-			frame := s.idleFrame(g722Encoder, g722Idle, opusIdle, idleFrameIndex)
-			idleFrameIndex++
-			return frame
-		})
+	emitFrame := func(frame []byte, kind webRTCFrameKind) bool {
 		if len(frame) == 0 {
 			return true
 		}
@@ -1280,7 +1344,33 @@ func (s *webRTCFrameSource) run() {
 		}
 		return true
 	}
-	if !emitFrame() {
+
+	emitNextFrame := func() bool {
+		now := time.Now()
+		if gap := now.Sub(lastTickAt); gap >= webrtcFrameSourceResetGap {
+			frameHead = 0
+			frameQueue = frameQueue[:0]
+			concealer.reset()
+			if lastStallResetLog.IsZero() || now.Sub(lastStallResetLog) >= 10*time.Second {
+				log.Printf("media bridge WebRTC frame source reset after scheduler stall feed=%s codec=%s gap_ms=%d", s.key.feedID, s.key.codec, gap.Milliseconds())
+				lastStallResetLog = now
+			}
+		}
+		lastTickAt = now
+		if !drainUpdates() {
+			return false
+		}
+		frame, kind := concealer.nextWithKind(&frameQueue, &frameHead, func() []byte {
+			frame := s.idleFrame(g722Encoder, g722Idle, opusIdle, idleFrameIndex)
+			idleFrameIndex++
+			return frame
+		})
+		return emitFrame(frame, kind)
+	}
+
+	initialFrame := s.idleFrame(g722Encoder, g722Idle, opusIdle, idleFrameIndex)
+	idleFrameIndex++
+	if !emitFrame(initialFrame, webRTCFrameIdle) {
 		return
 	}
 	for {
@@ -1288,7 +1378,7 @@ func (s *webRTCFrameSource) run() {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			if !emitFrame() {
+			if !emitNextFrame() {
 				return
 			}
 		}
@@ -1568,90 +1658,29 @@ func (h *MediaHub) streamWebRTCFrames(ctx context.Context, peerID string, feedID
 	}
 	var pendingSkipped int
 	var lastSourceSequence uint64
-	var fillerFramesSinceSource int
-	var lastPeerSourceFrame webRTCFrame
-	var peerConcealedFrames int
-	var fillerPhase int
-	fillerGenerator := newWebRTCFillerGenerator(codec)
 	writeSourceFrame := func(frame webRTCFrame, drainSkipped int) bool {
 		if len(frame.payload) == 0 {
 			return true
 		}
-		lastPeerSourceFrame = cloneWebRTCFrame(frame)
-		peerConcealedFrames = 0
 		sourceSkipped := webRTCTimestampSkippedFrames(lastSourceSequence, frame.sequence)
-		sourceGap := webRTCSourceGapFramesAfterFiller(sourceSkipped, fillerFramesSinceSource)
 		pendingSkipped += webRTCDiagnosticSkippedFrames(lastSourceSequence, sourceSkipped, drainSkipped)
 		lastSourceSequence = frame.sequence
-		fillerFramesSinceSource = 0
 		skipped := pendingSkipped
 		pendingSkipped = 0
-		return writeFrame(frame, skipped, sourceGap, false, false)
+		return writeFrame(frame, skipped, sourceSkipped, false, false)
 	}
-	writeFillerFrame := func() bool {
-		var frame webRTCFrame
-		concealed := false
-		filler := true
-		if len(lastPeerSourceFrame.payload) > 0 && peerConcealedFrames < webrtcConcealmentFrames {
-			frame = cloneWebRTCFrame(lastPeerSourceFrame)
-			peerConcealedFrames++
-			concealed = true
-			filler = false
-		} else {
-			frame = webRTCFrame{payload: fillerGenerator.next(fillerPhase)}
-			fillerPhase++
-		}
-		if len(frame.payload) == 0 {
-			return true
-		}
-		if !writeFrame(frame, 0, 0, filler, concealed) {
-			return false
-		}
-		fillerFramesSinceSource++
-		return true
-	}
-	writeNextSourceFrame := func() bool {
-		frame, drainSkipped, ok, hasFrame := drainLatestWebRTCFrame(frames)
-		if !ok {
-			failPeer("frame_source_closed")
-			return false
-		}
-		if !hasFrame {
-			return writeFillerFrame()
-		}
-		return writeSourceFrame(frame, drainSkipped)
-	}
-	nextWriteAt := time.Now()
-	pacingTimer := time.NewTimer(webrtcFrameDuration)
-	if !pacingTimer.Stop() {
-		<-pacingTimer.C
-	}
-	defer pacingTimer.Stop()
 	for {
-		if ctx.Err() != nil {
-			return
-		}
-		now := time.Now()
-		if now.Sub(nextWriteAt) >= webrtcPeerPacingResetGap {
-			pendingSkipped = 0
-			fillerFramesSinceSource = 0
-			peerConcealedFrames = webrtcConcealmentFrames
-			nextWriteAt = now
-		}
-		if !writeNextSourceFrame() {
-			return
-		}
-		nextWriteAt = nextWriteAt.Add(webrtcFrameDuration)
-		wait := time.Until(nextWriteAt)
-		if wait <= 0 {
-			nextWriteAt = time.Now().Add(webrtcFrameDuration)
-			wait = webrtcFrameDuration
-		}
-		pacingTimer.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return
-		case <-pacingTimer.C:
+		case frame, ok := <-frames:
+			if !ok {
+				failPeer("frame_source_closed")
+				return
+			}
+			if !writeSourceFrame(frame, 0) {
+				return
+			}
 		}
 	}
 }

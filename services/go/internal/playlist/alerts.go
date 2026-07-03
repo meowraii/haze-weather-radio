@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
@@ -13,7 +13,7 @@ const alertRegistryGrace = 10 * time.Minute
 
 type capRegistryEntry struct {
 	UpdatedAt time.Time
-	Alert     capingest.Alert
+	Alert     capmodel.Alert
 }
 
 func (p *feedPlanner) hasRoutineAlerts(now time.Time) bool {
@@ -30,7 +30,7 @@ func (p *feedPlanner) hasRoutineAlerts(now time.Time) bool {
 		if strings.TrimSpace(row.FeedID) != p.feed.ID {
 			continue
 		}
-		alert, err := capingest.ParseCAP([]byte(strings.TrimSpace(row.RawXML)))
+		alert, err := capmodel.ParseCAP([]byte(strings.TrimSpace(row.RawXML)))
 		if err != nil || alert.Identifier == "" {
 			_ = p.cfg.Store.DeleteCAPArchiveBucketItem(ctx, row.AlertID, row.FeedID, "accepted")
 			continue
@@ -47,7 +47,7 @@ func (p *feedPlanner) hasRoutineAlerts(now time.Time) bool {
 	return false
 }
 
-func archiveExpiredCAPRow(ctx context.Context, store datastore.Store, row datastore.StoredCAPArchive, alert capingest.Alert, now time.Time) {
+func archiveExpiredCAPRow(ctx context.Context, store datastore.Store, row datastore.StoredCAPArchive, alert capmodel.Alert, now time.Time) {
 	if store == nil || strings.TrimSpace(row.AlertID) == "" {
 		return
 	}
@@ -74,7 +74,7 @@ func archiveExpiredCAPRow(ctx context.Context, store datastore.Store, row datast
 	_ = store.DeleteCAPArchiveBucketItem(ctx, row.AlertID, row.FeedID, "accepted")
 }
 
-func firstCAPInfo(alert capingest.Alert) capingest.AlertInfo {
+func firstCAPInfo(alert capmodel.Alert) capmodel.AlertInfo {
 	for _, info := range alert.Infos {
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(info.Language)), "en") {
 			return info
@@ -83,7 +83,7 @@ func firstCAPInfo(alert capingest.Alert) capingest.AlertInfo {
 	if len(alert.Infos) > 0 {
 		return alert.Infos[0]
 	}
-	return capingest.AlertInfo{}
+	return capmodel.AlertInfo{}
 }
 
 func firstNonBlankText(values ...string) string {
@@ -110,7 +110,7 @@ func isRenderableCAPEntry(entry capRegistryEntry, now time.Time) bool {
 	return true
 }
 
-func capRegistryAnchor(alert capingest.Alert, fallback time.Time) time.Time {
+func capRegistryAnchor(alert capmodel.Alert, fallback time.Time) time.Time {
 	if isExplicitCAPEnd(alert) {
 		if anchor := firstCAPTime(alert.Sent, alert.Infos); !anchor.IsZero() {
 			return anchor
@@ -119,7 +119,7 @@ func capRegistryAnchor(alert capingest.Alert, fallback time.Time) time.Time {
 	return fallback
 }
 
-func isExplicitCAPEnd(alert capingest.Alert) bool {
+func isExplicitCAPEnd(alert capmodel.Alert) bool {
 	if strings.EqualFold(alert.MessageType, "Cancel") {
 		return true
 	}
@@ -140,7 +140,7 @@ func isExplicitCAPEnd(alert capingest.Alert) bool {
 	return false
 }
 
-func isCAPEnded(alert capingest.Alert, now time.Time) bool {
+func isCAPEnded(alert capmodel.Alert, now time.Time) bool {
 	if isExplicitCAPEnd(alert) {
 		return true
 	}
@@ -150,7 +150,7 @@ func isCAPEnded(alert capingest.Alert, now time.Time) bool {
 	return false
 }
 
-func alertExpiresAt(alert capingest.Alert) time.Time {
+func alertExpiresAt(alert capmodel.Alert) time.Time {
 	for _, info := range alert.Infos {
 		if parsed := parseTime(info.Expires); !parsed.IsZero() {
 			return parsed
@@ -159,7 +159,7 @@ func alertExpiresAt(alert capingest.Alert) time.Time {
 	return time.Time{}
 }
 
-func firstCAPTime(sent string, infos []capingest.AlertInfo) time.Time {
+func firstCAPTime(sent string, infos []capmodel.AlertInfo) time.Time {
 	if parsed := parseTime(sent); !parsed.IsZero() {
 		return parsed
 	}
@@ -173,7 +173,7 @@ func firstCAPTime(sent string, infos []capingest.AlertInfo) time.Time {
 	return time.Time{}
 }
 
-func alertParam(info capingest.AlertInfo, name string) string {
+func alertParam(info capmodel.AlertInfo, name string) string {
 	for _, param := range info.Parameters {
 		if strings.EqualFold(strings.TrimSpace(param.Name), name) {
 			return strings.TrimSpace(param.Value)

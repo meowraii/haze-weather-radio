@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 )
 
 func TestBuildSAMETranslationMatchesBannerStyleLead(t *testing.T) {
@@ -141,12 +141,12 @@ AN,ANZ541,073541,Choptank River to Cambridge MD and the Little Choptank River,-7
 
 func TestBuildCAPAlertTextUsesSharedWeatherSpeech(t *testing.T) {
 	now := time.Date(2026, 6, 17, 3, 0, 0, 0, time.UTC)
-	alert := capingest.Alert{
+	alert := capmodel.Alert{
 		Identifier:  "cap-1",
 		Sender:      "cap-pac@canada.ca",
 		Sent:        "2026-06-17T02:30:00Z",
 		MessageType: "Alert",
-		Infos: []capingest.AlertInfo{{
+		Infos: []capmodel.AlertInfo{{
 			Event:       "Severe Thunderstorm Warning",
 			Headline:    "Severe Thunderstorm Warning - in effect",
 			SenderName:  "Environment Canada",
@@ -244,12 +244,12 @@ func TestPickBannerGradientForcesBroadcastImmediateRed(t *testing.T) {
 }
 
 func TestSerializeCAPAlertUsesHeadlineForBackgroundColor(t *testing.T) {
-	alert := capingest.Alert{
+	alert := capmodel.Alert{
 		Identifier:  "cap-yellow-warning",
 		Sender:      "cap-pac@canada.ca",
 		Sent:        "2026-06-17T02:30:00Z",
 		MessageType: "Alert",
-		Infos: []capingest.AlertInfo{{
+		Infos: []capmodel.AlertInfo{{
 			Event:      "thunderstorm",
 			Headline:   "yellow warning - severe thunderstorm - in effect",
 			SenderName: "Environment Canada",

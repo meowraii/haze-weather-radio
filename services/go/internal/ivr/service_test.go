@@ -11,6 +11,22 @@ import (
 	"time"
 )
 
+func TestMediaServiceURLForBroadcastPrefersPacedMediaService(t *testing.T) {
+	cfg := loadedConfig{}
+	cfg.Root.Services.Rust.Media.Enabled = true
+	cfg.Root.Services.Rust.Media.Addr = "127.0.0.1:8097"
+
+	service := &Service{cfg: cfg}
+	if got := service.mediaServiceURLForBroadcast(); got != "http://127.0.0.1:8097" {
+		t.Fatalf("media service broadcast URL = %q, want HTTP fallback", got)
+	}
+
+	service.mediaBridge = &bridgeClient{}
+	if got := service.mediaServiceURLForBroadcast(); got != "http://127.0.0.1:8097" {
+		t.Fatalf("media service broadcast URL with media bridge = %q, want paced HTTP source", got)
+	}
+}
+
 func TestWriteProductTwiMLDoesNotPreRenderOnCacheMiss(t *testing.T) {
 	cfg := loadedConfig{
 		BaseDir: t.TempDir(),

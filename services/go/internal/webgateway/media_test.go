@@ -44,6 +44,9 @@ func TestPCM16ToG722SilenceFrame(t *testing.T) {
 }
 
 func TestWebRTCIdleFramesAreSilent(t *testing.T) {
+	if opusEncoderChannels != opusRTPChannels {
+		t.Fatalf("Opus encoder channels = %d, want RTP channels %d", opusEncoderChannels, opusRTPChannels)
+	}
 	opusIdle := opusIdleFrameSamples()
 	if len(opusIdle) != opusFrameSamples*opusEncoderChannels {
 		t.Fatalf("Opus idle samples = %d, want %d", len(opusIdle), opusFrameSamples*opusEncoderChannels)
@@ -180,6 +183,33 @@ func TestMediaHubPreservesPublishedPCM(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for PCM chunk")
+	}
+}
+
+func TestMediaHubDoesNotStartHTTPSourceWhenBridgeIsAvailable(t *testing.T) {
+	hub := newMemoryMediaHub()
+	hub.addr = "127.0.0.1:1"
+	hub.SetHTTPSource("http://127.0.0.1:8097")
+
+	hub.ensureHTTPSource("sk-0001")
+
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.sourceFeeds) != 0 {
+		t.Fatalf("HTTP source feeds = %d, want none while direct media bridge is configured", len(hub.sourceFeeds))
+	}
+}
+
+func TestCopyRealtimeHTTPAudioFlushesChunks(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	if err := copyRealtimeHTTPAudio(recorder, strings.NewReader("pcm")); err != nil {
+		t.Fatalf("copy realtime audio: %v", err)
+	}
+	if recorder.Body.String() != "pcm" {
+		t.Fatalf("copied body = %q, want pcm", recorder.Body.String())
+	}
+	if !recorder.Flushed {
+		t.Fatal("realtime audio proxy should flush after writing a chunk")
 	}
 }
 
@@ -1666,7 +1696,7 @@ func TestMediaHubConcealsShortRTPSourceMissesWithLastPayload(t *testing.T) {
 			t.Fatal("never received source-backed PCMU payload")
 		}
 	}
-	for i := 0; i < 8; i++ {
+	for i := 0; i < webrtcConcealmentFrames; i++ {
 		payload := waitForRTPPacket(t, track)
 		if isPCMUIdlePayload(payload) {
 			t.Fatalf("packet %d after live payload fell back to generated idle instead of concealment", i+1)

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 )
 
 const maxIVRAlertMenuOptions = 9
@@ -19,8 +19,8 @@ type ivrActiveAlert struct {
 	ID        string
 	FeedID    string
 	UpdatedAt time.Time
-	Alert     capingest.Alert
-	Info      capingest.AlertInfo
+	Alert     capmodel.Alert
+	Info      capmodel.AlertInfo
 	Title     string
 	Score     ivrAlertScore
 }
@@ -55,7 +55,7 @@ func (s *Service) activeIVRAlerts(ctx context.Context, location ResolvedLocation
 		if !strings.EqualFold(strings.TrimSpace(row.FeedID), feedID) {
 			continue
 		}
-		alert, err := capingest.ParseCAP([]byte(row.RawXML))
+		alert, err := capmodel.ParseCAP([]byte(row.RawXML))
 		if err != nil || strings.TrimSpace(alert.Identifier) == "" {
 			continue
 		}
@@ -88,9 +88,9 @@ func (s *Service) activeIVRAlerts(ctx context.Context, location ResolvedLocation
 	return alerts
 }
 
-func chooseIVRAlertInfo(alert capingest.Alert, language string) (capingest.AlertInfo, bool) {
+func chooseIVRAlertInfo(alert capmodel.Alert, language string) (capmodel.AlertInfo, bool) {
 	if len(alert.Infos) == 0 {
-		return capingest.AlertInfo{}, false
+		return capmodel.AlertInfo{}, false
 	}
 	want := strings.ToLower(strings.TrimSpace(language))
 	if want != "" {
@@ -143,7 +143,7 @@ func sortIVRAlerts(alerts []ivrActiveAlert) {
 	})
 }
 
-func ivrAlertPriority(alert capingest.Alert, info capingest.AlertInfo, updated time.Time) ivrAlertScore {
+func ivrAlertPriority(alert capmodel.Alert, info capmodel.AlertInfo, updated time.Time) ivrAlertScore {
 	return ivrAlertScore{
 		Event:     ivrEventPriority(alert, info),
 		Impact:    ivrImpactPriority(info),
@@ -154,7 +154,7 @@ func ivrAlertPriority(alert capingest.Alert, info capingest.AlertInfo, updated t
 	}
 }
 
-func ivrEventPriority(alert capingest.Alert, info capingest.AlertInfo) int {
+func ivrEventPriority(alert capmodel.Alert, info capmodel.AlertInfo) int {
 	text := strings.ToLower(strings.Join([]string{
 		info.Event,
 		info.Headline,
@@ -185,7 +185,7 @@ func ivrEventPriority(alert capingest.Alert, info capingest.AlertInfo) int {
 	}
 }
 
-func ivrImpactPriority(info capingest.AlertInfo) int {
+func ivrImpactPriority(info capmodel.AlertInfo) int {
 	impact := strings.ToLower(firstNonBlank(
 		alerttext.CAPParam(info, "layer:EC-MSC-SMC:1.1:MSC_Impact"),
 		alerttext.CAPParam(info, "layer:EC-MSC-SMC:1.0:MSC_Impact"),
@@ -333,10 +333,14 @@ func ivrAlertMenuLabel(alert ivrActiveAlert) string {
 func (s *Service) alertReadoutText(location ResolvedLocation, alert ivrActiveAlert) string {
 	info := alert.Info
 	areas := ivrAlertAreaNames(info)
+	areaText := alerttext.JoinParts(areas)
+	if len(areas) > 6 || len(areaText) > 360 {
+		areaText = spokenLocationName(location) + " area"
+	}
 	text := alerttext.BuildCAPAlertText(alerttext.CAPMessageRequest{
 		Alert:     alert.Alert,
 		Info:      info,
-		AreaText:  alerttext.JoinParts(areas),
+		AreaText:  areaText,
 		Sender:    firstNonBlank(info.SenderName, alert.Alert.Sender),
 		EventName: firstNonBlank(alerttext.AlertSubject(info), info.Event, alert.Title),
 		Timezone:  firstNonBlank(location.Timezone, "UTC"),
@@ -349,7 +353,7 @@ func (s *Service) alertReadoutText(location ResolvedLocation, alert ivrActiveAle
 	return text
 }
 
-func ivrAlertAreaNames(info capingest.AlertInfo) []string {
+func ivrAlertAreaNames(info capmodel.AlertInfo) []string {
 	out := []string{}
 	seen := map[string]struct{}{}
 	add := func(value string) {

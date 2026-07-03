@@ -80,6 +80,16 @@ type Config struct {
 		OnAirName    any `yaml:"on_air_name"`
 		OperatorName any `yaml:"operator_name"`
 	} `yaml:"operator"`
+	Services struct {
+		Rust struct {
+			Media struct {
+				Enabled bool   `yaml:"enabled"`
+				Addr    string `yaml:"addr"`
+				Listen  string `yaml:"listen"`
+				Backend string `yaml:"backend"`
+			} `yaml:"media"`
+		} `yaml:"rust"`
+	} `yaml:"services"`
 }
 
 // LoadConfig reads a Haze YAML config. Missing files produce a default config.
@@ -95,6 +105,7 @@ func LoadConfig(path string) (Config, error) {
 		}
 		return config, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	if err := yaml.Unmarshal(raw, &config); err != nil {
 		return config, err
 	}

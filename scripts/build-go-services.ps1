@@ -97,7 +97,7 @@ function Copy-BundleDirectory {
 
 New-Item -ItemType Directory -Force -Path $OutFull | Out-Null
 New-Item -ItemType Directory -Force -Path $BinFull | Out-Null
-foreach ($File in @("haze-web.exe", "haze-data-ingest.exe", "haze-cap-ingest.exe", "haze-tts.exe", "haze-product-render.exe", "haze-playlist.exe", "haze-webhook.exe", "haze-ivr.exe", "libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll", "libwinpthread-1.dll")) {
+foreach ($File in @("haze-web.exe", "haze-data-ingest.exe", "haze-tts.exe", "haze-product-render.exe", "haze-playlist.exe", "haze-webhook.exe", "haze-ivr.exe", "libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll", "libwinpthread-1.dll")) {
     $LegacyTarget = Join-Path $OutFull $File
     if (Test-Path -LiteralPath $LegacyTarget) {
         Remove-Item -LiteralPath $LegacyTarget -Force
@@ -208,7 +208,6 @@ try {
     $WebLdflags = "-X github.com/meowraii/haze-weather-radio/services/go/internal/webgateway.BuildGitCommit=$GitCommit"
     go build @BuildWebArgs -ldflags $WebLdflags -o (Join-Path $BinFull "haze-web.exe") ./cmd/haze-web
     go build -o (Join-Path $BinFull "haze-data-ingest.exe") ./cmd/haze-data-ingest
-    go build -o (Join-Path $BinFull "haze-cap-ingest.exe") ./cmd/haze-cap-ingest
     go build -o (Join-Path $BinFull "haze-tts.exe") ./cmd/haze-tts
     go build -o (Join-Path $BinFull "haze-product-render.exe") ./cmd/haze-product-render
     go build -o (Join-Path $BinFull "haze-playlist.exe") ./cmd/haze-playlist

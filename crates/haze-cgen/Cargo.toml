@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+build = "build.rs"
 
 [[bin]]
 name = "haze-cgen"
@@ -33,6 +34,7 @@ gstreamer = "0.25.3"
 gstreamer-app = "0.25.2"
 gstreamer-audio = "0.25.3"
 gstreamer-video = "0.25.3"
+jpeg-encoder = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

@@ -95,6 +95,7 @@ pub fn run(args: DaemonArgs) -> Result<()> {
             layout.runtime_dir.display()
         )
     })?;
+    load_dotenv_for_runtime(&layout.runtime_dir)?;
     env::set_var("CONFIG_PATH", &config_path);
     env::set_var("HAZE_HOST_RUNTIME", "haze");
     env::set_var("HAZE_HOST_EXE", &host_exe);
@@ -348,6 +349,66 @@ fn read_lock_pid(path: &Path) -> Option<u32> {
 
 fn parse_lock_pid(raw: &str) -> Option<u32> {
     raw.lines().next()?.trim().parse().ok()
+}
+
+fn load_dotenv_for_runtime(runtime_dir: &Path) -> Result<usize> {
+    let path = runtime_dir.join(".env");
+    if !path.is_file() {
+        let example_path = runtime_dir.join(".env.example");
+        if example_path.is_file() {
+            fs::copy(&example_path, &path).with_context(|| {
+                format!(
+                    "failed to create {} from {}",
+                    path.display(),
+                    example_path.display()
+                )
+            })?;
+            eprintln!(
+                "WARN .env file not found: created {} from {}",
+                path.display(),
+                example_path.display()
+            );
+        } else {
+            eprintln!(
+                "WARN .env file not found and no .env.example is available: {}",
+                path.display()
+            );
+            return Ok(0);
+        }
+    }
+
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read local .env {}", path.display()))?;
+    let mut loaded = 0usize;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() || env::var_os(key).is_some() {
+            continue;
+        }
+        env::set_var(key, parse_env_value(value));
+        loaded += 1;
+    }
+    Ok(loaded)
+}
+
+fn parse_env_value(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.len() >= 2 {
+        let bytes = raw.as_bytes();
+        if (bytes[0] == b'"' && bytes[raw.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[raw.len() - 1] == b'\'')
+        {
+            return raw[1..raw.len() - 1].to_string();
+        }
+    }
+    raw.to_string()
 }
 
 #[cfg(windows)]

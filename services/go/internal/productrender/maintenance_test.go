@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
@@ -65,9 +65,9 @@ func TestNextCleanupDelayUsesNextDailyWindow(t *testing.T) {
 	}
 }
 
-func parseTestAlert(t *testing.T, raw string) capingest.Alert {
+func parseTestAlert(t *testing.T, raw string) capmodel.Alert {
 	t.Helper()
-	alert, err := capingest.ParseCAP([]byte(raw))
+	alert, err := capmodel.ParseCAP([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 )
 
 func TestCAPSAMEPayloadSuppressesCancellations(t *testing.T) {
@@ -212,6 +212,21 @@ func TestNWSCAPWarningGeneratesPrioritySAMEForCatchall(t *testing.T) {
 	}
 }
 
+func TestCoverageMatchesLinkedSGCToCLC(t *testing.T) {
+	db := alertGeoDB{
+		CAPCPToCLC: map[string][]string{
+			"4711066": []string{"065100"},
+		},
+	}
+	coverage := map[string]struct{}{
+		"065100": {},
+	}
+
+	if !coverageMatchesAlertCode(db, coverage, "4711066") {
+		t.Fatal("expected SGC linked to CLC coverage to match")
+	}
+}
+
 func TestNWSCAPUsesEASEventNameInsteadOfHeadline(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"eas":{"SPS":"Special Weather Statement"}}`)
@@ -267,15 +282,15 @@ func TestCAPSAMEPayloadKeepsSAMEAfterFreshnessWindow(t *testing.T) {
 func TestSameOriginatorForCAPDerivesNWSAndCivilAuthorities(t *testing.T) {
 	tests := []struct {
 		name           string
-		alert          capingest.Alert
+		alert          capmodel.Alert
 		wantOriginator string
 		wantService    string
 	}{
 		{
 			name: "nws",
-			alert: capingest.Alert{
+			alert: capmodel.Alert{
 				Sender: "alerts.weather.gov",
-				Infos: []capingest.AlertInfo{{
+				Infos: []capmodel.AlertInfo{{
 					SenderName: "National Weather Service",
 					Event:      "Severe Thunderstorm Warning",
 				}},
@@ -285,9 +300,9 @@ func TestSameOriginatorForCAPDerivesNWSAndCivilAuthorities(t *testing.T) {
 		},
 		{
 			name: "civil authority",
-			alert: capingest.Alert{
+			alert: capmodel.Alert{
 				Sender: "county-emergency-management@example.gov",
-				Infos: []capingest.AlertInfo{{
+				Infos: []capmodel.AlertInfo{{
 					SenderName: "County Emergency Management",
 					Event:      "Civil Emergency Message",
 				}},
@@ -590,7 +605,7 @@ func TestCAPFeedFilterRequiresStrictCatchallImpact(t *testing.T) {
 		{name: "possible", severity: "Severe", urgency: "Immediate", certainty: "Possible"},
 	} {
 		filtered := alert
-		filtered.Infos = append([]capingest.AlertInfo(nil), alert.Infos...)
+		filtered.Infos = append([]capmodel.AlertInfo(nil), alert.Infos...)
 		filtered.Infos[0].Severity = tc.severity
 		filtered.Infos[0].Urgency = tc.urgency
 		filtered.Infos[0].Certainty = tc.certainty
@@ -617,9 +632,9 @@ func TestSameLocationsForCAPUsesNWSFIPSAndZones(t *testing.T) {
 GA|033|FFC|North Fulton|GA033|Fulton|13121|E|nc|33.9350|-84.3557
 `)
 	var feed feedXML
-	info := capingest.AlertInfo{
-		Areas: []capingest.AlertArea{{
-			Geocodes: []capingest.NameValue{{Name: "UGC", Value: "GAZ033"}},
+	info := capmodel.AlertInfo{
+		Areas: []capmodel.AlertArea{{
+			Geocodes: []capmodel.NameValue{{Name: "UGC", Value: "GAZ033"}},
 		}},
 	}
 
@@ -654,9 +669,9 @@ Wabamun,,4811045,53.56186389990,-114.47830913600,,AB,CA
 076232,fixture,Parkland Co. near Wabamun Carvel and Keephills,Parkland, , ,53.48353858000,-114.38112697000, , , ,AB,CA
 031419,fixture,The City of Calgary,Calgary, , ,51.05000000000,-114.06666600000, , , ,AB,CA
 `)
-	info := capingest.AlertInfo{
-		Areas: []capingest.AlertArea{{
-			Geocodes: []capingest.NameValue{{Name: "profile:CAP-CP:Location:0.3", Value: "4811045"}},
+	info := capmodel.AlertInfo{
+		Areas: []capmodel.AlertArea{{
+			Geocodes: []capmodel.NameValue{{Name: "profile:CAP-CP:Location:0.3", Value: "4811045"}},
 		}},
 	}
 
@@ -668,7 +683,7 @@ Wabamun,,4811045,53.56186389990,-114.47830913600,,AB,CA
 }
 
 func TestSameLocationsForCAPFallsBackToNationalWhenNoCodesResolve(t *testing.T) {
-	got := sameLocationsForCAP(capingest.AlertInfo{}, feedXML{}, t.TempDir())
+	got := sameLocationsForCAP(capmodel.AlertInfo{}, feedXML{}, t.TempDir())
 	want := []string{"000000"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("same locations = %#v, want %#v", got, want)
@@ -685,9 +700,9 @@ Wabamun,,4811045,53.56186389990,-114.47830913600,,AB,CA
 `)
 	var feed feedXML
 	feed.Locations.Coverage.Regions = []coverageRegionXML{{ID: "076232", Source: "eccc"}}
-	info := capingest.AlertInfo{
-		Areas: []capingest.AlertArea{{
-			Geocodes: []capingest.NameValue{{Name: "profile:CAP-CP:Location:0.3", Value: "4811045"}},
+	info := capmodel.AlertInfo{
+		Areas: []capmodel.AlertArea{{
+			Geocodes: []capmodel.NameValue{{Name: "profile:CAP-CP:Location:0.3", Value: "4811045"}},
 		}},
 	}
 

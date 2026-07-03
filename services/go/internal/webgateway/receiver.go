@@ -31,6 +31,8 @@ type ReceiverManager struct {
 	mu         sync.Mutex
 	challenges map[string]receiverChallenge
 	cookies    map[string]receiverCookie
+	active     map[string]receiverActiveConnection
+	nextActive uint64
 }
 
 type receiverChallenge struct {
@@ -49,6 +51,18 @@ type receiverCookie struct {
 	ReceiverID       string
 	ReceiverHostname string
 	ExpiresAt        time.Time
+}
+
+type receiverActiveConnection struct {
+	ID               string
+	FeedID           string
+	ReceiverID       string
+	ReceiverHostname string
+	RemoteAddr       string
+	ConnectedAt      time.Time
+	LastSeenAt       time.Time
+	LastMessageType  string
+	Transport        string
 }
 
 type receiverStore struct {
@@ -117,6 +131,7 @@ func NewReceiverManager(config Config, configPath string, media *MediaHub) *Rece
 		media:      media,
 		challenges: map[string]receiverChallenge{},
 		cookies:    map[string]receiverCookie{},
+		active:     map[string]receiverActiveConnection{},
 	}
 }
 
@@ -275,9 +290,10 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 		return
 	}
 	feedID := strings.TrimSpace(request.URL.Query().Get("feed_id"))
-	if feedID == "" {
-		cookieValue := receiverCookieFromRequest(request)
-		if cookie, ok := m.consumeCookie(cookieValue); ok {
+	cookieValue := receiverCookieFromRequest(request)
+	cookie, cookieOK := m.consumeCookie(cookieValue)
+	if cookieOK {
+		if feedID == "" {
 			feedID = cookie.FeedID
 		}
 	}
@@ -298,6 +314,8 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 	}
 	defer connection.CloseNow()
 	ctx := request.Context()
+	activeID := m.registerActiveReceiver(feedID, cookie, cookieOK, request.RemoteAddr)
+	defer m.unregisterActiveReceiver(activeID)
 	_ = writeReceiverWS(ctx, connection, map[string]any{
 		"type":        "receiver_ready",
 		"timestamp":   time.Now().UTC(),
@@ -314,15 +332,60 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 			_ = writeReceiverWS(ctx, connection, map[string]any{"type": "receiver_error", "detail": "invalid json"})
 			continue
 		}
-		if stringValue(message, "type") == "webrtc_offer" {
-			if !m.media.Available() {
+		messageType := stringValue(message, "type")
+		m.updateActiveReceiver(activeID, messageType, "")
+		if messageType == "webrtc_offer" {
+			m.updateActiveReceiver(activeID, messageType, "webrtc")
+			offerSDP := normalizeWebRTCOfferSDP(stringValue(message, "sdp"))
+			if offerSDP == "" {
+				_ = writeReceiverWS(ctx, connection, map[string]any{
+					"type":   "webrtc_error",
+					"detail": "sdp is required",
+				})
+				continue
+			}
+			mediaServiceURL := mediaServiceBaseURL(m.config)
+			legacyMediaAvailable := m.media != nil && m.media.Available()
+			if !legacyMediaAvailable && mediaServiceURL == "" {
 				_ = writeReceiverWS(ctx, connection, map[string]any{
 					"type":   "webrtc_error",
 					"detail": "receiver media bridge is not available",
 				})
 				continue
 			}
-			answer, err := m.media.Answer(ctx, feedID, stringValue(message, "sdp"))
+			preferredCodec := firstNonBlank(stringValue(message, "codec"), stringValue(message, "preferred_codec"))
+			if answer, ok := mediaServiceWebRTCAnswerFromBase(ctx, mediaServiceURL, map[string]any{
+				"feed_id":         feedID,
+				"sdp":             offerSDP,
+				"disable_g722":    boolValue(message, "disable_g722"),
+				"require_opus":    boolValue(message, "require_opus"),
+				"preferred_codec": preferredCodec,
+			}); ok {
+				answer["type"] = "webrtc_answer"
+				answer["timestamp"] = time.Now().UTC()
+				answer["feed_id"] = feedID
+				if _, ok := answer["sdp_type"]; !ok {
+					answer["sdp_type"] = "answer"
+				}
+				_ = writeReceiverWS(ctx, connection, answer)
+				continue
+			}
+			if !legacyMediaAvailable {
+				detail := "receiver media bridge is not available"
+				if mediaServiceURL != "" {
+					detail = "haze-media WebRTC service is unavailable and legacy media bridge is not available"
+				}
+				_ = writeReceiverWS(ctx, connection, map[string]any{
+					"type":   "webrtc_error",
+					"detail": detail,
+				})
+				continue
+			}
+			answer, err := m.media.AnswerWithOptions(ctx, feedID, offerSDP, WebRTCAnswerOptions{
+				DisableG722:    boolValue(message, "disable_g722"),
+				RequireOpus:    boolValue(message, "require_opus"),
+				PreferredCodec: preferredCodec,
+			})
 			if err != nil {
 				_ = writeReceiverWS(ctx, connection, map[string]any{
 					"type":   "webrtc_error",
@@ -334,13 +397,96 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 				"type":         "webrtc_answer",
 				"timestamp":    time.Now().UTC(),
 				"feed_id":      feedID,
-				"sdp":          answer,
+				"sdp":          answer.SDP,
 				"sdp_type":     "answer",
 				"media_recent": m.media.HasRecentPCM(feedID, 5*time.Second),
+				"codec":        answer.Codec.String(),
+				"payload_type": answer.PayloadType,
 			})
 			continue
 		}
 	}
+}
+
+func (m *ReceiverManager) registerActiveReceiver(feedID string, cookie receiverCookie, hasCookie bool, remoteAddr string) string {
+	now := time.Now().UTC()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextActive++
+	id := fmt.Sprintf("%d", m.nextActive)
+	active := receiverActiveConnection{
+		ID:          id,
+		FeedID:      strings.TrimSpace(feedID),
+		RemoteAddr:  strings.TrimSpace(remoteAddr),
+		ConnectedAt: now,
+		LastSeenAt:  now,
+		Transport:   "control",
+	}
+	if hasCookie {
+		active.ReceiverID = strings.TrimSpace(cookie.ReceiverID)
+		active.ReceiverHostname = strings.TrimSpace(cookie.ReceiverHostname)
+	}
+	m.active[id] = active
+	return id
+}
+
+func (m *ReceiverManager) updateActiveReceiver(id string, messageType string, transport string) {
+	if id == "" {
+		return
+	}
+	now := time.Now().UTC()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	active, ok := m.active[id]
+	if !ok {
+		return
+	}
+	active.LastSeenAt = now
+	if messageType = strings.TrimSpace(messageType); messageType != "" {
+		active.LastMessageType = messageType
+	}
+	if transport = strings.TrimSpace(transport); transport != "" {
+		active.Transport = transport
+	}
+	m.active[id] = active
+}
+
+func (m *ReceiverManager) unregisterActiveReceiver(id string) {
+	if id == "" {
+		return
+	}
+	m.mu.Lock()
+	delete(m.active, id)
+	m.mu.Unlock()
+}
+
+func (m *ReceiverManager) ActiveSnapshots() []map[string]any {
+	if m == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]map[string]any, 0, len(m.active))
+	for _, active := range m.active {
+		out = append(out, map[string]any{
+			"id":                active.ID,
+			"feed_id":           active.FeedID,
+			"receiver_id":       active.ReceiverID,
+			"receiver_hostname": active.ReceiverHostname,
+			"remote_addr":       active.RemoteAddr,
+			"connected_at":      active.ConnectedAt,
+			"connected_ms":      now.Sub(active.ConnectedAt).Milliseconds(),
+			"last_seen_at":      active.LastSeenAt,
+			"last_seen_ms":      now.Sub(active.LastSeenAt).Milliseconds(),
+			"last_message_type": active.LastMessageType,
+			"transport":         active.Transport,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return fmt.Sprint(out[i]["connected_at"]) < fmt.Sprint(out[j]["connected_at"])
+	})
+	return out
 }
 
 func (m *ReceiverManager) receiverRequestAllowed(writer http.ResponseWriter, request *http.Request, method string) bool {

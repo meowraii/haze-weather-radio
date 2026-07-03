@@ -1,4 +1,4 @@
-package capingest
+package capmodel
 
 import (
 	"os"
@@ -93,30 +93,23 @@ func TestParseCAPRejectsMissingRequiredHeader(t *testing.T) {
 	}
 }
 
-func TestParseAtomEntriesExpandsCAPLinks(t *testing.T) {
+func TestParseCAPAcceptsNAADSHeartbeatWithoutInfo(t *testing.T) {
 	raw := []byte(`<?xml version="1.0"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <entry>
-    <id>https://alerts.weather.gov/cap/abc</id>
-    <updated>2026-06-14T12:00:00Z</updated>
-    <link href="https://alerts.weather.gov/cap/abc" type="application/atom+xml"/>
-  </entry>
-</feed>`)
+<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>heartbeat-1</identifier>
+  <sender>NAADS-Heartbeat</sender>
+  <sent>2026-06-14T12:00:00Z</sent>
+  <status>System</status>
+  <msgType>Alert</msgType>
+  <scope>Public</scope>
+  <references>sender,abc,2026-06-14T11:59:00Z</references>
+</alert>`)
 
-	entries, err := ParseAtomEntries(raw)
+	alert, err := ParseCAP(raw)
 	if err != nil {
-		t.Fatalf("ParseAtomEntries returned error: %v", err)
+		t.Fatalf("ParseCAP returned error: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("entries = %d", len(entries))
-	}
-	if len(entries[0].Links) != 2 {
-		t.Fatalf("links = %#v", entries[0].Links)
-	}
-	if entries[0].ID == "" || entries[0].Updated == "" {
-		t.Fatalf("entry metadata = %#v", entries[0])
-	}
-	if entries[0].Links[1] != "https://alerts.weather.gov/cap/abc.cap" {
-		t.Fatalf("expanded link = %q", entries[0].Links[1])
+	if alert.Status != "System" || len(alert.Infos) != 0 {
+		t.Fatalf("heartbeat parse = %#v", alert)
 	}
 }

@@ -1,8 +1,6 @@
-package capingest
+package capmodel
 
-import "time"
-
-// Alert is a normalized CAP alert payload produced by ingest services.
+// Alert is a normalized CAP alert payload consumed from Haze CAP events.
 type Alert struct {
 	Identifier  string      `json:"identifier"`
 	Sender      string      `json:"sender,omitempty"`
@@ -63,21 +61,4 @@ type Resource struct {
 	MimeType    string `json:"mime_type,omitempty"`
 	URI         string `json:"uri,omitempty"`
 	DerefURI    string `json:"deref_uri,omitempty"`
-}
-
-// AtomEntry is a normalized Atom feed entry.
-type AtomEntry struct {
-	ID      string
-	Updated string
-	Links   []string
-}
-
-// SourceConfig configures a CAP source.
-type SourceConfig struct {
-	ID           string
-	URL          string
-	URLs         []string
-	PollInterval time.Duration
-	Timeout      time.Duration
-	UserAgent    string
 }

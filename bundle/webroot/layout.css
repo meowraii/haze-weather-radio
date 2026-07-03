@@ -510,7 +510,7 @@ a.alert-card-id:hover {
 
 .wx-form-grid {
     display: grid;
-    grid-template-columns: minmax(180px, 1.1fr) minmax(220px, 1.3fr) repeat(4, minmax(120px, 0.75fr));
+    grid-template-columns: minmax(220px, 1.5fr) repeat(4, minmax(120px, 0.8fr));
     gap: 10px;
     align-items: end;
 }

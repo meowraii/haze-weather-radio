@@ -154,9 +154,12 @@ const WEBRTC_CODECS = [
     ['pcmu', 'PCMU'],
     ['pcma', 'PCMA'],
 ];
+const DEFAULT_FEED_MODE = 'http';
+const DEFAULT_WEBRTC_CODEC = 'auto';
+const DEFAULT_HTTP_CODEC = 'opus';
 const HTTP_CODECS = [
-    ['pcm16', 'PCM16 / WAV'],
     ['opus', 'Opus / Ogg'],
+    ['pcm16', 'PCM16 / WAV'],
     ['webm_opus', 'Opus / WebM'],
     ['aac', 'AAC / ADTS'],
     ['m4a', 'AAC / fragmented MP4'],
@@ -575,7 +578,7 @@ function feedCanHTTP(feed) {
 }
 
 function normalizedFeedPreferences(feedId, feed = null) {
-    const current = feedPreferences.get(feedId) || { mode: 'webrtc', codec: 'auto' };
+    const current = feedPreferences.get(feedId) || { mode: DEFAULT_FEED_MODE, codec: DEFAULT_HTTP_CODEC };
     const canWebRTC = feed ? feedCanWebRTC(feed) : true;
     const canHTTP = feed ? feedCanHTTP(feed) : true;
     let mode = current.mode === 'http' ? 'http' : 'webrtc';
@@ -618,9 +621,13 @@ function selectedFeedCodec(feedId) {
 function setFeedMode(feedId, mode) {
     const prefs = normalizedFeedPreferences(feedId);
     prefs.mode = mode === 'http' ? 'http' : 'webrtc';
-    prefs.codec = codecOptionsForMode(prefs.mode)[0][0];
+    prefs.codec = defaultCodecForMode(prefs.mode);
     feedPreferences.set(feedId, prefs);
     updateFeedCodecSelect(feedId);
+}
+
+function defaultCodecForMode(mode) {
+    return mode === 'http' ? DEFAULT_HTTP_CODEC : DEFAULT_WEBRTC_CODEC;
 }
 
 function updateFeedCodecSelect(feedId) {
@@ -661,7 +668,7 @@ function listenPageURL(feedId, absolute = false, codec = null, options = {}) {
 
 function normalizeHTTPCodec(codec) {
     const value = String(codec || '').trim().toLowerCase().replaceAll('-', '_');
-    return HTTP_CODEC_VALUES.has(value) ? value : 'pcm16';
+    return HTTP_CODEC_VALUES.has(value) ? value : DEFAULT_HTTP_CODEC;
 }
 
 function updateFeedRuntime(feeds) {
@@ -1661,7 +1668,7 @@ async function startFeedWebRTC(feedId) {
         trackAttached: false,
         connected: false,
         mediaRecent: null,
-        requestedCodec: 'auto',
+        requestedCodec: DEFAULT_WEBRTC_CODEC,
         connectionStateTimer: null,
         disconnectReconnectTimer: null,
         mediaEventTimer: null,
@@ -1865,13 +1872,17 @@ async function startFeedWebRTC(feedId) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         await waitForIceGathering(pc);
-        const local = pc.localDescription;
+        const local = pc.localDescription || offer;
+        const offerSdp = String(local?.sdp || offer?.sdp || '').trim();
+        if (!offerSdp) {
+            throw new Error('Could not create WebRTC offer');
+        }
         const codec = selectedFeedCodec(feedId);
         player.requestedCodec = codec || 'auto';
         const payload = {
             feed_id: feedId,
-            sdp: local.sdp,
-            sdp_type: local.type,
+            sdp: offerSdp,
+            sdp_type: local?.type || offer?.type || 'offer',
         };
         if (codec && codec !== 'auto') {
             payload.codec = codec;
@@ -2317,7 +2328,7 @@ function requestedListenFeedID(feeds) {
 
 function requestedListenCodec() {
     const params = new URLSearchParams(window.location.search);
-    return normalizeHTTPCodec(params.get('codec') || params.get('format') || 'pcm16');
+    return normalizeHTTPCodec(params.get('codec') || params.get('format') || DEFAULT_HTTP_CODEC);
 }
 
 function webRTCOutputMixerEnabled() {

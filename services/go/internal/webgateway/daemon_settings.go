@@ -108,14 +108,6 @@ func daemonSettingsView(source map[string]any) map[string]any {
 					"interval": textAt(source, []string{"services", "go", "data_ingest", "interval"}, "45m", 24),
 					"timeout":  textAt(source, []string{"services", "go", "data_ingest", "timeout"}, "20s", 24),
 				},
-				"cap_ingest": map[string]any{
-					"enabled":   boolAt(source, []string{"services", "go", "cap_ingest", "enabled"}, false),
-					"source_id": textAt(source, []string{"services", "go", "cap_ingest", "source_id"}, "go-cap", 180),
-					"source":    textAt(source, []string{"services", "go", "cap_ingest", "source"}, "naads", 32),
-					"url":       textAt(source, []string{"services", "go", "cap_ingest", "url"}, "", 400),
-					"interval":  textAt(source, []string{"services", "go", "cap_ingest", "interval"}, "30s", 24),
-					"timeout":   textAt(source, []string{"services", "go", "cap_ingest", "timeout"}, "15s", 24),
-				},
 				"tts": map[string]any{
 					"enabled":  boolAt(source, []string{"services", "go", "tts", "enabled"}, false),
 					"readers":  textAt(source, []string{"services", "go", "tts", "readers"}, "managed/configs/readers.xml", 200),
@@ -171,6 +163,23 @@ func daemonSettingsView(source map[string]any) map[string]any {
 					"render_timeout":       textAt(source, []string{"services", "go", "ivr", "render_timeout"}, "25s", 24),
 					"max_concurrent_calls": textAt(source, []string{"services", "go", "ivr", "max_concurrent_calls"}, "256", 12),
 					"max_render_inflight":  textAt(source, []string{"services", "go", "ivr", "max_render_inflight"}, "8", 12),
+				},
+			},
+			"rust": map[string]any{
+				"cap_ingest": map[string]any{
+					"enabled":              boolAt(source, []string{"services", "rust", "cap_ingest", "enabled"}, true),
+					"shadow":               boolAt(source, []string{"services", "rust", "cap_ingest", "shadow"}, false),
+					"source_id":            textAt(source, []string{"services", "rust", "cap_ingest", "source_id"}, "rust-cap", 180),
+					"source":               textAt(source, []string{"services", "rust", "cap_ingest", "source"}, "naads", 32),
+					"mode":                 textAt(source, []string{"services", "rust", "cap_ingest", "mode"}, "tcp", 32),
+					"url":                  textAt(source, []string{"services", "rust", "cap_ingest", "url"}, "tcp://streaming1.naad-adna.pelmorex.com:8080", 400),
+					"fallback_url":         textAt(source, []string{"services", "rust", "cap_ingest", "fallback_url"}, "tcp://streaming2.naad-adna.pelmorex.com:8080", 400),
+					"archive_url":          textAt(source, []string{"services", "rust", "cap_ingest", "archive_url"}, "http://capcp1.naad-adna.pelmorex.com", 400),
+					"fallback_archive_url": textAt(source, []string{"services", "rust", "cap_ingest", "fallback_archive_url"}, "http://capcp2.naad-adna.pelmorex.com", 400),
+					"interval":             textAt(source, []string{"services", "rust", "cap_ingest", "interval"}, "5s", 24),
+					"timeout":              textAt(source, []string{"services", "rust", "cap_ingest", "timeout"}, "15s", 24),
+					"startup_seed":         boolAt(source, []string{"services", "rust", "cap_ingest", "startup_seed"}, true),
+					"concurrency":          textAt(source, []string{"services", "rust", "cap_ingest", "concurrency"}, "8", 12),
 				},
 			},
 			"daemon": map[string]any{

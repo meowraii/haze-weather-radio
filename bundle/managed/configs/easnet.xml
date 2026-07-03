@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<easnet enabled="true">
+  <listener enabled="true" addr="0.0.0.0:41800" max_message_bytes="262144" read_timeout="10s" />
+  <audio_server
+    enabled="true"
+    addr="0.0.0.0:41801"
+    public_base_url="http://172.16.1.30:41801"
+    token_ttl="15m"
+    max_audio_bytes="26214400" />
+
+  <peers>
+    <peer
+      id="dasdec"
+      enabled="true"
+      host="172.16.1.42"
+      port="22"
+      direction="send-receive"
+      protocol="ssh-stdin"
+      data_protocol="easnet"
+      user_env="DASDEC_USER"
+      password_env="DASDEC_PASSWORD"
+      remote_command="cat &gt; /tmp/EAS_NET_IN"
+      receive_policy="relay-if-matched">
+      <allow>
+        <ip>172.16.1.42</ip>
+      </allow>
+      <filters>
+        <feed>CAP-IT-ALL</feed>
+        <location>*</location>
+        <severity>*</severity>
+        <event>*</event>
+      </filters>
+    </peer>
+  </peers>
+</easnet>

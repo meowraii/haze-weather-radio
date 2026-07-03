@@ -33,6 +33,13 @@ type rootConfig struct {
 		TelephoneName any `yaml:"telephone_name"`
 	} `yaml:"operator"`
 	Services struct {
+		Rust struct {
+			Media struct {
+				Enabled bool   `yaml:"enabled"`
+				Addr    string `yaml:"addr"`
+				Listen  string `yaml:"listen"`
+			} `yaml:"media"`
+		} `yaml:"rust"`
 		Go struct {
 			TTS struct {
 				Readers string `yaml:"readers"`
@@ -213,6 +220,7 @@ func loadConfig(path string, overrides Options) (loadedConfig, error) {
 	if err != nil {
 		return loadedConfig{}, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var root rootConfig
 	if err := yaml.Unmarshal(raw, &root); err != nil {
 		return loadedConfig{}, err
@@ -315,11 +323,11 @@ func normalizeIVRConfig(cfg *Config) {
 		cfg.DigitTimeoutSeconds = 8
 	}
 	if cfg.RenderTimeoutRaw == "" {
-		cfg.RenderTimeoutRaw = "25s"
+		cfg.RenderTimeoutRaw = "60s"
 	}
 	timeout, err := time.ParseDuration(cfg.RenderTimeoutRaw)
 	if err != nil || timeout <= 0 {
-		timeout = 25 * time.Second
+		timeout = 60 * time.Second
 	}
 	cfg.RenderTimeout = timeout
 	if cfg.MaxConcurrentCalls == 0 {
@@ -343,6 +351,21 @@ func (cfg loadedConfig) cacheDir() string {
 
 func (cfg loadedConfig) ttsReadersPath() string {
 	return resolvePath(cfg.BaseDir, fallbackText(cfg.Root.Services.Go.TTS.Readers, "managed/configs/readers.xml"))
+}
+
+func (cfg loadedConfig) mediaServiceBaseURL() string {
+	media := cfg.Root.Services.Rust.Media
+	if !media.Enabled {
+		return ""
+	}
+	addr := strings.TrimSpace(firstNonBlank(media.Addr, media.Listen))
+	if addr == "" {
+		addr = "127.0.0.1:8097"
+	}
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return strings.TrimRight(addr, "/")
+	}
+	return "http://" + addr
 }
 
 func (cfg loadedConfig) ttsReaderFingerprint(readerID string, language string, gender string) string {
@@ -380,6 +403,7 @@ func loadFeeds(path string) ([]feedXML, error) {
 	if err != nil {
 		return nil, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var parsed feedsXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("parse feeds XML: %w", err)

@@ -35,6 +35,7 @@ func LoadReaders(path string) ([]Reader, error) {
 	if err != nil {
 		return nil, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var parsed readersXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
 		return nil, err

@@ -52,10 +52,10 @@ impl PipelineWorker {
         info!(
             feed_id = %self.feed.id,
             name = %self.feed.name,
-            input = %self.feed.program_input_url(),
+            input = %self.feed.redacted_program_input_url(),
             priority_feed = %self.feed.priority_input.feed_id,
             audio_source = %self.feed.priority_input.audio_source,
-            output = %self.feed.program_output_url(),
+            output = %self.feed.redacted_program_output_url(),
             video = format_args!("{}x{}", self.feed.video.width, self.feed.video.height),
             fps = %self.feed.video.fps,
             input_format = %self.feed.program_input.format,

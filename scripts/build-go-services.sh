@@ -94,7 +94,6 @@ mkdir -p "$out_full" "$bin_full" "$root/target/go-build-cache" "$root/target/go-
 rm -f \
   "$out_full/haze-web" \
   "$out_full/haze-data-ingest" \
-  "$out_full/haze-cap-ingest" \
   "$out_full/haze-tts" \
   "$out_full/haze-product-render" \
   "$out_full/haze-playlist" \
@@ -189,7 +188,6 @@ if [[ "${#build_web_args[@]}" -gt 0 ]]; then
   "$bin_full/haze-web" --check-codecs --require-opus
 fi
 go build -o "$bin_full/haze-data-ingest" ./cmd/haze-data-ingest
-go build -o "$bin_full/haze-cap-ingest" ./cmd/haze-cap-ingest
 go build -o "$bin_full/haze-tts" ./cmd/haze-tts
 go build -o "$bin_full/haze-product-render" ./cmd/haze-product-render
 go build -o "$bin_full/haze-playlist" ./cmd/haze-playlist
@@ -199,7 +197,6 @@ go build -o "$bin_full/haze-ivr" ./cmd/haze-ivr
 chmod +x \
   "$bin_full/haze-web" \
   "$bin_full/haze-data-ingest" \
-  "$bin_full/haze-cap-ingest" \
   "$bin_full/haze-tts" \
   "$bin_full/haze-product-render" \
   "$bin_full/haze-playlist" \

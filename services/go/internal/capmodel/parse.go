@@ -1,10 +1,9 @@
-package capingest
+package capmodel
 
 import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -126,7 +125,9 @@ func validateCAP(alert Alert) []string {
 	warnings = appendEnumWarning(warnings, "status", alert.Status, []string{"Actual", "Exercise", "System", "Test", "Draft"}, true)
 	warnings = appendEnumWarning(warnings, "msgType", alert.MessageType, []string{"Alert", "Update", "Cancel", "Ack", "Error"}, true)
 	warnings = appendEnumWarning(warnings, "scope", alert.Scope, []string{"Public", "Restricted", "Private"}, true)
-	if len(alert.Infos) == 0 && !strings.EqualFold(alert.MessageType, "Cancel") {
+	if len(alert.Infos) == 0 &&
+		!strings.EqualFold(alert.MessageType, "Cancel") &&
+		!strings.EqualFold(alert.Status, "System") {
 		warnings = append(warnings, "fatal: non-cancel alert has no info block")
 	}
 	for index, info := range alert.Infos {
@@ -192,57 +193,6 @@ func parseCAPTime(raw string) time.Time {
 	return time.Time{}
 }
 
-// ParseAtomEntries extracts CAP links from an Atom feed.
-func ParseAtomEntries(raw []byte) ([]AtomEntry, error) {
-	decoder := xml.NewDecoder(bytes.NewReader(raw))
-	var entries []AtomEntry
-	var current *AtomEntry
-
-	for {
-		token, err := decoder.Token()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-
-		switch tok := token.(type) {
-		case xml.StartElement:
-			switch tok.Name.Local {
-			case "entry":
-				current = &AtomEntry{}
-			case "id":
-				if current != nil {
-					current.ID = readElementText(decoder, tok)
-				}
-			case "updated":
-				if current != nil {
-					current.Updated = readElementText(decoder, tok)
-				}
-			case "link":
-				if current != nil {
-					if href := linkHref(tok); href != "" {
-						current.Links = appendCAPLink(current.Links, href)
-					}
-				}
-			}
-		case xml.EndElement:
-			if tok.Name.Local == "entry" && current != nil {
-				if current.ID != "" && len(current.Links) == 0 && strings.HasPrefix(current.ID, "http") {
-					current.Links = appendCAPLink(current.Links, current.ID)
-				}
-				if current.ID != "" && len(current.Links) > 0 {
-					entries = append(entries, *current)
-				}
-				current = nil
-			}
-		}
-	}
-
-	return entries, nil
-}
-
 func normalizeInfo(info infoXML) AlertInfo {
 	result := AlertInfo{
 		Language:    clean(info.Language),
@@ -294,45 +244,6 @@ func normalizePairs(values []pairXML) []NameValue {
 		pairs = append(pairs, NameValue{Name: name, Value: item})
 	}
 	return pairs
-}
-
-func readElementText(decoder *xml.Decoder, start xml.StartElement) string {
-	var value string
-	if err := decoder.DecodeElement(&value, &start); err != nil {
-		return ""
-	}
-	return clean(value)
-}
-
-func linkHref(start xml.StartElement) string {
-	for _, attr := range start.Attr {
-		if attr.Name.Local == "href" {
-			return clean(attr.Value)
-		}
-	}
-	return ""
-}
-
-func appendCAPLink(links []string, href string) []string {
-	if href == "" {
-		return links
-	}
-	for _, link := range links {
-		if link == href {
-			return links
-		}
-	}
-	links = append(links, href)
-	if strings.HasPrefix(href, "http") && !strings.HasSuffix(href, ".cap") {
-		capURL := strings.TrimRight(href, "/") + ".cap"
-		for _, link := range links {
-			if link == capURL {
-				return links
-			}
-		}
-		links = append(links, capURL)
-	}
-	return links
 }
 
 func cleanSlice(values []string) []string {

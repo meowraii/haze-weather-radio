@@ -40,8 +40,21 @@ struct ServicesConfig {
 
 #[derive(Debug, Default, Deserialize)]
 struct RustServicesConfig {
+    media: Option<RustMediaConfig>,
     playout: Option<RustPlayoutConfig>,
     cgen: Option<RustCgenConfig>,
+    cap_ingest: Option<RustCapIngestConfig>,
+    easnet: Option<RustEasNetConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RustMediaConfig {
+    enabled: Option<bool>,
+    executable: Option<PathBuf>,
+    addr: Option<String>,
+    listen: Option<String>,
+    backend: Option<String>,
+    scheduler: Option<ServiceSchedulerConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -49,6 +62,7 @@ struct RustPlayoutConfig {
     enabled: Option<bool>,
     executable: Option<PathBuf>,
     alert_poll: Option<String>,
+    scheduler: Option<ServiceSchedulerConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -56,6 +70,42 @@ struct RustCgenConfig {
     enabled: Option<bool>,
     executable: Option<PathBuf>,
     config: Option<PathBuf>,
+    scheduler: Option<ServiceSchedulerConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RustCapIngestConfig {
+    enabled: Option<bool>,
+    executable: Option<PathBuf>,
+    source_id: Option<String>,
+    source: Option<String>,
+    url: Option<String>,
+    fallback_url: Option<String>,
+    mode: Option<String>,
+    archive_url: Option<String>,
+    fallback_archive_url: Option<String>,
+    interval: Option<String>,
+    timeout: Option<String>,
+    user_agent: Option<String>,
+    shadow: Option<bool>,
+    startup_seed: Option<bool>,
+    concurrency: Option<usize>,
+    scheduler: Option<ServiceSchedulerConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RustEasNetConfig {
+    enabled: Option<bool>,
+    executable: Option<PathBuf>,
+    config: Option<PathBuf>,
+    scheduler: Option<ServiceSchedulerConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct ServiceSchedulerConfig {
+    priority: Option<String>,
+    windows_priority: Option<String>,
+    nice: Option<i32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -63,7 +113,6 @@ struct GoServicesConfig {
     enabled: Option<bool>,
     web_gateway: Option<WebGatewayConfig>,
     data_ingest: Option<DataIngestConfig>,
-    cap_ingest: Option<CapIngestConfig>,
     tts: Option<TtsConfig>,
     product_render: Option<ProductRenderConfig>,
     playlist: Option<PlaylistConfig>,
@@ -91,18 +140,6 @@ struct WebPanelSurfaceConfig {
     enabled: Option<bool>,
     host: Option<String>,
     port: Option<u16>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct CapIngestConfig {
-    enabled: Option<bool>,
-    executable: Option<PathBuf>,
-    source_id: Option<String>,
-    source: Option<String>,
-    url: Option<String>,
-    fallback_url: Option<String>,
-    interval: Option<String>,
-    timeout: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -207,6 +244,22 @@ struct ServiceSpec {
     binary: &'static str,
     configured_executable: Option<PathBuf>,
     args: Vec<String>,
+    scheduler: ProcessScheduler,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ProcessScheduler {
+    windows_priority: WindowsPriorityClass,
+    unix_nice: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum WindowsPriorityClass {
+    #[default]
+    Normal,
+    AboveNormal,
+    High,
+    Realtime,
 }
 
 #[derive(Debug)]
@@ -313,8 +366,8 @@ impl GoServiceSupervisor {
             return true;
         };
 
-        let mut command = Command::new(&executable);
-        configure_managed_process(&mut command);
+        let mut command = managed_command(&executable, spec.scheduler);
+        configure_managed_process(&mut command, spec.scheduler);
         command
             .args(&spec.args)
             .current_dir(&self.host.runtime_dir)
@@ -333,6 +386,7 @@ impl GoServiceSupervisor {
                 if let Some(stderr) = child.stderr.take() {
                     pipe_service_output(spec.id, "stderr", stderr, true);
                 }
+                apply_managed_process_priority(pid, spec.scheduler, service_label(spec.id));
                 info!("started {} (pid {pid})", service_label(spec.id));
                 debug!(
                     "[{}] executable {}",
@@ -353,6 +407,7 @@ impl GoServiceSupervisor {
                         "embedded": embedded_binary(spec.binary).is_some(),
                         "restart_count": restart_count,
                         "start_reason": reason,
+                        "scheduler": spec.scheduler.status_value(),
                         "started_at_unix": unix_now(),
                     }),
                 );
@@ -719,6 +774,68 @@ fn restart_backoff(restart_count: u64) -> Duration {
     Duration::from_secs(seconds).min(MAX_RESTART_BACKOFF)
 }
 
+impl ProcessScheduler {
+    fn from_config(config: Option<&ServiceSchedulerConfig>, fallback: Self) -> Self {
+        let Some(config) = config else {
+            return fallback;
+        };
+        let mut scheduler = fallback;
+        let priority = config
+            .windows_priority
+            .as_deref()
+            .or(config.priority.as_deref())
+            .and_then(parse_windows_priority)
+            .unwrap_or(scheduler.windows_priority);
+        scheduler.windows_priority = priority;
+        if let Some(nice) = config.nice {
+            scheduler.unix_nice = Some(nice.clamp(-20, 19));
+        }
+        scheduler
+    }
+
+    fn cgen_default() -> Self {
+        Self {
+            windows_priority: WindowsPriorityClass::AboveNormal,
+            unix_nice: Some(-2),
+        }
+    }
+
+    fn media_default() -> Self {
+        Self {
+            windows_priority: WindowsPriorityClass::High,
+            unix_nice: Some(-10),
+        }
+    }
+
+    fn status_value(self) -> Value {
+        json!({
+            "windows_priority": self.windows_priority.as_str(),
+            "unix_nice": self.unix_nice,
+        })
+    }
+}
+
+impl WindowsPriorityClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::AboveNormal => "above_normal",
+            Self::High => "high",
+            Self::Realtime => "realtime",
+        }
+    }
+}
+
+fn parse_windows_priority(value: &str) -> Option<WindowsPriorityClass> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "" | "normal" => Some(WindowsPriorityClass::Normal),
+        "above_normal" | "above" => Some(WindowsPriorityClass::AboveNormal),
+        "high" => Some(WindowsPriorityClass::High),
+        "realtime" | "real_time" | "rt" => Some(WindowsPriorityClass::Realtime),
+        _ => None,
+    }
+}
+
 impl Drop for GoServiceSupervisor {
     fn drop(&mut self) {
         self.shutdown();
@@ -731,11 +848,26 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
         .as_ref()
         .and_then(|services| services.rust.as_ref())
         .and_then(|services| services.playout.as_ref());
+    let rust_media = root
+        .services
+        .as_ref()
+        .and_then(|services| services.rust.as_ref())
+        .and_then(|services| services.media.as_ref());
     let rust_cgen = root
         .services
         .as_ref()
         .and_then(|services| services.rust.as_ref())
         .and_then(|services| services.cgen.as_ref());
+    let rust_cap = root
+        .services
+        .as_ref()
+        .and_then(|services| services.rust.as_ref())
+        .and_then(|services| services.cap_ingest.as_ref());
+    let rust_easnet = root
+        .services
+        .as_ref()
+        .and_then(|services| services.rust.as_ref())
+        .and_then(|services| services.easnet.as_ref());
     let mut specs = Vec::new();
     let mut deferred_cap_specs = Vec::new();
 
@@ -777,97 +909,8 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     binary: executable_name("haze-data-ingest"),
                     configured_executable: data_ingest.executable.clone(),
                     args,
+                    scheduler: ProcessScheduler::default(),
                 });
-            }
-        }
-
-        if let Some(cap) = &go.cap_ingest {
-            if cap.enabled.unwrap_or(false) {
-                let mut args = vec![
-                    "--source-id".to_string(),
-                    cap.source_id
-                        .clone()
-                        .unwrap_or_else(|| "go-cap".to_string()),
-                    "--source".to_string(),
-                    cap.source.clone().unwrap_or_else(|| "naads".to_string()),
-                    "--interval".to_string(),
-                    cap.interval.clone().unwrap_or_else(|| "30s".to_string()),
-                    "--timeout".to_string(),
-                    cap.timeout.clone().unwrap_or_else(|| "15s".to_string()),
-                ];
-                if let Some(url) = &cap.url {
-                    if !url.trim().is_empty() {
-                        args.extend(["--url".to_string(), url.to_string()]);
-                    }
-                }
-                if let Some(url) = &cap.fallback_url {
-                    if !url.trim().is_empty() {
-                        args.extend(["--fallback-url".to_string(), url.to_string()]);
-                    }
-                }
-                deferred_cap_specs.push(ServiceSpec {
-                    id: "go:cap_ingest",
-                    kind: "managed",
-                    binary: executable_name("haze-cap-ingest"),
-                    configured_executable: cap.executable.clone(),
-                    args,
-                });
-
-                if root
-                    .cap
-                    .as_ref()
-                    .and_then(|cap| cap.nws_cap.as_ref())
-                    .and_then(|nws| nws.enabled)
-                    .unwrap_or(false)
-                {
-                    let source = root
-                        .cap
-                        .as_ref()
-                        .and_then(|cap| cap.nws_cap.as_ref())
-                        .and_then(|nws| nws.sources.as_ref())
-                        .and_then(|sources| sources.first());
-                    let url = source
-                        .and_then(|source| source.url.as_ref())
-                        .filter(|value| !value.trim().is_empty())
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            "https://api.weather.gov/alerts/active.atom".to_string()
-                        });
-                    let url = if url.to_ascii_lowercase().contains(".atom") {
-                        url
-                    } else {
-                        append_query_params(
-                            &url,
-                            source
-                                .and_then(|source| source.queries.as_ref())
-                                .map(Vec::as_slice)
-                                .unwrap_or(&[]),
-                        )
-                    };
-                    let source_id = source
-                        .and_then(|source| source.id.as_ref())
-                        .filter(|value| !value.trim().is_empty())
-                        .cloned()
-                        .unwrap_or_else(|| "nws_api".to_string());
-                    deferred_cap_specs.push(ServiceSpec {
-                        id: "go:nws_cap_ingest",
-                        kind: "managed",
-                        binary: executable_name("haze-cap-ingest"),
-                        configured_executable: cap.executable.clone(),
-                        args: vec![
-                            "--source-id".to_string(),
-                            source_id,
-                            "--source".to_string(),
-                            "nws".to_string(),
-                            "--url".to_string(),
-                            url,
-                            "--interval".to_string(),
-                            cap.interval.clone().unwrap_or_else(|| "30s".to_string()),
-                            "--timeout".to_string(),
-                            cap.timeout.clone().unwrap_or_else(|| "15s".to_string()),
-                        ],
-                    });
-                }
             }
         }
 
@@ -950,6 +993,7 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     binary: executable_name("haze-tts"),
                     configured_executable: tts.executable.clone(),
                     args,
+                    scheduler: ProcessScheduler::default(),
                 });
             }
         }
@@ -975,6 +1019,7 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     binary: executable_name("haze-product-render"),
                     configured_executable: product_render.executable.clone(),
                     args,
+                    scheduler: ProcessScheduler::default(),
                 });
             }
         }
@@ -1012,6 +1057,7 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     binary: executable_name("haze-playlist"),
                     configured_executable: playlist.executable.clone(),
                     args,
+                    scheduler: ProcessScheduler::default(),
                 });
             }
         }
@@ -1042,6 +1088,7 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     binary: executable_name("haze-webhook"),
                     configured_executable: webhook.executable.clone(),
                     args,
+                    scheduler: ProcessScheduler::default(),
                 });
             }
         }
@@ -1053,6 +1100,8 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     host.config_path.to_string_lossy().into_owned(),
                     "--bridge".to_string(),
                     std::env::var("HAZE_HOST_BRIDGE_ADDR").unwrap_or_default(),
+                    "--media-bridge".to_string(),
+                    std::env::var("HAZE_MEDIA_BRIDGE_ADDR").unwrap_or_default(),
                 ];
                 if let Some(addr) = ivr
                     .http
@@ -1084,9 +1133,47 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     binary: executable_name("haze-ivr"),
                     configured_executable: ivr.executable.clone(),
                     args,
+                    scheduler: ProcessScheduler::default(),
                 });
             }
         }
+    }
+
+    if let Some(media) = rust_media.filter(|media| media.enabled.unwrap_or(false)) {
+        let mut args = vec![
+            "--config".to_string(),
+            host.config_path.to_string_lossy().into_owned(),
+            "--bridge".to_string(),
+            std::env::var("HAZE_HOST_BRIDGE_ADDR").unwrap_or_default(),
+            "--media-bridge".to_string(),
+            std::env::var("HAZE_MEDIA_BRIDGE_ADDR").unwrap_or_default(),
+        ];
+        if let Some(addr) = media
+            .listen
+            .as_ref()
+            .or(media.addr.as_ref())
+            .filter(|value| !value.trim().is_empty())
+        {
+            args.extend(["--listen".to_string(), addr.to_string()]);
+        }
+        if let Some(backend) = media
+            .backend
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            args.extend(["--backend".to_string(), backend.to_string()]);
+        }
+        specs.push(ServiceSpec {
+            id: "svc:media",
+            kind: "managed",
+            binary: executable_name("haze-media"),
+            configured_executable: media.executable.clone(),
+            args,
+            scheduler: ProcessScheduler::from_config(
+                media.scheduler.as_ref(),
+                ProcessScheduler::media_default(),
+            ),
+        });
     }
 
     if let Some(playout) = rust_playout.filter(|playout| playout.enabled.unwrap_or(false)) {
@@ -1109,6 +1196,10 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
             binary: executable_name("haze-playout-rs"),
             configured_executable: playout.executable.clone(),
             args,
+            scheduler: ProcessScheduler::from_config(
+                playout.scheduler.as_ref(),
+                ProcessScheduler::media_default(),
+            ),
         });
     }
     if let Some(cgen) = rust_cgen.filter(|cgen| cgen.enabled.unwrap_or(false)) {
@@ -1130,10 +1221,180 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
             binary: executable_name("haze-cgen"),
             configured_executable: cgen.executable.clone(),
             args,
+            scheduler: ProcessScheduler::from_config(
+                cgen.scheduler.as_ref(),
+                ProcessScheduler::cgen_default(),
+            ),
+        });
+    }
+    if let Some(cap) = rust_cap.filter(|cap| cap.enabled.unwrap_or(false)) {
+        deferred_cap_specs.extend(rust_cap_ingest_specs(cap, root));
+    }
+    if let Some(easnet) = rust_easnet.filter(|easnet| easnet.enabled.unwrap_or(false)) {
+        specs.push(ServiceSpec {
+            id: "svc:easnet",
+            kind: "managed",
+            binary: executable_name("haze-easnet"),
+            configured_executable: easnet.executable.clone(),
+            args: vec![
+                "--config".to_string(),
+                host.config_path.to_string_lossy().into_owned(),
+                "--easnet".to_string(),
+                easnet
+                    .config
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("managed/configs/easnet.xml"))
+                    .to_string_lossy()
+                    .into_owned(),
+                "--bridge".to_string(),
+                std::env::var("HAZE_HOST_BRIDGE_ADDR").unwrap_or_default(),
+            ],
+            scheduler: ProcessScheduler::from_config(
+                easnet.scheduler.as_ref(),
+                ProcessScheduler::default(),
+            ),
         });
     }
     specs.extend(deferred_cap_specs);
     specs
+}
+
+fn rust_cap_ingest_specs(cap: &RustCapIngestConfig, root: &RootConfig) -> Vec<ServiceSpec> {
+    let mut specs = Vec::new();
+    specs.push(rust_cap_ingest_spec(
+        "svc:cap_ingest",
+        cap,
+        cap.source_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("rust-cap"),
+        cap.source
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("naads"),
+        cap.url.as_deref(),
+        cap.fallback_url.as_deref(),
+    ));
+
+    if root
+        .cap
+        .as_ref()
+        .and_then(|cap| cap.nws_cap.as_ref())
+        .and_then(|nws| nws.enabled)
+        .unwrap_or(false)
+    {
+        let source = root
+            .cap
+            .as_ref()
+            .and_then(|cap| cap.nws_cap.as_ref())
+            .and_then(|nws| nws.sources.as_ref())
+            .and_then(|sources| sources.first());
+        let url = source
+            .and_then(|source| source.url.as_ref())
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| "https://api.weather.gov/alerts/active.atom".to_string());
+        let url = if url.to_ascii_lowercase().contains(".atom") {
+            url
+        } else {
+            append_query_params(
+                &url,
+                source
+                    .and_then(|source| source.queries.as_ref())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            )
+        };
+        let source_id = source
+            .and_then(|source| source.id.as_ref())
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| "nws_api".to_string());
+        specs.push(rust_cap_ingest_spec(
+            "svc:nws_cap_ingest",
+            cap,
+            &source_id,
+            "nws",
+            Some(&url),
+            None,
+        ));
+    }
+
+    specs
+}
+
+fn rust_cap_ingest_spec(
+    id: &'static str,
+    cap: &RustCapIngestConfig,
+    source_id: &str,
+    source: &str,
+    url: Option<&str>,
+    fallback_url: Option<&str>,
+) -> ServiceSpec {
+    let mode = if source.eq_ignore_ascii_case("nws") {
+        "atom".to_string()
+    } else {
+        cap.mode.clone().unwrap_or_else(|| "auto".to_string())
+    };
+    let mut args = vec![
+        "--source-id".to_string(),
+        source_id.to_string(),
+        "--source".to_string(),
+        source.to_string(),
+        "--mode".to_string(),
+        mode,
+        "--interval".to_string(),
+        cap.interval.clone().unwrap_or_else(|| "5s".to_string()),
+        "--timeout".to_string(),
+        cap.timeout.clone().unwrap_or_else(|| "15s".to_string()),
+        "--startup-seed".to_string(),
+        cap.startup_seed.unwrap_or(true).to_string(),
+        "--concurrency".to_string(),
+        cap.concurrency.unwrap_or(8).max(1).to_string(),
+        "--bridge".to_string(),
+        std::env::var("HAZE_HOST_BRIDGE_ADDR").unwrap_or_default(),
+    ];
+    if let Some(user_agent) = cap
+        .user_agent
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.extend(["--user-agent".to_string(), user_agent.to_string()]);
+    }
+    if let Some(url) = url.filter(|value| !value.trim().is_empty()) {
+        args.extend(["--url".to_string(), url.to_string()]);
+    }
+    if let Some(url) = fallback_url.filter(|value| !value.trim().is_empty()) {
+        args.extend(["--fallback-url".to_string(), url.to_string()]);
+    }
+    if let Some(url) = cap
+        .archive_url
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.extend(["--archive-url".to_string(), url.to_string()]);
+    }
+    if let Some(url) = cap
+        .fallback_archive_url
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.extend(["--fallback-archive-url".to_string(), url.to_string()]);
+    }
+    if cap.shadow.unwrap_or(false) {
+        args.push("--shadow".to_string());
+    }
+    ServiceSpec {
+        id,
+        kind: "managed",
+        binary: executable_name("haze-cap-ingest"),
+        configured_executable: cap.executable.clone(),
+        args,
+        scheduler: ProcessScheduler::from_config(
+            cap.scheduler.as_ref(),
+            ProcessScheduler::default(),
+        ),
+    }
 }
 
 fn web_gateway_specs(
@@ -1257,6 +1518,7 @@ fn web_gateway_spec(
             "--config".to_string(),
             host.config_path.to_string_lossy().into_owned(),
         ],
+        scheduler: ProcessScheduler::default(),
     }
 }
 
@@ -1284,6 +1546,7 @@ fn executable_name(base: &'static str) -> &'static str {
             "haze-web" => "haze-web.exe",
             "haze-data-ingest" => "haze-data-ingest.exe",
             "haze-cap-ingest" => "haze-cap-ingest.exe",
+            "haze-easnet" => "haze-easnet.exe",
             "haze-tts" => "haze-tts.exe",
             "haze-product-render" => "haze-product-render.exe",
             "haze-playlist" => "haze-playlist.exe",
@@ -1291,6 +1554,7 @@ fn executable_name(base: &'static str) -> &'static str {
             "haze-ivr" => "haze-ivr.exe",
             "haze-playout-rs" => "haze-playout-rs.exe",
             "haze-cgen" => "haze-cgen.exe",
+            "haze-media" => "haze-media.exe",
             _ => base,
         }
     }
@@ -1489,15 +1753,78 @@ fn resolve_path(base: &Path, path: &Path) -> PathBuf {
 }
 
 #[cfg(windows)]
-fn configure_managed_process(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+fn managed_command(executable: &Path, _scheduler: ProcessScheduler) -> Command {
+    Command::new(executable)
 }
 
 #[cfg(not(windows))]
-fn configure_managed_process(_command: &mut Command) {}
+fn managed_command(executable: &Path, scheduler: ProcessScheduler) -> Command {
+    if let Some(nice) = scheduler.unix_nice {
+        let mut command = Command::new("nice");
+        command.args(["-n", &nice.to_string()]);
+        command.arg(executable);
+        command
+    } else {
+        Command::new(executable)
+    }
+}
+
+#[cfg(windows)]
+fn configure_managed_process(command: &mut Command, scheduler: ProcessScheduler) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const ABOVE_NORMAL_PRIORITY_CLASS: u32 = 0x0000_8000;
+    const HIGH_PRIORITY_CLASS: u32 = 0x0000_0080;
+    const REALTIME_PRIORITY_CLASS: u32 = 0x0000_0100;
+    let priority_flag = match scheduler.windows_priority {
+        WindowsPriorityClass::Normal => 0,
+        WindowsPriorityClass::AboveNormal => ABOVE_NORMAL_PRIORITY_CLASS,
+        WindowsPriorityClass::High => HIGH_PRIORITY_CLASS,
+        WindowsPriorityClass::Realtime => REALTIME_PRIORITY_CLASS,
+    };
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | priority_flag);
+}
+
+#[cfg(not(windows))]
+fn configure_managed_process(_command: &mut Command, _scheduler: ProcessScheduler) {}
+
+#[cfg(windows)]
+fn apply_managed_process_priority(pid: u32, scheduler: ProcessScheduler, label: &str) {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
+        PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
+    };
+
+    let priority = match scheduler.windows_priority {
+        WindowsPriorityClass::Normal => return,
+        WindowsPriorityClass::AboveNormal => ABOVE_NORMAL_PRIORITY_CLASS,
+        WindowsPriorityClass::High => HIGH_PRIORITY_CLASS,
+        WindowsPriorityClass::Realtime => REALTIME_PRIORITY_CLASS,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_SET_INFORMATION, 0, pid);
+        if handle.is_null() {
+            warn!(
+                "[{label}] failed to open process for priority update: win32 error {}",
+                GetLastError()
+            );
+            return;
+        }
+        if SetPriorityClass(handle, priority) == 0 {
+            warn!(
+                "[{label}] failed to apply {} priority: win32 error {}",
+                scheduler.windows_priority.as_str(),
+                GetLastError()
+            );
+        }
+        let _ = CloseHandle(handle);
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_managed_process_priority(_pid: u32, _scheduler: ProcessScheduler, _label: &str) {}
 
 #[cfg(windows)]
 fn terminate_child_tree(child: &mut Child) -> std::io::Result<()> {
@@ -1545,6 +1872,7 @@ fn terminate_pid_tree(pid: u32) -> std::io::Result<()> {
 fn load_config_with_overlay(path: &Path, runtime_dir: &Path) -> Result<RootConfig> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read daemon config {}", path.display()))?;
+    let raw = expand_env_vars(&raw);
     let mut value: serde_yaml::Value = serde_yaml::from_str(&raw)
         .with_context(|| format!("failed to parse daemon config {}", path.display()))?;
 
@@ -1592,6 +1920,44 @@ fn merge_yaml(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
             *base_slot = overlay_value;
         }
     }
+}
+
+fn expand_env_vars(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '$' {
+            out.push(ch);
+            continue;
+        }
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            let mut name = String::new();
+            for next in chars.by_ref() {
+                if next == '}' {
+                    break;
+                }
+                name.push(next);
+            }
+            out.push_str(&std::env::var(name).unwrap_or_default());
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(next) = chars.peek().copied() {
+            if next == '_' || next.is_ascii_alphanumeric() {
+                name.push(next);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if name.is_empty() {
+            out.push('$');
+        } else {
+            out.push_str(&std::env::var(name).unwrap_or_default());
+        }
+    }
+    out
 }
 
 fn pipe_service_output<R>(
@@ -1668,8 +2034,8 @@ fn service_label(service_id: &str) -> &str {
         "go:web_public" => "Public web",
         "go:web_admin" => "Admin web",
         "svc:data_ingest" => "Data ingest",
-        "go:cap_ingest" => "CAP ingest",
-        "go:nws_cap_ingest" => "NWS CAP ingest",
+        "svc:cap_ingest" => "CAP ingest",
+        "svc:nws_cap_ingest" => "NWS CAP ingest",
         "aux:tts" => "TTS",
         "svc:product_render" => "Product render",
         "svc:playlist" => "Playlist",
@@ -1677,6 +2043,7 @@ fn service_label(service_id: &str) -> &str {
         "svc:ivr" => "IVR",
         "svc:playout" => "Playout",
         "svc:cgen" => "CG renderer",
+        "svc:easnet" => "EAS NET",
         _ => service_id,
     }
 }
@@ -1894,6 +2261,28 @@ services:
     }
 
     #[test]
+    fn ivr_service_uses_separate_pcm_media_bridge() {
+        let root: RootConfig = serde_yaml::from_str(
+            r#"
+services:
+  go:
+    enabled: true
+    ivr:
+      enabled: true
+"#,
+        )
+        .expect("config");
+
+        let specs = service_specs(&root, &test_host());
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].id, "svc:ivr");
+        assert_eq!(specs[0].binary, executable_name("haze-ivr"));
+        assert!(specs[0].args.contains(&"--bridge".to_string()));
+        assert!(specs[0].args.contains(&"--media-bridge".to_string()));
+    }
+
+    #[test]
     fn rust_playout_is_the_only_playout_service() {
         let root: RootConfig = serde_yaml::from_str(
             r#"
@@ -1952,14 +2341,93 @@ services:
     }
 
     #[test]
+    fn rust_media_service_uses_separate_pcm_media_bridge() {
+        let root: RootConfig = serde_yaml::from_str(
+            r#"
+services:
+  rust:
+    media:
+      enabled: true
+      addr: 127.0.0.1:8097
+      backend: auto
+"#,
+        )
+        .expect("config");
+
+        let specs = service_specs(&root, &test_host());
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].id, "svc:media");
+        assert_eq!(specs[0].binary, executable_name("haze-media"));
+        assert!(specs[0].args.contains(&"--bridge".to_string()));
+        assert!(specs[0].args.contains(&"--media-bridge".to_string()));
+        assert!(specs[0].args.contains(&"127.0.0.1:8097".to_string()));
+    }
+
+    #[test]
+    fn rust_cap_service_uses_native_binary_and_tcp_mode() {
+        let root: RootConfig = serde_yaml::from_str(
+            r#"
+services:
+  rust:
+    cap_ingest:
+      enabled: true
+      shadow: false
+      mode: tcp
+      url: tcp://streaming1.naad-adna.pelmorex.com:8080
+      fallback_url: tcp://streaming2.naad-adna.pelmorex.com:8080
+      interval: 5s
+      startup_seed: true
+"#,
+        )
+        .expect("config");
+
+        let specs = service_specs(&root, &test_host());
+
+        assert_eq!(specs.len(), 1);
+        let rust = specs
+            .iter()
+            .find(|spec| spec.id == "svc:cap_ingest")
+            .expect("rust cap spec");
+        assert_eq!(rust.binary, executable_name("haze-cap-ingest"));
+        assert!(!rust.args.contains(&"--shadow".to_string()));
+        assert!(rust.args.contains(&"tcp".to_string()));
+        assert!(rust.args.contains(&"5s".to_string()));
+    }
+
+    #[test]
+    fn rust_easnet_service_uses_managed_xml_config() {
+        let root: RootConfig = serde_yaml::from_str(
+            r#"
+services:
+  rust:
+    easnet:
+      enabled: true
+      config: managed/configs/easnet.xml
+"#,
+        )
+        .expect("config");
+
+        let specs = service_specs(&root, &test_host());
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].id, "svc:easnet");
+        assert_eq!(specs[0].binary, executable_name("haze-easnet"));
+        assert!(specs[0].args.contains(&"--easnet".to_string()));
+        assert!(specs[0]
+            .args
+            .contains(&"managed/configs/easnet.xml".to_string()));
+    }
+
+    #[test]
     fn nws_cap_atom_source_does_not_append_query_filters() {
         let root: RootConfig = serde_yaml::from_str(
             r#"
 services:
-  go:
-    enabled: true
+  rust:
     cap_ingest:
       enabled: true
+      mode: tcp
       interval: 30s
       timeout: 15s
 cap:
@@ -1977,7 +2445,7 @@ cap:
         let specs = service_specs(&root, &test_host());
         let nws = specs
             .iter()
-            .find(|spec| spec.id == "go:nws_cap_ingest")
+            .find(|spec| spec.id == "svc:nws_cap_ingest")
             .expect("nws cap spec");
 
         let url_index = nws
@@ -1986,6 +2454,13 @@ cap:
             .position(|arg| arg == "--url")
             .expect("url arg")
             + 1;
+        let mode_index = nws
+            .args
+            .iter()
+            .position(|arg| arg == "--mode")
+            .expect("mode arg")
+            + 1;
+        assert_eq!(nws.args[mode_index], "atom");
         assert_eq!(
             nws.args[url_index],
             "https://api.weather.gov/alerts/active.atom"
@@ -2021,6 +2496,7 @@ cap:
         assert_eq!(service_label("go:web_gateway"), "Web panel");
         assert_eq!(service_label("svc:product_render"), "Product render");
         assert_eq!(service_label("svc:cgen"), "CG renderer");
+        assert_eq!(service_label("svc:cap_ingest"), "CAP ingest");
         assert_eq!(service_label("unknown-service"), "unknown-service");
     }
 }

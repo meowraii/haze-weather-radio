@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
@@ -189,6 +189,38 @@ func TestWxOnDemandUsesRequestedLocationInsteadOfFeedLocations(t *testing.T) {
 	}
 	if strings.Contains(product.Text, "Saskatoon Diefenbaker") {
 		t.Fatalf("on-demand product leaked feed observation:\n%s", product.Text)
+	}
+}
+
+func TestWxOnDemandDoesNotRequireFeed(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	storeForecastJSON(t, cfg.Store, "sk-99", "06099", `{
+  "issued_at": "2026-06-15T20:00:00-06:00",
+  "name": {"en": "Regina"},
+  "forecast": [
+    {"period": {"en": "Tonight"}, "textSummary": {"en": "Clear."}}
+  ]
+}`)
+
+	product, err := newRenderer(cfg).RenderWxOnDemand(wxOnDemandRequest{
+		RequestID:    "wx-feedless",
+		Code:         "06099",
+		Source:       "hello_weather",
+		LocationName: "Regina",
+		ForecastID:   "sk-99",
+		StationID:    "sk-99",
+		Packages:     []string{"forecast"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if product.FeedID != "wx-on-demand" {
+		t.Fatalf("FeedID = %q", product.FeedID)
+	}
+	if !strings.Contains(product.Text, "Tonight. Clear.") {
+		t.Fatalf("on-demand forecast missing requested location text:\n%s", product.Text)
 	}
 }
 
@@ -903,7 +935,7 @@ func TestAlertsProductUsesNativeCAPRegistry(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
 	cfg := loadFixtureConfig(t, dir)
-	alert, err := capingest.ParseCAP([]byte(testCAP("urn:test:alert:1", "Update", "active", "2099-06-15T21:30:00-06:00", false)))
+	alert, err := capmodel.ParseCAP([]byte(testCAP("urn:test:alert:1", "Update", "active", "2099-06-15T21:30:00-06:00", false)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -942,7 +974,7 @@ func TestOperatorExpiredCAPReplayIsSuppressedUntilAuthorityUpdate(t *testing.T) 
 	cfg := loadFixtureConfig(t, dir)
 	now := time.Now().UTC()
 	raw := testCAP("urn:test:operator-suppressed", "Alert", "active", "2099-06-15T21:30:00-06:00", false)
-	alert, err := capingest.ParseCAP([]byte(raw))
+	alert, err := capmodel.ParseCAP([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -981,7 +1013,7 @@ func TestOperatorExpiredCAPReplayIsSuppressedUntilAuthorityUpdate(t *testing.T) 
 	}
 
 	updatedRaw := strings.Replace(raw, "nickel size hail", "quarter size hail", 1)
-	updatedAlert, err := capingest.ParseCAP([]byte(updatedRaw))
+	updatedAlert, err := capmodel.ParseCAP([]byte(updatedRaw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1009,7 +1041,7 @@ func TestMinorCAPAlertBypassesSAMEFilterForRoutinePackage(t *testing.T) {
 	raw := strings.Replace(testCAP("urn:test:alert:minor-statement", "Alert", "active", "2099-06-15T21:30:00-06:00", false), "<severity>Moderate</severity>", "<severity>Minor</severity>", 1)
 	raw = strings.Replace(raw, "<event>thunderstorm</event>", "<event>weather</event>", 1)
 	raw = strings.Replace(raw, "yellow warning - severe thunderstorm", "special weather statement", -1)
-	alert, err := capingest.ParseCAP([]byte(raw))
+	alert, err := capmodel.ParseCAP([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1054,7 +1086,7 @@ func TestNonRoutineCatchallRejectsMinorAndUnknownCAPAlerts(t *testing.T) {
 
 	for _, severity := range []string{"Minor", "Unknown"} {
 		raw := strings.Replace(testCAP("urn:test:catchall:"+strings.ToLower(severity), "Alert", "active", "2099-06-15T21:30:00-06:00", false), "<severity>Moderate</severity>", "<severity>"+severity+"</severity>", 1)
-		alert, err := capingest.ParseCAP([]byte(raw))
+		alert, err := capmodel.ParseCAP([]byte(raw))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1088,12 +1120,59 @@ func TestNonRoutineCatchallRejectsMinorAndUnknownCAPAlerts(t *testing.T) {
 	}
 }
 
+func TestNonRoutineCatchallRetainsModerateWatchWithoutPriorityBroadcast(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	var feed feedXML
+	feed.ID = "CAP-IT-ALL"
+	feed.EnabledRaw = "true"
+	feed.Playout.Routine = "false"
+	feed.Alerts.CapCP.EnabledRaw = "true"
+	feed.Alerts.CapCP.Filter.UseFeedLocations = "false"
+	feed.Alerts.CapCP.Filter.Allowlist.Severities = []string{"Moderate", "Severe", "Extreme"}
+	feed.Alerts.CapCP.Filter.Allowlist.Urgencies = []string{"Immediate"}
+	feed.Alerts.CapCP.Filter.Allowlist.Certainties = []string{"Observed", "Likely"}
+	cfg.Feeds = []feedXML{feed}
+	service := &Service{cfg: cfg}
+
+	raw := testCAP("urn:test:catchall:sva-watch", "Alert", "active", "2099-06-15T21:30:00-06:00", false)
+	raw = strings.Replace(raw, "<urgency>Immediate</urgency>", "<urgency>Expected</urgency>", 1)
+	raw = strings.Replace(raw, "yellow warning - severe thunderstorm", "yellow watch - severe thunderstorm", -1)
+	alert, err := capmodel.ParseCAP([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates, err := service.recordCAPAlert(alert, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || updates[0].FeedID != "CAP-IT-ALL" || !updates[0].Renderable || updates[0].Broadcast {
+		t.Fatalf("updates = %#v", updates)
+	}
+
+	accepted, err := cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accepted) != 1 || accepted[0].AlertID != alert.Identifier || accepted[0].FeedID != "CAP-IT-ALL" {
+		t.Fatalf("accepted archive rows = %#v", accepted)
+	}
+	rejected, err := cfg.Store.ListCAPArchives(context.Background(), "rejected", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rejected) != 0 {
+		t.Fatalf("moderate watch should not be rejected: %#v", rejected)
+	}
+}
+
 func TestTestCAPAlertDoesNotEnterRoutinePackage(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
 	cfg := loadFixtureConfig(t, dir)
 	raw := strings.Replace(testCAP("urn:test:alert:test-message", "Alert", "active", "2099-06-15T21:30:00-06:00", false), "<status>Actual</status>", "<status>Test</status>", 1)
-	alert, err := capingest.ParseCAP([]byte(raw))
+	alert, err := capmodel.ParseCAP([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1127,7 +1206,7 @@ func TestCAPEndedUpdateRemovesReferencedActiveAlert(t *testing.T) {
 	cfg := loadFixtureConfig(t, dir)
 	service := &Service{cfg: cfg}
 	now := time.Now().UTC()
-	active, err := capingest.ParseCAP([]byte(testCAP("urn:test:alert:original", "Alert", "active", "2099-06-15T21:30:00-06:00", false)))
+	active, err := capmodel.ParseCAP([]byte(testCAP("urn:test:alert:original", "Alert", "active", "2099-06-15T21:30:00-06:00", false)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1138,7 +1217,7 @@ func TestCAPEndedUpdateRemovesReferencedActiveAlert(t *testing.T) {
 		testCAP("urn:test:alert:ended-update", "Update", "ended", "2099-06-15T21:30:00-06:00", true),
 		"cap-pac@canada.ca,urn:test:alert:original,2026-06-15T15:58:00-06:00",
 	)
-	ended, err := capingest.ParseCAP([]byte(endedRaw))
+	ended, err := capmodel.ParseCAP([]byte(endedRaw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1167,20 +1246,106 @@ func TestCAPEndedUpdateRemovesReferencedActiveAlert(t *testing.T) {
 	}
 }
 
-func TestCAPEndedUpdateOverridesActiveAlertByEventAndLocation(t *testing.T) {
+func TestCAPEndedUpdateDoesNotRemoveReferencedAlertOutsideLocation(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
 	cfg := loadFixtureConfig(t, dir)
 	service := &Service{cfg: cfg}
 	now := time.Now().UTC()
-	active, err := capingest.ParseCAP([]byte(testCAP("urn:test:alert:active-no-reference", "Alert", "active", "2099-06-15T21:30:00-06:00", false)))
+	active, err := capmodel.ParseCAP([]byte(testCAP("urn:test:alert:local-original", "Alert", "active", "2099-06-15T21:30:00-06:00", false)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.recordCAPAlert(active, now); err != nil {
 		t.Fatal(err)
 	}
-	ended, err := capingest.ParseCAP([]byte(testCAP("urn:test:alert:ended-no-reference", "Update", "ended", "2099-06-15T21:30:00-06:00", true)))
+	endedRaw := testCAP("urn:test:alert:off-feed-ended-update", "Update", "ended", "2099-06-15T21:30:00-06:00", true)
+	endedRaw = strings.ReplaceAll(endedRaw, "065522", "066999")
+	endedRaw = strings.ReplaceAll(endedRaw, "City of Saskatoon", "Off Feed County")
+	endedRaw = capWithReferences(endedRaw, "cap-pac@canada.ca,urn:test:alert:local-original,2026-06-15T15:58:00-06:00")
+	ended, err := capmodel.ParseCAP([]byte(endedRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.recordCAPAlert(ended, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.AlertID == active.Identifier {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("off-feed ended update removed active local alert: %#v", rows)
+	}
+}
+
+func TestCAPEndedWarningDoesNotRemoveReferencedWatch(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	service := &Service{cfg: cfg}
+	now := time.Now().UTC()
+	activeRaw := strings.ReplaceAll(
+		testCAP("urn:test:alert:watch-original", "Alert", "active", "2099-06-15T21:30:00-06:00", false),
+		"yellow warning - severe thunderstorm",
+		"yellow watch - severe thunderstorm",
+	)
+	activeRaw = strings.ReplaceAll(activeRaw, "<value>warning</value>", "<value>watch</value>")
+	active, err := capmodel.ParseCAP([]byte(activeRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.recordCAPAlert(active, now); err != nil {
+		t.Fatal(err)
+	}
+	endedRaw := capWithReferences(
+		testCAP("urn:test:alert:warning-ended", "Update", "ended", "2099-06-15T21:30:00-06:00", true),
+		"cap-pac@canada.ca,urn:test:alert:watch-original,2026-06-15T15:58:00-06:00",
+	)
+	ended, err := capmodel.ParseCAP([]byte(endedRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.recordCAPAlert(ended, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.AlertID == active.Identifier {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ended warning removed active watch: %#v", rows)
+	}
+}
+
+func TestCAPEndedUpdateOverridesActiveAlertByEventAndLocation(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	service := &Service{cfg: cfg}
+	now := time.Now().UTC()
+	active, err := capmodel.ParseCAP([]byte(testCAP("urn:test:alert:active-no-reference", "Alert", "active", "2099-06-15T21:30:00-06:00", false)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.recordCAPAlert(active, now); err != nil {
+		t.Fatal(err)
+	}
+	ended, err := capmodel.ParseCAP([]byte(testCAP("urn:test:alert:ended-no-reference", "Update", "ended", "2099-06-15T21:30:00-06:00", true)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1210,7 +1375,7 @@ func TestAlertBroadcastAudioPrefersBroadcastMP3Resource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alert, err := capingest.ParseCAP(raw)
+	alert, err := capmodel.ParseCAP(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1229,7 +1394,7 @@ func TestEndedAlertsArePrunedAfterGrace(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
 	cfg := loadFixtureConfig(t, dir)
-	alert, err := capingest.ParseCAP([]byte(testCAP("urn:test:alert:ended", "Update", "ended", "2099-06-15T21:30:00-06:00", true)))
+	alert, err := capmodel.ParseCAP([]byte(testCAP("urn:test:alert:ended", "Update", "ended", "2099-06-15T21:30:00-06:00", true)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1264,7 +1429,7 @@ func TestEndedAlertsArePrunedAfterGrace(t *testing.T) {
 		time.Now().UTC().Format(time.RFC3339),
 		1,
 	)
-	recentEnded, err := capingest.ParseCAP([]byte(recentRaw))
+	recentEnded, err := capmodel.ParseCAP([]byte(recentRaw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1283,7 +1448,7 @@ func TestExpiredAlertsArePrunedAfterExpiryGrace(t *testing.T) {
 	writeFixture(t, dir)
 	cfg := loadFixtureConfig(t, dir)
 	expires := time.Now().UTC().Add(-11 * time.Minute).Format(time.RFC3339)
-	alert, err := capingest.ParseCAP([]byte(testCAP("urn:test:alert:expired", "Alert", "active", expires, false)))
+	alert, err := capmodel.ParseCAP([]byte(testCAP("urn:test:alert:expired", "Alert", "active", expires, false)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1309,7 +1474,7 @@ func TestBroadAlertsUseConfiguredCoverageRegionNames(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
 	cfg := loadFixtureConfig(t, dir)
-	alert, err := capingest.ParseCAP([]byte(testBroadCAP()))
+	alert, err := capmodel.ParseCAP([]byte(testBroadCAP()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1345,7 +1510,7 @@ func TestWatchAlertsUseForecastRegionNamesWhenComplete(t *testing.T) {
 			{ID: "065522"},
 		},
 	}}
-	alert, err := capingest.ParseCAP([]byte(testWatchCAP("urn:test:watch:complete", "065514,065522")))
+	alert, err := capmodel.ParseCAP([]byte(testWatchCAP("urn:test:watch:complete", "065514,065522")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1381,7 +1546,7 @@ func TestWatchAlertsKeepSubregionsWhenForecastRegionIncomplete(t *testing.T) {
 			{ID: "065522"},
 		},
 	}}
-	alert, err := capingest.ParseCAP([]byte(testWatchCAP("urn:test:watch:partial", "065522")))
+	alert, err := capmodel.ParseCAP([]byte(testWatchCAP("urn:test:watch:partial", "065522")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1407,7 +1572,7 @@ func TestCAPAlertMatchesExpandedCoverageRegion(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
 	cfg := loadFixtureConfig(t, dir)
-	alert, err := capingest.ParseCAP([]byte(testOutlookCAP()))
+	alert, err := capmodel.ParseCAP([]byte(testOutlookCAP()))
 	if err != nil {
 		t.Fatal(err)
 	}

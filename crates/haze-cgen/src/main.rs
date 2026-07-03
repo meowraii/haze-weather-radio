@@ -4,6 +4,7 @@ mod graphics;
 mod gst_backend;
 mod pipeline;
 mod state;
+mod sunny_cat;
 mod wgpu_renderer;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +29,9 @@ struct Args {
     #[arg(long, default_value = "managed/configs/cgen.xml")]
     cgen: PathBuf,
     #[arg(long, env = "HAZE_HOST_BRIDGE_ADDR")]
-    bridge: String,
+    bridge: Option<String>,
+    #[arg(long)]
+    gst_catalog: bool,
 }
 
 #[tokio::main]
@@ -41,6 +44,15 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    if args.gst_catalog {
+        let catalog = gst_backend::gstreamer_catalog_json()?;
+        println!("{}", serde_json::to_string(&catalog)?);
+        return Ok(());
+    }
+    let bridge_addr = args
+        .bridge
+        .as_deref()
+        .context("--bridge or HAZE_HOST_BRIDGE_ADDR is required")?;
     spawn_parent_watcher();
 
     let base_dir = args
@@ -59,7 +71,7 @@ async fn main() -> Result<()> {
         "haze-cgen config loaded"
     );
 
-    let bridge = bridge::connect_retry(&args.bridge).await?;
+    let bridge = bridge::connect_retry(bridge_addr).await?;
     bridge
         .client
         .publish(json!({
@@ -77,7 +89,8 @@ async fn main() -> Result<()> {
                 "service": SOURCE_ID,
                 "feeds": feeds.len(),
                 "config": cgen_path,
-                "media_pipeline": "gstreamer-rs"
+                "media_pipeline": "gstreamer-rs",
+                "sunny_cat_available": sunny_cat::available()
             }
         }))
         .await?;

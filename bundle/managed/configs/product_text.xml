@@ -6,7 +6,7 @@
     <text key="report_time" lang="en-CA"></text>
   </package>
   <package id="forecast">
-    <text key="opener" lang="en-CA">Forecast for the {callsign} listening area:</text>
+    <text key="opener" lang="en-CA">Now for your official {source} forecast,</text>
     <text key="issued_at" lang="en-CA">Issued at {time}.</text>
     <text key="region" lang="en-CA">For the {region}.</text>
   </package>
@@ -23,7 +23,7 @@
     <text key="forecast_insmoke_eccc" lang="en-CA">The air quality health index is expected to be {val} in smoke.</text>
   </package>
   <package id="climate_summary">
-    <text key="opener" lang="en-CA">The Environment Canada climate summary.</text>
+    <text key="opener" lang="en-CA">The {source} climate summary.</text>
   </package>
   <package id="hydrometric">
     <text key="opener" lang="en-CA">River conditions for the {site} area.</text>

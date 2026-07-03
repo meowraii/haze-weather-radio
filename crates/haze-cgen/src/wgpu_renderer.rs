@@ -3,6 +3,10 @@ use anyhow::Context;
 use anyhow::Result;
 use serde_json::{json, Value};
 
+pub(crate) fn fatal_error_message() -> &'static str {
+    "HAZE CGEN FATAL GRAPHICS ERROR: WGPU renderer initialization failed. Cairo fallback is disabled; install a working Vulkan/DX12/OpenGL-capable GPU driver or change the CGEN graphics backend."
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OverlayRenderState {
     pub(crate) visual_id: String,
@@ -11,6 +15,11 @@ pub(crate) struct OverlayRenderState {
     pub(crate) font_family: String,
     pub(crate) font_weight: String,
     pub(crate) font_size: u32,
+    pub(crate) clock_text: String,
+    pub(crate) clock_x: i32,
+    pub(crate) clock_y: i32,
+    pub(crate) clock_font_size: u32,
+    pub(crate) clock_color: String,
     pub(crate) banner_height: u32,
     pub(crate) speed_px_per_frame: u32,
     pub(crate) frame_width: u32,
@@ -23,14 +32,7 @@ pub(crate) struct OverlayRenderState {
     pub(crate) x_absolute: f64,
     pub(crate) silent: bool,
     pub(crate) gradient: [String; 3],
-}
-
-pub(crate) fn fatal_error_message() -> &'static str {
-    if cfg!(feature = "gpu-wgpu") {
-        "HAZE CGEN FATAL GRAPHICS ERROR\n\nHaze CGEN could not create a valid WGPU compositor.\n\nPossible reasons:\n1. The WGPU renderer path failed to initialize.\n2. Your GPU driver is missing, too old, or currently crashed.\n3. The selected graphics backend is unavailable for this session.\n4. This system does not expose a compatible D3D12, Vulkan, Metal, or GL backend.\n\nCairo fallback is disabled on purpose because it causes unstable broadcast timing."
-    } else {
-        "HAZE CGEN FATAL GRAPHICS ERROR\n\nHaze CGEN could not create a valid WGPU compositor.\n\nPossible reasons:\n1. haze-cgen was built without the gpu-wgpu feature.\n2. Your GPU driver is missing, too old, or currently crashed.\n3. The selected graphics backend is unavailable for this session.\n4. This system does not expose a compatible D3D12, Vulkan, Metal, or GL backend.\n\nCairo fallback is disabled on purpose because it causes unstable broadcast timing."
-    }
+    pub(crate) sunny_cat: bool,
 }
 
 #[cfg(not(feature = "gpu-wgpu"))]
@@ -78,13 +80,19 @@ pub(crate) struct WgpuFrameRenderer {
     adapter_name: String,
     backend: String,
     ticker_key: Option<String>,
-    ticker_start_pts_ns: Option<u64>,
-    ticker_start_instant: std::time::Instant,
     ticker_start_frame: u64,
+    ticker_start_pts_ns: Option<u64>,
+    text_strip_cache: std::collections::BTreeMap<String, RenderedTextStrip>,
+    text_strip_cache_bytes: usize,
     rendered_frames: u64,
     dropped_frames: u64,
     last_error: Option<String>,
 }
+
+#[cfg(feature = "gpu-wgpu")]
+const MAX_TEXT_STRIP_CACHE_ENTRIES: usize = 4;
+#[cfg(feature = "gpu-wgpu")]
+const MAX_TEXT_STRIP_CACHE_BYTES: usize = 24 * 1024 * 1024;
 
 #[cfg(feature = "gpu-wgpu")]
 #[derive(Debug, Clone)]
@@ -146,9 +154,10 @@ impl WgpuFrameRenderer {
             adapter_name: info.name,
             backend: format!("{:?}", info.backend),
             ticker_key: None,
-            ticker_start_pts_ns: None,
-            ticker_start_instant: std::time::Instant::now(),
             ticker_start_frame: 0,
+            ticker_start_pts_ns: None,
+            text_strip_cache: std::collections::BTreeMap::new(),
+            text_strip_cache_bytes: 0,
             rendered_frames: 0,
             dropped_frames: 0,
             last_error: None,
@@ -173,14 +182,17 @@ impl WgpuFrameRenderer {
             ));
             return Ok(());
         }
-        let Some(state) = state.filter(|state| !state.silent && !state.text.trim().is_empty())
-        else {
+        let Some(state) = state.filter(|state| {
+            state.sunny_cat
+                || (!state.silent && !state.text.trim().is_empty())
+                || !state.clock_text.trim().is_empty()
+        }) else {
             self.ticker_key = None;
             self.ticker_start_pts_ns = None;
+            self.clear_text_strip_cache();
             self.rendered_frames = self.rendered_frames.saturating_add(1);
             return Ok(());
         };
-        self.touch_wgpu();
         if let Err(err) = self.composite_overlay(frame, frame_pts_ns, state) {
             self.dropped_frames = self.dropped_frames.saturating_add(1);
             self.last_error = Some(err.to_string());
@@ -203,7 +215,10 @@ impl WgpuFrameRenderer {
             "interlaced": self.interlaced,
             "rendered_frames": self.rendered_frames,
             "dropped_frames": self.dropped_frames,
+            "text_strip_cache_entries": self.text_strip_cache.len(),
+            "text_strip_cache_bytes": self.text_strip_cache_bytes,
             "last_error": self.last_error,
+            "sunny_cat_available": crate::sunny_cat::available(),
         })
     }
 
@@ -222,18 +237,26 @@ impl WgpuFrameRenderer {
             .clamp(0, height.saturating_sub(banner_height) as isize) as usize;
         let is_ticker = state.visual_mode == "ticker_alert";
         let mut render_state = state.clone();
-        if is_ticker {
+        if render_state.sunny_cat {
+            draw_sunny_cat(frame, width, height);
+        }
+        if render_state.text.trim().is_empty() && render_state.clock_text.trim().is_empty() {
+            return Ok(());
+        }
+        if is_ticker && !render_state.text.trim().is_empty() {
             let Some((text, x_absolute)) = self.ticker_window_for_frame(state, width, frame_pts_ns)
             else {
+                self.draw_clock(frame, width, height, &render_state)?;
                 return Ok(());
             };
             render_state.text = text;
             render_state.x_absolute = x_absolute;
-        } else {
+        } else if !is_ticker {
             self.ticker_key = None;
             self.ticker_start_pts_ns = None;
+            self.clear_text_strip_cache();
         }
-        if is_ticker {
+        if is_ticker && !render_state.text.trim().is_empty() {
             self.draw_gradient(
                 frame,
                 width,
@@ -242,27 +265,72 @@ impl WgpuFrameRenderer {
                 banner_height,
                 &render_state.gradient,
             );
+            let text_x = (render_state.x_absolute * width as f64).round() as isize;
+            let strip_width = ticker_strip_width(&render_state, width);
+            let strip =
+                self.ensure_ticker_strip(strip_width, banner_height as u32, &render_state)?;
+            blend_text_strip_at(frame, width, height, text_x, y as isize, strip);
+            self.draw_clock(frame, width, height, &render_state)?;
+            return Ok(());
         }
-        let text_x = if is_ticker {
-            (render_state.x_absolute * width as f64).round() as isize
-        } else {
-            let approx_text_width = render_state.text_width_px.round().max(0.0) as usize;
-            ((width.saturating_sub(approx_text_width)) / 2) as isize
-        };
-        let text_y = if is_ticker { 0 } else { y as isize };
-        let strip = self.render_text_strip(
-            width as u32,
-            banner_height as u32,
-            text_x,
-            text_y,
-            &render_state,
-        );
-        match strip {
-            Ok(strip) => self.blend_text_strip(frame, width, height, y, &strip),
-            Err(err) => {
-                self.last_error = Some(err.to_string());
+        if !render_state.text.trim().is_empty() {
+            let text_x = {
+                let approx_text_width = render_state.text_width_px.round().max(0.0) as usize;
+                ((width.saturating_sub(approx_text_width)) / 2) as isize
+            };
+            let text_y = y as isize;
+            let strip = self.render_text_strip(
+                width as u32,
+                banner_height as u32,
+                text_x,
+                text_y,
+                &render_state,
+            );
+            match strip {
+                Ok(strip) => blend_text_strip_at(frame, width, height, 0, y as isize, &strip),
+                Err(err) => {
+                    self.last_error = Some(err.to_string());
+                }
             }
         }
+        self.draw_clock(frame, width, height, &render_state)?;
+        Ok(())
+    }
+
+    fn draw_clock(
+        &mut self,
+        frame: &mut [u8],
+        width: usize,
+        height: usize,
+        state: &OverlayRenderState,
+    ) -> Result<()> {
+        let clock_text = state.clock_text.trim();
+        if clock_text.is_empty() {
+            return Ok(());
+        }
+        let mut clock_state = state.clone();
+        clock_state.text = clock_text.to_string();
+        clock_state.source_text = clock_text.to_string();
+        clock_state.font_size = state.clock_font_size.max(12);
+        clock_state.text_width_px = estimated_text_width_px(clock_text, clock_state.font_size);
+        clock_state.visual_mode = "clock".to_string();
+        let strip_width = (clock_state.text_width_px.round().max(1.0) as u32)
+            .saturating_add(clock_state.clock_font_size.saturating_mul(2))
+            .min(self.width.max(1));
+        let strip_height = clock_state
+            .clock_font_size
+            .saturating_mul(2)
+            .max(24)
+            .min(self.height.max(1));
+        let strip = self.render_text_strip(strip_width, strip_height, 0, 0, &clock_state)?;
+        blend_text_strip_at(
+            frame,
+            width,
+            height,
+            isize::try_from(state.clock_x).unwrap_or(0),
+            isize::try_from(state.clock_y).unwrap_or(0),
+            &strip,
+        );
         Ok(())
     }
 
@@ -272,8 +340,8 @@ impl WgpuFrameRenderer {
         frame_width: usize,
         frame_pts_ns: Option<u64>,
     ) -> Option<(String, f64)> {
-        let text = state.source_text.trim();
-        if text.is_empty() {
+        let source_text = state.source_text.trim();
+        if source_text.is_empty() {
             return None;
         }
         let key = format!(
@@ -285,35 +353,79 @@ impl WgpuFrameRenderer {
             state.banner_height,
             state.speed_px_per_frame,
             if state.visual_id.trim().is_empty() {
-                text
+                source_text
             } else {
                 state.visual_id.trim()
             }
         );
         if self.ticker_key.as_deref() != Some(key.as_str()) {
             self.ticker_key = Some(key);
-            self.ticker_start_pts_ns = frame_pts_ns;
-            self.ticker_start_instant = std::time::Instant::now();
             self.ticker_start_frame = self.rendered_frames;
+            self.ticker_start_pts_ns = frame_pts_ns;
+            self.clear_text_strip_cache();
         }
         let frame_width_f = frame_width.max(1) as f64;
-        let elapsed = self.ticker_elapsed_seconds(frame_pts_ns);
-        let pixels_per_second =
-            f64::from(state.speed_px_per_frame.max(1)) * state.draw_fps.max(1.0);
-        let x_px = frame_width_f + 1.0 - (elapsed * pixels_per_second);
+        let frames_since_start = self.rendered_frames.saturating_sub(self.ticker_start_frame);
+        let elapsed_seconds = ticker_elapsed_for_compositor_frame(
+            frame_pts_ns,
+            self.ticker_start_pts_ns,
+            frames_since_start,
+            state.draw_fps,
+        );
+        let x_px = ticker_x_for_compositor_time(
+            frame_width_f,
+            state.text_width_px,
+            state.speed_px_per_frame,
+            state.draw_fps,
+            elapsed_seconds,
+        );
         if x_px < -state.text_width_px.max(1.0) {
             return None;
         }
-        Some((text.to_string(), x_px / frame_width_f))
+        Some(ticker_text_window(
+            source_text,
+            state.text_width_px,
+            state.font_size,
+            x_px,
+            frame_width_f,
+        ))
     }
 
-    fn ticker_elapsed_seconds(&self, frame_pts_ns: Option<u64>) -> f64 {
-        match (frame_pts_ns, self.ticker_start_pts_ns) {
-            (Some(now), Some(start)) if now >= start => {
-                now.saturating_sub(start) as f64 / 1_000_000_000.0
+    fn ensure_ticker_strip(
+        &mut self,
+        strip_width: u32,
+        strip_height: u32,
+        state: &OverlayRenderState,
+    ) -> Result<&RenderedTextStrip> {
+        let key = format!(
+            "{}|{}|{}|{}|{}|{}",
+            state.text,
+            state.font_family,
+            state.font_weight,
+            state.font_size,
+            strip_width,
+            strip_height,
+        );
+        if !self.text_strip_cache.contains_key(&key) {
+            let strip = self.render_text_strip(strip_width, strip_height, 0, 0, state)?;
+            let strip_bytes = strip.bgra.len();
+            if self.text_strip_cache.len() >= MAX_TEXT_STRIP_CACHE_ENTRIES
+                || self.text_strip_cache_bytes.saturating_add(strip_bytes)
+                    > MAX_TEXT_STRIP_CACHE_BYTES
+            {
+                self.clear_text_strip_cache();
             }
-            _ => self.ticker_start_instant.elapsed().as_secs_f64(),
+            self.text_strip_cache_bytes = self.text_strip_cache_bytes.saturating_add(strip_bytes);
+            self.text_strip_cache.insert(key.clone(), strip);
         }
+        self.text_strip_cache
+            .get(&key)
+            .context("ticker strip cache entry missing after render")
+    }
+
+    fn clear_text_strip_cache(&mut self) {
+        self.text_strip_cache.clear();
+        self.text_strip_cache_bytes = 0;
     }
 
     fn draw_gradient(
@@ -407,13 +519,18 @@ impl WgpuFrameRenderer {
             default_color: glyphon::Color::rgba(0, 0, 0, 210),
             custom_glyphs: &[],
         };
+        let text_rgb = if state.visual_mode == "clock" {
+            rgb_from_hex(&state.clock_color)
+        } else {
+            [255, 255, 255]
+        };
         let text_area = glyphon::TextArea {
             buffer: &buffer,
             left,
             top,
             scale: 1.0,
             bounds,
-            default_color: glyphon::Color::rgba(255, 255, 255, 255),
+            default_color: glyphon::Color::rgba(text_rgb[0], text_rgb[1], text_rgb[2], 255),
             custom_glyphs: &[],
         };
         self.text_renderer.prepare(
@@ -526,44 +643,183 @@ impl WgpuFrameRenderer {
             bgra,
         })
     }
+}
 
-    fn blend_text_strip(
-        &self,
-        frame: &mut [u8],
-        width: usize,
-        height: usize,
-        y: usize,
-        strip: &RenderedTextStrip,
-    ) {
-        for sy in 0..strip.height {
-            let dy = y + sy;
-            if dy >= height {
-                continue;
-            }
-            let row_width = strip.width.min(width);
-            for sx in 0..row_width {
-                let src = sy * strip.stride + sx * 4;
-                let alpha = strip.bgra[src + 3];
-                if alpha == 0 {
-                    continue;
-                }
-                let alpha = u16::from(alpha);
-                let inv = 255u16.saturating_sub(alpha);
-                let dst = (dy * width + sx) * 4;
-                frame[dst] = blend(frame[dst], strip.bgra[src], alpha, inv);
-                frame[dst + 1] = blend(frame[dst + 1], strip.bgra[src + 1], alpha, inv);
-                frame[dst + 2] = blend(frame[dst + 2], strip.bgra[src + 2], alpha, inv);
-            }
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_text_window(
+    text: &str,
+    text_width_px: f64,
+    font_size: u32,
+    x_px: f64,
+    frame_width: f64,
+) -> (String, f64) {
+    let frame_width = frame_width.max(1.0);
+    let char_count = text.chars().count();
+    if char_count == 0 {
+        return (String::new(), 1.0);
+    }
+    let estimated_width = text_width_px
+        .max(f64::from(font_size.max(16)) * char_count as f64 * 0.48)
+        .max(1.0);
+    let char_width = (estimated_width / char_count as f64).max(8.0);
+    let first_visible_px = (-x_px).max(0.0);
+    let page_width_px = (frame_width * 2.0).max(char_width * 32.0);
+    let page_left_px = (first_visible_px / page_width_px).floor() * page_width_px;
+    let first_char = ((page_left_px / char_width).floor() as usize).saturating_sub(8);
+    let char_offset_px = first_char as f64 * char_width;
+    let window_left_px = x_px + char_offset_px;
+    let visible_width_px = (frame_width - window_left_px).max(frame_width) + page_width_px;
+    let max_chars = ((visible_width_px / char_width).ceil() as usize)
+        .saturating_add(24)
+        .min(char_count.saturating_sub(first_char));
+    let window_text = text.chars().skip(first_char).take(max_chars).collect();
+    (window_text, window_left_px / frame_width)
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_x_for_compositor_frame(
+    frame_width: f64,
+    text_width_px: f64,
+    speed_px_per_frame: u32,
+    interlaced: bool,
+    frames_since_start: u64,
+) -> f64 {
+    let _ = interlaced;
+    ticker_x_for_compositor_time(
+        frame_width,
+        text_width_px,
+        speed_px_per_frame,
+        1.0,
+        frames_since_start as f64,
+    )
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_elapsed_for_compositor_frame(
+    frame_pts_ns: Option<u64>,
+    start_pts_ns: Option<u64>,
+    frames_since_start: u64,
+    draw_fps: f64,
+) -> f64 {
+    if let (Some(frame_pts_ns), Some(start_pts_ns)) = (frame_pts_ns, start_pts_ns) {
+        if frame_pts_ns >= start_pts_ns {
+            return frame_pts_ns.saturating_sub(start_pts_ns) as f64 / 1_000_000_000.0;
         }
     }
+    frames_since_start as f64 / draw_fps.max(1.0)
+}
 
-    fn touch_wgpu(&self) {
-        let encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("haze-cgen-wgpu-frame"),
-            });
-        self.queue.submit(Some(encoder.finish()));
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_x_for_compositor_time(
+    frame_width: f64,
+    _text_width_px: f64,
+    speed_px_per_frame: u32,
+    draw_fps: f64,
+    elapsed_seconds: f64,
+) -> f64 {
+    let start_x = frame_width.max(1.0) + 1.0;
+    let pixels_per_second = f64::from(speed_px_per_frame.max(1)) * draw_fps.max(1.0);
+    start_x - (elapsed_seconds.max(0.0) * pixels_per_second)
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_strip_width(state: &OverlayRenderState, frame_width: usize) -> u32 {
+    let chars = state.text.chars().count().max(1) as f64;
+    let estimate = chars * f64::from(state.font_size.max(16)) * 0.92 + 32.0;
+    let max_width = frame_width.saturating_mul(2).clamp(512, 8_192) as f64;
+    estimate.ceil().clamp(64.0, max_width) as u32
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn blend_text_strip_at(
+    frame: &mut [u8],
+    width: usize,
+    height: usize,
+    x: isize,
+    y: isize,
+    strip: &RenderedTextStrip,
+) {
+    let start_sx = if x < 0 {
+        usize::try_from(-x).unwrap_or(strip.width).min(strip.width)
+    } else {
+        0
+    };
+    let end_sx = if x >= width as isize {
+        0
+    } else {
+        let visible = width.saturating_sub(x.max(0) as usize);
+        start_sx.saturating_add(visible).min(strip.width)
+    };
+    if start_sx >= end_sx {
+        return;
+    }
+    for sy in 0..strip.height {
+        let dy = y.saturating_add(sy as isize);
+        if dy < 0 || dy >= height as isize {
+            continue;
+        }
+        for sx in start_sx..end_sx {
+            let dx = x.saturating_add(sx as isize);
+            let src = sy * strip.stride + sx * 4;
+            let alpha = strip.bgra[src + 3];
+            if alpha == 0 {
+                continue;
+            }
+            let alpha = u16::from(alpha);
+            let inv = 255u16.saturating_sub(alpha);
+            let dst = (dy as usize * width + dx as usize) * 4;
+            frame[dst] = blend(frame[dst], strip.bgra[src], alpha, inv);
+            frame[dst + 1] = blend(frame[dst + 1], strip.bgra[src + 1], alpha, inv);
+            frame[dst + 2] = blend(frame[dst + 2], strip.bgra[src + 2], alpha, inv);
+        }
+    }
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn draw_sunny_cat(frame: &mut [u8], width: usize, height: usize) {
+    if !crate::sunny_cat::available() || width == 0 || height == 0 {
+        return;
+    }
+    let src_width = crate::sunny_cat::WIDTH;
+    let src_height = crate::sunny_cat::HEIGHT;
+    let max_width = width.saturating_sub(32).max(1);
+    let max_height = height.saturating_sub(32).max(1);
+    let scale = (max_width as f64 / src_width as f64)
+        .min(max_height as f64 / src_height as f64)
+        .min(1.0)
+        .max(0.1);
+    let dst_width = (src_width as f64 * scale).round().max(1.0) as usize;
+    let dst_height = (src_height as f64 * scale).round().max(1.0) as usize;
+    let x0 = width.saturating_sub(dst_width).saturating_sub(36);
+    let y0 = height.saturating_sub(dst_height).saturating_sub(36);
+    let rgba = crate::sunny_cat::RGBA;
+    for dy in 0..dst_height {
+        let sy = ((dy as f64 / scale).floor() as usize).min(src_height.saturating_sub(1));
+        let out_y = y0 + dy;
+        if out_y >= height {
+            continue;
+        }
+        for dx in 0..dst_width {
+            let sx = ((dx as f64 / scale).floor() as usize).min(src_width.saturating_sub(1));
+            let src = (sy * src_width + sx) * 4;
+            if src + 3 >= rgba.len() {
+                continue;
+            }
+            let alpha = rgba[src + 3];
+            if alpha == 0 {
+                continue;
+            }
+            let out_x = x0 + dx;
+            if out_x >= width {
+                continue;
+            }
+            let alpha = u16::from(alpha);
+            let inv = 255u16.saturating_sub(alpha);
+            let dst = (out_y * width + out_x) * 4;
+            frame[dst] = blend(frame[dst], rgba[src + 2], alpha, inv);
+            frame[dst + 1] = blend(frame[dst + 1], rgba[src + 1], alpha, inv);
+            frame[dst + 2] = blend(frame[dst + 2], rgba[src], alpha, inv);
+        }
     }
 }
 
@@ -638,4 +894,118 @@ fn lerp(a: u8, b: u8, t: f32) -> u8 {
     ((a as f32) + ((b as f32) - (a as f32)) * t)
         .round()
         .clamp(0.0, 255.0) as u8
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn estimated_text_width_px(text: &str, font_size: u32) -> f64 {
+    let font_size = f64::from(font_size.max(16));
+    let units = text.chars().fold(0.0, |sum, ch| {
+        sum + if ch.is_whitespace() {
+            0.38
+        } else if ch.is_ascii_punctuation() {
+            0.42
+        } else if ch.is_ascii_lowercase() {
+            0.58
+        } else if ch.is_ascii_digit() {
+            0.60
+        } else {
+            0.74
+        }
+    });
+    units * font_size
+}
+
+#[cfg(all(test, feature = "gpu-wgpu"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ticker_window_keeps_rendering_tail_when_leading_text_is_offscreen() {
+        let text = "Environment Canada has issued a Severe Thunderstorm Warning. ".repeat(20);
+        let text_width = text.chars().count() as f64 * 48.0 * 0.56;
+
+        let (window, x_absolute) = ticker_text_window(&text, text_width, 48, -19_000.0, 1_920.0);
+
+        assert!(!window.trim().is_empty());
+        assert!(
+            x_absolute > -1.0,
+            "window x should keep the visible suffix on-screen"
+        );
+        assert!(
+            window.len() < text.len(),
+            "renderer should draw a bounded text window"
+        );
+    }
+
+    #[test]
+    fn ticker_window_uses_stable_pages_for_adjacent_frames() {
+        let text = "Environment Canada has issued a Severe Thunderstorm Warning. ".repeat(20);
+        let text_width = text.chars().count() as f64 * 48.0 * 0.56;
+
+        let (first, first_x) = ticker_text_window(&text, text_width, 48, -320.0, 1_920.0);
+        let (second, second_x) = ticker_text_window(&text, text_width, 48, -332.0, 1_920.0);
+
+        assert_eq!(first, second);
+        assert!(
+            second_x < first_x,
+            "the cached page should slide smoothly between frame positions"
+        );
+    }
+
+    #[test]
+    fn ticker_x_uses_exact_compositor_frame_steps() {
+        assert_eq!(
+            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, false, 0),
+            1_921.0
+        );
+        assert_eq!(
+            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, false, 1),
+            1_909.0
+        );
+        assert_eq!(
+            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, false, 10),
+            1_801.0
+        );
+    }
+
+    #[test]
+    fn ticker_x_uses_full_steps_for_interlaced_output() {
+        assert_eq!(
+            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, true, 0),
+            1_921.0
+        );
+        assert_eq!(
+            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, true, 1),
+            1_909.0
+        );
+        assert_eq!(
+            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, true, 2),
+            1_897.0
+        );
+    }
+
+    #[test]
+    fn ticker_elapsed_prefers_buffer_pts_over_callback_count() {
+        let elapsed = ticker_elapsed_for_compositor_frame(
+            Some(2_500_000_000),
+            Some(1_000_000_000),
+            120,
+            60.0,
+        );
+        assert!((elapsed - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ticker_elapsed_falls_back_to_draw_fps_without_pts() {
+        let elapsed = ticker_elapsed_for_compositor_frame(None, None, 30, 30.0);
+        assert!((elapsed - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ticker_x_uses_media_time_and_configured_draw_fps() {
+        let fps = 30_000.0 / 1_001.0;
+        let x = ticker_x_for_compositor_time(1_920.0, 800.0, 12, fps, 1.0);
+        let expected = 1_921.0 - (12.0 * fps);
+        assert!((x - expected).abs() < 0.000_001);
+    }
 }

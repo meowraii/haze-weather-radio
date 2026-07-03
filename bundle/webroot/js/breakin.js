@@ -232,9 +232,9 @@ async function startMic() {
     sendChain = Promise.resolve();
     const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
             channelCount: 1,
         },
     });

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
@@ -104,6 +104,197 @@ fn sync_status_value(feed: &FeedConfig) -> Value {
     })
 }
 
+pub(crate) fn gstreamer_catalog_json() -> Result<Value> {
+    gst::init().context("failed to initialize GStreamer")?;
+    Ok(json!({
+        "formats": gstreamer_muxer_catalog(),
+        "video_codecs": gstreamer_encoder_catalog(gst::ElementFactoryType::VIDEO_ENCODER, "video"),
+        "audio_codecs": gstreamer_encoder_catalog(gst::ElementFactoryType::AUDIO_ENCODER, "audio"),
+        "gstreamer": {
+            "source": "haze-cgen-registry",
+            "runtime": "gstreamer-rs",
+        },
+    }))
+}
+
+fn gstreamer_muxer_catalog() -> Vec<Value> {
+    let mut entries = Vec::new();
+    for factory in
+        gst::ElementFactory::factories_with_type(gst::ElementFactoryType::MUXER, gst::Rank::NONE)
+    {
+        let element = factory.name().to_string();
+        if let Some((id, label)) = format_catalog_entry(
+            element.as_str(),
+            factory.longname(),
+            factory.klass(),
+            factory.description(),
+        ) {
+            let source = factory
+                .plugin_name()
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| "gstreamer".to_string());
+            entries.push(json!({
+                "id": id,
+                "label": label,
+                "kind": "container",
+                "element": element,
+                "source": source,
+            }));
+        }
+    }
+    sort_catalog_values(entries)
+}
+
+fn gstreamer_encoder_catalog(
+    factory_type: gst::ElementFactoryType,
+    media_kind: &str,
+) -> Vec<Value> {
+    let mut entries = Vec::new();
+    for factory in gst::ElementFactory::factories_with_type(factory_type, gst::Rank::NONE) {
+        let element = factory.name().to_string();
+        let label = encoder_catalog_label(
+            element.as_str(),
+            factory.longname(),
+            factory.klass(),
+            factory.description(),
+        );
+        let source = factory
+            .plugin_name()
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| "gstreamer".to_string());
+        entries.push(json!({
+            "id": element,
+            "label": label,
+            "kind": media_kind,
+            "element": element,
+            "source": source,
+        }));
+    }
+    sort_catalog_values(entries)
+}
+
+fn sort_catalog_values(mut entries: Vec<Value>) -> Vec<Value> {
+    entries.sort_by(|left, right| {
+        let left_label = left
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let right_label = right
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        left_label.cmp(&right_label)
+    });
+    entries
+}
+
+fn format_catalog_entry(
+    element: &str,
+    longname: &str,
+    klass: &str,
+    description: &str,
+) -> Option<(&'static str, &'static str)> {
+    let lower = catalog_lower(element, longname, klass, description);
+    match () {
+        _ if lower.contains("mpeg-ts")
+            || lower.contains("mpeg transport")
+            || element == "mpegtsmux" =>
+        {
+            Some(("mpegts", "MPEG-TS"))
+        }
+        _ if lower.contains("quicktime") || lower.contains("mp4") => Some(("mp4", "MPEG-4 / MP4")),
+        _ if lower.contains("matroska") => Some(("matroska", "Matroska")),
+        _ if lower.contains("webm") => Some(("webm", "WebM")),
+        _ if lower.contains("flv") => Some(("flv", "FLV")),
+        _ if lower.contains("wav") => Some(("wav", "WAV")),
+        _ if lower.contains("ogg") => Some(("ogg", "Ogg")),
+        _ if lower.contains("avi") => Some(("avi", "AVI")),
+        _ if lower.contains("mxf") => Some(("mxf", "MXF")),
+        _ => None,
+    }
+}
+
+fn encoder_catalog_label(element: &str, longname: &str, klass: &str, description: &str) -> String {
+    let lower = catalog_lower(element, longname, klass, description);
+    let codec = catalog_codec_name(lower.as_str()).unwrap_or(longname.trim());
+    let implementation = catalog_implementation_name(element, lower.as_str());
+    if implementation.is_empty() {
+        format!("{codec} ({element})")
+    } else {
+        format!("{codec} - {implementation} ({element})")
+    }
+}
+
+fn catalog_lower(element: &str, longname: &str, klass: &str, description: &str) -> String {
+    format!("{element} {longname} {klass} {description}").to_ascii_lowercase()
+}
+
+fn catalog_codec_name(lower: &str) -> Option<&'static str> {
+    match () {
+        _ if lower.contains("e-ac-3")
+            || lower.contains("eac3")
+            || lower.contains("enhanced ac-3") =>
+        {
+            Some("E-AC-3")
+        }
+        _ if lower.contains("ac-3") || lower.contains("ac3") => Some("AC-3"),
+        _ if lower.contains("h.265") || lower.contains("h265") || lower.contains("hevc") => {
+            Some("H.265 / HEVC")
+        }
+        _ if lower.contains("h.264") || lower.contains("h264") || lower.contains("avc") => {
+            Some("H.264 / AVC")
+        }
+        _ if lower.contains("aac") => Some("AAC"),
+        _ if lower.contains("opus") => Some("Opus"),
+        _ if lower.contains("vorbis") => Some("Vorbis"),
+        _ if lower.contains("flac") => Some("FLAC"),
+        _ if lower.contains("mp3") || lower.contains("mpeg layer 3") => Some("MP3"),
+        _ if lower.contains("mp2") || lower.contains("mpeg layer ii") => {
+            Some("MPEG Layer II Audio")
+        }
+        _ if lower.contains("alaw") || lower.contains("a-law") => Some("A-law"),
+        _ if lower.contains("mulaw") || lower.contains("mu-law") => Some("mu-law"),
+        _ if lower.contains("speex") => Some("Speex"),
+        _ if lower.contains("mpeg-2") || lower.contains("mpeg2") => Some("MPEG-2 Video"),
+        _ if lower.contains("mpeg-4") || lower.contains("mpeg4") => Some("MPEG-4 Part 2"),
+        _ if lower.contains("av1") => Some("AV1"),
+        _ if lower.contains("vp9") => Some("VP9"),
+        _ if lower.contains("vp8") => Some("VP8"),
+        _ if lower.contains("theora") => Some("Theora"),
+        _ if lower.contains("jpeg") => Some("Motion JPEG"),
+        _ if lower.contains("png") => Some("PNG"),
+        _ if lower.contains("webp") => Some("WebP"),
+        _ => None,
+    }
+}
+
+fn catalog_implementation_name(element: &str, lower: &str) -> &'static str {
+    match element {
+        "x264enc" => "x264 software",
+        "x265enc" => "x265 software",
+        "openh264enc" => "OpenH264",
+        "amfh264enc" | "amfh265enc" | "amfav1enc" => "AMD AMF",
+        "nvh264enc" | "nvh265enc" | "nvav1enc" => "NVIDIA NVENC",
+        "qsvh264enc" | "qsvh265enc" | "qsvmpeg2enc" | "qsvav1enc" => "Intel Quick Sync",
+        "svtav1enc" => "SVT-AV1",
+        "aomav1enc" | "av1enc" => "AOM",
+        "vp8enc" | "vp9enc" => "libvpx",
+        "opusenc" => "Opus",
+        "vorbisenc" => "Vorbis",
+        "flacenc" => "FLAC",
+        "faac" => "FAAC",
+        "fdkaacenc" => "fdk-aac",
+        "mfaacenc" => "Media Foundation",
+        "lamemp3enc" => "LAME",
+        "twolame" => "TwoLAME",
+        _ if element.starts_with("avenc_") => "libav",
+        _ if lower.contains("hardware") => "hardware",
+        _ => "",
+    }
+}
+
 fn run_pipeline_once(
     feed: FeedConfig,
     mut state_rx: watch::Receiver<RuntimeState>,
@@ -114,12 +305,12 @@ fn run_pipeline_once(
     let plan = GstPipelinePlan::from_feed(&feed)?;
     info!(
         feed_id = %feed.id,
-        input = %feed.program_input_url(),
-        output = %feed.program_output_url(),
+        input = %feed.redacted_program_input_url(),
+        output = %feed.redacted_program_output_url(),
         routine_audio = feed.priority_input.routine_audio_enabled(),
         priority_audio = feed.priority_input.priority_audio_enabled(),
         mute_standby_routine = feed.audio.mute_standby_routine,
-        pipeline = %plan.description,
+        pipeline = %crate::config::redacted_pipeline_description(&feed, &plan.description),
         "starting gstreamer cgen pipeline"
     );
     publish_status(
@@ -132,7 +323,7 @@ fn run_pipeline_once(
             "input_video_connected": false,
             "input_audio_connected": false,
             "output_active": false,
-            "pipeline_description": plan.description.clone(),
+            "pipeline_description": crate::config::redacted_pipeline_description(&feed, &plan.description),
             "output_ladder": plan.status_value(),
             "sync": sync_status_value(&feed),
         }),
@@ -174,33 +365,38 @@ fn run_pipeline_once(
         priority_drain,
     );
     let mut text_overlay = TextOverlayController::default();
-    let wgpu_compositors =
-        match install_wgpu_overlay_probes(&pipeline, &feed, &plan, text_overlay.shared_state()) {
-            Ok(compositors) => compositors,
-            Err(err) => {
-                publish_status(
-                    &status_tx,
-                    &feed,
-                    &state_rx,
-                    json!({
-                        "media_backend": "gstreamer-rs",
-                        "graphics_backend": "wgpu",
-                        "input_connected": false,
-                        "output_active": false,
-                        "fatal": true,
-                        "last_error": err.to_string(),
-                        "sync": sync_status_value(&feed),
-                    }),
-                );
-                return Err(err);
-            }
-        };
+    let wgpu_compositors = match install_wgpu_overlay_probes(
+        &pipeline,
+        &feed,
+        &plan,
+        &base_dir,
+        text_overlay.shared_state(),
+    ) {
+        Ok(compositors) => compositors,
+        Err(err) => {
+            publish_status(
+                &status_tx,
+                &feed,
+                &state_rx,
+                json!({
+                    "media_backend": "gstreamer-rs",
+                    "graphics_backend": "wgpu",
+                    "input_connected": false,
+                    "output_active": false,
+                    "fatal": true,
+                    "last_error": err.to_string(),
+                    "sync": sync_status_value(&feed),
+                }),
+            );
+            return Err(err);
+        }
+    };
     let (initial_audio_mode, initial_video_mode) = {
         let state = state_rx.borrow();
         let video_connected = input_video_connected(&input_health, &feed);
         let audio_connected = input_audio_connected(&input_health, &feed);
         let feeder_status = priority_feeder.update(priority_audio_for_feed(&feed, &state));
-        let video_mode = desired_video_selector_mode(&feed, video_connected);
+        let video_mode = desired_video_selector_mode(&feed, &state, video_connected);
         let audio_live = feeder_status.is_live_priority();
         text_overlay.sync(&pipeline, &feed, &state, video_mode.no_signal(), audio_live)?;
         (
@@ -313,7 +509,7 @@ fn run_pipeline_once(
         {
             let state = state_rx.borrow();
             let video_connected = input_video_connected(&input_health, &feed);
-            let video_mode = desired_video_selector_mode(&feed, video_connected);
+            let video_mode = desired_video_selector_mode(&feed, &state, video_connected);
             if current_video_mode != video_mode {
                 set_video_selector_mode(&pipeline, video_mode)?;
                 current_video_mode = video_mode;
@@ -349,7 +545,7 @@ fn run_pipeline_once(
             let feeder_status = priority_feeder.update(priority_audio);
             let audio_mode =
                 desired_audio_selector_mode_with_status(&feed, audio_connected, &feeder_status);
-            let video_mode = desired_video_selector_mode(&feed, video_connected);
+            let video_mode = desired_video_selector_mode(&feed, &state, video_connected);
             let priority_active = priority_audio_active(&feed, &state);
             let visual_lifecycle = if state.banner_for(feed.id.as_str()).is_some() {
                 "banner"
@@ -468,6 +664,11 @@ impl TextOverlayController {
                 font_family: snapshot.font,
                 font_weight: snapshot.font_weight,
                 font_size: snapshot.font_size.max(16),
+                clock_text: snapshot.clock_text,
+                clock_x: snapshot.clock_x,
+                clock_y: snapshot.clock_y,
+                clock_font_size: snapshot.clock_font_size,
+                clock_color: snapshot.clock_color,
                 banner_height: snapshot.ticker_height,
                 speed_px_per_frame: snapshot.ticker_speed_px_per_frame.max(1),
                 frame_width: feed.video.width.max(1),
@@ -480,6 +681,7 @@ impl TextOverlayController {
                 x_absolute: 1.0,
                 silent: true,
                 gradient: snapshot.ticker_gradient,
+                sunny_cat: snapshot.sunny_cat,
             };
         }
 
@@ -527,6 +729,11 @@ impl TextOverlayController {
             font_family: snapshot.font,
             font_weight: snapshot.font_weight,
             font_size,
+            clock_text: snapshot.clock_text,
+            clock_x: snapshot.clock_x,
+            clock_y: snapshot.clock_y,
+            clock_font_size: snapshot.clock_font_size,
+            clock_color: snapshot.clock_color,
             banner_height: snapshot.ticker_height,
             speed_px_per_frame: snapshot.ticker_speed_px_per_frame.max(1),
             frame_width: feed.video.width.max(1),
@@ -538,6 +745,7 @@ impl TextOverlayController {
             x_absolute,
             silent,
             gradient: snapshot.ticker_gradient,
+            sunny_cat: snapshot.sunny_cat,
         }
     }
 
@@ -619,6 +827,11 @@ impl TextOverlayController {
             font_family: snapshot.font,
             font_weight: snapshot.font_weight,
             font_size: snapshot.font_size.max(16),
+            clock_text: snapshot.clock_text,
+            clock_x: snapshot.clock_x,
+            clock_y: snapshot.clock_y,
+            clock_font_size: snapshot.clock_font_size,
+            clock_color: snapshot.clock_color,
             banner_height: snapshot.ticker_height,
             speed_px_per_frame: snapshot.ticker_speed_px_per_frame.max(1),
             frame_width: feed.video.width.max(1),
@@ -631,6 +844,7 @@ impl TextOverlayController {
             x_absolute: 1.0,
             silent: true,
             gradient: snapshot.ticker_gradient,
+            sunny_cat: snapshot.sunny_cat,
         }
     }
 
@@ -642,8 +856,13 @@ impl TextOverlayController {
                 "x_absolute": state.x_absolute,
                 "ypos": state.ypos,
                 "silent": state.silent,
+                "sunny_cat": state.sunny_cat,
                 "font_desc": state.font_desc,
                 "font_weight": state.font_weight,
+                "clock_text": state.clock_text,
+                "clock_x": state.clock_x,
+                "clock_y": state.clock_y,
+                "clock_font_size": state.clock_font_size,
                 "pass_index": self.pass_index,
                 "completed_passes": self.completed_passes,
                 "audio_was_live": self.audio_was_live,
@@ -656,7 +875,12 @@ impl TextOverlayController {
                 "x_absolute": 1.0,
                 "ypos": 0.08,
                 "silent": true,
+                "sunny_cat": false,
                 "font_desc": "",
+                "clock_text": "",
+                "clock_x": 48,
+                "clock_y": 48,
+                "clock_font_size": 30,
                 "pass_index": self.pass_index,
                 "completed_passes": self.completed_passes,
             })
@@ -688,6 +912,7 @@ fn install_wgpu_overlay_probes(
     pipeline: &gst::Pipeline,
     feed: &FeedConfig,
     plan: &GstPipelinePlan,
+    base_dir: &Path,
     state: Arc<Mutex<Option<TextOverlayRenderState>>>,
 ) -> Result<WgpuCompositorSet> {
     let mut renderers = Vec::new();
@@ -708,6 +933,19 @@ fn install_wgpu_overlay_probes(
         )?));
         let renderer_for_probe = Arc::clone(&renderer);
         let state_for_probe = Arc::clone(&state);
+        let preview_writer = if index == 0 {
+            Some(Arc::new(Mutex::new(FramePreviewWriter::new(
+                base_dir
+                    .join("runtime")
+                    .join("cgen")
+                    .join(format!("{}.preview.jpg", safe_preview_id(&feed.id))),
+                video.width,
+                video.height,
+            ))))
+        } else {
+            None
+        };
+        let preview_for_probe = preview_writer.clone();
         let feed_id = feed.id.clone();
         let overlay_for_probe = overlay_name.clone();
         let probe_id = src_pad
@@ -721,6 +959,13 @@ fn install_wgpu_overlay_probes(
                             if let Ok(mut renderer) = renderer_for_probe.lock() {
                                 if let Err(err) = renderer.composite_bgrx(map.as_mut_slice(), frame_pts_ns, state.as_ref()) {
                                     warn!(feed_id = %feed_id, overlay = %overlay_for_probe, "wgpu compositor failed: {err:#}");
+                                }
+                            }
+                            if let Some(preview) = &preview_for_probe {
+                                if let Ok(mut preview) = preview.lock() {
+                                    if let Err(err) = preview.maybe_write(map.as_slice()) {
+                                        warn!(feed_id = %feed_id, overlay = %overlay_for_probe, "failed to write cgen preview frame: {err:#}");
+                                    }
                                 }
                             }
                         }
@@ -739,6 +984,93 @@ fn install_wgpu_overlay_probes(
         renderers,
         _probe_ids: probe_ids,
     })
+}
+
+struct FramePreviewWriter {
+    path: PathBuf,
+    source_width: u32,
+    source_height: u32,
+    last_write: Option<Instant>,
+}
+
+impl FramePreviewWriter {
+    fn new(path: PathBuf, source_width: u32, source_height: u32) -> Self {
+        Self {
+            path,
+            source_width,
+            source_height,
+            last_write: None,
+        }
+    }
+
+    fn maybe_write(&mut self, frame: &[u8]) -> Result<()> {
+        let now = Instant::now();
+        if self
+            .last_write
+            .map(|last| now.saturating_duration_since(last) < Duration::from_millis(66))
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let width = usize::try_from(self.source_width).unwrap_or(0);
+        let height = usize::try_from(self.source_height).unwrap_or(0);
+        let expected = width.saturating_mul(height).saturating_mul(4);
+        if width == 0 || height == 0 || frame.len() < expected {
+            return Ok(());
+        }
+        write_bgrx_preview_jpeg(&self.path, frame, width, height)?;
+        self.last_write = Some(now);
+        Ok(())
+    }
+}
+
+fn write_bgrx_preview_jpeg(path: &Path, frame: &[u8], width: usize, height: usize) -> Result<()> {
+    const MAX_PREVIEW_WIDTH: usize = 320;
+    let out_width = width.min(MAX_PREVIEW_WIDTH).max(1);
+    let out_height = ((height as f64 * out_width as f64 / width.max(1) as f64).round() as usize)
+        .clamp(1, height.max(1));
+    let mut rgb = vec![0u8; out_width.saturating_mul(out_height).saturating_mul(3)];
+    for out_y in 0..out_height {
+        let src_y = out_y.saturating_mul(height) / out_height;
+        for out_x in 0..out_width {
+            let src_x = out_x.saturating_mul(width) / out_width;
+            let src = (src_y * width + src_x) * 4;
+            let dst = (out_y * out_width + out_x) * 3;
+            rgb[dst] = frame[src + 2];
+            rgb[dst + 1] = frame[src + 1];
+            rgb[dst + 2] = frame[src];
+        }
+    }
+    let mut jpeg = Vec::with_capacity(rgb.len().saturating_div(3));
+    let encoder = jpeg_encoder::Encoder::new(&mut jpeg, 68);
+    encoder
+        .encode(
+            &rgb,
+            out_width as u16,
+            out_height as u16,
+            jpeg_encoder::ColorType::Rgb,
+        )
+        .context("failed to encode cgen preview jpeg")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).context("failed to create cgen preview directory")?;
+    }
+    let tmp = path.with_extension("preview.jpg.tmp");
+    fs::write(&tmp, jpeg).context("failed to write cgen preview temp file")?;
+    fs::rename(&tmp, path).context("failed to replace cgen preview file")?;
+    Ok(())
+}
+
+fn safe_preview_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn ticker_state_done(state: &TextOverlayRenderState) -> bool {
@@ -795,13 +1127,8 @@ fn ticker_x_absolute(
 }
 
 fn ticker_elapsed_seconds(feed: &FeedConfig, started_at: Instant) -> f64 {
-    let elapsed = started_at.elapsed().as_secs_f64();
-    if !feed.video.interlaced {
-        return elapsed;
-    }
-    let output_fps = (feed_fps(feed) / 2.0).max(1.0);
-    let output_frame = (elapsed * output_fps).floor();
-    output_frame / output_fps
+    let _ = feed;
+    started_at.elapsed().as_secs_f64()
 }
 
 fn ticker_overlay_window(
@@ -1101,12 +1428,23 @@ fn install_program_audio_probe(
     Ok(())
 }
 
-fn desired_video_selector_mode(feed: &FeedConfig, input_connected: bool) -> VideoSelectorMode {
-    if feed.state.smpte_bars || feed.state.mode.eq_ignore_ascii_case("smpte") {
+fn desired_video_selector_mode(
+    feed: &FeedConfig,
+    state: &RuntimeState,
+    input_connected: bool,
+) -> VideoSelectorMode {
+    let control = state.control_for(feed.id.as_str());
+    let mode = control
+        .and_then(|control| control.string_field("mode"))
+        .unwrap_or(feed.state.mode.as_str());
+    let smpte_bars = control
+        .and_then(|control| control.bool_field("smpte_bars"))
+        .unwrap_or(feed.state.smpte_bars);
+    if smpte_bars || mode.eq_ignore_ascii_case("smpte") {
         VideoSelectorMode::Smpte
-    } else if feed.state.mode.eq_ignore_ascii_case("black") {
+    } else if mode.eq_ignore_ascii_case("black") {
         VideoSelectorMode::Black
-    } else if feed.state.mode.eq_ignore_ascii_case("standby") || !input_connected {
+    } else if mode.eq_ignore_ascii_case("standby") || !input_connected {
         VideoSelectorMode::Standby
     } else {
         VideoSelectorMode::Program
@@ -1221,6 +1559,9 @@ fn priority_audio_appsrc(pipeline: &gst::Pipeline) -> Result<gst_app::AppSrc> {
 }
 
 fn apply_mpegts_program_map(pipeline: &gst::Pipeline, plan: &GstPipelinePlan) -> Result<()> {
+    if plan.mux_kind != MuxKind::MpegTs {
+        return Ok(());
+    }
     let mux = pipeline
         .by_name("mux")
         .context("GStreamer CGEN pipeline is missing mpegts mux")?;
@@ -1641,6 +1982,7 @@ fn publish_status(
     if let Some(target) = data.as_object_mut() {
         target.insert("feed_id".to_string(), Value::String(feed.id.clone()));
     }
+    crate::config::redact_feed_endpoint_status(feed, &mut data);
     if let Some(tx) = status_tx {
         let _ = tx.send(data);
     }
@@ -1743,6 +2085,7 @@ struct GstPipelinePlan {
     videos: Vec<PlannedVideoRendition>,
     audios: Vec<PlannedAudioRendition>,
     program_map: String,
+    mux_kind: MuxKind,
     required_elements: Vec<String>,
 }
 
@@ -1777,8 +2120,12 @@ impl GstPipelinePlan {
     fn from_feed(feed: &FeedConfig) -> Result<Self> {
         let source = InputSourceFragment::from_url(feed.program_input_url(), feed)?;
         let sink = SinkFragment::from_url(feed.program_output_url(), feed)?;
-        let videos = feed.enabled_video_renditions(feed.video.width, feed.video.height);
-        let audios = feed.enabled_audio_renditions();
+        let mut videos = feed.enabled_video_renditions(feed.video.width, feed.video.height);
+        let mut audios = feed.enabled_audio_renditions();
+        if sink.mux_kind == MuxKind::Flv {
+            videos.truncate(1);
+            audios.truncate(1);
+        }
         let planned_videos = videos
             .iter()
             .enumerate()
@@ -1799,7 +2146,7 @@ impl GstPipelinePlan {
             .collect::<Vec<_>>();
         let video_input = source.video_branch();
         let audio_input = source.audio_branch();
-        let mux = mux_fragment(feed);
+        let mux = mux_fragment(feed, sink.mux_kind);
         let queue = queue_fragment(feed, QueueLeak::None);
         let video_live_queue = queue_fragment(feed, QueueLeak::Downstream);
         let audio_live_queue = queue_fragment(feed, QueueLeak::Downstream);
@@ -1810,14 +2157,14 @@ impl GstPipelinePlan {
             .iter()
             .enumerate()
             .map(|(index, video)| {
-                video_rendition_branch(feed, video, &planned_videos[index], index)
+                video_rendition_branch(feed, video, &planned_videos[index], index, sink.mux_kind)
             })
             .collect::<Vec<_>>()
             .join(" ");
         let audio_branches = planned_audios
             .iter()
             .enumerate()
-            .map(|(index, audio)| audio_rendition_branch(feed, audio, index))
+            .map(|(index, audio)| audio_rendition_branch(feed, audio, index, sink.mux_kind))
             .collect::<Vec<_>>()
             .join(" ");
         let description = format!(
@@ -1843,6 +2190,7 @@ impl GstPipelinePlan {
             videos: planned_videos,
             audios: planned_audios,
             program_map,
+            mux_kind: sink.mux_kind,
             required_elements,
         })
     }
@@ -1888,7 +2236,6 @@ fn required_elements(
         "audiotestsrc".to_string(),
         "input-selector".to_string(),
         "identity".to_string(),
-        "mpegtsmux".to_string(),
         "queue".to_string(),
         "tee".to_string(),
         "videoconvert".to_string(),
@@ -1896,8 +2243,9 @@ fn required_elements(
         "videoscale".to_string(),
         "videotestsrc".to_string(),
     ]);
+    elements.insert(sink.mux_kind.required_element().to_string());
     elements.extend(source.required_elements.iter().cloned());
-    elements.insert(sink.required_element.clone());
+    elements.extend(sink.required_elements.iter().cloned());
     elements.extend(
         videos
             .iter()
@@ -1990,6 +2338,7 @@ fn video_rendition_branch(
     video: &crate::config::VideoRenditionConfig,
     planned: &PlannedVideoRendition,
     index: usize,
+    mux_kind: MuxKind,
 ) -> String {
     let caps = video_caps_fragment(feed, video);
     let overlay_name = gst_element_name("cgen_overlay", &video.id, index);
@@ -2010,9 +2359,9 @@ fn video_rendition_branch(
     };
     let queue = queue_fragment(feed, QueueLeak::None);
     let leaky_queue = queue_fragment(feed, QueueLeak::Downstream);
+    let mux_pad = mux_kind.video_sink_pad(planned);
     format!(
-        "video_tee. ! {leaky_queue} ! videoconvert ! videoscale ! videorate ! {caps},format=BGRx ! identity name={overlay_name} silent=true ! videoconvert ! video/x-raw,format=I420{interlace} ! {queue} ! {encoder} ! {queue} ! mux.sink_{}",
-        planned.video_pid
+        "video_tee. ! {leaky_queue} ! videoconvert ! videoscale ! videorate ! {caps},format=BGRx ! identity name={overlay_name} silent=true ! videoconvert ! video/x-raw,format=I420{interlace} ! {queue} ! {encoder} ! {queue} ! {mux_pad}"
     )
 }
 
@@ -2020,6 +2369,7 @@ fn audio_rendition_branch(
     feed: &FeedConfig,
     audio: &PlannedAudioRendition,
     index: usize,
+    mux_kind: MuxKind,
 ) -> String {
     let name = gst_element_name(
         "audio",
@@ -2029,9 +2379,10 @@ fn audio_rendition_branch(
     let encoder = audio_encoder_fragment_bps(audio.codec.as_str(), audio.bitrate_bps);
     let queue = queue_fragment(feed, QueueLeak::None);
     let leaky_queue = queue_fragment(feed, QueueLeak::Downstream);
+    let mux_pad = mux_kind.audio_sink_pad(audio);
     format!(
-        "audio_tee. ! {leaky_queue} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels={},layout=interleaved ! {queue} ! {encoder} ! {queue} name={name}_encoded ! mux.sink_{}",
-        audio.channels, audio.audio_pid
+        "audio_tee. ! {leaky_queue} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels={},layout=interleaved ! {queue} ! {encoder} ! {queue} name={name}_encoded ! {mux_pad}",
+        audio.channels
     )
 }
 
@@ -2093,11 +2444,43 @@ fn priority_appsrc_max_bytes(feed: &FeedConfig) -> u64 {
         .max(48_000)
 }
 
-fn mux_fragment(feed: &FeedConfig) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MuxKind {
+    MpegTs,
+    Flv,
+}
+
+impl MuxKind {
+    fn required_element(self) -> &'static str {
+        match self {
+            Self::MpegTs => "mpegtsmux",
+            Self::Flv => "flvmux",
+        }
+    }
+
+    fn video_sink_pad(self, video: &PlannedVideoRendition) -> String {
+        match self {
+            Self::MpegTs => format!("mux.sink_{}", video.video_pid),
+            Self::Flv => "mux.video".to_string(),
+        }
+    }
+
+    fn audio_sink_pad(self, audio: &PlannedAudioRendition) -> String {
+        match self {
+            Self::MpegTs => format!("mux.sink_{}", audio.audio_pid),
+            Self::Flv => "mux.audio".to_string(),
+        }
+    }
+}
+
+fn mux_fragment(feed: &FeedConfig, kind: MuxKind) -> String {
     let latency_ns = queue_time_ns(feed) / 2;
-    format!(
-        "mpegtsmux name=mux alignment=7 latency={latency_ns} pat-interval=4500 pmt-interval=4500 si-interval=4500 pcr-interval=1800"
-    )
+    match kind {
+        MuxKind::MpegTs => format!(
+            "mpegtsmux name=mux alignment=7 latency={latency_ns} pat-interval=4500 pmt-interval=4500 si-interval=4500 pcr-interval=1800"
+        ),
+        MuxKind::Flv => "flvmux name=mux streamable=true latency=0".to_string(),
+    }
 }
 
 fn gst_element_name(prefix: &str, id: &str, index: usize) -> String {
@@ -2180,7 +2563,8 @@ impl InputSourceFragment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SinkFragment {
     description: String,
-    required_element: String,
+    required_elements: Vec<String>,
+    mux_kind: MuxKind,
 }
 
 impl SinkFragment {
@@ -2198,7 +2582,8 @@ impl SinkFragment {
                     endpoint.port,
                     endpoint.buffer_size.unwrap_or(DEFAULT_UDP_BUFFER_BYTES)
                 ),
-                required_element: "udpsink".to_string(),
+                required_elements: vec!["udpsink".to_string()],
+                mux_kind: MuxKind::MpegTs,
             });
         }
         if url.to_ascii_lowercase().starts_with("rtmp://") {
@@ -2207,12 +2592,14 @@ impl SinkFragment {
                     "rtmpsink location={} sync=true async=false qos=true max-lateness={max_lateness_ns}",
                     gst_quote(url)
                 ),
-                required_element: "rtmpsink".to_string(),
+                required_elements: vec!["rtmpsink".to_string()],
+                mux_kind: MuxKind::Flv,
             });
         }
         return Ok(Self {
             description: format!("filesink location={} sync=true async=false", gst_quote(url)),
-            required_element: "filesink".to_string(),
+            required_elements: vec!["filesink".to_string()],
+            mux_kind: MuxKind::MpegTs,
         });
     }
 }
@@ -2253,7 +2640,7 @@ fn video_encoder_fragment(
 ) -> String {
     let bitrate = bitrate_kbps.unwrap_or(12_000).saturating_mul(1_000);
     match codec.trim().to_ascii_lowercase().as_str() {
-        "mpeg2video" | "mpeg2" => {
+        "mpeg2video" | "mpeg2" | "avenc_mpeg2video" => {
             let interlace_flags = if interlaced {
                 let field_order = if top_field_first(field_order) {
                     "tt"
@@ -2268,12 +2655,59 @@ fn video_encoder_fragment(
             };
             format!("avenc_mpeg2video bitrate={bitrate} gop-size=15 qos=true{interlace_flags}")
         }
-        "h264_amf" => format!("amfh264enc bitrate={} qos=true", bitrate / 1_000),
-        "h264_nvenc" => format!("nvh264enc bitrate={}", bitrate / 1_000),
+        "h264" | "avc" | "x264" | "libx264" | "x264enc" => format!(
+            "x264enc tune=zerolatency speed-preset=ultrafast bitrate={} qos=true",
+            bitrate / 1_000
+        ),
+        "avenc_h264" | "h264_libav" => format!("avenc_h264 bitrate={bitrate}"),
+        "h264_amf" | "amf_h264" | "amfh264enc" => {
+            format!("amfh264enc bitrate={} qos=true", bitrate / 1_000)
+        }
+        "h264_nvenc" | "nvenc_h264" | "nvh264enc" => {
+            format!("nvh264enc bitrate={}", bitrate / 1_000)
+        }
+        "h264_qsv" | "qsv_h264" | "qsvh264enc" => {
+            format!("qsvh264enc bitrate={}", bitrate / 1_000)
+        }
+        "mpeg2_qsv" | "qsv_mpeg2" | "qsvmpeg2enc" => {
+            format!("qsvmpeg2enc bitrate={}", bitrate / 1_000)
+        }
+        "openh264" | "h264_openh264" | "openh264enc" => format!("openh264enc bitrate={bitrate}"),
+        "h265" | "hevc" | "x265" | "libx265" | "x265enc" => {
+            format!(
+                "x265enc speed-preset=ultrafast tune=zerolatency bitrate={} option-string=\"bframes=0:rc-lookahead=0:frame-threads=1:pools=none\"",
+                bitrate / 1_000
+            )
+        }
+        "h265_amf" | "hevc_amf" | "amf_h265" | "amf_hevc" | "amfh265enc" => {
+            format!("amfh265enc bitrate={}", bitrate / 1_000)
+        }
+        "h265_nvenc" | "hevc_nvenc" | "nvenc_h265" | "nvenc_hevc" | "nvh265enc" => {
+            format!("nvh265enc bitrate={}", bitrate / 1_000)
+        }
+        "h265_qsv" | "hevc_qsv" | "qsv_h265" | "qsv_hevc" | "qsvh265enc" => {
+            format!("qsvh265enc bitrate={}", bitrate / 1_000)
+        }
+        "hevc_libav" | "h265_libav" | "avenc_hevc" => format!("avenc_hevc bitrate={bitrate}"),
+        "mpeg4" | "mpeg4video" | "avenc_mpeg4" => format!("avenc_mpeg4 bitrate={bitrate}"),
+        actual if actual.starts_with("avenc_") => format!("{actual} bitrate={bitrate}"),
+        actual if actual.ends_with("enc") => generic_video_encoder_fragment(actual, bitrate),
         _ => format!(
             "x264enc tune=zerolatency speed-preset=ultrafast bitrate={} qos=true",
             bitrate / 1_000
         ),
+    }
+}
+
+fn generic_video_encoder_fragment(element: &str, bitrate: u32) -> String {
+    match element {
+        name if name.starts_with("amf") || name.starts_with("qsv") || name.starts_with("nv") => {
+            format!("{name} bitrate={}", bitrate / 1_000)
+        }
+        name if name.starts_with("mf") || name.starts_with("d3d12") => {
+            format!("{name} bitrate={}", bitrate / 1_000)
+        }
+        name => name.to_string(),
     }
 }
 
@@ -2290,29 +2724,77 @@ fn doubled_gst_fraction(value: &str) -> Option<String> {
     Some(format!("{}/{}", num.saturating_mul(2), den.max(1)))
 }
 
-fn video_encoder_element(codec: &str) -> &'static str {
+fn video_encoder_element(codec: &str) -> String {
     match codec.trim().to_ascii_lowercase().as_str() {
-        "mpeg2video" | "mpeg2" => "avenc_mpeg2video",
-        "h264_amf" => "amfh264enc",
-        "h264_nvenc" => "nvh264enc",
-        _ => "x264enc",
+        "mpeg2video" | "mpeg2" | "avenc_mpeg2video" => "avenc_mpeg2video".to_string(),
+        "h264" | "avc" | "x264" | "libx264" | "x264enc" => "x264enc".to_string(),
+        "avenc_h264" | "h264_libav" => "avenc_h264".to_string(),
+        "h264_amf" | "amf_h264" | "amfh264enc" => "amfh264enc".to_string(),
+        "h264_nvenc" | "nvenc_h264" | "nvh264enc" => "nvh264enc".to_string(),
+        "h264_qsv" | "qsv_h264" | "qsvh264enc" => "qsvh264enc".to_string(),
+        "mpeg2_qsv" | "qsv_mpeg2" | "qsvmpeg2enc" => "qsvmpeg2enc".to_string(),
+        "openh264" | "h264_openh264" | "openh264enc" => "openh264enc".to_string(),
+        "h265" | "hevc" | "x265" | "libx265" | "x265enc" => "x265enc".to_string(),
+        "h265_amf" | "hevc_amf" | "amf_h265" | "amf_hevc" | "amfh265enc" => {
+            "amfh265enc".to_string()
+        }
+        "h265_nvenc" | "hevc_nvenc" | "nvenc_h265" | "nvenc_hevc" | "nvh265enc" => {
+            "nvh265enc".to_string()
+        }
+        "h265_qsv" | "hevc_qsv" | "qsv_h265" | "qsv_hevc" | "qsvh265enc" => {
+            "qsvh265enc".to_string()
+        }
+        "hevc_libav" | "h265_libav" | "avenc_hevc" => "avenc_hevc".to_string(),
+        "mpeg4" | "mpeg4video" | "avenc_mpeg4" => "avenc_mpeg4".to_string(),
+        actual if actual.starts_with("avenc_") || actual.ends_with("enc") => actual.to_string(),
+        _ => "x264enc".to_string(),
     }
 }
 
 fn audio_encoder_fragment_bps(codec: &str, bitrate_bps: i64) -> String {
     let bitrate = bitrate_bps.max(1);
     match codec.trim().to_ascii_lowercase().as_str() {
-        "ac3" => format!("avenc_ac3 bitrate={bitrate}"),
-        "eac3" => format!("avenc_eac3 bitrate={bitrate}"),
+        "ac3" | "avenc_ac3" => format!("avenc_ac3 bitrate={bitrate}"),
+        "eac3" | "e-ac3" | "e_ac3" | "enhanced_ac3" | "enhanced-ac3" | "avenc_eac3" => {
+            format!("avenc_eac3 bitrate={bitrate}")
+        }
+        "mp2" | "mpeg_layer_2" | "mpeg-layer-2" | "avenc_mp2" => {
+            format!("avenc_mp2 bitrate={bitrate}")
+        }
+        "mp3" | "lamemp3enc" => {
+            format!("lamemp3enc target=bitrate bitrate={}", bitrate / 1_000)
+        }
+        "avenc_mp3" => format!("avenc_mp3 bitrate={bitrate}"),
+        "opus" | "opusenc" => format!("opusenc bitrate={bitrate}"),
+        "vorbis" | "vorbisenc" => format!("vorbisenc bitrate={bitrate}"),
+        "flac" | "flacenc" => "flacenc".to_string(),
+        "avenc_flac" => "avenc_flac".to_string(),
+        "avenc_aac" | "aac" => format!("avenc_aac bitrate={bitrate}"),
+        "faac" => format!("faac bitrate={bitrate}"),
+        actual if actual.starts_with("avenc_") => format!("{actual} bitrate={bitrate}"),
+        "fdkaacenc" | "mfaacenc" => format!("{} bitrate={bitrate}", codec.trim()),
+        actual if actual.ends_with("enc") => actual.to_string(),
         _ => format!("avenc_aac bitrate={bitrate}"),
     }
 }
 
-fn audio_encoder_element(codec: &str) -> &'static str {
+fn audio_encoder_element(codec: &str) -> String {
     match codec.trim().to_ascii_lowercase().as_str() {
-        "ac3" => "avenc_ac3",
-        "eac3" => "avenc_eac3",
-        _ => "avenc_aac",
+        "ac3" | "avenc_ac3" => "avenc_ac3".to_string(),
+        "eac3" | "e-ac3" | "e_ac3" | "enhanced_ac3" | "enhanced-ac3" | "avenc_eac3" => {
+            "avenc_eac3".to_string()
+        }
+        "mp2" | "mpeg_layer_2" | "mpeg-layer-2" | "avenc_mp2" => "avenc_mp2".to_string(),
+        "mp3" | "lamemp3enc" => "lamemp3enc".to_string(),
+        "avenc_mp3" => "avenc_mp3".to_string(),
+        "opus" | "opusenc" => "opusenc".to_string(),
+        "vorbis" | "vorbisenc" => "vorbisenc".to_string(),
+        "flac" | "flacenc" => "flacenc".to_string(),
+        "avenc_flac" => "avenc_flac".to_string(),
+        "aac" | "avenc_aac" => "avenc_aac".to_string(),
+        "faac" => "faac".to_string(),
+        actual if actual.starts_with("avenc_") || actual.ends_with("enc") => actual.to_string(),
+        _ => "avenc_aac".to_string(),
     }
 }
 
@@ -2601,6 +3083,32 @@ mod tests {
     }
 
     #[test]
+    fn gstreamer_plan_uses_selected_hevc_and_eac3_encoders() {
+        let mut feed = test_feed();
+        feed.program_output.vcodec = "h265".to_string();
+        feed.program_output.acodec = "e-ac3".to_string();
+        for video in &mut feed.ladder.videos {
+            video.vcodec = "h265".to_string();
+        }
+        for audio in &mut feed.ladder.audios {
+            audio.acodec = "e-ac3".to_string();
+        }
+
+        let plan = GstPipelinePlan::from_feed(&feed).expect("plan");
+
+        assert!(
+            plan.description
+                .contains("x265enc speed-preset=ultrafast bitrate=12000"),
+            "HEVC selection should not fall back to x264: {}",
+            plan.description
+        );
+        assert!(plan.description.contains("avenc_eac3 bitrate=192000"));
+        assert!(plan.required_elements.contains(&"x265enc".to_string()));
+        assert!(plan.required_elements.contains(&"avenc_eac3".to_string()));
+        assert!(!plan.required_elements.contains(&"x264enc".to_string()));
+    }
+
+    #[test]
     fn gstreamer_plan_uses_uridecodebin_for_non_udp_inputs() {
         let mut feed = test_feed();
         feed.program_input.url = "http://172.16.1.31:8866/live?channel_id=10798".to_string();
@@ -2747,7 +3255,7 @@ mod tests {
         let mut state = RuntimeState::default();
 
         assert_eq!(
-            desired_video_selector_mode(&feed, true),
+            desired_video_selector_mode(&feed, &state, true),
             VideoSelectorMode::Program
         );
         assert!(state.apply_event(&json!({
@@ -2761,7 +3269,7 @@ mod tests {
             }
         })));
         assert_eq!(
-            desired_video_selector_mode(&feed, true),
+            desired_video_selector_mode(&feed, &state, true),
             VideoSelectorMode::Program
         );
         assert_eq!(
@@ -2771,7 +3279,7 @@ mod tests {
 
         feed.state.mode = "standby".to_string();
         assert_eq!(
-            desired_video_selector_mode(&feed, true),
+            desired_video_selector_mode(&feed, &state, true),
             VideoSelectorMode::Standby
         );
         assert_eq!(
@@ -2780,7 +3288,31 @@ mod tests {
         );
         feed.state.smpte_bars = true;
         assert_eq!(
-            desired_video_selector_mode(&feed, true),
+            desired_video_selector_mode(&feed, &state, true),
+            VideoSelectorMode::Smpte
+        );
+    }
+
+    #[test]
+    fn live_cgen_control_can_switch_video_selector_without_static_config_change() {
+        let feed = test_feed();
+        let mut state = RuntimeState::default();
+        assert_eq!(
+            desired_video_selector_mode(&feed, &state, true),
+            VideoSelectorMode::Program
+        );
+        assert!(state.apply_event(&json!({
+            "type": "cgen.control",
+            "subject": feed.id.clone(),
+            "data": {
+                "feed_id": feed.id.clone(),
+                "action": "smpte_bars",
+                "enabled": true,
+                "smpte_bars": true
+            }
+        })));
+        assert_eq!(
+            desired_video_selector_mode(&feed, &state, true),
             VideoSelectorMode::Smpte
         );
     }
@@ -2792,7 +3324,7 @@ mod tests {
         let mut state = RuntimeState::default();
 
         assert_eq!(
-            desired_video_selector_mode(&feed, false),
+            desired_video_selector_mode(&feed, &state, false),
             VideoSelectorMode::Standby
         );
         assert_eq!(
@@ -2811,7 +3343,7 @@ mod tests {
             }
         })));
         assert_eq!(
-            desired_video_selector_mode(&feed, false),
+            desired_video_selector_mode(&feed, &state, false),
             VideoSelectorMode::Standby
         );
         assert_eq!(
@@ -2849,7 +3381,7 @@ mod tests {
         assert!(health.video_connected(&feed));
         assert!(!health.audio_connected(&feed));
         assert_eq!(
-            desired_video_selector_mode(&feed, health.video_connected(&feed)),
+            desired_video_selector_mode(&feed, &state, health.video_connected(&feed)),
             VideoSelectorMode::Program
         );
         assert_eq!(

@@ -42,6 +42,24 @@ func TestServerIPIgnoresLoopbackLocalAddress(t *testing.T) {
 	}
 }
 
+func TestLoadConfigExpandsSiteNameFromEnv(t *testing.T) {
+	t.Setenv("SITE_NAME", "Env Haze")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	mustWrite(t, configPath, `version: test
+webpanel:
+  public:
+    site_name: "${SITE_NAME}"
+`)
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := siteName(config); got != "Env Haze" {
+		t.Fatalf("siteName = %q", got)
+	}
+}
+
 func TestCachedInterfaceServerIPUsesTTL(t *testing.T) {
 	interfaceServerIPMu.Lock()
 	previousIP := interfaceServerIPCached
@@ -746,17 +764,25 @@ func TestWebSocketDaemonSettingsCommandRoundTrip(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(`version: test
 daemon_settings_file: runtime/state/daemonSettings.json
 services:
+  rust:
+    cap_ingest:
+      enabled: true
+      source_id: rust-cap
+      source: naads
+      mode: tcp
+      url: tcp://streaming1.naad-adna.pelmorex.com:8080
+      fallback_url: tcp://streaming2.naad-adna.pelmorex.com:8080
+      archive_url: http://capcp1.naad-adna.pelmorex.com
+      fallback_archive_url: http://capcp2.naad-adna.pelmorex.com
+      interval: 5s
+      timeout: 15s
+      startup_seed: true
+      concurrency: 8
   go:
     enabled: true
     web_gateway:
       enabled: true
       addr: "127.0.0.1:8081"
-    cap_ingest:
-      enabled: true
-      source_id: go-cap
-      source: naads
-      interval: 30s
-      timeout: 15s
     tts:
       enabled: true
       readers: managed/configs/readers.xml
@@ -817,8 +843,8 @@ webpanel:
 	getResult := getReply["result"].(map[string]any)
 	effective := getResult["effective"].(map[string]any)
 	services := effective["services"].(map[string]any)
-	goServices := services["go"].(map[string]any)
-	capIngest := goServices["cap_ingest"].(map[string]any)
+	rustServices := services["rust"].(map[string]any)
+	capIngest := rustServices["cap_ingest"].(map[string]any)
 	capIngest["enabled"] = false
 
 	writeWS(t, ctx, conn, map[string]any{
@@ -1281,6 +1307,17 @@ func TestPublicWebSocketRejectsOversizedWebRTCOfferFields(t *testing.T) {
 	}
 }
 
+func TestNormalizeWebRTCOfferSDPUsesCRLFAndNestedFallbackShape(t *testing.T) {
+	raw := "v=0\nm=audio 9 UDP/TLS/RTP/SAVPF 111\n  \na=rtpmap:111 opus/48000/2  \n"
+	normalized := normalizeWebRTCOfferSDP(raw)
+	if normalized != "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n" {
+		t.Fatalf("normalized SDP = %q", normalized)
+	}
+	if normalizeWebRTCOfferSDP(" \r\n\t") != "" {
+		t.Fatal("blank SDP should normalize to empty")
+	}
+}
+
 func TestPublicFeedAudioHEADValidatesFeedAndCodec(t *testing.T) {
 	dir := t.TempDir()
 	writePublicFixture(t, dir, "public")
@@ -1289,6 +1326,17 @@ func TestPublicFeedAudioHEADValidatesFeedAndCodec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	config.Services.Rust.Media.Enabled = true
+	mediaBackend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/health" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true,"capabilities":{"http_audio":true}}`))
+	}))
+	defer mediaBackend.Close()
+	config.Services.Rust.Media.Listen = mediaBackend.URL
 	server := NewServerWithConfigPath(config, configPath, ".")
 	server.media = newMemoryMediaHub()
 
@@ -1299,6 +1347,9 @@ func TestPublicFeedAudioHEADValidatesFeedAndCodec(t *testing.T) {
 	}
 	if got := okResponse.Header().Get("Content-Type"); !strings.Contains(got, "audio/wav") {
 		t.Fatalf("content type = %q", got)
+	}
+	if got := okResponse.Header().Get("X-Haze-Media-Backend"); got != "haze-media" {
+		t.Fatalf("media backend header = %q", got)
 	}
 
 	missingFeed := httptest.NewRecorder()
@@ -1338,6 +1389,54 @@ func TestPublicFeedAudioHEADValidatesFeedAndCodec(t *testing.T) {
 	}
 	if allow := wrongMethod.Header().Get("Allow"); allow != "GET, HEAD" {
 		t.Fatalf("Allow = %q", allow)
+	}
+}
+
+func TestPublicFeedAudioHEADRejectsUnavailableNativeMediaService(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Services.Rust.Media.Enabled = true
+	config.Services.Rust.Media.Listen = "127.0.0.1:1"
+	server := NewServerWithConfigPath(config, configPath, ".")
+	server.media = newMemoryMediaHub()
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=sk-0001&codec=pcm16", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestPublicFeedAudioGETDoesNotSilentlyFallbackForNativeMediaServiceCodec(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaBackend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Error(writer, "nope", http.StatusServiceUnavailable)
+	}))
+	defer mediaBackend.Close()
+	config.Services.Rust.Media.Enabled = true
+	config.Services.Rust.Media.Listen = mediaBackend.URL
+	server := NewServerWithConfigPath(config, configPath, ".")
+	server.media = newMemoryMediaHub()
+	server.media.publish(PCMChunk{FeedID: "sk-0001", SampleRate: httpWAVSampleRate, Channels: 1, Data: make([]byte, httpWAVFrameSamples*2)})
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/public/v1/feed/audio?feed=sk-0001&codec=pcm16", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	if strings.Contains(response.Body.String(), "RIFF") {
+		t.Fatal("native media service failure should not fall back to legacy WAV stream")
 	}
 }
 
@@ -1579,6 +1678,13 @@ func TestReceiverSessionAndWebSocketUseFeedID(t *testing.T) {
 	transmitter := ready["transmitter"].(map[string]any)
 	if transmitter["site_name"] != "Saskatoon" || transmitter["callsign"] != "XLF322" {
 		t.Fatalf("transmitter = %#v", transmitter)
+	}
+	active := server.receiver.ActiveSnapshots()
+	if len(active) != 1 {
+		t.Fatalf("active receivers = %#v", active)
+	}
+	if active[0]["feed_id"] != "sk-0001" || active[0]["transport"] != "control" {
+		t.Fatalf("active receiver snapshot = %#v", active[0])
 	}
 	conn.CloseNow()
 }

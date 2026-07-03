@@ -14,23 +14,23 @@ import (
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
 )
 
 type archiveCAPRecord struct {
-	ID                 string          `json:"id"`
-	FeedID             string          `json:"feed_id,omitempty"`
-	Status             string          `json:"status"`
-	Reason             string          `json:"reason,omitempty"`
-	UpdatedAt          time.Time       `json:"updated_at"`
-	Alert              capingest.Alert `json:"alert"`
-	RawXML             string          `json:"raw_xml,omitempty"`
-	AlertText          string          `json:"alert_text,omitempty"`
-	BannerText         string          `json:"banner_text,omitempty"`
-	BroadcastImmediate bool            `json:"broadcast_immediate,omitempty"`
+	ID                 string         `json:"id"`
+	FeedID             string         `json:"feed_id,omitempty"`
+	Status             string         `json:"status"`
+	Reason             string         `json:"reason,omitempty"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+	Alert              capmodel.Alert `json:"alert"`
+	RawXML             string         `json:"raw_xml,omitempty"`
+	AlertText          string         `json:"alert_text,omitempty"`
+	BannerText         string         `json:"banner_text,omitempty"`
+	BroadcastImmediate bool           `json:"broadcast_immediate,omitempty"`
 }
 
 func alertsArchivePayload(configPath string) (map[string]any, error) {
@@ -102,7 +102,7 @@ func listArchiveStoreRecords(ctx context.Context, store datastore.Store, bucket 
 	}
 	records := make([]archiveCAPRecord, 0, len(rows))
 	for _, row := range rows {
-		alert, err := capingest.ParseCAP([]byte(row.RawXML))
+		alert, err := capmodel.ParseCAP([]byte(row.RawXML))
 		if err != nil || alert.Identifier == "" {
 			continue
 		}
@@ -385,55 +385,12 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 	if !ok {
 		return nil, fmt.Errorf("alert %s was not found", id)
 	}
+	data, withSAME, audio := archiveRebroadcastEventData(configPath, record, withSAME, force, time.Now().UTC())
 	if withSAME {
-		if !force && !archiveSAMEAllowed(configPath, record.Alert, time.Now().UTC()) {
-			withSAME = false
-		} else if item, err := queueArchiveSAME(configPath, record); err == nil {
-			_ = item
-		} else {
-			return nil, err
+		if strings.TrimSpace(stringPayload(data, "same_event", "")) == "" || len(stringSlicePayload(data, "same_locations")) == 0 {
+			return nil, fmt.Errorf("alert cannot be mapped to SAME cleanly")
 		}
 	}
-	audio := archiveBroadcastAudio(record.Alert)
-	data := map[string]any{
-		"feed_id":         feedID,
-		"alert_id":        id,
-		"package_id":      "alerts",
-		"title":           archiveAlertTitle(record.Alert),
-		"rebroadcast":     true,
-		"force":           force,
-		"force_broadcast": force,
-		"include_same":    withSAME,
-	}
-	info := chooseArchiveInfo(record.Alert)
-	areas := archiveAreaNames(info)
-	data["event"] = info.Event
-	data["headline"] = info.Headline
-	data["severity"] = info.Severity
-	data["urgency"] = info.Urgency
-	data["certainty"] = info.Certainty
-	data["description"] = info.Description
-	data["instruction"] = info.Instruction
-	if record.Alert.Sent != "" {
-		data["alert_sent_at"] = record.Alert.Sent
-	}
-	if info.Expires != "" {
-		data["alert_expires_at"] = info.Expires
-	}
-	data["alert_text"] = alerttext.BuildCAPAlertText(alerttext.CAPMessageRequest{
-		Alert:     record.Alert,
-		Info:      info,
-		AreaText:  alerttext.JoinParts(areas),
-		EventName: alerttext.AlertSubject(info),
-		Now:       time.Now().UTC(),
-	})
-	if audio.URL != "" {
-		data["audio_url"] = audio.URL
-		data["audio_mime_type"] = audio.MimeType
-		data["audio_authoritative"] = true
-	}
-	packet, _ := alertmodel.FromMap(data)
-	data = alertmodel.WithLegacyFields(packet, data)
 	bridgeAddr := strings.TrimSpace(os.Getenv("HAZE_HOST_BRIDGE_ADDR"))
 	if bridgeAddr == "" {
 		return nil, fmt.Errorf("event bridge is not available")
@@ -451,7 +408,111 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 	return map[string]any{"accepted": true, "same": withSAME, "audio_url": audio.URL}, nil
 }
 
-func archiveSAMEAllowed(configPath string, alert capingest.Alert, now time.Time) bool {
+func archiveRebroadcastEventData(configPath string, record archiveCAPRecord, withSAME bool, force bool, now time.Time) (map[string]any, bool, archiveAudio) {
+	id := fallbackString(record.ID, record.Alert.Identifier)
+	feedID := strings.TrimSpace(record.FeedID)
+	info := chooseArchiveInfo(record.Alert)
+	areas := archiveAreaNames(info)
+	audio := archiveBroadcastAudio(record.Alert)
+	message := alerttext.BuildCAPAlertText(alerttext.CAPMessageRequest{
+		Alert:     record.Alert,
+		Info:      info,
+		AreaText:  alerttext.JoinParts(areas),
+		EventName: alerttext.AlertSubject(info),
+		Now:       now,
+	})
+	visual := alerttext.PickBannerGradient([]alerttext.AlertVisualInput{{
+		Severity: info.Severity,
+		Event:    strings.Join([]string{info.Event, info.Headline, alerttext.AlertSubject(info), message}, " "),
+	}})
+	if withSAME && !force && !archiveSAMEAllowed(configPath, record.Alert, now) {
+		withSAME = false
+	}
+	data := map[string]any{
+		"feed_id":          feedID,
+		"feed_ids":         []string{feedID},
+		"alert_id":         id,
+		"id":               id,
+		"package_id":       "alerts",
+		"title":            archiveAlertTitle(record.Alert),
+		"rebroadcast":      true,
+		"force":            force,
+		"force_broadcast":  force,
+		"include_same":     withSAME,
+		"message_type":     record.Alert.MessageType,
+		"sender":           record.Alert.Sender,
+		"event":            info.Event,
+		"headline":         info.Headline,
+		"severity":         info.Severity,
+		"urgency":          info.Urgency,
+		"certainty":        info.Certainty,
+		"description":      info.Description,
+		"instruction":      info.Instruction,
+		"area_names":       areas,
+		"area_text":        alerttext.JoinParts(areas),
+		"alert_text":       message,
+		"banner_text":      archiveBannerText(record, info, message),
+		"background_color": visual[0],
+	}
+	if record.Alert.Sent != "" {
+		data["alert_sent_at"] = record.Alert.Sent
+		data["same_sent_at"] = record.Alert.Sent
+	}
+	if begins := firstNonBlank(info.Onset, info.Effective); begins != "" {
+		data["alert_begins_at"] = begins
+		data["same_begins_at"] = begins
+	}
+	if info.Expires != "" {
+		data["alert_expires_at"] = info.Expires
+		data["same_expires_at"] = info.Expires
+	}
+	if audio.URL != "" {
+		data["audio_url"] = audio.URL
+		data["audio_mime_type"] = audio.MimeType
+		data["audio_authoritative"] = true
+	}
+	if withSAME {
+		baseDir := filepath.Dir(filepath.Clean(configPath))
+		resolution := capsame.ResolveEvent(record.Alert, info, baseDir)
+		locations := sameLocationsFromCAP(info)
+		data["same_event"] = resolution.Event
+		data["same_event_name"] = alerttext.EventName(configPath, resolution.Event)
+		data["same_event_source"] = resolution.Source
+		data["same_event_reason"] = resolution.Reason
+		data["same_event_confidence"] = resolution.Confidence
+		data["same_alert_class"] = resolution.AlertClass
+		data["same_event_phenomenon"] = resolution.Phenomenon
+		data["same_locations"] = locations
+		data["locations"] = locations
+		data["same_duration"] = sameDurationFromCAP(info)
+		data["same_originator"] = "WXR"
+		data["same_originator_name"] = "The National Weather Service or Environment Canada"
+		data["same_weather_service"] = record.Alert.Sender
+		data["same_callsign"] = sameCallsignFromConfig(configPath, feedID)
+		data["same_tone"] = "WXR"
+	}
+	packet, _ := alertmodel.FromMap(data)
+	return alertmodel.WithLegacyFields(packet, data), withSAME, audio
+}
+
+func archiveBannerText(record archiveCAPRecord, info capmodel.AlertInfo, fallback string) string {
+	if text := strings.TrimSpace(record.BannerText); text != "" {
+		return text
+	}
+	parts := []string{}
+	if description := strings.TrimSpace(info.Description); description != "" {
+		parts = append(parts, alerttext.CleanAlertText(description))
+	}
+	if instruction := strings.TrimSpace(info.Instruction); instruction != "" {
+		parts = append(parts, alerttext.CleanAlertText(instruction))
+	}
+	if len(parts) == 0 {
+		return strings.TrimSpace(fallback)
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func archiveSAMEAllowed(configPath string, alert capmodel.Alert, now time.Time) bool {
 	if archiveAlertExpired(alert, now) {
 		return false
 	}
@@ -472,7 +533,7 @@ func archiveSAMEAllowed(configPath string, alert capingest.Alert, now time.Time)
 	return now.Sub(anchor) <= limit
 }
 
-func archiveSAMEPreviewAvailable(alert capingest.Alert, baseDir string) bool {
+func archiveSAMEPreviewAvailable(alert capmodel.Alert, baseDir string) bool {
 	if strings.EqualFold(alert.MessageType, "Cancel") {
 		return false
 	}
@@ -639,7 +700,7 @@ func queuedAlertMatches(manifest map[string]any, filename string, id string, fee
 	return strings.Contains(name, safeAlertID)
 }
 
-func chooseArchiveInfo(alert capingest.Alert) capingest.AlertInfo {
+func chooseArchiveInfo(alert capmodel.Alert) capmodel.AlertInfo {
 	for _, info := range alert.Infos {
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(info.Language)), "en") {
 			return info
@@ -648,7 +709,7 @@ func chooseArchiveInfo(alert capingest.Alert) capingest.AlertInfo {
 	if len(alert.Infos) > 0 {
 		return alert.Infos[0]
 	}
-	return capingest.AlertInfo{}
+	return capmodel.AlertInfo{}
 }
 
 type archiveAudio struct {
@@ -656,7 +717,7 @@ type archiveAudio struct {
 	MimeType string
 }
 
-func archiveBroadcastAudio(alert capingest.Alert) archiveAudio {
+func archiveBroadcastAudio(alert capmodel.Alert) archiveAudio {
 	for _, info := range alert.Infos {
 		for _, resource := range info.Resources {
 			mimeType := strings.ToLower(strings.TrimSpace(resource.MimeType))
@@ -689,7 +750,7 @@ func archiveAudioURLAllowed(rawURL string) bool {
 	}
 }
 
-func archiveAreaNames(info capingest.AlertInfo) []string {
+func archiveAreaNames(info capmodel.AlertInfo) []string {
 	out := []string{}
 	for _, area := range info.Areas {
 		if text := strings.TrimSpace(area.Description); text != "" {
@@ -699,12 +760,12 @@ func archiveAreaNames(info capingest.AlertInfo) []string {
 	return uniqueStrings(out)
 }
 
-func archiveAlertTitle(alert capingest.Alert) string {
+func archiveAlertTitle(alert capmodel.Alert) string {
 	info := chooseArchiveInfo(alert)
 	return fallbackString(info.Headline, info.Event, "Weather Alert")
 }
 
-func sameLocationsFromCAP(info capingest.AlertInfo) []string {
+func sameLocationsFromCAP(info capmodel.AlertInfo) []string {
 	out := []string{}
 	for _, area := range info.Areas {
 		for _, geocode := range area.Geocodes {
@@ -717,7 +778,7 @@ func sameLocationsFromCAP(info capingest.AlertInfo) []string {
 	return uniqueStrings(out)
 }
 
-func sameDurationFromCAP(info capingest.AlertInfo) string {
+func sameDurationFromCAP(info capmodel.AlertInfo) string {
 	expires := parseArchiveTime(info.Expires)
 	if expires.IsZero() {
 		return "0015"
@@ -732,7 +793,7 @@ func sameDurationFromCAP(info capingest.AlertInfo) string {
 	return fmt.Sprintf("%02d%02d", minutes/60, minutes%60)
 }
 
-func archiveAlertExpired(alert capingest.Alert, now time.Time) bool {
+func archiveAlertExpired(alert capmodel.Alert, now time.Time) bool {
 	if strings.EqualFold(alert.MessageType, "Cancel") {
 		return true
 	}
@@ -749,7 +810,7 @@ func archiveAlertExpired(alert capingest.Alert, now time.Time) bool {
 	return !expires.IsZero() && now.After(expires)
 }
 
-func isRealTornadoOrSevereThunderstorm(alert capingest.Alert) bool {
+func isRealTornadoOrSevereThunderstorm(alert capmodel.Alert) bool {
 	if !strings.EqualFold(alert.Status, "Actual") {
 		return false
 	}
@@ -785,7 +846,7 @@ func sortArchiveRecords(records []archiveCAPRecord) {
 	})
 }
 
-func firstArchiveTime(alert capingest.Alert) time.Time {
+func firstArchiveTime(alert capmodel.Alert) time.Time {
 	for _, raw := range []string{alert.Sent, chooseArchiveInfo(alert).Effective, chooseArchiveInfo(alert).Onset, chooseArchiveInfo(alert).Expires} {
 		if parsed := parseArchiveTime(raw); !parsed.IsZero() {
 			return parsed

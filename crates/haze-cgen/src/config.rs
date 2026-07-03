@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename = "cgen")]
@@ -29,8 +30,8 @@ pub(crate) struct FeedConfig {
     pub(crate) priority_input: PriorityInputConfig,
     #[serde(rename = "programOutput", default)]
     pub(crate) program_output: EndpointConfig,
-    #[serde(default)]
-    pub(crate) program: ProgramSectionConfig,
+    #[serde(rename = "program", default)]
+    pub(crate) program: Vec<ProgramSectionConfig>,
     #[serde(default)]
     pub(crate) priority: PrioritySectionConfig,
     #[serde(default)]
@@ -266,6 +267,8 @@ pub(crate) struct StateConfig {
     pub(crate) mode: String,
     #[serde(rename = "@smpte_bars", default)]
     pub(crate) smpte_bars: bool,
+    #[serde(rename = "@sunny_cat", default)]
+    pub(crate) sunny_cat: bool,
     #[serde(rename = "@updated_at", default)]
     pub(crate) updated_at: String,
 }
@@ -417,11 +420,13 @@ impl CgenConfig {
 
 impl FeedConfig {
     fn apply_nested_sections(&mut self) {
-        if self.program.input.has_values() {
-            self.program_input = self.program.input.clone();
-        }
-        if self.program.output.has_values() {
-            self.program_output = self.program.output.clone();
+        for program in &self.program {
+            if program.input.has_values() {
+                self.program_input = program.input.clone();
+            }
+            if program.output.has_values() {
+                self.program_output = program.output.clone();
+            }
         }
         if !self.priority.input.feed_id.trim().is_empty()
             || !self.priority.input.audio_source.trim().is_empty()
@@ -559,6 +564,14 @@ impl FeedConfig {
         &self.program_output
     }
 
+    pub(crate) fn redacted_program_input_url(&self) -> String {
+        redact_endpoint_url(self.program_input_url())
+    }
+
+    pub(crate) fn redacted_program_output_url(&self) -> String {
+        redact_endpoint_url(self.program_output_url())
+    }
+
     pub(crate) fn enabled_video_renditions(
         &self,
         source_width: u32,
@@ -595,6 +608,73 @@ impl FeedConfig {
         }
         out
     }
+}
+
+pub(crate) fn redact_feed_endpoint_status(feed: &FeedConfig, value: &mut Value) {
+    let replacements = [
+        (
+            feed.program_input_url().trim(),
+            feed.redacted_program_input_url(),
+        ),
+        (
+            feed.program_output_url().trim(),
+            feed.redacted_program_output_url(),
+        ),
+    ];
+    redact_status_value(value, &replacements);
+}
+
+pub(crate) fn redacted_pipeline_description(feed: &FeedConfig, text: &str) -> String {
+    let mut value = Value::String(text.to_string());
+    redact_feed_endpoint_status(feed, &mut value);
+    value.as_str().unwrap_or(text).to_string()
+}
+
+fn redact_status_value(value: &mut Value, replacements: &[(&str, String); 2]) {
+    match value {
+        Value::String(text) => {
+            for (raw, redacted) in replacements {
+                if !raw.is_empty() && *raw != redacted {
+                    *text = text.replace(raw, redacted);
+                    let quoted = format!("\"{}\"", raw.replace('\\', "\\\\").replace('"', "\\\""));
+                    let redacted_quoted = format!(
+                        "\"{}\"",
+                        redacted.replace('\\', "\\\\").replace('"', "\\\"")
+                    );
+                    *text = text.replace(&quoted, &redacted_quoted);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                redact_status_value(item, replacements);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values_mut() {
+                redact_status_value(item, replacements);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn redact_endpoint_url(value: &str) -> String {
+    let value = value.trim();
+    let Some(scheme_end) = value.find("://") else {
+        return value.to_string();
+    };
+    let scheme = &value[..scheme_end];
+    let rest = &value[scheme_end + 3..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() {
+        return format!("{scheme}://...");
+    }
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    format!("{scheme}://{host}/...")
 }
 
 impl VideoRenditionConfig {
@@ -662,11 +742,50 @@ impl AudioRenditionConfig {
 pub(crate) fn load_config(path: &Path) -> Result<CgenConfig> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    reject_legacy_cgen_xml(path, &raw)?;
-    let mut config: CgenConfig = quick_xml::de::from_str(&raw)
+    let expanded = expand_env_vars(&raw);
+    reject_legacy_cgen_xml(path, &expanded)?;
+    let mut config: CgenConfig = quick_xml::de::from_str(&expanded)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     config.apply_nested_sections();
     Ok(config)
+}
+
+fn expand_env_vars(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '$' {
+            out.push(ch);
+            continue;
+        }
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            let mut name = String::new();
+            for next in chars.by_ref() {
+                if next == '}' {
+                    break;
+                }
+                name.push(next);
+            }
+            out.push_str(&std::env::var(name).unwrap_or_default());
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(next) = chars.peek().copied() {
+            if next == '_' || next.is_ascii_alphanumeric() {
+                name.push(next);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if name.is_empty() {
+            out.push('$');
+        } else {
+            out.push_str(&std::env::var(name).unwrap_or_default());
+        }
+    }
+    out
 }
 
 fn reject_legacy_cgen_xml(path: &Path, raw: &str) -> Result<()> {
@@ -1055,6 +1174,76 @@ mod tests {
     }
 
     #[test]
+    fn load_config_expands_environment_variables_at_runtime_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cgen.xml");
+        std::env::set_var(
+            "HAZE_CGEN_TEST_OUTPUT",
+            "rtmp://example.invalid/live/super-secret-key",
+        );
+        std::fs::write(
+            &path,
+            r#"
+<cgen enabled="true">
+  <feed id="CAP-IT-ALL" enabled="true">
+    <programInput url="udp://127.0.0.1:5000" format="mpegts"/>
+    <priorityInput feed_id="CAP-IT-ALL" audio_source="priority"/>
+    <programOutput url="${HAZE_CGEN_TEST_OUTPUT}" format="rtmp" vcodec="h264" acodec="ac3"/>
+    <video width="1920" height="1080" fps="30000/1001"/>
+    <audio idle="source" alert_mode="replace"/>
+    <ladder>
+      <video id="hd" enabled="true" width="1920" height="1080"/>
+      <audio id="stereo" enabled="true" channels="2"/>
+    </ladder>
+  </feed>
+</cgen>"#,
+        )
+        .expect("write config");
+
+        let config = load_config(&path).expect("config");
+        let feeds = config.enabled_feeds().expect("feeds");
+        assert_eq!(
+            feeds[0].program_output_url(),
+            "rtmp://example.invalid/live/super-secret-key"
+        );
+    }
+
+    #[test]
+    fn redacts_configured_endpoint_values_from_status() {
+        let config: CgenConfig = quick_xml::de::from_str(
+            r#"
+<cgen enabled="true">
+  <feed id="CAP-IT-ALL" enabled="true">
+    <programInput url="http://user:pass@example.invalid/input.ts" format="mpegts"/>
+    <priorityInput feed_id="CAP-IT-ALL" audio_source="priority"/>
+    <programOutput url="rtmp://publish.example.invalid/live/secret-key" format="rtmp" vcodec="h264" acodec="ac3"/>
+    <video width="1920" height="1080" fps="30000/1001"/>
+    <audio idle="source" alert_mode="replace"/>
+    <ladder>
+      <video id="hd" enabled="true" width="1920" height="1080"/>
+      <audio id="stereo" enabled="true" channels="2"/>
+    </ladder>
+  </feed>
+</cgen>"#,
+        )
+        .expect("parse");
+        let feed = config.feeds.into_iter().next().expect("feed");
+        let mut status = serde_json::json!({
+            "pipeline_description": "uridecodebin uri=\"http://user:pass@example.invalid/input.ts\" ! rtmpsink location=\"rtmp://publish.example.invalid/live/secret-key\"",
+            "nested": {
+                "output": "rtmp://publish.example.invalid/live/secret-key"
+            }
+        });
+
+        redact_feed_endpoint_status(&feed, &mut status);
+        let rendered = status.to_string();
+        assert!(!rendered.contains("user:pass"));
+        assert!(!rendered.contains("secret-key"));
+        assert!(rendered.contains("http://example.invalid/..."));
+        assert!(rendered.contains("rtmp://publish.example.invalid/..."));
+    }
+
+    #[test]
     fn validates_supported_sizes() {
         assert!(allowed_video_size(720, 480));
         assert!(allowed_video_size(720, 576));
@@ -1352,6 +1541,7 @@ impl Default for StateConfig {
         Self {
             mode: release_mode(),
             smpte_bars: false,
+            sunny_cat: false,
             updated_at: String::new(),
         }
     }

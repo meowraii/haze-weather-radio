@@ -428,7 +428,7 @@ func feedSummary(feed feedXML, outputs outputXML, forecastNames map[string]strin
 		"transmitters":        transmitterPayloads(feed),
 		"outputs":             outputLabels,
 		"webrtc_enabled":      webrtcEnabled,
-		"http_stream_enabled": webrtcEnabled,
+		"http_stream_enabled": true,
 		"alert_queue_depth":   queueDepth,
 		"recent_alerts":       recentQueue,
 		"playlist_items":      []any{},

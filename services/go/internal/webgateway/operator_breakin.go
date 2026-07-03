@@ -21,11 +21,9 @@ import (
 )
 
 const operatorBreakInDir = "runtime/audio/operator-breakin"
-const operatorBreakInMaxPCMBytes = 48_000 * 2 * 180
 const operatorBreakInMaxChunkBytes = 512 << 10
 const operatorBreakInMaxUploadBytes = 8 << 20
 const operatorBreakInMaxSessions = 8
-const operatorBreakInSessionTTL = 5 * time.Minute
 
 type OperatorBreakInManager struct {
 	mu       sync.Mutex
@@ -43,7 +41,6 @@ type operatorBreakInSession struct {
 	StreamURL   string
 	Publisher   *events.HostBridgePublisher
 	Cancel      context.CancelFunc
-	MaxBytes    int64
 	Bytes       int64
 	Chunks      int
 	StartedAt   time.Time
@@ -223,14 +220,14 @@ func (s *wsSession) cancelOperatorBreakIn(payload map[string]any) (map[string]an
 }
 
 func (m *OperatorBreakInManager) start(configPath string, feedIDs []string, title string, sampleRate int, channels int, prerollPath string) (map[string]any, error) {
-	return m.startSession(configPath, feedIDs, title, sampleRate, channels, prerollPath, "", nil, operatorBreakInMaxPCMBytes)
+	return m.startSession(configPath, feedIDs, title, sampleRate, channels, prerollPath, "", nil)
 }
 
 func (m *OperatorBreakInManager) startStream(configPath string, feedIDs []string, title string, streamURL string, cancel context.CancelFunc) (map[string]any, error) {
-	return m.startSession(configPath, feedIDs, title, 48000, 1, "", streamURL, cancel, 0)
+	return m.startSession(configPath, feedIDs, title, 48000, 1, "", streamURL, cancel)
 }
 
-func (m *OperatorBreakInManager) startSession(configPath string, feedIDs []string, title string, sampleRate int, channels int, prerollPath string, streamURL string, cancel context.CancelFunc, maxBytes int64) (map[string]any, error) {
+func (m *OperatorBreakInManager) startSession(configPath string, feedIDs []string, title string, sampleRate int, channels int, prerollPath string, streamURL string, cancel context.CancelFunc) (map[string]any, error) {
 	m.reapStale()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -258,7 +255,6 @@ func (m *OperatorBreakInManager) startSession(configPath string, feedIDs []strin
 		StreamURL:   streamURL,
 		Publisher:   publisher,
 		Cancel:      cancel,
-		MaxBytes:    maxBytes,
 		StartedAt:   time.Now().UTC(),
 	}
 	if err := publishOperatorBreakInEvent(session, "operator.breakin.start", nil); err != nil {
@@ -276,7 +272,6 @@ func (m *OperatorBreakInManager) startSession(configPath string, feedIDs []strin
 		StreamURL:   session.StreamURL,
 		Publisher:   session.Publisher,
 		Cancel:      session.Cancel,
-		MaxBytes:    session.MaxBytes,
 		StartedAt:   session.StartedAt,
 	}
 	if prerollPath != "" {
@@ -297,12 +292,11 @@ func (m *OperatorBreakInManager) startSession(configPath string, feedIDs []strin
 		m.sessions[id].Chunks = session.Chunks
 	}
 	return map[string]any{
-		"session_id":    id,
-		"alert_id":      alertID,
-		"feed_ids":      feedIDs,
-		"max_pcm_bytes": maxBytes,
-		"live":          true,
-		"stream_url":    streamURL,
+		"session_id": id,
+		"alert_id":   alertID,
+		"feed_ids":   feedIDs,
+		"live":       true,
+		"stream_url": streamURL,
 	}, nil
 }
 
@@ -322,9 +316,6 @@ func (m *OperatorBreakInManager) appendChunk(id string, data []byte) (map[string
 	session := m.sessions[id]
 	if session == nil || session.Publisher == nil {
 		return nil, fmt.Errorf("break-in session is not active")
-	}
-	if session.MaxBytes > 0 && session.Bytes+int64(len(data)) > session.MaxBytes {
-		return nil, fmt.Errorf("break-in audio exceeds maximum duration")
 	}
 	if err := publishOperatorBreakInPCM(session, data, session.SampleRate, session.Channels); err != nil {
 		return nil, err
@@ -662,32 +653,13 @@ func (m *OperatorBreakInManager) reapStale() {
 	if m == nil {
 		return
 	}
-	now := time.Now().UTC()
-	expired := []*operatorBreakInSession{}
 	m.mu.Lock()
 	for id, session := range m.sessions {
-		if session != nil && strings.TrimSpace(session.StreamURL) != "" {
-			continue
-		}
-		if session == nil || session.StartedAt.IsZero() || now.Sub(session.StartedAt) > operatorBreakInSessionTTL {
+		if session == nil {
 			delete(m.sessions, id)
-			if session != nil {
-				expired = append(expired, session)
-			}
 		}
 	}
 	m.mu.Unlock()
-	for _, session := range expired {
-		if session.Publisher != nil {
-			if session.Cancel != nil {
-				session.Cancel()
-			}
-			_ = publishOperatorBreakInEvent(session, "operator.breakin.cancel", map[string]any{
-				"reason": "stale session expired",
-			})
-			_ = session.Publisher.Close()
-		}
-	}
 }
 
 type wavInfoLite struct {

@@ -11,6 +11,7 @@ const PRIORITY_AUDIO_EXPIRE_GRACE_MS: i64 = 2_000;
 pub(crate) struct RuntimeState {
     pub(crate) banners: BTreeMap<String, BannerPayload>,
     pub(crate) active_audio: BTreeMap<String, PriorityAudio>,
+    pub(crate) controls: BTreeMap<String, CgenControlOverride>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -37,6 +38,12 @@ pub(crate) struct SerializedAlert {
     pub(crate) fields: BTreeMap<String, Value>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CgenControlOverride {
+    #[serde(flatten)]
+    pub(crate) fields: BTreeMap<String, Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PriorityAudio {
     pub(crate) queue_id: String,
@@ -57,10 +64,17 @@ impl RuntimeState {
         match event_type.as_str() {
             "banner.state.updated" => self.apply_banner_state(event),
             "alert.playout.started" => self.apply_priority_audio(event),
+            "cgen.control" => self.apply_cgen_control(event),
             "cap.alert.audio.ready" => false,
             "alert.playout.completed" | "playout.interrupted" => self.clear_priority_audio(event),
             _ => false,
         }
+    }
+
+    pub(crate) fn control_for(&self, feed_id: &str) -> Option<&CgenControlOverride> {
+        self.controls
+            .get(feed_id)
+            .or_else(|| self.controls.get("*"))
     }
 
     pub(crate) fn banner_for(&self, feed_id: &str) -> Option<&BannerPayload> {
@@ -164,6 +178,35 @@ impl RuntimeState {
         changed
     }
 
+    fn apply_cgen_control(&mut self, event: &Value) -> bool {
+        let data = event.get("data").unwrap_or(event);
+        let feed_id = fallback_text(
+            &text_at(data, &["feed_id"]),
+            &fallback_text(&text_at(data, &["id"]), &text_at(event, &["subject"]), ""),
+            "",
+        );
+        if feed_id.trim().is_empty() {
+            return false;
+        }
+        let mut next = CgenControlOverride {
+            fields: data
+                .as_object()
+                .map(|object| {
+                    object
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        normalize_cgen_control(&mut next);
+        let changed = self.controls.get(&feed_id) != Some(&next);
+        if changed {
+            self.controls.insert(feed_id, next);
+        }
+        changed
+    }
+
     fn clear_priority_audio(&mut self, event: &Value) -> bool {
         let feed_ids = feed_ids(event);
         let queue_id = fallback_text(
@@ -201,6 +244,113 @@ impl RuntimeState {
             changed |= self.active_audio.remove("*").is_some();
         }
         changed
+    }
+}
+
+impl CgenControlOverride {
+    pub(crate) fn string_field(&self, key: &str) -> Option<&str> {
+        self.fields
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+    }
+
+    pub(crate) fn bool_field(&self, key: &str) -> Option<bool> {
+        let value = self.fields.get(key)?;
+        if let Some(value) = value.as_bool() {
+            return Some(value);
+        }
+        value.as_str().and_then(parse_bool)
+    }
+
+    pub(crate) fn u32_field(&self, key: &str) -> Option<u32> {
+        let value = self.fields.get(key)?;
+        if let Some(value) = value.as_u64().and_then(|value| u32::try_from(value).ok()) {
+            return Some(value);
+        }
+        value
+            .as_str()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+    }
+
+    pub(crate) fn i32_field(&self, key: &str) -> Option<i32> {
+        let value = self.fields.get(key)?;
+        if let Some(value) = value.as_i64().and_then(|value| i32::try_from(value).ok()) {
+            return Some(value);
+        }
+        value
+            .as_str()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+    }
+}
+
+fn normalize_cgen_control(control: &mut CgenControlOverride) {
+    let action = control
+        .string_field("action")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match action.as_str() {
+        "release" => {
+            control
+                .fields
+                .insert("mode".into(), Value::String("release".into()));
+            control
+                .fields
+                .insert("smpte_bars".into(), Value::Bool(false));
+            control
+                .fields
+                .insert("sunny_cat".into(), Value::Bool(false));
+            control
+                .fields
+                .insert("text_enabled".into(), Value::Bool(false));
+            control
+                .fields
+                .insert("clock_enabled".into(), Value::Bool(false));
+        }
+        "overlay" => {
+            control
+                .fields
+                .insert("mode".into(), Value::String("overlay".into()));
+        }
+        "smpte_bars" => {
+            control
+                .fields
+                .insert("mode".into(), Value::String("overlay".into()));
+        }
+        "clock" => {
+            control
+                .fields
+                .insert("mode".into(), Value::String("overlay".into()));
+        }
+        "insert_text" => {
+            control
+                .fields
+                .insert("mode".into(), Value::String("overlay".into()));
+            control
+                .fields
+                .insert("text_enabled".into(), Value::Bool(true));
+        }
+        "clear_text" => {
+            control
+                .fields
+                .insert("text_enabled".into(), Value::Bool(false));
+            control
+                .fields
+                .insert("text".into(), Value::String(String::new()));
+        }
+        "unleash_sunny" => {
+            control
+                .fields
+                .insert("mode".into(), Value::String("overlay".into()));
+            control.fields.insert("sunny_cat".into(), Value::Bool(true));
+        }
+        "banish_sunny" => {
+            control
+                .fields
+                .insert("sunny_cat".into(), Value::Bool(false));
+        }
+        _ => {}
     }
 }
 
@@ -275,6 +425,14 @@ fn fallback_text(values: &str, fallback: &str, default: &str) -> String {
 
 fn non_empty(value: String) -> Option<String> {
     (!value.trim().is_empty()).then_some(value)
+}
+
+fn parse_bool(text: &str) -> Option<bool> {
+    match text.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" | "enabled" => Some(true),
+        "false" | "0" | "no" | "off" | "disabled" => Some(false),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -562,6 +720,50 @@ mod tests {
             "data": {"queue_id": "audio-ready-id"}
         })));
         assert!(state.priority_audio_for("CAP-IT-ALL").is_none());
+    }
+
+    #[test]
+    fn cgen_control_updates_live_override_state() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "cgen.control",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "feed_id": "CAP-IT-ALL",
+                "action": "clock",
+                "mode": "release",
+                "clock_enabled": true,
+                "clock_format": "Jan 02 15:04:05",
+                "clock_x": "96",
+                "smpte_bars": "false"
+            }
+        })));
+        let control = state.control_for("CAP-IT-ALL").expect("control override");
+        assert_eq!(control.string_field("mode"), Some("overlay"));
+        assert_eq!(control.bool_field("clock_enabled"), Some(true));
+        assert_eq!(
+            control.string_field("clock_format"),
+            Some("Jan 02 15:04:05")
+        );
+        assert_eq!(control.i32_field("clock_x"), Some(96));
+        assert_eq!(control.bool_field("smpte_bars"), Some(false));
+
+        assert!(state.apply_event(&json!({
+            "type": "cgen.control",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "feed_id": "CAP-IT-ALL",
+                "action": "release",
+                "clock_enabled": true,
+                "text_enabled": true,
+                "sunny_cat": true
+            }
+        })));
+        let control = state.control_for("CAP-IT-ALL").expect("control override");
+        assert_eq!(control.string_field("mode"), Some("release"));
+        assert_eq!(control.bool_field("clock_enabled"), Some(false));
+        assert_eq!(control.bool_field("text_enabled"), Some(false));
+        assert_eq!(control.bool_field("sunny_cat"), Some(false));
     }
 
     #[test]

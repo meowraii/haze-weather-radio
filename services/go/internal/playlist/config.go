@@ -140,6 +140,7 @@ func loadConfig(configPath string, outDir string) (loadedConfig, error) {
 	if err != nil {
 		return loadedConfig{}, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var root rootConfig
 	if err := yaml.Unmarshal(raw, &root); err != nil {
 		return loadedConfig{}, err
@@ -187,6 +188,7 @@ func loadFeeds(path string) ([]feedXML, error) {
 	if err != nil {
 		return nil, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var parsed feedsXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("parse feeds XML: %w", err)

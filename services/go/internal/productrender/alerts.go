@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
@@ -28,18 +29,18 @@ const alertRegistryGrace = 10 * time.Minute
 type capRegistryEntry struct {
 	ID        string
 	UpdatedAt time.Time
-	Alert     capingest.Alert
+	Alert     capmodel.Alert
 	RawXML    string
 }
 
 type capArchiveRecord struct {
-	ID        string          `json:"id"`
-	FeedID    string          `json:"feed_id,omitempty"`
-	Status    string          `json:"status"`
-	Reason    string          `json:"reason,omitempty"`
-	UpdatedAt time.Time       `json:"updated_at"`
-	Alert     capingest.Alert `json:"alert"`
-	RawXML    string          `json:"raw_xml,omitempty"`
+	ID        string         `json:"id"`
+	FeedID    string         `json:"feed_id,omitempty"`
+	Status    string         `json:"status"`
+	Reason    string         `json:"reason,omitempty"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Alert     capmodel.Alert `json:"alert"`
+	RawXML    string         `json:"raw_xml,omitempty"`
 }
 
 func (s *Service) handleCAPAlert(event map[string]any) {
@@ -98,7 +99,7 @@ func (s *Service) handleCAPAlert(event map[string]any) {
 	}
 }
 
-func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now time.Time) map[string]any {
+func capSAMEPayload(alert capmodel.Alert, feed feedXML, baseDir string, now time.Time) map[string]any {
 	payload := map[string]any{
 		"include_same": xmlBool(feed.Playout.SAME, true),
 		"cap_source":   detectCAPSource(alert),
@@ -157,7 +158,7 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 	}
 	payload["same_locations"] = locations
 	payload["same_duration"] = sameDurationForCAP(alert, *info)
-	if sent := firstCAPTime(alert.Sent, []capingest.AlertInfo{*info}); !sent.IsZero() {
+	if sent := firstCAPTime(alert.Sent, []capmodel.AlertInfo{*info}); !sent.IsZero() {
 		payload["same_sent_at"] = sent.Format(time.RFC3339Nano)
 	}
 	if begins := sameBeginsForCAP(alert, *info); !begins.IsZero() {
@@ -170,8 +171,8 @@ func capSAMEPayload(alert capingest.Alert, feed feedXML, baseDir string, now tim
 	return payload
 }
 
-func sameAlertFreshForTone(alert capingest.Alert, info capingest.AlertInfo, event string, now time.Time) bool {
-	anchor := firstCAPTime(alert.Sent, []capingest.AlertInfo{info})
+func sameAlertFreshForTone(alert capmodel.Alert, info capmodel.AlertInfo, event string, now time.Time) bool {
+	anchor := firstCAPTime(alert.Sent, []capmodel.AlertInfo{info})
 	if anchor.IsZero() || now.IsZero() || now.Before(anchor) {
 		return true
 	}
@@ -183,15 +184,15 @@ func sameAlertFreshForTone(alert capingest.Alert, info capingest.AlertInfo, even
 	return now.Sub(anchor) <= limit
 }
 
-func sameEventForCAP(alert capingest.Alert, info capingest.AlertInfo, baseDir string) string {
+func sameEventForCAP(alert capmodel.Alert, info capmodel.AlertInfo, baseDir string) string {
 	return sameEventResolutionForCAP(alert, info, baseDir).Event
 }
 
-func sameEventResolutionForCAP(alert capingest.Alert, info capingest.AlertInfo, baseDir string) capsame.EventResolution {
+func sameEventResolutionForCAP(alert capmodel.Alert, info capmodel.AlertInfo, baseDir string) capsame.EventResolution {
 	return capsame.ResolveEvent(alert, info, baseDir)
 }
 
-func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string) []string {
+func sameLocationsForCAP(info capmodel.AlertInfo, feed feedXML, baseDir string) []string {
 	db := loadAlertGeoDB(baseDir)
 	coverage := feedCoverageModel(baseDir, feed, nil)
 	alertCodes := alertInfoCoverageCodes(info)
@@ -232,7 +233,7 @@ func sameLocationsForCAP(info capingest.AlertInfo, feed feedXML, baseDir string)
 	return out
 }
 
-func sameEventNameForCAP(alert capingest.Alert, info capingest.AlertInfo, event string, baseDir string) string {
+func sameEventNameForCAP(alert capmodel.Alert, info capmodel.AlertInfo, event string, baseDir string) string {
 	if detectCAPSource(alert) == "nws" {
 		if name := alerttext.EventName(filepath.Join(baseDir, "config.yaml"), event); strings.TrimSpace(name) != "" {
 			return name
@@ -252,8 +253,8 @@ func sameLocationCodesForAlertCode(db alertGeoDB, raw string) []string {
 	if clean := sameLocationCode(raw); clean != "" {
 		return []string{clean}
 	}
-	if clean := capCPToCLC(db, raw); clean != "" {
-		return []string{clean}
+	if codes := capCPToCLCs(db, raw); len(codes) > 0 {
+		return codes
 	}
 	code := normalizeNWSCode(raw)
 	if code == "" {
@@ -291,20 +292,27 @@ func sameLocationCode(raw string) string {
 	return value
 }
 
-func capCPToCLC(db alertGeoDB, raw string) string {
+func capCPToCLCs(db alertGeoDB, raw string) []string {
+	out := []string{}
 	for _, code := range uniqueStrings([]string{strings.TrimSpace(raw), digitsOnly(raw)}) {
+		lookup := strings.ToUpper(strings.TrimSpace(code))
+		for _, linked := range db.CAPCPToCLC[lookup] {
+			if clean := sameLocationCode(linked); clean != "" {
+				out = append(out, clean)
+			}
+		}
 		item, ok := db.CAPCP[code]
 		if !ok || !validGeoPoint(item.Lat, item.Lon) {
 			continue
 		}
 		if nearest := nearestCLCForCAPCP(db, item, true); nearest != "" {
-			return nearest
+			out = append(out, nearest)
 		}
 		if nearest := nearestCLCForCAPCP(db, item, false); nearest != "" {
-			return nearest
+			out = append(out, nearest)
 		}
 	}
-	return ""
+	return uniqueStrings(out)
 }
 
 func nearestCLCForCAPCP(db alertGeoDB, item capCPGeocode, sameProvinceOnly bool) string {
@@ -368,7 +376,7 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-func sameOriginatorForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
+func sameOriginatorForCAP(alert capmodel.Alert, info capmodel.AlertInfo) string {
 	if originator := strings.ToUpper(strings.TrimSpace(alertParam(info, "eas-org"))); len(originator) == 3 {
 		return originator
 	}
@@ -380,7 +388,7 @@ func sameOriginatorForCAP(alert capingest.Alert, info capingest.AlertInfo) strin
 	}
 }
 
-func sameWeatherServiceForCAP(alert capingest.Alert) string {
+func sameWeatherServiceForCAP(alert capmodel.Alert) string {
 	switch detectCAPSource(alert) {
 	case "eccc":
 		return "Environment Canada"
@@ -391,7 +399,7 @@ func sameWeatherServiceForCAP(alert capingest.Alert) string {
 	}
 }
 
-func sameOriginatorNameForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
+func sameOriginatorNameForCAP(alert capmodel.Alert, info capmodel.AlertInfo) string {
 	if detectCAPSource(alert) == "nws" {
 		return ""
 	}
@@ -401,7 +409,7 @@ func sameOriginatorNameForCAP(alert capingest.Alert, info capingest.AlertInfo) s
 	return sameWeatherServiceForCAP(alert)
 }
 
-func sameBeginsForCAP(alert capingest.Alert, info capingest.AlertInfo) time.Time {
+func sameBeginsForCAP(alert capmodel.Alert, info capmodel.AlertInfo) time.Time {
 	for _, raw := range []string{info.Onset, info.Effective, alert.Sent} {
 		if parsed := parseCAPTime(raw); !parsed.IsZero() {
 			return parsed
@@ -410,8 +418,8 @@ func sameBeginsForCAP(alert capingest.Alert, info capingest.AlertInfo) time.Time
 	return time.Time{}
 }
 
-func sameDurationForCAP(alert capingest.Alert, info capingest.AlertInfo) string {
-	start := firstCAPTime(alert.Sent, []capingest.AlertInfo{info})
+func sameDurationForCAP(alert capmodel.Alert, info capmodel.AlertInfo) string {
+	start := firstCAPTime(alert.Sent, []capmodel.AlertInfo{info})
 	expires := parseCAPTime(info.Expires)
 	if expires.IsZero() {
 		return "0100"
@@ -429,7 +437,7 @@ func sameDurationForCAP(alert capingest.Alert, info capingest.AlertInfo) string 
 	return fmt.Sprintf("%02d%02d", minutes/60, minutes%60)
 }
 
-func sameToneForCAP(info capingest.AlertInfo, feed feedXML) string {
+func sameToneForCAP(info capmodel.AlertInfo, feed feedXML) string {
 	if isBroadcastImmediateInfo(info) {
 		return "NPAS"
 	}
@@ -464,7 +472,7 @@ type capRegistryUpdate struct {
 	AlertPacket        alertmodel.Packet
 }
 
-func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capRegistryUpdate, error) {
+func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegistryUpdate, error) {
 	alert = normalizeRawCAPAlert(alert)
 	if alert.Identifier == "" || strings.TrimSpace(alert.RawXML) == "" {
 		return nil, nil
@@ -680,7 +688,7 @@ func (s *Service) recordCAPAlert(alert capingest.Alert, now time.Time) ([]capReg
 	return updates, nil
 }
 
-func capAlertPacket(alert capingest.Alert, feed feedXML, headline string, eventName string, severity string, urgency string, certainty string, description string, instruction string, backgroundColor string, broadcastImmediate bool, alertText string, audio capBroadcastAudio, samePayload map[string]any) alertmodel.Packet {
+func capAlertPacket(alert capmodel.Alert, feed feedXML, headline string, eventName string, severity string, urgency string, certainty string, description string, instruction string, backgroundColor string, broadcastImmediate bool, alertText string, audio capBroadcastAudio, samePayload map[string]any) alertmodel.Packet {
 	data := map[string]any{
 		"feed_id":             feed.ID,
 		"alert_id":            alert.Identifier,
@@ -734,7 +742,7 @@ func (s *Service) claimCAPPriorityBroadcast(feedID string, alertID string) bool 
 	return true
 }
 
-func routineCAPAlertAllowed(alert capingest.Alert) bool {
+func routineCAPAlertAllowed(alert capmodel.Alert) bool {
 	switch strings.ToLower(strings.TrimSpace(alert.Status)) {
 	case "test", "exercise", "draft":
 		return false
@@ -762,11 +770,11 @@ func routineCAPAlertAllowed(alert capingest.Alert) bool {
 	return true
 }
 
-func capPriorityBroadcastAllowed(alert capingest.Alert, feed feedXML, baseDir string, now time.Time) bool {
+func capPriorityBroadcastAllowed(alert capmodel.Alert, feed feedXML, baseDir string, now time.Time) bool {
 	return capPriorityBroadcastAllowedWithPrior(alert, feed, baseDir, now, nil)
 }
 
-func capPriorityBroadcastAllowedWithPrior(alert capingest.Alert, feed feedXML, baseDir string, now time.Time, priorEntries []capRegistryEntry) bool {
+func capPriorityBroadcastAllowedWithPrior(alert capmodel.Alert, feed feedXML, baseDir string, now time.Time, priorEntries []capRegistryEntry) bool {
 	if isCAPEnded(alert, now) {
 		return false
 	}
@@ -886,11 +894,11 @@ func capEntryExists(entries []capRegistryEntry, id string) bool {
 	return false
 }
 
-func capMessageTypeIsUpdate(alert capingest.Alert) bool {
+func capMessageTypeIsUpdate(alert capmodel.Alert) bool {
 	return strings.EqualFold(strings.TrimSpace(alert.MessageType), "Update")
 }
 
-func capUpdateAddsFeedLocations(alert capingest.Alert, info capingest.AlertInfo, feed feedXML, baseDir string) bool {
+func capUpdateAddsFeedLocations(alert capmodel.Alert, info capmodel.AlertInfo, feed feedXML, baseDir string) bool {
 	newCodes := capNewlyActiveCodes(info)
 	if len(newCodes) == 0 {
 		return false
@@ -911,7 +919,7 @@ func capUpdateAddsFeedLocations(alert capingest.Alert, info capingest.AlertInfo,
 	return false
 }
 
-func capNewlyActiveCodes(info capingest.AlertInfo) []string {
+func capNewlyActiveCodes(info capmodel.AlertInfo) []string {
 	seen := map[string]struct{}{}
 	add := func(raw string) {
 		for _, part := range strings.FieldsFunc(raw, func(ch rune) bool {
@@ -944,7 +952,7 @@ type capBroadcastAudio struct {
 	Description string
 }
 
-func alertBroadcastAudio(alert capingest.Alert, preferredLanguage string) capBroadcastAudio {
+func alertBroadcastAudio(alert capmodel.Alert, preferredLanguage string) capBroadcastAudio {
 	for _, preferred := range []bool{true, false} {
 		for _, info := range preferredCAPInfos(alert.Infos, preferredLanguage) {
 			if preferred && !isBroadcastImmediateInfo(info) && !hasBroadcastAudioResource(info) {
@@ -973,7 +981,7 @@ func alertBroadcastAudio(alert capingest.Alert, preferredLanguage string) capBro
 	return capBroadcastAudio{}
 }
 
-func hasBroadcastAudioResource(info capingest.AlertInfo) bool {
+func hasBroadcastAudioResource(info capmodel.AlertInfo) bool {
 	for _, resource := range info.Resources {
 		if isAudioResource(resource) {
 			return true
@@ -982,7 +990,7 @@ func hasBroadcastAudioResource(info capingest.AlertInfo) bool {
 	return false
 }
 
-func isAudioResource(resource capingest.Resource) bool {
+func isAudioResource(resource capmodel.Resource) bool {
 	mimeType := strings.ToLower(strings.TrimSpace(resource.MimeType))
 	description := strings.ToLower(strings.TrimSpace(resource.Description))
 	uri := strings.ToLower(strings.TrimSpace(resource.URI))
@@ -994,19 +1002,19 @@ func isAudioResource(resource capingest.Resource) bool {
 		strings.Contains(uri, ".m4a")
 }
 
-func isBroadcastImmediateInfo(info capingest.AlertInfo) bool {
+func isBroadcastImmediateInfo(info capmodel.AlertInfo) bool {
 	return alerttext.IsBroadcastImmediateInfo(info)
 }
 
-func preferredCAPInfos(infos []capingest.AlertInfo, language string) []capingest.AlertInfo {
+func preferredCAPInfos(infos []capmodel.AlertInfo, language string) []capmodel.AlertInfo {
 	language = strings.ToLower(strings.TrimSpace(language))
 	short := language
 	if index := strings.Index(short, "-"); index > 0 {
 		short = short[:index]
 	}
-	var exact []capingest.AlertInfo
-	var prefix []capingest.AlertInfo
-	var rest []capingest.AlertInfo
+	var exact []capmodel.AlertInfo
+	var prefix []capmodel.AlertInfo
+	var rest []capmodel.AlertInfo
 	for _, info := range infos {
 		infoLang := strings.ToLower(strings.TrimSpace(info.Language))
 		switch {
@@ -1021,7 +1029,7 @@ func preferredCAPInfos(infos []capingest.AlertInfo, language string) []capingest
 	return append(append(exact, prefix...), rest...)
 }
 
-func alertBroadcastTitle(alert capingest.Alert) string {
+func alertBroadcastTitle(alert capmodel.Alert) string {
 	for _, info := range alert.Infos {
 		if text := firstNonBlank(info.Headline, info.Event); text != "" {
 			return titleText(text)
@@ -1030,33 +1038,33 @@ func alertBroadcastTitle(alert capingest.Alert) string {
 	return "Weather Alert"
 }
 
-func capAlertFromEvent(event map[string]any) (capingest.Alert, bool) {
+func capAlertFromEvent(event map[string]any) (capmodel.Alert, bool) {
 	data := mapAt(event, "data")
 	value, ok := data["alert"]
 	if !ok {
 		value = event["alert"]
 	}
 	if value == nil {
-		return capingest.Alert{}, false
+		return capmodel.Alert{}, false
 	}
 	raw, err := json.Marshal(value)
 	if err != nil {
-		return capingest.Alert{}, false
+		return capmodel.Alert{}, false
 	}
-	var alert capingest.Alert
+	var alert capmodel.Alert
 	if err := json.Unmarshal(raw, &alert); err != nil {
-		return capingest.Alert{}, false
+		return capmodel.Alert{}, false
 	}
 	alert = normalizeRawCAPAlert(alert)
 	return alert, alert.Identifier != "" && strings.TrimSpace(alert.RawXML) != ""
 }
 
-func normalizeRawCAPAlert(alert capingest.Alert) capingest.Alert {
+func normalizeRawCAPAlert(alert capmodel.Alert) capmodel.Alert {
 	raw := strings.TrimSpace(alert.RawXML)
 	if raw == "" {
 		return alert
 	}
-	parsed, err := capingest.ParseCAP([]byte(raw))
+	parsed, err := capmodel.ParseCAP([]byte(raw))
 	if err != nil {
 		return alert
 	}
@@ -1138,14 +1146,14 @@ func capAcceptedArchiveContains(store datastore.Store, feedID string, alertID st
 	return false
 }
 
-func storedCAPArchiveAlert(row datastore.StoredCAPArchive) (capingest.Alert, bool) {
+func storedCAPArchiveAlert(row datastore.StoredCAPArchive) (capmodel.Alert, bool) {
 	rawXML := strings.TrimSpace(row.RawXML)
 	if rawXML == "" {
-		return capingest.Alert{}, false
+		return capmodel.Alert{}, false
 	}
-	alert, err := capingest.ParseCAP([]byte(rawXML))
+	alert, err := capmodel.ParseCAP([]byte(rawXML))
 	if err != nil || alert.Identifier == "" {
-		return capingest.Alert{}, false
+		return capmodel.Alert{}, false
 	}
 	if alert.RawXML == "" {
 		alert.RawXML = rawXML
@@ -1173,7 +1181,7 @@ func deleteCAPReferences(store datastore.Store, feedID string, ids []string) {
 	}
 }
 
-func capOperatorSuppressedSameVersion(store datastore.Store, feedID string, alert capingest.Alert, now time.Time) bool {
+func capOperatorSuppressedSameVersion(store datastore.Store, feedID string, alert capmodel.Alert, now time.Time) bool {
 	if store == nil || strings.TrimSpace(alert.Identifier) == "" || strings.TrimSpace(alert.RawXML) == "" {
 		return false
 	}
@@ -1224,9 +1232,7 @@ func storeCAPArchiveRecord(store datastore.Store, bucket string, record capArchi
 	if !record.UpdatedAt.IsZero() {
 		updated = record.UpdatedAt.UTC().Format(time.RFC3339Nano)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_ = store.StoreCAPArchive(ctx, datastore.CAPArchiveRecord{
+	archiveRecord := datastore.CAPArchiveRecord{
 		AlertID:      fallbackText(record.ID, record.Alert.Identifier),
 		FeedID:       record.FeedID,
 		Bucket:       bucket,
@@ -1244,7 +1250,30 @@ func storeCAPArchiveRecord(store datastore.Store, bucket string, record capArchi
 			"message_type": record.Alert.MessageType,
 			"scope":        record.Alert.Scope,
 		},
-	})
+	}
+	if err := storeCAPArchiveRecordWithRetry(store, archiveRecord); err != nil {
+		log.Printf("CAP archive store failed bucket=%s feed_id=%s alert_id=%s status=%s: %v",
+			archiveRecord.Bucket,
+			archiveRecord.FeedID,
+			archiveRecord.AlertID,
+			archiveRecord.Status,
+			err,
+		)
+	}
+}
+
+func storeCAPArchiveRecordWithRetry(store datastore.Store, record datastore.CAPArchiveRecord) error {
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		err = store.StoreCAPArchive(ctx, record)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt) * 75 * time.Millisecond)
+	}
+	return err
 }
 
 func archiveExpiredCAPEntries(_ string, feedID string, entries []capRegistryEntry, now time.Time, store datastore.Store) {
@@ -1317,7 +1346,7 @@ func parseCAPReferences(references string) []string {
 	return ids
 }
 
-func cancelledAlertIDs(alert capingest.Alert) []string {
+func cancelledAlertIDs(alert capmodel.Alert) []string {
 	ids := append([]string{}, parseCAPReferences(alert.References)...)
 	if strings.TrimSpace(alert.Identifier) != "" {
 		ids = append(ids, strings.TrimSpace(alert.Identifier))
@@ -1325,10 +1354,22 @@ func cancelledAlertIDs(alert capingest.Alert) []string {
 	return uniqueStrings(ids)
 }
 
-func cancelledAlertIDsWithOverrides(entries []capRegistryEntry, alert capingest.Alert, baseDir string) []string {
-	ids := cancelledAlertIDs(alert)
+func cancelledAlertIDsWithOverrides(entries []capRegistryEntry, alert capmodel.Alert, baseDir string) []string {
+	referenced := map[string]struct{}{}
+	for _, id := range parseCAPReferences(alert.References) {
+		referenced[id] = struct{}{}
+	}
+	ids := []string{}
 	seen := map[string]struct{}{}
-	for _, id := range ids {
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		ids = append(ids, id)
 		seen[id] = struct{}{}
 	}
 	for _, entry := range entries {
@@ -1336,21 +1377,26 @@ func cancelledAlertIDsWithOverrides(entries []capRegistryEntry, alert capingest.
 		if id == "" {
 			continue
 		}
-		if _, ok := seen[id]; ok {
+		if strings.EqualFold(id, strings.TrimSpace(alert.Identifier)) || strings.EqualFold(entry.Alert.Identifier, strings.TrimSpace(alert.Identifier)) {
+			add(id)
+			continue
+		}
+		if _, ok := referenced[id]; ok && capAlertCancelsEntry(alert, entry.Alert, baseDir) {
+			add(id)
+			continue
+		}
+		if _, ok := referenced[entry.Alert.Identifier]; ok && capAlertCancelsEntry(alert, entry.Alert, baseDir) {
+			add(id)
 			continue
 		}
 		if capAlertOverrides(alert, entry.Alert, baseDir) {
-			ids = append(ids, id)
-			seen[id] = struct{}{}
+			add(id)
 		}
 	}
 	return uniqueStrings(ids)
 }
 
-func capAlertOverrides(next capingest.Alert, previous capingest.Alert, baseDir string) bool {
-	if next.Identifier == "" || previous.Identifier == "" || next.Identifier == previous.Identifier {
-		return false
-	}
+func capAlertCancelsEntry(next capmodel.Alert, previous capmodel.Alert, baseDir string) bool {
 	if !isExplicitCAPEnd(next) {
 		return false
 	}
@@ -1366,29 +1412,123 @@ func capAlertOverrides(next capingest.Alert, previous capingest.Alert, baseDir s
 	return stringSetOverlaps(capLifecycleLocationSet(next, baseDir), capLifecycleLocationSet(previous, baseDir))
 }
 
-func capLifecycleEventSet(alert capingest.Alert) map[string]struct{} {
-	out := map[string]struct{}{}
-	add := func(raw string) {
+func capAlertOverrides(next capmodel.Alert, previous capmodel.Alert, baseDir string) bool {
+	if next.Identifier == "" || previous.Identifier == "" || next.Identifier == previous.Identifier {
+		return false
+	}
+	return capAlertCancelsEntry(next, previous, baseDir)
+}
+
+func capLifecycleEventSet(alert capmodel.Alert) map[string]struct{} {
+	specific := map[string]struct{}{}
+	broad := map[string]struct{}{}
+	add := func(out map[string]struct{}, raw string) {
 		key := normalizeLifecycleKey(raw)
 		if key != "" {
 			out[key] = struct{}{}
 		}
 	}
+	addSpecific := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		add(specific, raw)
+		if canonical := canonicalLifecycleEventKey(raw); canonical != "" {
+			add(specific, canonical)
+		}
+	}
 	for _, info := range alert.Infos {
-		add(info.Event)
-		add(alertSubject(info))
-		add(stripAlertHeadlineState(info.Headline))
+		alertType := lifecycleAlertParam(info, "alert_type")
+		alertName := lifecycleAlertParam(info, "alert_name")
+		addSpecific(alertName)
+		addSpecific(alertSubject(info))
+		addSpecific(stripAlertHeadlineState(info.Headline))
+		if alertType != "" {
+			addSpecific(joinLifecycleParts(alertType, info.Event))
+			addSpecific(joinLifecycleParts(alertType, alertName))
+		}
+		add(broad, info.Event)
 		for _, code := range info.EventCodes {
 			name := strings.ToLower(strings.TrimSpace(code.Name))
 			if strings.Contains(name, "same") || strings.Contains(name, "event") {
-				add(code.Value)
+				addSpecific(code.Value)
 			}
 		}
 	}
-	return out
+	if len(specific) > 0 {
+		return specific
+	}
+	return broad
 }
 
-func capLifecycleLocationSet(alert capingest.Alert, baseDir string) map[string]struct{} {
+func lifecycleAlertParam(info capmodel.AlertInfo, token string) string {
+	token = strings.ToLower(strings.TrimSpace(token))
+	for _, param := range info.Parameters {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(param.Name)), token) {
+			return strings.TrimSpace(param.Value)
+		}
+	}
+	return ""
+}
+
+func joinLifecycleParts(values ...string) string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+func canonicalLifecycleEventKey(raw string) string {
+	key := normalizeLifecycleKey(raw)
+	if key == "" {
+		return ""
+	}
+	class := lifecycleAlertClass(key)
+	if class == "" {
+		return ""
+	}
+	words := strings.Fields(key)
+	hazard := make([]string, 0, len(words))
+	for _, word := range words {
+		switch word {
+		case class, "yellow", "orange", "red", "green", "blue", "grey", "gray", "alert", "in", "effect", "ended", "updated", "cancelled", "canceled":
+			continue
+		default:
+			hazard = append(hazard, word)
+		}
+	}
+	if len(hazard) == 0 {
+		return class
+	}
+	return class + " " + strings.Join(hazard, " ")
+}
+
+func lifecycleAlertClass(key string) string {
+	for _, class := range []string{"warning", "watch", "advisory", "statement"} {
+		for _, word := range strings.Fields(key) {
+			if word == class {
+				return class
+			}
+		}
+	}
+	switch strings.ToUpper(strings.TrimSpace(key)) {
+	case "SVA", "TOA", "FFA", "FLA", "HUA", "HWA", "TRA", "TSA", "WSA":
+		return "watch"
+	case "SVR", "TOR", "FFW", "FLW", "HUW", "HWW", "SQW", "WSW":
+		return "warning"
+	case "SPS", "SPSA", "DMO", "RWT", "RMT":
+		return "advisory"
+	default:
+		return ""
+	}
+}
+
+func capLifecycleLocationSet(alert capmodel.Alert, baseDir string) map[string]struct{} {
 	db := loadAlertGeoDB(baseDir)
 	out := map[string]struct{}{}
 	add := func(raw string) {
@@ -1501,7 +1641,7 @@ func isRenderableCAPEntry(entry capRegistryEntry, now time.Time) bool {
 	return true
 }
 
-func capRegistryAnchor(alert capingest.Alert, fallback time.Time) time.Time {
+func capRegistryAnchor(alert capmodel.Alert, fallback time.Time) time.Time {
 	if isExplicitCAPEnd(alert) {
 		if anchor := firstCAPTime(alert.Sent, alert.Infos); !anchor.IsZero() {
 			return anchor
@@ -1510,7 +1650,7 @@ func capRegistryAnchor(alert capingest.Alert, fallback time.Time) time.Time {
 	return fallback
 }
 
-func isExplicitCAPEnd(alert capingest.Alert) bool {
+func isExplicitCAPEnd(alert capmodel.Alert) bool {
 	if strings.EqualFold(alert.MessageType, "Cancel") {
 		return true
 	}
@@ -1531,7 +1671,7 @@ func isExplicitCAPEnd(alert capingest.Alert) bool {
 	return false
 }
 
-func feedAcceptsCAPSource(feed feedXML, alert capingest.Alert) bool {
+func feedAcceptsCAPSource(feed feedXML, alert capmodel.Alert) bool {
 	source, sourceConfig := feedCAPSourceConfig(feed, alert)
 	if source == "generic" {
 		return xmlBool(feed.Alerts.CapCP.EnabledRaw, true) || xmlBool(feed.Alerts.NWSCAP.EnabledRaw, false)
@@ -1539,24 +1679,28 @@ func feedAcceptsCAPSource(feed feedXML, alert capingest.Alert) bool {
 	return xmlBool(sourceConfig.EnabledRaw, source == "eccc")
 }
 
-func feedAllowsCAPAlert(feed feedXML, alert capingest.Alert) bool {
+func feedAllowsCAPAlert(feed feedXML, alert capmodel.Alert) bool {
 	_, sourceConfig := feedCAPSourceConfig(feed, alert)
 	return alertFilterAllows(sourceConfig.Filter, alert, feedLanguage(feed))
 }
 
-func feedAllowsRoutineOnlyCAPAlert(feed feedXML, alert capingest.Alert) bool {
+func feedAllowsRoutineOnlyCAPAlert(feed feedXML, alert capmodel.Alert) bool {
 	if xmlBool(feed.Playout.Routine, true) {
 		return true
 	}
-	return feedAllowsCAPAlert(feed, alert)
+	if feedAllowsCAPAlert(feed, alert) {
+		return true
+	}
+	_, sourceConfig := feedCAPSourceConfig(feed, alert)
+	return alertFilterAllowsActiveRetention(sourceConfig.Filter, alert, feedLanguage(feed))
 }
 
-func feedUsesAlertCoverage(feed feedXML, alert capingest.Alert) bool {
+func feedUsesAlertCoverage(feed feedXML, alert capmodel.Alert) bool {
 	_, sourceConfig := feedCAPSourceConfig(feed, alert)
 	return xmlBool(sourceConfig.Filter.UseFeedLocations, true)
 }
 
-func feedCAPSourceConfig(feed feedXML, alert capingest.Alert) (string, feedAlertSourceXML) {
+func feedCAPSourceConfig(feed feedXML, alert capmodel.Alert) (string, feedAlertSourceXML) {
 	source := detectCAPSource(alert)
 	switch source {
 	case "nws":
@@ -1566,7 +1710,7 @@ func feedCAPSourceConfig(feed feedXML, alert capingest.Alert) (string, feedAlert
 	}
 }
 
-func alertFilterAllows(filter alertFilterXML, alert capingest.Alert, language string) bool {
+func alertFilterAllows(filter alertFilterXML, alert capmodel.Alert, language string) bool {
 	info := chooseAlertInfo(alert, language)
 	if info == nil {
 		return true
@@ -1580,7 +1724,24 @@ func alertFilterAllows(filter alertFilterXML, alert capingest.Alert, language st
 	return alertFilterListAllows(filter.Allowlist, alert, *info)
 }
 
-func alertFilterListAllows(list alertFilterListXML, alert capingest.Alert, info capingest.AlertInfo) bool {
+func alertFilterAllowsActiveRetention(filter alertFilterXML, alert capmodel.Alert, language string) bool {
+	info := chooseAlertInfo(alert, language)
+	if info == nil {
+		return true
+	}
+	if alertFilterListMatches(filter.Blocklist, alert, *info) {
+		return false
+	}
+	if len(filter.Allowlist.Severities) > 0 {
+		return textInList(info.Severity, filter.Allowlist.Severities)
+	}
+	if alertFilterListEmpty(filter.Allowlist) {
+		return true
+	}
+	return alertFilterListAllows(filter.Allowlist, alert, *info)
+}
+
+func alertFilterListAllows(list alertFilterListXML, alert capmodel.Alert, info capmodel.AlertInfo) bool {
 	if len(list.Severities) > 0 && !textInList(info.Severity, list.Severities) {
 		return false
 	}
@@ -1607,7 +1768,7 @@ func alertFilterListAllows(list alertFilterListXML, alert capingest.Alert, info 
 	return true
 }
 
-func alertFilterListMatches(list alertFilterListXML, alert capingest.Alert, info capingest.AlertInfo) bool {
+func alertFilterListMatches(list alertFilterListXML, alert capmodel.Alert, info capmodel.AlertInfo) bool {
 	return (len(list.Severities) > 0 && textInList(info.Severity, list.Severities)) ||
 		(len(list.Urgencies) > 0 && textInList(info.Urgency, list.Urgencies)) ||
 		(len(list.Certainties) > 0 && textInList(info.Certainty, list.Certainties)) ||
@@ -1627,7 +1788,7 @@ func alertFilterListEmpty(list alertFilterListXML) bool {
 		len(list.Others) == 0
 }
 
-func alertEventMatches(info capingest.AlertInfo, wanted []string) bool {
+func alertEventMatches(info capmodel.AlertInfo, wanted []string) bool {
 	if textInList(info.Event, wanted) || textInList(info.Headline, wanted) {
 		return true
 	}
@@ -1639,7 +1800,7 @@ func alertEventMatches(info capingest.AlertInfo, wanted []string) bool {
 	return false
 }
 
-func alertOtherFiltersMatch(info capingest.AlertInfo, filters []alertFilterOtherXML) bool {
+func alertOtherFiltersMatch(info capmodel.AlertInfo, filters []alertFilterOtherXML) bool {
 	for _, filter := range filters {
 		if alertOtherFilterMatches(info, filter) {
 			return true
@@ -1648,7 +1809,7 @@ func alertOtherFiltersMatch(info capingest.AlertInfo, filters []alertFilterOther
 	return false
 }
 
-func alertOtherFilterMatches(info capingest.AlertInfo, filter alertFilterOtherXML) bool {
+func alertOtherFilterMatches(info capmodel.AlertInfo, filter alertFilterOtherXML) bool {
 	name := strings.TrimSpace(filter.ValueName)
 	value := strings.TrimSpace(filter.Value)
 	if name == "" || value == "" {
@@ -1672,7 +1833,7 @@ func textInList(value string, list []string) bool {
 	return false
 }
 
-func detectCAPSource(alert capingest.Alert) string {
+func detectCAPSource(alert capmodel.Alert) string {
 	for _, info := range alert.Infos {
 		for _, param := range info.Parameters {
 			if strings.HasPrefix(param.Name, "layer:EC-MSC-SMC") || strings.Contains(strings.ToLower(param.Name), "cap-cp") {
@@ -1706,6 +1867,7 @@ type coverageRegion struct {
 type alertGeoDB struct {
 	CLC         map[string]clcBaseZone
 	CAPCP       map[string]capCPGeocode
+	CAPCPToCLC  map[string][]string
 	NWS         map[string]nwsZone
 	FIPS        map[string]nwsZone
 	Marine      map[string]nwsZone
@@ -1742,7 +1904,7 @@ var alertGeoCache = struct {
 	byBase map[string]alertGeoDB
 }{byBase: map[string]alertGeoDB{}}
 
-func alertMatchesFeed(alert capingest.Alert, feed feedXML, baseDir string) bool {
+func alertMatchesFeed(alert capmodel.Alert, feed feedXML, baseDir string) bool {
 	if !feedUsesAlertCoverage(feed, alert) {
 		return true
 	}
@@ -1847,6 +2009,7 @@ func loadAlertGeoDBFromSQLite(baseDir string) (alertGeoDB, bool) {
 	db := alertGeoDB{
 		CLC:         map[string]clcBaseZone{},
 		CAPCP:       map[string]capCPGeocode{},
+		CAPCPToCLC:  map[string][]string{},
 		NWS:         map[string]nwsZone{},
 		FIPS:        map[string]nwsZone{},
 		Marine:      map[string]nwsZone{},
@@ -1879,6 +2042,15 @@ func loadAlertGeoDBFromSQLite(baseDir string) (alertGeoDB, bool) {
 	}
 	for _, link := range snap.Links {
 		switch link.Type {
+		case "sgc_to_clc":
+			from := strings.ToUpper(strings.TrimSpace(link.FromCode))
+			to := sameLocationCode(link.ToCode)
+			if from == "" || to == "" || strings.EqualFold(strings.TrimSpace(link.Confidence), "low") {
+				continue
+			}
+			if strings.EqualFold(link.FromSource, "sgc") && strings.EqualFold(link.ToSource, "clc") {
+				db.CAPCPToCLC[from] = append(db.CAPCPToCLC[from], to)
+			}
 		case "nws_same_to_zone":
 			same := sameLocationCode(link.FromCode)
 			zone := normalizeNWSCode(link.ToCode)
@@ -1908,6 +2080,9 @@ func loadAlertGeoDBFromSQLite(baseDir string) (alertGeoDB, bool) {
 	}
 	for zone, codes := range db.NWSZoneSAME {
 		db.NWSZoneSAME[zone] = uniqueStrings(codes)
+	}
+	for code, links := range db.CAPCPToCLC {
+		db.CAPCPToCLC[code] = uniqueStrings(links)
 	}
 	return db, true
 }
@@ -2177,7 +2352,7 @@ func alertCodeName(db alertGeoDB, code string, lang string) string {
 	return strings.TrimSpace(code)
 }
 
-func alertAreaNameFromGeocodes(db alertGeoDB, area capingest.AlertArea, lang string) string {
+func alertAreaNameFromGeocodes(db alertGeoDB, area capmodel.AlertArea, lang string) string {
 	if desc := cleanAreaName(area.Description); desc != "" {
 		return desc
 	}
@@ -2189,7 +2364,7 @@ func alertAreaNameFromGeocodes(db alertGeoDB, area capingest.AlertArea, lang str
 	return ""
 }
 
-func alertCoverageCodes(alert capingest.Alert) []string {
+func alertCoverageCodes(alert capmodel.Alert) []string {
 	seen := map[string]struct{}{}
 	add := func(raw string) {
 		for _, part := range strings.Split(raw, ",") {
@@ -2285,7 +2460,7 @@ func (r renderer) alertsProduct(base Product, feed feedXML) (Product, error) {
 	return base, nil
 }
 
-func renderCAPAlertSentence(entry capRegistryEntry, info capingest.AlertInfo, feed feedXML, baseDir string, forecastNames map[string]forecastRegionName, now time.Time) string {
+func renderCAPAlertSentence(entry capRegistryEntry, info capmodel.AlertInfo, feed feedXML, baseDir string, forecastNames map[string]forecastRegionName, now time.Time) string {
 	alert := entry.Alert
 	sender := fallbackText(info.SenderName, alertSenderName(alert))
 	subject := alertSubject(info)
@@ -2314,7 +2489,7 @@ func renderCAPAlertSentence(entry capRegistryEntry, info capingest.AlertInfo, fe
 	})
 }
 
-func chooseAlertInfo(alert capingest.Alert, lang string) *capingest.AlertInfo {
+func chooseAlertInfo(alert capmodel.Alert, lang string) *capmodel.AlertInfo {
 	if len(alert.Infos) == 0 {
 		return nil
 	}
@@ -2338,14 +2513,14 @@ func chooseAlertInfo(alert capingest.Alert, lang string) *capingest.AlertInfo {
 	return &alert.Infos[0]
 }
 
-func alertSenderName(alert capingest.Alert) string {
+func alertSenderName(alert capmodel.Alert) string {
 	if detectCAPSource(alert) == "eccc" {
 		return "Environment Canada"
 	}
 	return fallbackText(alert.Sender, "The alerting authority")
 }
 
-func alertSubject(info capingest.AlertInfo) string {
+func alertSubject(info capmodel.AlertInfo) string {
 	name := alertParam(info, "layer:EC-MSC-SMC:1.0:Alert_Name")
 	if name == "" {
 		name = stripAlertHeadlineState(info.Headline)
@@ -2371,7 +2546,7 @@ func stripAlertHeadlineState(headline string) string {
 	return value
 }
 
-func alertAreas(info capingest.AlertInfo, feed feedXML, baseDir string, forecastNames map[string]forecastRegionName) string {
+func alertAreas(info capmodel.AlertInfo, feed feedXML, baseDir string, forecastNames map[string]forecastRegionName) string {
 	coverage := feedCoverageModel(baseDir, feed, forecastNames)
 	db := loadAlertGeoDB(baseDir)
 	if useBroadAlertRegions(info) {
@@ -2410,7 +2585,7 @@ func alertAreas(info capingest.AlertInfo, feed feedXML, baseDir string, forecast
 	return strings.Join(areas, "; ")
 }
 
-func useBroadAlertRegions(info capingest.AlertInfo) bool {
+func useBroadAlertRegions(info capmodel.AlertInfo) bool {
 	haystack := strings.ToLower(strings.Join([]string{
 		alertSubject(info),
 		info.Event,
@@ -2447,7 +2622,7 @@ func useBroadAlertRegions(info capingest.AlertInfo) bool {
 	return false
 }
 
-func broadAlertAreaPhrase(info capingest.AlertInfo, coverage coverageModel, db alertGeoDB) string {
+func broadAlertAreaPhrase(info capmodel.AlertInfo, coverage coverageModel, db alertGeoDB) string {
 	if len(coverage.Regions) == 0 {
 		return ""
 	}
@@ -2477,7 +2652,7 @@ func broadAlertAreaPhrase(info capingest.AlertInfo, coverage coverageModel, db a
 	return "areas within " + joinBroadRegionNames(names)
 }
 
-func alertInfoCoverageCodes(info capingest.AlertInfo) map[string]struct{} {
+func alertInfoCoverageCodes(info capmodel.AlertInfo) map[string]struct{} {
 	codes := map[string]struct{}{}
 	add := func(raw string) {
 		for _, part := range strings.Split(raw, ",") {
@@ -2576,7 +2751,7 @@ func cleanAreaName(raw string) string {
 	return value
 }
 
-func alertParam(info capingest.AlertInfo, name string) string {
+func alertParam(info capmodel.AlertInfo, name string) string {
 	for _, param := range info.Parameters {
 		if strings.EqualFold(strings.TrimSpace(param.Name), name) {
 			return strings.TrimSpace(param.Value)
@@ -2585,7 +2760,7 @@ func alertParam(info capingest.AlertInfo, name string) string {
 	return ""
 }
 
-func isCAPEnded(alert capingest.Alert, now time.Time) bool {
+func isCAPEnded(alert capmodel.Alert, now time.Time) bool {
 	if isExplicitCAPEnd(alert) {
 		return true
 	}
@@ -2595,7 +2770,7 @@ func isCAPEnded(alert capingest.Alert, now time.Time) bool {
 	return false
 }
 
-func alertExpiresAt(alert capingest.Alert) time.Time {
+func alertExpiresAt(alert capmodel.Alert) time.Time {
 	for _, info := range alert.Infos {
 		if expires := parseCAPTime(info.Expires); !expires.IsZero() {
 			return expires
@@ -2604,7 +2779,7 @@ func alertExpiresAt(alert capingest.Alert) time.Time {
 	return time.Time{}
 }
 
-func firstCAPTime(sent string, infos []capingest.AlertInfo) time.Time {
+func firstCAPTime(sent string, infos []capmodel.AlertInfo) time.Time {
 	for _, raw := range []string{sent} {
 		if parsed := parseCAPTime(raw); !parsed.IsZero() {
 			return parsed

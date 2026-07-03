@@ -15,7 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capsame"
 )
 
@@ -140,7 +140,8 @@ func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Req
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.media == nil || !s.media.Available() {
+	legacyMediaAvailable := s.media != nil && s.media.Available()
+	if !legacyMediaAvailable && mediaServiceBaseURL(s.config) == "" {
 		http.Error(writer, "media bridge is not available", http.StatusServiceUnavailable)
 		return
 	}
@@ -166,6 +167,28 @@ func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Req
 	}
 	if !s.feedWebRTCEnabled(feedID) {
 		http.Error(writer, "feed WebRTC output is not enabled", http.StatusForbidden)
+		return
+	}
+	if answer, ok := s.mediaServiceWebRTCAnswer(request.Context(), map[string]any{
+		"feed_id":         feedID,
+		"sdp":             payload.SDP,
+		"disable_g722":    payload.DisableG722,
+		"require_opus":    payload.RequireOpus,
+		"preferred_codec": firstNonBlank(payload.Codec, payload.PreferredCodec),
+	}); ok {
+		answer["feed_id"] = feedID
+		if _, ok := answer["sdp_type"]; !ok {
+			answer["sdp_type"] = "answer"
+		}
+		writeJSON(writer, answer)
+		return
+	}
+	if !legacyMediaAvailable {
+		if mediaServiceBaseURL(s.config) != "" {
+			http.Error(writer, "haze-media WebRTC service is unavailable and legacy media bridge is not available", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(writer, "media bridge is not available", http.StatusServiceUnavailable)
 		return
 	}
 	answer, err := s.media.AnswerWithOptions(request.Context(), feedID, payload.SDP, WebRTCAnswerOptions{
@@ -275,7 +298,7 @@ func buildBannerPayload(configPath string, feedID string, hub *BannerHub) banner
 	return payload
 }
 
-func bannerVisualEvent(info capingest.AlertInfo, record archiveCAPRecord) string {
+func bannerVisualEvent(info capmodel.AlertInfo, record archiveCAPRecord) string {
 	parts := []string{info.Event, info.Headline, alerttext.AlertSubject(info), record.BannerText, record.AlertText}
 	out := parts[:0]
 	for _, part := range parts {
@@ -549,13 +572,13 @@ func bannerRecordFromOnAirAlert(item bannerOnAirAlert, now time.Time) archiveCAP
 		AlertText:          alertText,
 		BannerText:         bannerText,
 		BroadcastImmediate: item.BroadcastImmediate,
-		Alert: capingest.Alert{
+		Alert: capmodel.Alert{
 			Identifier:  alertID,
 			Sent:        sent,
 			Status:      "Actual",
 			MessageType: "Alert",
 			Scope:       "Public",
-			Infos: []capingest.AlertInfo{{
+			Infos: []capmodel.AlertInfo{{
 				Language:    "en-CA",
 				Event:       event,
 				Severity:    "Unknown",
@@ -577,7 +600,7 @@ type bannerSort struct {
 	identifier   string
 }
 
-func bannerSortKey(alert capingest.Alert) bannerSort {
+func bannerSortKey(alert capmodel.Alert) bannerSort {
 	info := chooseArchiveInfo(alert)
 	severity := strings.Title(strings.ToLower(strings.TrimSpace(info.Severity)))
 	if severity == "" {

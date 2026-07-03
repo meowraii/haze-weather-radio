@@ -13,12 +13,12 @@ func opusBackendAvailable() bool {
 }
 
 func newOpusFrameEncoder(sampleRate int, channels int) (opusFrameEncoder, error) {
-	encoder, err := opus.NewEncoder(sampleRate, channels, opus.AppVoIP)
+	encoder, err := opus.NewEncoder(sampleRate, channels, opus.AppAudio)
 	if err != nil {
 		return nil, err
 	}
-	_ = encoder.SetBitrate(32000)
-	_ = encoder.SetComplexity(5)
+	_ = encoder.SetBitrate(96000)
+	_ = encoder.SetComplexity(8)
 	_ = encoder.SetDTX(false)
 	return &libOpusFrameEncoder{encoder: encoder}, nil
 }

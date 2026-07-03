@@ -2,6 +2,7 @@ package ivr
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
-func TestLocationMenuUsesAlertGreetingAndStarOptionWhenAlertsAreActive(t *testing.T) {
+func TestLocationMenuAutoOpensAlertMenuWhenAlertsAreActive(t *testing.T) {
 	service, closeStore := ivrAlertTestService(t)
 	defer closeStore()
 	storeIVRTestCAP(t, service.store, "urn:test:ivr:tor", "sk-0001", "Tornado Warning", "Tornado Warning", "Extreme", "Immediate", "Observed", "high")
@@ -23,11 +24,20 @@ func TestLocationMenuUsesAlertGreetingAndStarOptionWhenAlertsAreActive(t *testin
 	service.writeLocationMenu(response, request, ivrTestLocation())
 
 	body := response.Body.String()
-	if !strings.Contains(body, "/ivr/v1/alert_audio") || !strings.Contains(body, "kind=location_menu") {
-		t.Fatalf("location menu did not use alert-aware greeting audio: %s", body)
+	if !strings.Contains(body, "/ivr/v1/alert_audio") || !strings.Contains(body, "kind=menu") || !strings.Contains(body, "state=alert_option") {
+		t.Fatalf("location menu did not immediately open alert submenu: %s", body)
 	}
 	if strings.Contains(body, "line=main") {
-		t.Fatalf("alert-aware location menu should not use the ordinary reached-location prompt: %s", body)
+		t.Fatalf("initial alert submenu should not use the ordinary reached-location prompt: %s", body)
+	}
+
+	request = formRequest("http://ivr.test/ivr/v1/twiml?state=alert_option&feed_id=sk-0001&lang=en-CA", url.Values{"Digits": {"#"}})
+	response = httptest.NewRecorder()
+	service.handleAlertOptionTwiML(response, request)
+
+	body = response.Body.String()
+	if !strings.Contains(body, "state=location_option") || !strings.Contains(body, "kind=location_menu") {
+		t.Fatalf("pound should return from alerts to alert-aware location menu: %s", body)
 	}
 
 	request = formRequest("http://ivr.test/ivr/v1/twiml?state=location_option&feed_id=sk-0001&lang=en-CA", url.Values{"Digits": {"*"}})
@@ -60,41 +70,41 @@ func TestIVRAlertMenuSortsMostCriticalAlertsFirst(t *testing.T) {
 		{
 			ID:    "statement",
 			Title: "Special Weather Statement",
-			Alert: capingest.Alert{Identifier: "statement"},
-			Info: capingest.AlertInfo{
+			Alert: capmodel.Alert{Identifier: "statement"},
+			Info: capmodel.AlertInfo{
 				Event:     "Special Weather Statement",
 				Headline:  "Special Weather Statement",
 				Severity:  "Minor",
 				Urgency:   "Future",
 				Certainty: "Possible",
 			},
-			Score: ivrAlertPriority(capingest.Alert{}, capingest.AlertInfo{Event: "Special Weather Statement", Headline: "Special Weather Statement", Severity: "Minor", Urgency: "Future", Certainty: "Possible"}, now.Add(-2*time.Minute)),
+			Score: ivrAlertPriority(capmodel.Alert{}, capmodel.AlertInfo{Event: "Special Weather Statement", Headline: "Special Weather Statement", Severity: "Minor", Urgency: "Future", Certainty: "Possible"}, now.Add(-2*time.Minute)),
 		},
 		{
 			ID:    "watch",
 			Title: "Severe Thunderstorm Watch",
-			Alert: capingest.Alert{Identifier: "watch"},
-			Info: capingest.AlertInfo{
+			Alert: capmodel.Alert{Identifier: "watch"},
+			Info: capmodel.AlertInfo{
 				Event:     "Severe Thunderstorm Watch",
 				Headline:  "Severe Thunderstorm Watch",
 				Severity:  "Moderate",
 				Urgency:   "Expected",
 				Certainty: "Likely",
 			},
-			Score: ivrAlertPriority(capingest.Alert{}, capingest.AlertInfo{Event: "Severe Thunderstorm Watch", Headline: "Severe Thunderstorm Watch", Severity: "Moderate", Urgency: "Expected", Certainty: "Likely"}, now.Add(-time.Minute)),
+			Score: ivrAlertPriority(capmodel.Alert{}, capmodel.AlertInfo{Event: "Severe Thunderstorm Watch", Headline: "Severe Thunderstorm Watch", Severity: "Moderate", Urgency: "Expected", Certainty: "Likely"}, now.Add(-time.Minute)),
 		},
 		{
 			ID:    "tornado",
 			Title: "Tornado Warning",
-			Alert: capingest.Alert{Identifier: "tornado"},
-			Info: capingest.AlertInfo{
+			Alert: capmodel.Alert{Identifier: "tornado"},
+			Info: capmodel.AlertInfo{
 				Event:     "Tornado Warning",
 				Headline:  "Tornado Warning",
 				Severity:  "Extreme",
 				Urgency:   "Immediate",
 				Certainty: "Observed",
 			},
-			Score: ivrAlertPriority(capingest.Alert{}, capingest.AlertInfo{Event: "Tornado Warning", Headline: "Tornado Warning", Severity: "Extreme", Urgency: "Immediate", Certainty: "Observed"}, now.Add(-3*time.Minute)),
+			Score: ivrAlertPriority(capmodel.Alert{}, capmodel.AlertInfo{Event: "Tornado Warning", Headline: "Tornado Warning", Severity: "Extreme", Urgency: "Immediate", Certainty: "Observed"}, now.Add(-3*time.Minute)),
 		},
 	}
 
@@ -102,6 +112,44 @@ func TestIVRAlertMenuSortsMostCriticalAlertsFirst(t *testing.T) {
 
 	if alerts[0].ID != "tornado" || alerts[1].ID != "watch" || alerts[2].ID != "statement" {
 		t.Fatalf("alerts sorted in wrong criticality order: %#v", []string{alerts[0].ID, alerts[1].ID, alerts[2].ID})
+	}
+}
+
+func TestIVRAlertReadoutCollapsesVeryLargeAreaLists(t *testing.T) {
+	service := &Service{cfg: loadedConfig{Prompts: defaultPromptConfig()}}
+	info := capmodel.AlertInfo{
+		Language:    "en-CA",
+		Event:       "thunderstorm",
+		Headline:    "yellow watch - severe thunderstorm - in effect",
+		Severity:    "Moderate",
+		Urgency:     "Expected",
+		Certainty:   "Likely",
+		SenderName:  "Environment Canada",
+		Description: "Conditions are favourable for severe thunderstorms.",
+		Instruction: "Monitor alerts and forecasts.",
+		Expires:     "2099-07-02T23:00:00-06:00",
+	}
+	for i := 0; i < 12; i++ {
+		info.Areas = append(info.Areas, capmodel.AlertArea{Description: fmt.Sprintf("Very Long Broad Watch Area %02d", i+1)})
+	}
+	text := service.alertReadoutText(ivrTestLocation(), ivrActiveAlert{
+		ID:    "watch",
+		Title: "Yellow Watch - Severe Thunderstorm",
+		Alert: capmodel.Alert{
+			Identifier:  "watch",
+			Sender:      "cap-pac@canada.ca",
+			Sent:        "2026-07-02T12:00:00-06:00",
+			MessageType: "Alert",
+			Infos:       []capmodel.AlertInfo{info},
+		},
+		Info: info,
+	})
+
+	if !strings.Contains(text, "for Saskatoon area") {
+		t.Fatalf("large area list was not collapsed to location area:\n%s", text)
+	}
+	if strings.Count(text, "Very Long Broad Watch Area") > 1 {
+		t.Fatalf("large area list leaked into IVR readout:\n%s", text)
 	}
 }
 

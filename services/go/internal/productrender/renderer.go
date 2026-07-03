@@ -20,9 +20,6 @@ func newRenderer(cfg loadedConfig) renderer {
 }
 
 func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
-	if strings.TrimSpace(request.FeedID) == "" {
-		return Product{}, fmt.Errorf("feed_id is required")
-	}
 	feed, err := r.onDemandFeed(request)
 	if err != nil {
 		return Product{}, err
@@ -169,12 +166,21 @@ func (r renderer) Render(request renderRequest) (Product, error) {
 }
 
 func (r renderer) onDemandFeed(request wxOnDemandRequest) (feedXML, error) {
-	feed, ok := r.cfg.feedByID(request.FeedID)
-	if !ok {
-		return feedXML{}, fmt.Errorf("feed %q is not configured", request.FeedID)
+	feedID := strings.TrimSpace(request.FeedID)
+	feed := feedXML{
+		ID:         "wx-on-demand",
+		EnabledRaw: "true",
+		Timezone:   firstNonBlank(request.Timezone, "UTC"),
 	}
-	if strings.TrimSpace(feed.ID) == "" || !xmlBool(feed.EnabledRaw, true) {
-		return feedXML{}, fmt.Errorf("feed %q is disabled", request.FeedID)
+	if feedID != "" {
+		configured, ok := r.cfg.feedByID(feedID)
+		if !ok {
+			return feedXML{}, fmt.Errorf("feed %q is not configured", request.FeedID)
+		}
+		if strings.TrimSpace(configured.ID) == "" || !xmlBool(configured.EnabledRaw, true) {
+			return feedXML{}, fmt.Errorf("feed %q is disabled", request.FeedID)
+		}
+		feed = configured
 	}
 
 	locationName := firstNonBlank(request.LocationName, request.Code, request.ForecastID, request.StationID)
@@ -414,6 +420,7 @@ func (r renderer) forecastProduct(base Product, feed feedXML) (Product, error) {
 		segments = append(segments, Segment{Kind: "opener", Text: r.packageText(base.PackageID, "opener", base.Language, "Forecast for the {callsign} listening area:", map[string]string{
 			"callsign": callsign,
 			"site":     feedSiteName(feed),
+			"source":   forecastSourceName(feed),
 		})})
 	}
 	if issued := reportTime(snapshot.IssuedAt, feed.Timezone); issued != "" && !isTelephoneProduct(base) {
@@ -624,6 +631,7 @@ func (r renderer) climateProduct(base Product, feed feedXML) (Product, error) {
 	segments := []Segment{{Kind: "opener", Text: r.packageText(base.PackageID, "opener", base.Language, "The Environment Canada climate summary.", map[string]string{
 		"location": location,
 		"site":     feedSiteName(feed),
+		"source":   "Environment Canada",
 	})}}
 	for _, line := range snapshot.Summary {
 		if text := sentence(strings.TrimSpace(line)); text != "" {

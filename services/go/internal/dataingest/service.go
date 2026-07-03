@@ -274,6 +274,7 @@ func loadConfig(configPath string) (loadedConfig, error) {
 	if err != nil {
 		return loadedConfig{}, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var root rootConfig
 	if err := yaml.Unmarshal(raw, &root); err != nil {
 		return loadedConfig{}, err
@@ -284,6 +285,7 @@ func loadConfig(configPath string) (loadedConfig, error) {
 	if err != nil {
 		return loadedConfig{}, err
 	}
+	feedsRaw = []byte(os.ExpandEnv(string(feedsRaw)))
 	var feeds feedsXML
 	if err := xml.Unmarshal(feedsRaw, &feeds); err != nil {
 		return loadedConfig{}, err
@@ -2062,9 +2064,24 @@ func degreesToCardinal(value float64, ok bool) any {
 }
 
 func loadDotEnv(path string) {
-	raw, err := os.ReadFile(filepath.Clean(path))
+	path = filepath.Clean(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return
+		if !os.IsNotExist(err) || filepath.Base(path) != ".env" {
+			return
+		}
+		examplePath := filepath.Join(filepath.Dir(path), ".env.example")
+		exampleRaw, readErr := os.ReadFile(examplePath)
+		if readErr != nil {
+			log.Printf("WARN .env file not found and no .env.example is available: %s", path)
+			return
+		}
+		if writeErr := os.WriteFile(path, exampleRaw, 0o600); writeErr != nil {
+			log.Printf("WARN .env file not found and could not create %s: %v", path, writeErr)
+			return
+		}
+		log.Printf("WARN .env file not found: created %s from %s", path, examplePath)
+		raw = exampleRaw
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)

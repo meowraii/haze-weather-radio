@@ -9,12 +9,20 @@ const addButton = document.getElementById('cgenAddButton');
 const saveButton = document.getElementById('cgenSaveButton');
 const globalEnabled = document.getElementById('cgenGlobalEnabled');
 const preview = document.getElementById('cgenPreview');
+const previewStream = document.getElementById('cgenPreviewStream');
 const metaProgramInput = document.getElementById('cgenProgramInputMeta');
 const metaPriority = document.getElementById('cgenPriorityMeta');
 const metaOutput = document.getElementById('cgenOutputMeta');
 const metaRuntime = document.getElementById('cgenRuntimeMeta');
 const metaDrift = document.getElementById('cgenDriftMeta');
 const metaVisual = document.getElementById('cgenVisualMeta');
+const sunnyField = document.getElementById('cgenSunnyField');
+const sunnyButton = document.getElementById('cgenSunnyButton');
+const refreshFontsButton = document.getElementById('cgenRefreshFontsButton');
+const fontPreview = document.getElementById('cgenFontPreview');
+const fontPicker = document.getElementById('cgenFontPicker');
+const fontPickerLabel = document.getElementById('cgenFontPickerLabel');
+const fontMenu = document.getElementById('cgenFontMenu');
 
 const fields = {
     id: document.getElementById('cgenID'),
@@ -73,6 +81,7 @@ const fields = {
     clockY: document.getElementById('cgenClockY'),
     clockFontSize: document.getElementById('cgenClockFontSize'),
     smpteBars: document.getElementById('cgenSmpteBars'),
+    sunnyCat: document.getElementById('cgenSunnyCat'),
 };
 
 let bound = false;
@@ -83,6 +92,14 @@ let editorDirty = false;
 let renderScheduled = false;
 let previewDirty = false;
 let metaDirty = false;
+let previewStreamFeedID = '';
+let previewRetryTimer = 0;
+let cgenCatalog = {
+    formats: [],
+    video_codecs: [],
+    audio_codecs: [],
+    fonts: [],
+};
 
 function setStatus(text, state = 'ok') {
     if (statusBanner.textContent !== text) {
@@ -126,13 +143,38 @@ function value(key, fallback = '') {
     return String(field.value || fallback).trim();
 }
 
+function optionLabelForValue(value) {
+    const text = String(value || '').trim();
+    return text ? `${text} (current/custom)` : '';
+}
+
+function ensureSelectOption(select, value, label = '') {
+    if (!select || select.tagName !== 'SELECT') return;
+    const text = String(value ?? '').trim();
+    if (!text) return;
+    const exists = Array.from(select.options).some((option) => option.value === text);
+    if (exists) return;
+    const option = document.createElement('option');
+    option.value = text;
+    option.textContent = label || optionLabelForValue(text);
+    option.dataset.custom = 'true';
+    if (select.id === 'cgenFont') {
+        option.style.fontFamily = fontCssStack(text);
+    }
+    select.appendChild(option);
+}
+
 function setValue(key, raw) {
     const field = fields[key];
     if (!field) return;
     if (field.type === 'checkbox') {
         field.checked = Boolean(raw);
     } else {
+        ensureSelectOption(field, raw);
         field.value = raw ?? '';
+    }
+    if (key === 'font') {
+        updateFontPreview();
     }
 }
 
@@ -149,6 +191,7 @@ function readEditor() {
         enabled: value('enabled'),
         mode: value('mode', 'release'),
         smpte_bars: value('smpteBars'),
+        sunny_cat: value('sunnyCat'),
         program_input_url: value('programInput'),
         program_input_format: value('programInputFormat', 'mpegts'),
         priority_feed_id: value('priorityFeed', id),
@@ -156,8 +199,8 @@ function readEditor() {
         priority_input_format: 'priority-audio',
         program_output_url: value('programOutput'),
         program_output_format: value('outputFormat', 'mpegts'),
-        vcodec: value('vcodec', 'mpeg2video'),
-        acodec: value('acodec', 'ac3'),
+        vcodec: value('vcodec', 'avenc_mpeg2video'),
+        acodec: value('acodec', 'avenc_ac3'),
         video_bitrate_kbps: value('hdBitrate', '12000'),
         audio_bitrate_kbps: value('stereoBitrate', '192'),
         hd_enabled: 'auto',
@@ -186,7 +229,7 @@ function readEditor() {
         font_size: value('fontSize', '58'),
         scroll_speed: value('scrollSpeed', '8'),
         scroll_repeat_mode: value('scrollRepeatMode', 'until_audio_end'),
-        after_eom_repeats: value('afterEomRepeats', '0'),
+        after_eom_repeats: value('afterEomRepeats', '1'),
         fixed_repeats: value('fixedRepeats', '1'),
         banner_background_enabled: true,
         banner_height: value('bannerHeight', '128'),
@@ -220,6 +263,7 @@ function writeEditor(feed) {
     setValue('enabled', Boolean(feed.enabled));
     setValue('mode', feed.mode || 'release');
     setValue('smpteBars', Boolean(feed.smpte_bars));
+    setValue('sunnyCat', Boolean(feed.sunny_cat));
     setValue('programInput', feed.program_input_url || '');
     setValue('programInputFormat', feed.program_input_format || 'mpegts');
     setValue('priorityFeed', feed.priority_feed_id || feed.id);
@@ -227,8 +271,8 @@ function writeEditor(feed) {
     setValue('muteStandbyRoutine', feed.mute_standby_routine !== false);
     setValue('programOutput', feed.program_output_url || '');
     setValue('outputFormat', feed.program_output_format || 'mpegts');
-    setValue('vcodec', feed.vcodec || 'mpeg2video');
-    setValue('acodec', feed.acodec || 'ac3');
+    setValue('vcodec', feed.vcodec || 'avenc_mpeg2video');
+    setValue('acodec', feed.acodec || 'avenc_ac3');
     setValue('hdBitrate', feed.hd_bitrate_kbps || feed.video_bitrate_kbps || '12000');
     setValue('p720Enabled', Boolean(feed.p720_enabled));
     setValue('p720Bitrate', feed.p720_bitrate_kbps || '8000');
@@ -255,7 +299,7 @@ function writeEditor(feed) {
     setValue('fontSize', feed.font_size || '58');
     setValue('scrollSpeed', feed.scroll_speed || '8');
     setValue('scrollRepeatMode', feed.scroll_repeat_mode || 'until_audio_end');
-    setValue('afterEomRepeats', feed.after_eom_repeats || '0');
+    setValue('afterEomRepeats', feed.after_eom_repeats || '1');
     setValue('fixedRepeats', feed.fixed_repeats || '1');
     setValue('bannerHeight', feed.banner_height || feed.ticker_height || '128');
     setValue('bannerMode', feed.banner_mode || 'auto');
@@ -273,6 +317,182 @@ function writeEditor(feed) {
     setValue('clockFontSize', feed.clock_font_size || '30');
     scheduleRender();
     editorDirty = false;
+}
+
+function catalogID(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    return String(entry.id || entry.value || '').trim();
+}
+
+function catalogLabel(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    return String(entry.label || entry.id || '').trim();
+}
+
+function catalogOptionTitle(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    const parts = [];
+    if (entry.source) parts.push(`Source: ${entry.source}`);
+    if (entry.element) parts.push(`GStreamer: ${entry.element}`);
+    if (entry.kind) parts.push(`Kind: ${entry.kind}`);
+    return parts.join('\n');
+}
+
+function populateCatalogSelect(select, entries, fallbackEntries = [], options = {}) {
+    if (!select) return;
+    const previous = String(select.value || '').trim();
+    const list = Array.isArray(entries) && entries.length ? entries : fallbackEntries;
+    select.replaceChildren();
+    const seen = new Set();
+    for (const entry of list) {
+        const id = catalogID(entry);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = options.font
+            ? `${catalogLabel(entry) || id} - ${entry.preview || 'The quick brown fox 0123456789'}`
+            : (catalogLabel(entry) || id);
+        const title = catalogOptionTitle(entry);
+        if (title) option.title = title;
+        if (entry.kind) option.dataset.kind = entry.kind;
+        if (entry.element) option.dataset.element = entry.element;
+        if (options.font) {
+            option.style.fontFamily = fontCssStack(id);
+        }
+        select.appendChild(option);
+    }
+    ensureSelectOption(select, previous);
+    if (previous) {
+        select.value = previous;
+    }
+}
+
+function populateCgenCatalogSelectors() {
+    const formats = cgenCatalog.formats || [];
+    populateCatalogSelect(fields.programInputFormat, formats, [{ id: 'mpegts', label: 'MPEG-TS' }]);
+    populateCatalogSelect(fields.outputFormat, formats, [{ id: 'mpegts', label: 'MPEG-TS' }]);
+    populateCatalogSelect(fields.vcodec, cgenCatalog.video_codecs || [], [
+        { id: 'avenc_mpeg2video', label: 'MPEG-2 Video - libav (avenc_mpeg2video)', element: 'avenc_mpeg2video' },
+        { id: 'x264enc', label: 'H.264 / AVC - x264 software (x264enc)', element: 'x264enc' },
+    ]);
+    populateCatalogSelect(fields.acodec, cgenCatalog.audio_codecs || [], [
+        { id: 'avenc_ac3', label: 'AC-3 - libav (avenc_ac3)', element: 'avenc_ac3' },
+        { id: 'avenc_aac', label: 'AAC - libav (avenc_aac)', element: 'avenc_aac' },
+    ]);
+    populateCatalogSelect(fields.font, cgenCatalog.fonts || [], [
+        { id: 'Arial', label: 'Arial', preview: 'The quick brown fox 0123456789' },
+        { id: 'Segoe UI', label: 'Segoe UI', preview: 'The quick brown fox 0123456789' },
+    ], { font: true });
+    renderFontPicker();
+    updateFontPreview();
+}
+
+function updateFontPreview() {
+    if (!fontPreview || !fields.font) return;
+    const family = String(fields.font.value || 'Arial').trim() || 'Arial';
+    fontPreview.style.fontFamily = fontCssStack(family);
+    fontPreview.textContent = 'The quick brown fox 0123456789';
+    fontPreview.title = family;
+    updateFontPickerSelection();
+}
+
+function fontCssStack(family) {
+    const cleaned = String(family || 'Arial').trim().replace(/\\/g, '\\\\').replace(/"/g, '\\"') || 'Arial';
+    const base = cleaned.replace(/\s+(regular|bold|italic|black|medium|semibold|semi-bold|light|thin|cond|condensed|narrow|roman|book|heavy|variable|[1-9][0-9]{1,2})+$/i, '').trim();
+    const fallback = base && base !== cleaned ? `, "${base.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : '';
+    return `"${cleaned}"${fallback}, Arial, sans-serif`;
+}
+
+function fontPickerEntries() {
+    const source = Array.isArray(cgenCatalog.fonts) && cgenCatalog.fonts.length
+        ? cgenCatalog.fonts
+        : [
+            { id: 'Arial', label: 'Arial', preview: 'The quick brown fox 0123456789' },
+            { id: 'Segoe UI', label: 'Segoe UI', preview: 'The quick brown fox 0123456789' },
+        ];
+    const seen = new Set();
+    const entries = [];
+    for (const entry of source) {
+        const id = catalogID(entry);
+        if (!id || seen.has(id.toLowerCase())) continue;
+        seen.add(id.toLowerCase());
+        entries.push({
+            id,
+            label: catalogLabel(entry) || id,
+            preview: entry?.preview || 'The quick brown fox 0123456789',
+        });
+    }
+    const current = String(fields.font?.value || '').trim();
+    if (current && !seen.has(current.toLowerCase())) {
+        entries.unshift({ id: current, label: current, preview: 'The quick brown fox 0123456789' });
+    }
+    return entries;
+}
+
+function renderFontPicker() {
+    if (!fontMenu) return;
+    fontMenu.replaceChildren();
+    for (const entry of fontPickerEntries()) {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'cgen-font-option';
+        option.dataset.value = entry.id;
+        option.setAttribute('role', 'option');
+        option.style.fontFamily = fontCssStack(entry.id);
+        const name = document.createElement('span');
+        name.className = 'cgen-font-option-name';
+        name.textContent = entry.label;
+        const preview = document.createElement('span');
+        preview.className = 'cgen-font-option-preview';
+        preview.textContent = `- ${entry.preview}`;
+        option.append(name, preview);
+        option.addEventListener('click', () => selectFontFamily(entry.id));
+        fontMenu.appendChild(option);
+    }
+    updateFontPickerSelection();
+}
+
+function updateFontPickerSelection() {
+    const family = String(fields.font?.value || 'Arial').trim() || 'Arial';
+    const entry = fontPickerEntries().find((item) => item.id === family);
+    if (fontPickerLabel) {
+        fontPickerLabel.textContent = `${entry?.label || family} - ${entry?.preview || 'The quick brown fox 0123456789'}`;
+        fontPickerLabel.style.fontFamily = fontCssStack(family);
+    }
+    if (fontPicker) {
+        fontPicker.title = family;
+    }
+    if (fontMenu) {
+        fontMenu.querySelectorAll('.cgen-font-option').forEach((option) => {
+            option.setAttribute('aria-selected', option.dataset.value === family ? 'true' : 'false');
+        });
+    }
+}
+
+function selectFontFamily(family) {
+    if (!fields.font) return;
+    ensureSelectOption(fields.font, family);
+    fields.font.value = family;
+    editorDirty = true;
+    setFontPickerOpen(false);
+    updateFontPreview();
+    scheduleRender();
+}
+
+function setFontPickerOpen(open) {
+    if (!fontPicker || !fontMenu) return;
+    fontMenu.hidden = !open;
+    fontPicker.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+        updateFontPickerSelection();
+        const selectedOption = fontMenu.querySelector('.cgen-font-option[aria-selected="true"]') || fontMenu.querySelector('.cgen-font-option');
+        selectedOption?.scrollIntoView({ block: 'nearest' });
+    }
+}
+
+function toggleFontPicker() {
+    setFontPickerOpen(fontMenu?.hidden !== false);
 }
 
 function upsertEditor() {
@@ -326,8 +546,11 @@ function renderMeta() {
         const visual = runtime.visual_lifecycle || runtime.visual_mode || feed.mode || 'release';
         const video = runtime.video_selector || 'video?';
         const audio = runtime.audio_selector || 'audio?';
-        setText(metaVisual, `${visual} / ${video} video / ${audio} audio`);
+        const sunny = sunnyAvailableForFeed(feed) ? ` / Sunny ${feed.sunny_cat ? 'unleashed' : 'banished'}` : '';
+        setText(metaVisual, `${visual} / ${video} video / ${audio} audio${sunny}`);
     }
+    updateSunnyVisibility(feed, runtime);
+    updatePreviewStream(feed);
 }
 
 function formatStreamHealth(label, live, timedOut, ageValue) {
@@ -439,7 +662,7 @@ function drawProgramPlaceholder(ctx, width, height, feed, runtime) {
     ctx.textBaseline = 'top';
     ctx.fillText(live ? 'PROGRAM INPUT LIVE' : 'NO PROGRAM INPUT', 28, 26);
     ctx.font = `500 ${Math.max(10, width / 58)}px Arial, sans-serif`;
-    const label = `${feed.width || 1920}x${feed.height || 1080} ${feed.interlaced ? 'interlaced' : 'progressive'}  ${feed.vcodec || 'mpeg2video'} / ${feed.acodec || 'ac3'}`;
+    const label = `${feed.width || 1920}x${feed.height || 1080} ${feed.interlaced ? 'interlaced' : 'progressive'}  ${feed.vcodec || 'avenc_mpeg2video'} / ${feed.acodec || 'avenc_ac3'}`;
     ctx.fillText(label, 28, 58);
 }
 
@@ -470,8 +693,28 @@ function drawCompositorTicker(ctx, width, height, feed, runtime, text) {
     ctx.fillText(text, width * 0.03, textY);
 }
 
+function drawSunnyPreview(ctx, width, height) {
+    const w = Math.min(width * 0.22, 120);
+    const h = w * 1.25;
+    const x = width - w - 18;
+    const y = height - h - 18;
+    const gradient = ctx.createLinearGradient(x, y, x + w, y + h);
+    gradient.addColorStop(0, '#ffd98a');
+    gradient.addColorStop(0.55, '#f28c28');
+    gradient.addColorStop(1, '#5b2f13');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#1b1009';
+    ctx.fillRect(x + w * 0.18, y + h * 0.18, w * 0.16, h * 0.08);
+    ctx.fillRect(x + w * 0.66, y + h * 0.18, w * 0.16, h * 0.08);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `700 ${Math.max(10, w / 9)}px Arial, sans-serif`;
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('SUNNY', x + w * 0.08, y + h - 8);
+}
+
 function renderPreview() {
-    if (!preview) return;
+    if (!preview || (previewStream && !previewStream.hidden)) return;
     const ctx = preview.getContext('2d');
     const width = preview.width;
     const height = preview.height;
@@ -497,6 +740,9 @@ function renderPreview() {
     if (activeText) {
         drawCompositorTicker(ctx, width, height, feed, runtime, activeText);
     }
+    if (feed.sunny_cat && sunnyAvailableForFeed(feed)) {
+        drawSunnyPreview(ctx, width, height);
+    }
     ctx.fillStyle = '#ffffff';
     const sx = width / Number(feed.width || 1280);
     const sy = height / Number(feed.height || 720);
@@ -508,6 +754,38 @@ function renderPreview() {
         ctx.fillStyle = '#ffffff';
         ctx.font = `${Math.max(8, Number(feed.clock_font_size || 30) * sy)}px monospace`;
         ctx.fillText(new Date().toLocaleString(), Number(feed.clock_x || 48) * sx, Number(feed.clock_y || 48) * sy);
+    }
+}
+
+function updatePreviewStream(feed = selected()) {
+    if (!previewStream || !feed?.id) return;
+    if (previewStreamFeedID === feed.id && previewStream.src) return;
+    previewStreamFeedID = feed.id;
+    previewStream.hidden = true;
+    if (preview) preview.hidden = false;
+    const url = `/api/v1/cgen/preview?feed=${encodeURIComponent(feed.id)}&t=${Date.now()}`;
+    previewStream.src = url;
+}
+
+function sunnyAvailableForFeed(feed) {
+    const runtime = feed?.runtime || {};
+    if (runtime.sunny_cat_available === true) return true;
+    const compositor = runtime.compositor || runtime.text_overlay || {};
+    if (compositor.sunny_cat_available === true) return true;
+    const renderer = runtime.graphics_renderer || {};
+    if (renderer.sunny_cat_available === true) return true;
+    if (Array.isArray(renderer.renditions)) {
+        return renderer.renditions.some((rendition) => rendition && rendition.sunny_cat_available === true);
+    }
+    return false;
+}
+
+function updateSunnyVisibility(feed = selected(), runtime = feed?.runtime || {}) {
+    const available = sunnyAvailableForFeed({ ...feed, runtime });
+    if (sunnyField) sunnyField.hidden = !available;
+    if (sunnyButton) {
+        sunnyButton.hidden = !available;
+        sunnyButton.textContent = feed?.sunny_cat ? 'Banish Loathed Creature' : 'Unleash Sunny, the Cat';
     }
 }
 
@@ -532,7 +810,25 @@ async function loadCgen() {
     }
     renderInstances();
     writeEditor(selected());
+    updatePreviewStream(selected());
     setStatus('CGEN config loaded.', 'ok');
+}
+
+async function loadCgenCatalog({ announce = false } = {}) {
+    const payload = await panelClient.command('cgen.catalog', {}, 15000);
+    cgenCatalog = {
+        formats: Array.isArray(payload.formats) ? payload.formats : [],
+        video_codecs: Array.isArray(payload.video_codecs) ? payload.video_codecs : [],
+        audio_codecs: Array.isArray(payload.audio_codecs) ? payload.audio_codecs : [],
+        fonts: Array.isArray(payload.fonts) ? payload.fonts : [],
+    };
+    populateCgenCatalogSelectors();
+    if (announce) {
+        const fontCount = cgenCatalog.fonts.length;
+        const videoCount = cgenCatalog.video_codecs.length;
+        const audioCount = cgenCatalog.audio_codecs.length;
+        setStatus(`Catalog refreshed: ${videoCount} video codecs, ${audioCount} audio codecs, ${fontCount} fonts.`, 'ok');
+    }
 }
 
 async function refreshRuntime() {
@@ -551,6 +847,7 @@ async function refreshRuntime() {
         renderInstances();
     }
     scheduleRender();
+    updatePreviewStream(selected());
 }
 
 async function saveCgen() {
@@ -577,8 +874,8 @@ function defaultFeed() {
         mute_standby_routine: true,
         program_output_url: 'udp://239.0.0.2:9001?pkt_size=1316&buffer_size=1048576&reuse=1',
         program_output_format: 'mpegts',
-        vcodec: 'mpeg2video',
-        acodec: 'ac3',
+        vcodec: 'avenc_mpeg2video',
+        acodec: 'avenc_ac3',
         video_bitrate_kbps: '12000',
         audio_bitrate_kbps: '192',
         hd_enabled: 'auto',
@@ -606,7 +903,7 @@ function defaultFeed() {
         banner_mode: 'auto',
         scroll_speed: '8',
         scroll_repeat_mode: 'until_audio_end',
-        after_eom_repeats: '0',
+        after_eom_repeats: '1',
         fixed_repeats: '1',
         banner_height: '128',
         standby_mode: 'banner',
@@ -620,6 +917,7 @@ function defaultFeed() {
         clock_x: '48',
         clock_y: '48',
         clock_font_size: '30',
+        sunny_cat: false,
     };
 }
 
@@ -659,7 +957,8 @@ function canvasFontWeight(value, fallback = 'regular') {
 
 async function runAction(action, extra = {}) {
     upsertEditor();
-    const payload = await panelClient.command('cgen.action', { feed_id: selectedID, action, ...extra }, 10000);
+    const current = readEditor();
+    const payload = await panelClient.command('cgen.action', { ...current, feed_id: selectedID, action, ...extra }, 10000);
     feeds = Array.isArray(payload.feeds) ? payload.feeds : feeds;
     renderInstances();
     writeEditor(feeds.find((feed) => feed.id === selectedID) || feeds[0]);
@@ -692,11 +991,43 @@ export function initCgenView() {
         field?.addEventListener('input', () => {
             editorDirty = true;
             scheduleRender();
+            if (field === fields.font) updateFontPreview();
         });
         field?.addEventListener('change', () => {
             editorDirty = true;
             scheduleRender();
+            if (field === fields.font) updateFontPreview();
         });
+    });
+    refreshFontsButton?.addEventListener('click', () => {
+        refreshFontsButton.disabled = true;
+        loadCgenCatalog({ announce: true })
+            .catch((error) => setStatus(error.message || 'Unable to refresh CGEN catalog.', 'err'))
+            .finally(() => {
+                refreshFontsButton.disabled = false;
+            });
+    });
+    fontPicker?.addEventListener('click', toggleFontPicker);
+    fontPicker?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown') {
+            event.preventDefault();
+            setFontPickerOpen(true);
+        }
+    });
+    fontMenu?.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            setFontPickerOpen(false);
+            fontPicker?.focus();
+        }
+    });
+    document.addEventListener('click', (event) => {
+        if (!fontMenu || fontMenu.hidden) return;
+        const target = event.target;
+        if (target instanceof Node && (fontMenu.contains(target) || fontPicker?.contains(target))) {
+            return;
+        }
+        setFontPickerOpen(false);
     });
     document.getElementById('cgenReleaseButton')?.addEventListener('click', () => runAction('release').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenOverlayButton')?.addEventListener('click', () => runAction('overlay').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
@@ -704,8 +1035,31 @@ export function initCgenView() {
     document.getElementById('cgenClockButton')?.addEventListener('click', () => runAction('clock', { enabled: !fields.clockEnabled.checked }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenInsertTextButton')?.addEventListener('click', () => runAction('insert_text', { text: fields.text.value }).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
     document.getElementById('cgenClearTextButton')?.addEventListener('click', () => runAction('clear_text').catch((error) => setStatus(error.message || 'CGEN action failed.', 'err')));
+    sunnyButton?.addEventListener('click', () => {
+        const action = fields.sunnyCat.checked ? 'banish_sunny' : 'unleash_sunny';
+        runAction(action).catch((error) => setStatus(error.message || 'CGEN action failed.', 'err'));
+    });
+    previewStream?.addEventListener('load', () => {
+        previewStream.hidden = false;
+        if (preview) preview.hidden = true;
+    });
+    previewStream?.addEventListener('error', () => {
+        previewStream.hidden = true;
+        if (preview) preview.hidden = false;
+        window.clearTimeout(previewRetryTimer);
+        previewRetryTimer = window.setTimeout(() => {
+            previewStreamFeedID = '';
+            updatePreviewStream(selected());
+        }, 2500);
+    });
     window.setInterval(() => {
         refreshRuntime().catch(() => scheduleRender({ preview: true, meta: false }));
     }, 1500);
-    loadCgen().catch((error) => setStatus(error.message || 'Unable to load CGEN config.', 'err'));
+    loadCgenCatalog()
+        .catch(() => {
+            populateCgenCatalogSelectors();
+        })
+        .finally(() => {
+            loadCgen().catch((error) => setStatus(error.message || 'Unable to load CGEN config.', 'err'));
+        });
 }

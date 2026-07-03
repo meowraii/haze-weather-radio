@@ -235,6 +235,7 @@ func loadConfig(configPath string) (loadedConfig, error) {
 	if err != nil {
 		return loadedConfig{}, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var root rootConfig
 	if err := yaml.Unmarshal(raw, &root); err != nil {
 		return loadedConfig{}, err
@@ -349,6 +350,7 @@ func loadFeeds(path string) ([]feedXML, error) {
 	if err != nil {
 		return nil, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var parsed feedsXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("parse feeds XML: %w", err)
@@ -364,6 +366,7 @@ func loadPackages(path string) (map[string]packageProfile, error) {
 		}
 		return nil, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var parsed packagesXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("parse packages XML: %w", err)
@@ -426,6 +429,7 @@ func loadProductText(path string) (map[string]map[string]map[string]string, erro
 		}
 		return nil, err
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 	var parsed productTextXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("parse product text XML: %w", err)

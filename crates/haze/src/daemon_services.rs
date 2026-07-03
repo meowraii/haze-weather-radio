@@ -1250,6 +1250,7 @@ where
 {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read daemon config {}", path.display()))?;
+    let raw = expand_env_vars(&raw);
     let mut value: serde_yaml::Value = serde_yaml::from_str(&raw)
         .with_context(|| format!("failed to parse daemon config {}", path.display()))?;
     let settings_file = value
@@ -1297,6 +1298,44 @@ fn merge_yaml(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
             *base_slot = overlay_value;
         }
     }
+}
+
+fn expand_env_vars(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '$' {
+            out.push(ch);
+            continue;
+        }
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            let mut name = String::new();
+            for next in chars.by_ref() {
+                if next == '}' {
+                    break;
+                }
+                name.push(next);
+            }
+            out.push_str(&std::env::var(name).unwrap_or_default());
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(next) = chars.peek().copied() {
+            if next == '_' || next.is_ascii_alphanumeric() {
+                name.push(next);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if name.is_empty() {
+            out.push('$');
+        } else {
+            out.push_str(&std::env::var(name).unwrap_or_default());
+        }
+    }
+    out
 }
 
 fn resolve_path(base: &Path, path: &Path) -> PathBuf {

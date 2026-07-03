@@ -5,13 +5,14 @@ import { initDashboard } from './dashboard.js';
 import { initSameView } from './same.js';
 import { initWxView } from './wx.js';
 import { initDaemonView } from './daemon.js';
-import { initPlaylistView } from './playlist.js';
 import { initBreakInView } from './breakin.js';
 import { initAlertsArchiveView } from './alerts.js';
 import { initAutomationsView } from './automations.js';
 import { initDictionaryView } from './dictionary.js';
 import { initBulletinsView } from './bulletins.js';
 import { initCgenView } from './cgen.js';
+import { initTTSView } from './tts.js';
+import { initFeedsView } from './feeds.js';
 
 const authPill = document.getElementById('authPill');
 const healthPill = document.getElementById('healthPill');
@@ -23,7 +24,7 @@ const refreshButton = document.getElementById('refreshButton');
 
 let healthState = { auth_required: true };
 let dashboardInitialized = false;
-const viewInit = { same: false, automations: false, wx: false, daemon: false, playlist: false, breakin: false, cgen: false, bulletins: false, alerts: false, dictionary: false };
+const viewInit = { same: false, automations: false, wx: false, feeds: false, tts: false, daemon: false, breakin: false, cgen: false, bulletins: false, alerts: false, dictionary: false };
 
 session.importUrlToken();
 initTheme(themeToggle);
@@ -129,13 +130,17 @@ function navigate(view) {
         viewInit.wx = true;
         initWxView();
     }
+    if (view === 'feeds' && !viewInit.feeds) {
+        viewInit.feeds = true;
+        initFeedsView();
+    }
+    if (view === 'tts' && !viewInit.tts) {
+        viewInit.tts = true;
+        initTTSView();
+    }
     if (view === 'daemon' && !viewInit.daemon) {
         viewInit.daemon = true;
         initDaemonView();
-    }
-    if (view === 'playlist' && !viewInit.playlist) {
-        viewInit.playlist = true;
-        initPlaylistView();
     }
     if (view === 'breakin' && !viewInit.breakin) {
         viewInit.breakin = true;

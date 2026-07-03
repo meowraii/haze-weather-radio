@@ -1,5 +1,5 @@
 # haze-weather-radio
-Haze Weather Radio is a Rust-hosted, Go-service weather radio system for generating, managing, and broadcasting weather information and emergency alert audio. The production bundle is built around `haze`, which owns startup, shutdown, logging, runtime directory selection, and bundled service supervision. Go services are taking over I/O-heavy work such as the web gateway, CAP ingest, and TTS rendering.
+Haze Weather Radio is a Rust-hosted weather radio system for generating, managing, and broadcasting weather information and emergency alert audio. The production bundle is built around `haze`, which owns startup, shutdown, logging, runtime directory selection, and bundled service supervision. CAP ingest is handled by the native Rust ingest service; remaining managed Go services provide the web gateway, TTS, product rendering, playlist, webhooks, and IVR.
 
 # Why
 On March 16, 2026, Environment Canada shut down their Weatheradio Canada service, which provided weather radio broadcasts across the country. In response to this, I decided to create Haze Weather Radio as a replacement for the service, using publicly available data feeds and open-source tools. My goal is to provide a free and accessible weather radio service for Canadians, and to keep the spirit of Weatheradio Canada alive in a new and modernized form. As well as emphasize the importance of redundancy, accessibility, and reliability in public safety communications, and to demonstrate how technology can be used to fill gaps in public services when they arise.
@@ -25,7 +25,7 @@ scripts/build-haze.ps1
 dist/Haze_UAP-Windows-x86_64-Portable/haze.exe --config config.yaml
 ```
 
-The production bundle is host-only and ships the `haze` executable plus bundled Go services.
+The production bundle is host-only and ships the `haze` executable plus bundled managed services.
 
 On first launch, if the executable directory already contains meaningful files, `haze` asks whether to keep runtime files there, create a `haze-runtime` subfolder, or choose a custom directory. Services and unattended installs should pass `--workdir C:\path\to\runtime` to skip the prompt.
 
@@ -54,16 +54,16 @@ scripts/build-haze.ps1 -MediaBackend rsmpeg-vcpkg
 
 This is intended to replace external `ffmpeg` subprocess encoder paths with one unified in-process media layer over time.
 
-# Go Service Migration
-The service migration target is Go for I/O-heavy Haze services. First-pass services live under `services/go`:
+# Managed Services
+First-pass managed services live under `services/go`, with native Rust services under `crates/`:
 
 ```powershell
 scripts/build-go-services.ps1
 dist/Haze_UAP-Windows-x86_64-Portable/bin/haze-web.exe --addr 127.0.0.1:8081 --webroot webroot --config config.yaml
-dist/Haze_UAP-Windows-x86_64-Portable/bin/haze-cap-ingest.exe --source naads --once
+dist/Haze_UAP-Windows-x86_64-Portable/bin/haze-cap-ingest.exe --source naads --mode tcp
 ```
 
-`haze-web` is a static/admin/public gateway scaffold with health and WebSocket endpoints. `haze-cap-ingest` is intentionally policy-free: it fetches Atom/CAP sources and emits normalized `cap.alert.received` JSON events into the Haze host bridge when launched by `haze`, or JSONL to stdout when run standalone. `haze-tts` runs as a host-bridge TTS renderer for SAPI5, eSpeak, and Piper readers.
+`haze-web` is a static/admin/public gateway scaffold with health and WebSocket endpoints. `haze-cap-ingest` is intentionally policy-free: it consumes NAADS TCP streaming CAP-CP and NWS/custom Atom CAP sources, then emits normalized `cap.alert.received` JSON events into the Haze host bridge when launched by `haze`, or JSONL to stdout when run standalone. `haze-tts` runs as a host-bridge TTS renderer for SAPI5, SpeakyAPI, eSpeak, Piper, Kokoro, and other configured readers.
 
 The transmitter-side receiver stays separate as `hazeReceiver.py`; it pairs with the admin server, receives transmitter parameters, and plays the secure WebRTC feed into `pi_fm_adv` on the target host.
 

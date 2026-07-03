@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/meowraii/haze-weather-radio/services/go/internal/capingest"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
@@ -58,6 +58,48 @@ func TestArchiveSAMEAllowedSuppressesCancellationsAndStaleWarnings(t *testing.T)
 	}
 }
 
+func TestArchiveRebroadcastEventDataCarriesCompletePriorityAlertPayload(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	alert := parseArchiveTestAlert(t, archiveTestCAP("urn:test:force-svr", "Alert", "yellow warning - severe thunderstorm - in effect", "2099-06-15T21:30:00-06:00", false))
+	record := archiveCAPRecord{
+		ID:         "urn:test:force-svr",
+		FeedID:     "CAP-IT-ALL",
+		Status:     "rejected",
+		Alert:      alert,
+		BannerText: "Custom archive banner text",
+	}
+
+	data, withSAME, audio := archiveRebroadcastEventData(configPath, record, true, true, time.Date(2026, 6, 15, 22, 0, 0, 0, time.UTC))
+
+	if !withSAME {
+		t.Fatal("forced archive broadcast should keep SAME enabled when the alert can be mapped")
+	}
+	if audio.URL != "" {
+		t.Fatalf("test CAP has no audio resource, got %q", audio.URL)
+	}
+	if got := stringPayload(data, "feed_id", ""); got != "CAP-IT-ALL" {
+		t.Fatalf("feed_id = %q, want CAP-IT-ALL", got)
+	}
+	if got := stringPayload(data, "same_event", ""); got == "" {
+		t.Fatalf("same_event was not populated: %#v", data)
+	}
+	if got := stringSlicePayload(data, "same_locations"); len(got) != 1 || got[0] != "065522" {
+		t.Fatalf("same_locations = %#v, want [065522]", got)
+	}
+	if includeSAME, _ := data["include_same"].(bool); !includeSAME {
+		t.Fatalf("include_same = %#v, want true", data["include_same"])
+	}
+	if force, _ := data["force_broadcast"].(bool); !force {
+		t.Fatalf("force_broadcast = %#v, want true", data["force_broadcast"])
+	}
+	if got := stringPayload(data, "banner_text", ""); got != "Custom archive banner text" {
+		t.Fatalf("banner_text = %q", got)
+	}
+	if _, ok := data["alert_packet"]; !ok {
+		t.Fatalf("alert_packet was not attached: %#v", data)
+	}
+}
+
 func TestArchiveRecordPayloadIncludesCAPXMLURLAndSAMEPreviewFlag(t *testing.T) {
 	baseDir := t.TempDir()
 	alert := parseArchiveTestAlert(t, archiveTestCAP("urn:test:svr", "Alert", "yellow warning - severe thunderstorm - in effect", "2099-06-15T21:30:00-06:00", false))
@@ -83,8 +125,8 @@ func TestArchiveRecordPayloadIncludesCAPXMLURLAndSAMEPreviewFlag(t *testing.T) {
 }
 
 func TestArchiveBroadcastAudioOnlyAllowsWebURLs(t *testing.T) {
-	alert := capingest.Alert{Infos: []capingest.AlertInfo{{
-		Resources: []capingest.Resource{
+	alert := capmodel.Alert{Infos: []capmodel.AlertInfo{{
+		Resources: []capmodel.Resource{
 			{MimeType: "audio/mpeg", URI: "javascript:alert(1)"},
 			{MimeType: "audio/mpeg", URI: "file:///C:/Windows/win.ini"},
 			{Description: "Audio clip", DerefURI: "https://alerts.example.test/audio.mp3"},
@@ -98,8 +140,8 @@ func TestArchiveBroadcastAudioOnlyAllowsWebURLs(t *testing.T) {
 }
 
 func TestArchiveBroadcastAudioRejectsNonWebURLs(t *testing.T) {
-	alert := capingest.Alert{Infos: []capingest.AlertInfo{{
-		Resources: []capingest.Resource{
+	alert := capmodel.Alert{Infos: []capmodel.AlertInfo{{
+		Resources: []capmodel.Resource{
 			{MimeType: "audio/wav", URI: "data:audio/wav;base64,UklGRg=="},
 			{MimeType: "audio/wav", URI: "//alerts.example.test/audio.wav"},
 			{Description: "Audio clip", DerefURI: "ftp://alerts.example.test/audio.mp3"},
@@ -680,9 +722,9 @@ storage:
 	}
 }
 
-func parseArchiveTestAlert(t *testing.T, raw string) capingest.Alert {
+func parseArchiveTestAlert(t *testing.T, raw string) capmodel.Alert {
 	t.Helper()
-	alert, err := capingest.ParseCAP([]byte(raw))
+	alert, err := capmodel.ParseCAP([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
 	}

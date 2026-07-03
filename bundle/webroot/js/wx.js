@@ -3,7 +3,6 @@ import { pcmToWav } from './lib/audio.js';
 
 const PACKAGE_DESCRIPTIONS = {
     date_time: 'Date and time',
-    station_id: 'Station identification',
     current_conditions: 'Current conditions',
     forecast: 'Forecast',
     air_quality: 'Air quality',
@@ -15,7 +14,6 @@ const PACKAGE_DESCRIPTIONS = {
     precipitation_analysis: 'Precipitation analysis',
     geophysical_alert: 'Geophysical alert',
     alerts: 'Active alerts',
-    user_bulletin: 'User bulletin',
 };
 
 const FORMAT_INFO = {
@@ -44,7 +42,6 @@ const DEFAULT_WX_SUFFIX = '/wx-on-demand';
 
 const state = {
     wxBase: `${detectApiBase()}${DEFAULT_WX_SUFFIX}`,
-    feeds: [],
     readers: [],
     allPackages: [],
     selectedPackages: new Set(),
@@ -62,7 +59,6 @@ const el = {
     builderSummary: document.getElementById('wxBuilderSummary'),
     requestSummary: document.getElementById('wxRequestSummary'),
     responseSummary: document.getElementById('wxResponseSummary'),
-    feed: document.getElementById('tryFeed'),
     locations: document.getElementById('tryLocations'),
     source: document.getElementById('trySource'),
     lang: document.getElementById('tryLang'),
@@ -130,7 +126,6 @@ function setSelectedPackages(packages) {
 function payload() {
     const locations = splitLocations(el.locations.value);
     const body = {
-        feed_id: el.feed.value,
         locations: locations.length === 1 ? locations[0] : locations,
         packages: allPackagesSelected() ? 'all' : selectedPackages(),
         lang: el.lang.value,
@@ -182,7 +177,6 @@ function renderResponseMeta(result = null, message = '') {
     }
     const rows = [
         ['Format', result.format || el.format.value],
-        ['Feed', result.feed_id || el.feed.value || 'auto'],
         ['Reader', result.reader_id || 'automatic'],
         ['Language', result.language || el.lang.value],
         ['Packages', result.packages || selectedPackages().join(', ') || 'none'],
@@ -245,9 +239,8 @@ function update() {
     const body = payload();
     const packageCount = selectedPackages().length;
     const responseType = TEXT_FORMATS.has(body.format) ? 'text' : 'audio';
-    const feedLabel = el.feed.selectedOptions[0]?.textContent || body.feed_id || 'feed';
     const locationLabel = splitLocations(el.locations.value)[0] || 'default location';
-    el.builderSummary.textContent = `${feedLabel} - ${locationLabel} - ${packageCount || 0} package${packageCount === 1 ? '' : 's'}`;
+    el.builderSummary.textContent = `${locationLabel} - ${packageCount || 0} package${packageCount === 1 ? '' : 's'}`;
     el.requestSummary.textContent = `${responseType}, ${body.format}`;
     el.apiRequestUrl.textContent = apiRequestUrl();
     el.requestPreview.textContent = JSON.stringify(body, null, 2);
@@ -261,7 +254,7 @@ function update() {
     }
     el.curlPreview.textContent = curl.join(' \\\n');
     el.button.textContent = responseType === 'text' ? 'Generate Text' : 'Generate & Play';
-    el.button.disabled = state.busy || !body.feed_id || packageCount === 0;
+    el.button.disabled = state.busy || packageCount === 0;
     el.pkgDefaultBtn.disabled = state.busy || state.allPackages.length === 0;
     el.pkgAllBtn.disabled = state.busy || state.allPackages.length === 0;
     el.pkgClearBtn.disabled = state.busy || packageCount === 0;
@@ -294,25 +287,6 @@ async function copyText(text) {
     }
 }
 
-function renderFeeds() {
-    if (!state.feeds.length) {
-        el.feed.innerHTML = '<option value="">No configured feeds</option>';
-        return;
-    }
-    const current = el.feed.value;
-    el.feed.innerHTML = state.feeds.map((feed) => {
-        const name = feed.name || feed.id;
-        const suffix = feed.enabled === false ? ' (disabled)' : '';
-        return `<option value="${escapeHtml(feed.id)}">${escapeHtml(name)}${suffix}</option>`;
-    }).join('');
-    if (current && state.feeds.some((feed) => feed.id === current)) {
-        el.feed.value = current;
-    } else {
-        const enabled = state.feeds.find((feed) => feed.enabled !== false);
-        el.feed.value = enabled?.id || state.feeds[0]?.id || '';
-    }
-}
-
 function renderReaders() {
     const current = el.voice.value;
     el.voice.innerHTML = '<option value="">Automatic reader</option>' + state.readers.map((reader) => {
@@ -325,17 +299,26 @@ function renderReaders() {
     updateCatalogs();
 }
 
+function packageColumnCount(count) {
+    for (const cols of [4, 3, 2]) {
+        if (count >= cols && count % cols === 0) return cols;
+    }
+    return Math.min(4, Math.max(1, count || 1));
+}
+
 function renderPackageChips() {
     el.packages.innerHTML = '';
+    el.packages.style.setProperty('--pkg-cols', packageColumnCount(state.allPackages.length));
     for (const pkg of state.allPackages) {
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = `pkg-chip${state.selectedPackages.has(pkg) ? ' active' : ''}`;
-        chip.textContent = pkg.replace(/_/g, ' ');
-        chip.title = PACKAGE_DESCRIPTIONS[pkg] || pkg;
-        chip.disabled = state.busy;
-        chip.setAttribute('aria-pressed', String(state.selectedPackages.has(pkg)));
-        chip.addEventListener('click', () => {
+        const label = document.createElement('label');
+        label.className = `pkg-chip${state.selectedPackages.has(pkg) ? ' active' : ''}`;
+        label.title = PACKAGE_DESCRIPTIONS[pkg] || pkg;
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = state.selectedPackages.has(pkg);
+        checkbox.disabled = state.busy;
+        checkbox.addEventListener('change', () => {
             if (state.selectedPackages.has(pkg)) {
                 state.selectedPackages.delete(pkg);
             } else {
@@ -344,7 +327,11 @@ function renderPackageChips() {
             renderPackageChips();
             update();
         });
-        el.packages.appendChild(chip);
+
+        const text = document.createElement('span');
+        text.textContent = pkg.replace(/_/g, ' ');
+        label.append(checkbox, text);
+        el.packages.appendChild(label);
     }
 }
 
@@ -359,17 +346,6 @@ async function loadHealth() {
     const ready = health.capabilities?.wx_generate !== false;
     const auth = health.auth_required ? 'auth enabled' : 'auth disabled';
     setHealth(ready, ready ? `WX generator ready. ${auth}.` : `WX generator needs the event bridge. ${auth}.`, ready ? 'Ready' : 'Bridge offline');
-}
-
-async function loadFeeds() {
-    const panelState = await apiCommand('state', {}, 15000);
-    const feeds = panelState.summary?.feeds || [];
-    state.feeds = feeds.map((feed) => ({
-        id: String(feed.id || ''),
-        name: String(feed.name || feed.id || ''),
-        enabled: feed.enabled,
-    })).filter((feed) => feed.id);
-    renderFeeds();
 }
 
 async function loadPackages() {
@@ -422,7 +398,7 @@ async function generate() {
 }
 
 function bindEvents() {
-    for (const item of [el.feed, el.locations, el.source, el.lang, el.voice, el.format]) {
+    for (const item of [el.locations, el.source, el.lang, el.voice, el.format]) {
         item.addEventListener(item.tagName === 'TEXTAREA' ? 'input' : 'change', update);
     }
     el.pkgDefaultBtn.addEventListener('click', () => {
@@ -473,7 +449,7 @@ async function boot() {
     } catch (error) {
         setHealth(false, `Panel API unavailable: ${error.message || 'request failed'}`, 'Unavailable');
     }
-    await Promise.allSettled([loadFeeds(), loadPackages(), loadReaders()]);
+    await Promise.allSettled([loadPackages(), loadReaders()]);
     if (!state.allPackages.length) {
         state.allPackages = Object.keys(PACKAGE_DESCRIPTIONS);
         selectDefaultPackages();

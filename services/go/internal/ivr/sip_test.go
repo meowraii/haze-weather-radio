@@ -12,11 +12,15 @@ import (
 	"time"
 )
 
+func acceptTestSIPInvite(service *Service, ctx context.Context, request sipRequest, remote *net.UDPAddr, local net.Addr) (*sipCall, string) {
+	return service.acceptSIPInvite(ctx, request, remote, nil, local)
+}
+
 func TestSIPInviteUsesConfiguredG722AndTelephoneEvents(t *testing.T) {
 	service := &Service{cfg: loadedConfig{IVR: Config{RTP: rtpConfig{PortMin: 0, PortMax: 0}, Cache: cacheConfig{PhoneCodec: "g722"}}, Prompts: defaultPromptConfig()}}
 	request := sampleSIPInviteRequestWithFormats("9 0 101", "a=rtpmap:9 G722/8000", "a=rtpmap:0 PCMU/8000")
 
-	call, response := service.acceptSIPInvite(context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
+	call, response := acceptTestSIPInvite(service, context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
 	if call == nil {
 		t.Fatalf("expected accepted call, response: %s", response)
 	}
@@ -39,7 +43,7 @@ func TestSIPInvitePrefersConfiguredPCMUOverG722(t *testing.T) {
 	service := &Service{cfg: loadedConfig{IVR: Config{RTP: rtpConfig{PortMin: 0, PortMax: 0}, Cache: cacheConfig{PhoneCodec: "pcmu"}}, Prompts: defaultPromptConfig()}}
 	request := sampleSIPInviteRequestWithFormats("9 0 101", "a=rtpmap:9 G722/8000", "a=rtpmap:0 PCMU/8000")
 
-	call, response := service.acceptSIPInvite(context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
+	call, response := acceptTestSIPInvite(service, context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
 	if call == nil {
 		t.Fatalf("expected accepted call, response: %s", response)
 	}
@@ -56,7 +60,7 @@ func TestSIPInviteFallsBackToPCMU(t *testing.T) {
 	service := &Service{cfg: loadedConfig{IVR: Config{RTP: rtpConfig{PortMin: 0, PortMax: 0}}, Prompts: defaultPromptConfig()}}
 	request := sampleSIPInviteRequest()
 
-	call, response := service.acceptSIPInvite(context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
+	call, response := acceptTestSIPInvite(service, context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
 	if call == nil {
 		t.Fatalf("expected accepted call, response: %s", response)
 	}
@@ -72,7 +76,7 @@ func TestSIPInviteBindsRTPWildcardWhenPublicHostConfigured(t *testing.T) {
 		RTP: rtpConfig{PortMin: 0, PortMax: 0},
 	}, Prompts: defaultPromptConfig()}}
 
-	call, response := service.acceptSIPInvite(context.Background(), sampleSIPInviteRequest(), &net.UDPAddr{IP: net.ParseIP("198.51.100.20"), Port: 5060}, &net.UDPAddr{IP: net.IPv4zero, Port: 5060})
+	call, response := acceptTestSIPInvite(service, context.Background(), sampleSIPInviteRequest(), &net.UDPAddr{IP: net.ParseIP("198.51.100.20"), Port: 5060}, &net.UDPAddr{IP: net.IPv4zero, Port: 5060})
 	if call == nil {
 		t.Fatalf("expected accepted call, response: %s", response)
 	}
@@ -172,7 +176,7 @@ func TestSIPInviteSetsCallDeadline(t *testing.T) {
 		MaxCallSeconds: 7,
 		RTP:            rtpConfig{PortMin: 0, PortMax: 0},
 	}}}
-	call, response := service.acceptSIPInvite(context.Background(), sampleSIPInviteRequest(), &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
+	call, response := acceptTestSIPInvite(service, context.Background(), sampleSIPInviteRequest(), &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
 	if call == nil {
 		t.Fatalf("expected accepted call, response: %s", response)
 	}

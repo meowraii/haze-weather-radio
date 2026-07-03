@@ -85,25 +85,39 @@ func TestOperatorBreakInStreamURLValidation(t *testing.T) {
 	}
 }
 
-func TestOperatorBreakInReaperKeepsLiveURLStreams(t *testing.T) {
+func TestOperatorBreakInReaperKeepsLiveSessions(t *testing.T) {
 	manager := NewOperatorBreakInManager()
 	cancelled := false
 	manager.sessions["stream"] = &operatorBreakInSession{
 		ID:        "stream",
 		StreamURL: "https://example.com/live.mp3",
-		StartedAt: time.Now().Add(-operatorBreakInSessionTTL * 2),
+		StartedAt: time.Now().Add(-10 * time.Minute),
 		Cancel: func() {
 			cancelled = true
 		},
 	}
+	manager.sessions["mic"] = &operatorBreakInSession{
+		ID:        "mic",
+		StartedAt: time.Now().Add(-10 * time.Minute),
+		Cancel: func() {
+			cancelled = true
+		},
+	}
+	manager.sessions["broken"] = nil
 
 	manager.reapStale()
 
 	if manager.sessions["stream"] == nil {
 		t.Fatal("live URL stream session was reaped")
 	}
+	if manager.sessions["mic"] == nil {
+		t.Fatal("live mic session was reaped")
+	}
+	if _, ok := manager.sessions["broken"]; ok {
+		t.Fatal("nil session was not pruned")
+	}
 	if cancelled {
-		t.Fatal("live URL stream session was cancelled by stale reaper")
+		t.Fatal("live session was cancelled by stale reaper")
 	}
 }
 
@@ -116,7 +130,6 @@ func TestOperatorBreakInStreamChunksAreUnlimitedUntilStopped(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   1,
 		Publisher:  nil,
-		MaxBytes:   0,
 		StartedAt:  time.Now(),
 	}
 
@@ -126,7 +139,7 @@ func TestOperatorBreakInStreamChunksAreUnlimitedUntilStopped(t *testing.T) {
 
 	manager.sessions["stream"].Publisher = eventsTestPublisher(t)
 	defer manager.sessions["stream"].Publisher.Close()
-	manager.sessions["stream"].Bytes = operatorBreakInMaxPCMBytes
+	manager.sessions["stream"].Bytes = 48_000 * 2 * 60 * 60
 	if _, err := manager.appendChunk("stream", []byte{0, 0, 1, 0}); err != nil {
 		t.Fatalf("stream chunk should not be capped by mic duration: %v", err)
 	}

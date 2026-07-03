@@ -6,12 +6,41 @@ license.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "haze-media"
+path = "src/main.rs"
+
 [features]
 default = []
 ffmpeg-rsmpeg = ["dep:rsmpeg", "rsmpeg/link_system_ffmpeg"]
+gstreamer-backend = [
+    "dep:gstreamer",
+    "dep:gstreamer-app",
+    "dep:gstreamer-audio",
+    "dep:gstreamer-sdp",
+    "dep:gstreamer-webrtc",
+]
 
 [dependencies]
 anyhow = "1.0"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+quick-xml = { version = "0.38", features = ["serialize"] }
 hound = "3.5"
 rsmpeg = { version = "0.18.0", default-features = false, features = ["ffmpeg8"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
 thiserror = "2.0"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+gstreamer = { version = "0.25.3", optional = true }
+gstreamer-app = { version = "0.25.2", optional = true }
+gstreamer-audio = { version = "0.25.3", optional = true }
+gstreamer-sdp = { version = "0.25.3", optional = true }
+gstreamer-webrtc = { version = "0.25.2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Media"] }

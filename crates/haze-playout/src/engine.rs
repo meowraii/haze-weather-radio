@@ -24,8 +24,8 @@ const ALERT_QUEUE_DIR: &str = "runtime/queues/alerts";
 const PCM_CHUNK_MS: u32 = 20;
 const MEDIA_PUBLISH_CHUNK_MS: u32 = 40;
 const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 750;
-const MAX_CATCH_UP_CHUNKS: usize = 1;
-const PCM_PUBLISH_QUEUE_CAPACITY: usize = 8;
+const MAX_CATCH_UP_CHUNKS: usize = 4;
+const PCM_PUBLISH_QUEUE_CAPACITY: usize = 16;
 const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
 const AUDIO_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
 const AUDIO_CACHE_MAX_READY_ENTRIES: usize = 512;
@@ -835,15 +835,10 @@ impl FeedRunner {
                 _ = ticker.tick() => {
                     let tick_now = Instant::now();
                     let elapsed = tick_now.saturating_duration_since(last_media_tick);
-                    media_remainder += elapsed;
                     last_media_tick = tick_now;
-                    let mut chunks_due = 0usize;
-                    while media_remainder >= chunk_interval && chunks_due < MAX_CATCH_UP_CHUNKS {
-                        media_remainder -= chunk_interval;
-                        chunks_due += 1;
-                    }
-                    if media_remainder >= chunk_interval {
-                        let dropped_backlog = media_remainder;
+                    let (chunks_due, dropped_backlog) =
+                        realtime_chunks_due(&mut media_remainder, elapsed);
+                    if dropped_backlog > Duration::ZERO {
                         if dropped_backlog >= realtime_lag_warn_backlog()
                             && last_lag_log.elapsed() >= Duration::from_secs(10)
                         {
@@ -855,10 +850,6 @@ impl FeedRunner {
                             );
                             last_lag_log = Instant::now();
                         }
-                        media_remainder = Duration::from_millis(0);
-                    }
-                    if chunks_due == 0 {
-                        chunks_due = 1;
                     }
 
                     for _ in 0..chunks_due {
@@ -1386,12 +1377,26 @@ fn max_live_breakin_buffer_for(sample_rate: u32, channels: u16) -> usize {
     live_breakin_max_buffer_bytes(sample_rate, channels)
 }
 
-fn stale_pcm_publish_log_due(dropped: u64) -> bool {
-    dropped == 1 || dropped.is_multiple_of(25)
-}
-
 fn realtime_lag_warn_backlog() -> Duration {
     Duration::from_millis(REALTIME_LAG_WARN_BACKLOG_MS)
+}
+
+fn realtime_chunks_due(media_remainder: &mut Duration, elapsed: Duration) -> (usize, Duration) {
+    *media_remainder = (*media_remainder).saturating_add(elapsed);
+    let chunk_interval = Duration::from_millis(u64::from(PCM_CHUNK_MS));
+    let mut chunks_due = 0usize;
+    while *media_remainder >= chunk_interval && chunks_due < MAX_CATCH_UP_CHUNKS {
+        *media_remainder = (*media_remainder).saturating_sub(chunk_interval);
+        chunks_due += 1;
+    }
+    let dropped_backlog = if *media_remainder >= chunk_interval {
+        let dropped = *media_remainder;
+        *media_remainder = Duration::ZERO;
+        dropped
+    } else {
+        Duration::ZERO
+    };
+    (chunks_due.max(1), dropped_backlog)
 }
 
 fn realtime_tick_missed_behavior() -> MissedTickBehavior {
@@ -1464,23 +1469,7 @@ fn spawn_pcm_publisher(
 ) -> mpsc::Sender<PcmPublish> {
     let (tx, mut rx) = mpsc::channel::<PcmPublish>(pcm_publish_queue_capacity());
     tokio::spawn(async move {
-        let mut dropped_stale = 0u64;
-        while let Some(mut chunk) = rx.recv().await {
-            let mut skipped = 0u64;
-            while let Ok(newer) = rx.try_recv() {
-                chunk = newer;
-                skipped = skipped.saturating_add(1);
-            }
-            if skipped > 0 {
-                dropped_stale = dropped_stale.saturating_add(skipped);
-                if stale_pcm_publish_log_due(dropped_stale) {
-                    tracing::warn!(
-                        feed_id = feed_id.as_str(),
-                        dropped_chunks = dropped_stale,
-                        "media publisher dropped stale bridge PCM to keep realtime audio current"
-                    );
-                }
-            }
+        while let Some(chunk) = rx.recv().await {
             let pcm = base64::engine::general_purpose::STANDARD.encode(&chunk.data);
             let _ = client
                 .publish(json!({
@@ -3129,9 +3118,42 @@ mod tests {
     #[test]
     fn realtime_pcm_publish_queue_stays_short_but_smooth() {
         assert!(media_publish_chunk_duration() <= Duration::from_millis(40));
-        assert!(media_publish_queue_duration() <= Duration::from_millis(320));
+        assert!(media_publish_queue_duration() <= Duration::from_millis(640));
         assert!(pcm_publish_queue_capacity() >= 4);
-        assert_eq!(MAX_CATCH_UP_CHUNKS, 1);
+        assert!((3..=4).contains(&MAX_CATCH_UP_CHUNKS));
+    }
+
+    #[test]
+    fn realtime_tick_catches_up_short_scheduler_stalls() {
+        let mut remainder = Duration::ZERO;
+
+        let (chunks, dropped) = realtime_chunks_due(&mut remainder, Duration::from_millis(70));
+
+        assert_eq!(chunks, 3);
+        assert_eq!(dropped, Duration::ZERO);
+        assert!(remainder < Duration::from_millis(u64::from(PCM_CHUNK_MS)));
+    }
+
+    #[test]
+    fn realtime_tick_drops_backlog_after_bounded_catchup() {
+        let mut remainder = Duration::ZERO;
+
+        let (chunks, dropped) = realtime_chunks_due(&mut remainder, Duration::from_millis(180));
+
+        assert_eq!(chunks, MAX_CATCH_UP_CHUNKS);
+        assert!(dropped >= realtime_lag_warn_backlog());
+        assert_eq!(remainder, Duration::ZERO);
+    }
+
+    #[test]
+    fn realtime_tick_bounds_huge_scheduler_stalls() {
+        let mut remainder = Duration::ZERO;
+
+        let (chunks, dropped) = realtime_chunks_due(&mut remainder, Duration::from_millis(250));
+
+        assert_eq!(chunks, MAX_CATCH_UP_CHUNKS);
+        assert!(dropped >= realtime_lag_warn_backlog());
+        assert_eq!(remainder, Duration::ZERO);
     }
 
     #[test]

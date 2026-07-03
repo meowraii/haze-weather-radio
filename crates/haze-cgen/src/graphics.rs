@@ -1,7 +1,10 @@
 use serde_json::{json, Value};
 
 use crate::config::FeedConfig;
-use crate::state::{BannerPayload, PriorityAudio, RuntimeState, SerializedAlert};
+use crate::state::{
+    BannerPayload, CgenControlOverride, PriorityAudio, RuntimeState, SerializedAlert,
+};
+use crate::sunny_cat;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PresentationSnapshot {
@@ -16,8 +19,18 @@ pub(crate) struct PresentationSnapshot {
     pub(crate) font: String,
     pub(crate) font_weight: String,
     pub(crate) font_size: u32,
+    pub(crate) clock_text: String,
+    pub(crate) clock_enabled: bool,
+    pub(crate) clock_x: i32,
+    pub(crate) clock_y: i32,
+    pub(crate) clock_font_size: u32,
+    pub(crate) clock_color: String,
+    pub(crate) state_mode: String,
+    pub(crate) smpte_bars: bool,
     pub(crate) visual_id: String,
     pub(crate) active_alert_queue_id: Option<String>,
+    pub(crate) sunny_cat: bool,
+    pub(crate) sunny_cat_available: bool,
 }
 
 pub(crate) fn presentation_snapshot(
@@ -25,27 +38,33 @@ pub(crate) fn presentation_snapshot(
     state: &RuntimeState,
     no_signal: bool,
 ) -> PresentationSnapshot {
+    let effective = EffectivePresentation::new(feed, state);
     let priority_feed_id = priority_feed_id(feed);
     let banner_feed_id = banner_feed_id(feed, priority_feed_id);
     let banner = state.banner_for(banner_feed_id);
     let audio = state.priority_audio_for(priority_feed_id);
     let has_visual_input = banner.is_some();
     let overlay_text = if has_visual_input {
-        overlay_text(feed, banner, audio)
-    } else if no_signal && feed.standby.mode.eq_ignore_ascii_case("banner") {
-        feed.standby.text.trim().to_string()
-    } else if feed.text.enabled {
-        feed.text.content.trim().to_string()
+        overlay_text(&effective, banner, audio)
+    } else if no_signal && effective.standby_mode.eq_ignore_ascii_case("banner") {
+        effective.standby_text.trim().to_string()
+    } else if effective.manual_overlay_enabled() && effective.text_enabled {
+        effective.text_content.trim().to_string()
     } else {
         String::new()
     };
+    let clock_text = effective.clock_text();
     let ticker_color = ticker_color(banner, audio).unwrap_or_else(|| "#111827".to_string());
     let gradient = ticker_gradient(banner, audio, &ticker_color);
+    let sunny_cat_available = sunny_cat::available();
+    let sunny_cat =
+        effective.manual_overlay_enabled() && effective.sunny_cat && sunny_cat_available;
     PresentationSnapshot {
-        visual_mode: visual_mode(feed, has_visual_input, no_signal).to_string(),
+        visual_mode: visual_mode(&effective, has_visual_input, no_signal).to_string(),
         overlay_active: !overlay_text.trim().is_empty()
-            || feed.clock.enabled
-            || feed.state.smpte_bars,
+            || !clock_text.trim().is_empty()
+            || effective.smpte_bars
+            || sunny_cat,
         overlay_text,
         ticker_color,
         ticker_gradient: [
@@ -54,24 +73,30 @@ pub(crate) fn presentation_snapshot(
             rgb_to_hex(gradient.bottom),
         ],
         ticker_y: ticker_y(
-            feed,
+            &effective,
             i32::try_from(feed.video.height).unwrap_or(1080),
             no_signal,
         ),
-        ticker_height: feed
-            .banner
-            .ticker_height
-            .max(feed.graphics.banner_height)
-            .max(48),
-        ticker_speed_px_per_frame: feed.banner.scroll_speed.max(1),
-        font: ticker_font_family(feed).to_string(),
-        font_weight: ticker_font_weight(feed).to_string(),
-        font_size: feed.banner.font_size.max(feed.graphics.font_size).max(16),
+        ticker_height: effective.ticker_height.max(48),
+        ticker_speed_px_per_frame: effective.scroll_speed.max(1),
+        font: effective.font.clone(),
+        font_weight: effective.font_weight.clone(),
+        font_size: effective.font_size.max(16),
+        clock_text,
+        clock_enabled: effective.manual_overlay_enabled() && effective.clock_enabled,
+        clock_x: effective.clock_x,
+        clock_y: effective.clock_y,
+        clock_font_size: effective.clock_font_size.max(12),
+        clock_color: effective.clock_color.clone(),
+        state_mode: effective.state_mode.clone(),
+        smpte_bars: effective.smpte_bars,
         visual_id: banner
             .map(banner_visual_id)
             .or_else(|| audio.map(|audio| audio.queue_id.clone()))
             .unwrap_or_default(),
         active_alert_queue_id: audio.map(|audio| audio.queue_id.clone()),
+        sunny_cat,
+        sunny_cat_available,
     }
 }
 
@@ -79,8 +104,10 @@ pub(crate) fn compositor_status(feed: &FeedConfig, state: &RuntimeState, no_sign
     let snapshot = presentation_snapshot(feed, state, no_signal);
     json!({
         "visual_mode": snapshot.visual_mode,
-        "state_mode": feed.state.mode,
-        "smpte_bars": feed.state.smpte_bars,
+        "state_mode": snapshot.state_mode,
+        "smpte_bars": snapshot.smpte_bars,
+        "sunny_cat": snapshot.sunny_cat,
+        "sunny_cat_available": snapshot.sunny_cat_available,
         "overlay_active": snapshot.overlay_active,
         "overlay_text": snapshot.overlay_text,
         "ticker_color": snapshot.ticker_color,
@@ -95,25 +122,106 @@ pub(crate) fn compositor_status(feed: &FeedConfig, state: &RuntimeState, no_sign
         "font_weight": snapshot.font_weight,
         "font_size": snapshot.font_size,
         "visual_id": snapshot.visual_id,
-        "clock_enabled": feed.clock.enabled,
-        "clock_format": feed.clock.format,
-        "clock_x": feed.clock.x,
-        "clock_y": feed.clock.y,
-        "clock_font_size": feed.clock.font_size,
-        "clock_color": feed.clock.color,
-        "text_enabled": feed.text.enabled,
-        "text_x": feed.text.x,
-        "text_y": feed.text.y,
-        "text_font_size": feed.text.font_size,
-        "text_color": feed.text.color,
-        "standby_mode": feed.standby.mode,
-        "standby_text": feed.standby.text,
-        "standby_font_size": feed.standby.font_size,
-        "standby_y_percent": feed.standby.y_percent,
-        "state_updated_at": feed.state.updated_at,
+        "clock_enabled": snapshot.clock_enabled,
+        "clock_text": snapshot.clock_text,
+        "clock_x": snapshot.clock_x,
+        "clock_y": snapshot.clock_y,
+        "clock_font_size": snapshot.clock_font_size,
+        "clock_color": snapshot.clock_color,
+        "text_enabled": !snapshot.overlay_text.trim().is_empty(),
         "no_signal": no_signal,
         "active_alert_queue_id": snapshot.active_alert_queue_id,
     })
+}
+
+#[derive(Debug, Clone)]
+struct EffectivePresentation {
+    state_mode: String,
+    smpte_bars: bool,
+    sunny_cat: bool,
+    banner_mode: String,
+    ticker_height: u32,
+    scroll_speed: u32,
+    font: String,
+    font_weight: String,
+    font_size: u32,
+    text_enabled: bool,
+    text_content: String,
+    clock_enabled: bool,
+    clock_format: String,
+    clock_x: i32,
+    clock_y: i32,
+    clock_font_size: u32,
+    clock_color: String,
+    standby_mode: String,
+    standby_text: String,
+    standby_y_percent: u32,
+}
+
+impl EffectivePresentation {
+    fn new(feed: &FeedConfig, state: &RuntimeState) -> Self {
+        let control = state.control_for(feed.id.as_str());
+        let font = string_override(control, "font")
+            .or_else(|| non_empty_ref(&feed.banner.font).map(str::to_string))
+            .or_else(|| non_empty_ref(&feed.graphics.font).map(str::to_string))
+            .unwrap_or_else(|| "Arial".to_string());
+        let font_weight = string_override(control, "font_weight")
+            .or_else(|| non_empty_ref(&feed.banner.font_weight).map(str::to_string))
+            .or_else(|| non_empty_ref(&feed.graphics.font_weight).map(str::to_string))
+            .unwrap_or_else(|| "regular".to_string());
+        let font_size = u32_override(control, "font_size")
+            .unwrap_or_else(|| feed.banner.font_size.max(feed.graphics.font_size))
+            .max(16);
+        Self {
+            state_mode: string_override(control, "mode").unwrap_or_else(|| feed.state.mode.clone()),
+            smpte_bars: bool_override(control, "smpte_bars").unwrap_or(feed.state.smpte_bars),
+            sunny_cat: bool_override(control, "sunny_cat").unwrap_or(feed.state.sunny_cat),
+            banner_mode: string_override(control, "banner_mode")
+                .unwrap_or_else(|| feed.banner.mode.clone()),
+            ticker_height: u32_override(control, "ticker_height")
+                .or_else(|| u32_override(control, "banner_height"))
+                .unwrap_or_else(|| feed.banner.ticker_height.max(feed.graphics.banner_height)),
+            scroll_speed: u32_override(control, "scroll_speed").unwrap_or(feed.banner.scroll_speed),
+            font,
+            font_weight,
+            font_size,
+            text_enabled: bool_override(control, "text_enabled").unwrap_or(feed.text.enabled),
+            text_content: string_override(control, "text")
+                .unwrap_or_else(|| feed.text.content.clone()),
+            clock_enabled: bool_override(control, "clock_enabled").unwrap_or(feed.clock.enabled),
+            clock_format: string_override(control, "clock_format")
+                .unwrap_or_else(|| feed.clock.format.clone()),
+            clock_x: i32_override(control, "clock_x").unwrap_or(feed.clock.x),
+            clock_y: i32_override(control, "clock_y").unwrap_or(feed.clock.y),
+            clock_font_size: u32_override(control, "clock_font_size")
+                .unwrap_or(feed.clock.font_size),
+            clock_color: string_override(control, "clock_color")
+                .unwrap_or_else(|| feed.clock.color.clone()),
+            standby_mode: string_override(control, "standby_mode")
+                .unwrap_or_else(|| feed.standby.mode.clone()),
+            standby_text: string_override(control, "standby_text")
+                .unwrap_or_else(|| feed.standby.text.clone()),
+            standby_y_percent: u32_override(control, "standby_y_percent")
+                .unwrap_or(feed.standby.y_percent),
+        }
+    }
+
+    fn manual_overlay_enabled(&self) -> bool {
+        self.state_mode.eq_ignore_ascii_case("overlay")
+            || self.state_mode.eq_ignore_ascii_case("smpte")
+    }
+
+    fn clock_text(&self) -> String {
+        if !self.manual_overlay_enabled() || !self.clock_enabled {
+            return String::new();
+        }
+        let layout = if self.clock_format.trim().is_empty() {
+            "%b %d %H:%M:%S".to_string()
+        } else {
+            chrono_clock_layout(self.clock_format.trim())
+        };
+        chrono::Local::now().format(&layout).to_string()
+    }
 }
 
 fn priority_feed_id(feed: &FeedConfig) -> &str {
@@ -158,18 +266,20 @@ fn banner_visual_id(banner: &BannerPayload) -> String {
     banner.signature.trim().to_string()
 }
 
-fn visual_mode(feed: &FeedConfig, has_visual_input: bool, no_signal: bool) -> &str {
-    if feed.state.smpte_bars {
+fn visual_mode(effective: &EffectivePresentation, has_visual_input: bool, no_signal: bool) -> &str {
+    if effective.smpte_bars || effective.state_mode.eq_ignore_ascii_case("smpte") {
         "smpte"
     } else if has_visual_input {
-        if feed.banner.mode.eq_ignore_ascii_case("fullscreen") {
+        if effective.banner_mode.eq_ignore_ascii_case("fullscreen") {
             "fullscreen_alert"
         } else {
             "ticker_alert"
         }
     } else if no_signal {
-        feed.standby.mode.trim()
-    } else if feed.text.enabled || feed.clock.enabled {
+        effective.standby_mode.trim()
+    } else if effective.manual_overlay_enabled()
+        && (effective.text_enabled || effective.clock_enabled || effective.sunny_cat)
+    {
         "overlay"
     } else {
         "release"
@@ -177,7 +287,7 @@ fn visual_mode(feed: &FeedConfig, has_visual_input: bool, no_signal: bool) -> &s
 }
 
 fn overlay_text(
-    feed: &FeedConfig,
+    effective: &EffectivePresentation,
     banner: Option<&BannerPayload>,
     audio: Option<&PriorityAudio>,
 ) -> String {
@@ -192,8 +302,8 @@ fn overlay_text(
             }
         }
     }
-    if feed.text.enabled {
-        push_text_part(&mut parts, &feed.text.content);
+    if effective.manual_overlay_enabled() && effective.text_enabled {
+        push_text_part(&mut parts, &effective.text_content);
     }
     parts.join("     ").chars().take(1800).collect()
 }
@@ -227,24 +337,53 @@ fn push_text_part(parts: &mut Vec<String>, text: &str) {
     }
 }
 
-fn ticker_font_family(feed: &FeedConfig) -> &str {
-    non_empty_ref(&feed.banner.font)
-        .or_else(|| non_empty_ref(&feed.graphics.font))
-        .unwrap_or("Arial")
-}
-
-fn ticker_font_weight(feed: &FeedConfig) -> &str {
-    non_empty_ref(&feed.banner.font_weight)
-        .or_else(|| non_empty_ref(&feed.graphics.font_weight))
-        .unwrap_or("regular")
-}
-
-fn ticker_y(feed: &FeedConfig, frame_height: i32, no_signal: bool) -> i32 {
+fn ticker_y(effective: &EffectivePresentation, frame_height: i32, no_signal: bool) -> i32 {
     if no_signal {
-        let percent = feed.standby.y_percent.min(100) as f32 / 100.0;
+        let percent = effective.standby_y_percent.min(100) as f32 / 100.0;
         return ((frame_height.max(1) as f32) * percent).round() as i32;
     }
     ((frame_height.max(1) as f32) * 0.08).round() as i32
+}
+
+fn string_override(control: Option<&CgenControlOverride>, key: &str) -> Option<String> {
+    control
+        .and_then(|control| control.string_field(key))
+        .map(str::to_string)
+}
+
+fn bool_override(control: Option<&CgenControlOverride>, key: &str) -> Option<bool> {
+    control.and_then(|control| control.bool_field(key))
+}
+
+fn u32_override(control: Option<&CgenControlOverride>, key: &str) -> Option<u32> {
+    control.and_then(|control| control.u32_field(key))
+}
+
+fn i32_override(control: Option<&CgenControlOverride>, key: &str) -> Option<i32> {
+    control.and_then(|control| control.i32_field(key))
+}
+
+fn chrono_clock_layout(layout: &str) -> String {
+    let mut out = layout.to_string();
+    for (from, to) in [
+        ("January", "%B"),
+        ("Jan", "%b"),
+        ("Monday", "%A"),
+        ("Mon", "%a"),
+        ("2006", "%Y"),
+        ("06", "%y"),
+        ("15", "%H"),
+        ("03", "%I"),
+        ("04", "%M"),
+        ("05", "%S"),
+        ("PM", "%p"),
+        ("pm", "%P"),
+        ("MST", "%Z"),
+        ("02", "%d"),
+    ] {
+        out = out.replace(from, to);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -449,7 +588,9 @@ mod tests {
             }],
             ..Default::default()
         };
-        let text = overlay_text(&feed, Some(&banner), Some(&audio));
+        let state = RuntimeState::default();
+        let effective = EffectivePresentation::new(&feed, &state);
+        let text = overlay_text(&effective, Some(&banner), Some(&audio));
         assert!(text.starts_with("Audio banner"));
         assert!(text.contains("Visual banner"));
         assert!(text.contains("Manual"));
@@ -491,7 +632,9 @@ mod tests {
     #[test]
     fn default_ticker_y_is_eight_percent_down() {
         let feed = test_feed();
-        assert_eq!(ticker_y(&feed, 1080, false), 86);
+        let state = RuntimeState::default();
+        let effective = EffectivePresentation::new(&feed, &state);
+        assert_eq!(ticker_y(&effective, 1080, false), 86);
     }
 
     #[test]

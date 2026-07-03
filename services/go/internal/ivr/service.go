@@ -126,9 +126,24 @@ func Run(ctx context.Context, options Options) error {
 }
 
 func loadDotEnv(path string) {
-	raw, err := os.ReadFile(filepath.Clean(path))
+	path = filepath.Clean(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return
+		if !os.IsNotExist(err) || filepath.Base(path) != ".env" {
+			return
+		}
+		examplePath := filepath.Join(filepath.Dir(path), ".env.example")
+		exampleRaw, readErr := os.ReadFile(examplePath)
+		if readErr != nil {
+			log.Printf("WARN .env file not found and no .env.example is available: %s", path)
+			return
+		}
+		if writeErr := os.WriteFile(path, exampleRaw, 0o600); writeErr != nil {
+			log.Printf("WARN .env file not found and could not create %s: %v", path, writeErr)
+			return
+		}
+		log.Printf("WARN .env file not found: created %s from %s", path, examplePath)
+		raw = exampleRaw
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
@@ -177,12 +192,19 @@ func (s *Service) runConnected(ctx context.Context) error {
 		return err
 	}
 	s.broadcast = newBroadcastHub()
-	broadcastEvents := s.bridge.Events()
-	if s.mediaBridge != nil {
+	if mediaServiceURL := s.mediaServiceURLForBroadcast(); mediaServiceURL != "" {
+		s.broadcast.SetHTTPSource(mediaServiceURL)
 		go drainBridgeEvents(ctx, s.bridge.Events())
-		broadcastEvents = s.mediaBridge.Events()
+		if s.mediaBridge != nil {
+			go drainBridgeEvents(ctx, s.mediaBridge.Events())
+		}
+	} else if s.mediaBridge != nil {
+		go drainBridgeEvents(ctx, s.bridge.Events())
+		go s.broadcast.run(ctx, s.mediaBridge.Events())
+	} else {
+		broadcastEvents := s.bridge.Events()
+		go s.broadcast.run(ctx, broadcastEvents)
 	}
-	go s.broadcast.run(ctx, broadcastEvents)
 
 	errCh := make(chan error, 2)
 	if s.cfg.IVR.HTTP.Enabled {
@@ -225,6 +247,13 @@ func (s *Service) runConnected(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+func (s *Service) mediaServiceURLForBroadcast() string {
+	if s == nil {
+		return ""
+	}
+	return s.cfg.mediaServiceBaseURL()
 }
 
 func (s *Service) routes() http.Handler {
@@ -383,7 +412,7 @@ func (s *Service) writeEntryTwiML(writer http.ResponseWriter, request *http.Requ
 	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{"state": "entry"}), numDigits, "#", timeout, []string{
 		promptURL(request, "entry", lineKey, s.promptValues(nil)),
 	}, []string{
-		twimlPlay(promptURL(request, "error", "timeout", s.promptValues(nil))),
+		twimlTimeoutHangup(request, s.promptValues(nil)),
 	})
 	writeTwiML(writer, body)
 }
@@ -413,7 +442,7 @@ func (s *Service) handleEntryDigit(writer http.ResponseWriter, request *http.Req
 		}), "", "#", locationCodeAutoSubmitTimeoutForMenu(locationMenu.Timeout), []string{
 			promptURL(request, "location_code", "main", nil),
 		}, []string{
-			twimlPlay(promptURL(request, "error", "timeout", nil)),
+			twimlTimeoutHangup(request, nil),
 		})
 		writeTwiML(writer, body)
 	case "product":
@@ -457,14 +486,14 @@ func (s *Service) writeLocationCodePrompt(writer http.ResponseWriter, request *h
 	}), "", "#", locationCodeAutoSubmitTimeoutForMenu(locationMenu.Timeout), []string{
 		promptURL(request, "location_code", "main", nil),
 	}, []string{
-		twimlPlay(promptURL(request, "error", "timeout", nil)),
+		twimlTimeoutHangup(request, nil),
 	})
 	writeTwiML(writer, body)
 }
 
 func (s *Service) handleLocationCodeWithLanguageTwiML(writer http.ResponseWriter, request *http.Request, language string, code string) {
 	if code == "" {
-		writeTwiML(writer, twimlPlay(promptURL(request, "error", "timeout", nil)))
+		writeTwiML(writer, twimlTimeoutHangup(request, nil))
 		return
 	}
 	code = strings.TrimSuffix(strings.TrimSpace(code), "#")
@@ -504,7 +533,7 @@ func (s *Service) writeLocationNumberPrompt(writer http.ResponseWriter, request 
 	}), "", "#", locationCodeAutoSubmitTimeoutForMenu(menu.Timeout), []string{
 		promptURL(request, "location_number", "main", s.promptValues(map[string]string{"province": provinceDigitDisplayName(province)})),
 	}, []string{
-		twimlPlay(promptURL(request, "error", "timeout", nil)),
+		twimlTimeoutHangup(request, nil),
 	})
 	writeTwiML(writer, body)
 }
@@ -513,7 +542,7 @@ func (s *Service) handleLocationNumberTwiML(writer http.ResponseWriter, request 
 	province := firstNonBlank(request.URL.Query().Get("province"), request.FormValue("province"))
 	number := strings.TrimSuffix(strings.TrimSpace(firstNonBlank(request.FormValue("Digits"), request.URL.Query().Get("number"))), "#")
 	if number == "" {
-		writeTwiML(writer, twimlPlay(promptURL(request, "error", "timeout", nil)))
+		writeTwiML(writer, twimlTimeoutHangup(request, nil))
 		return
 	}
 	if number == "*" {
@@ -539,15 +568,24 @@ func (s *Service) writeLocationMenuTwiML(writer http.ResponseWriter, request *ht
 		s.writeEntryErrorTwiML(writer, request)
 		return
 	}
-	s.writeLocationMenu(writer, request, location)
+	s.writeLocationMenuWithAlertAuto(writer, request, location, twimlAlertAutoEnabled(request))
 }
 
 func (s *Service) writeLocationMenu(writer http.ResponseWriter, request *http.Request, location ResolvedLocation) {
+	s.writeLocationMenuWithAlertAuto(writer, request, location, true)
+}
+
+func (s *Service) writeLocationMenuWithAlertAuto(writer http.ResponseWriter, request *http.Request, location ResolvedLocation, autoAlertMenu bool) {
 	menu, _ := s.cfg.Prompts.Menu("location_menu")
+	alerts := s.activeIVRAlerts(request.Context(), location)
+	if autoAlertMenu && len(alerts) > 0 {
+		s.writeAlertMenu(writer, request, location)
+		return
+	}
 	params := locationTwiMLParams(location)
 	params["state"] = "location_option"
 	plays := []string{}
-	if alerts := s.activeIVRAlerts(request.Context(), location); len(alerts) > 0 {
+	if len(alerts) > 0 {
 		audioParams := locationTwiMLParams(location)
 		audioParams["kind"] = "location_menu"
 		plays = append(plays, twimlURL(request, "/ivr/v1/alert_audio", audioParams))
@@ -556,9 +594,13 @@ func (s *Service) writeLocationMenu(writer http.ResponseWriter, request *http.Re
 		plays = append(plays, promptURL(request, "location_menu", lineKey, s.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID})))
 	}
 	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", params), "1", "", menu.Timeout, plays, []string{
-		twimlPlay(promptURL(request, "error", "timeout", s.promptValues(nil))),
+		twimlTimeoutHangup(request, s.promptValues(nil)),
 	})
 	writeTwiML(writer, body)
+}
+
+func twimlAlertAutoEnabled(request *http.Request) bool {
+	return strings.TrimSpace(request.URL.Query().Get("alert_auto")) != "0"
 }
 
 func (s *Service) handleLocationOptionTwiML(writer http.ResponseWriter, request *http.Request) {
@@ -577,35 +619,33 @@ func (s *Service) handleLocationOptionTwiML(writer http.ResponseWriter, request 
 			s.writeAlertMenuTwiML(writer, request)
 			return
 		}
-		s.writeLocationMenu(writer, request, location)
+		s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 		return
 	}
 	option, ok := s.cfg.Prompts.Option("location_menu", digit)
 	if !ok {
-		s.writeLocationMenu(writer, request, location)
+		s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 		return
 	}
 	switch option.Action {
 	case "product":
-		s.writeProductTwiML(writer, request, location, splitCSV(option.Packages), twimlURL(request, "/ivr/v1/twiml", map[string]string{
-			"state": "location_menu",
-			"code":  location.Code,
-			"lang":  location.Language,
-		}))
+		params := locationTwiMLParams(location)
+		params["state"] = "location_menu"
+		params["alert_auto"] = "0"
+		s.writeProductTwiML(writer, request, location, splitCSV(option.Packages), twimlURL(request, "/ivr/v1/twiml", params))
 	case "menu":
 		s.writeConfiguredMenu(writer, request, location, option.Next)
 	case "broadcast":
 		if !s.locationBroadcastAvailable(location) {
-			s.writeLocationMenu(writer, request, location)
+			s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 			return
 		}
-		s.writeProductTwiML(writer, request, location, s.broadcastPackages(option), twimlURL(request, "/ivr/v1/twiml", map[string]string{
-			"state": "location_menu",
-			"code":  location.Code,
-			"lang":  location.Language,
-		}))
+		params := locationTwiMLParams(location)
+		params["state"] = "location_menu"
+		params["alert_auto"] = "0"
+		s.writeProductTwiML(writer, request, location, s.broadcastPackages(option), twimlURL(request, "/ivr/v1/twiml", params))
 	default:
-		s.writeLocationMenu(writer, request, location)
+		s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 	}
 }
 
@@ -615,9 +655,13 @@ func (s *Service) writeAlertMenuTwiML(writer http.ResponseWriter, request *http.
 		s.writeEntryErrorTwiML(writer, request)
 		return
 	}
+	s.writeAlertMenu(writer, request, location)
+}
+
+func (s *Service) writeAlertMenu(writer http.ResponseWriter, request *http.Request, location ResolvedLocation) {
 	alerts := s.activeIVRAlerts(request.Context(), location)
 	if len(alerts) == 0 {
-		s.writeLocationMenu(writer, request, location)
+		s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 		return
 	}
 	params := locationTwiMLParams(location)
@@ -628,7 +672,7 @@ func (s *Service) writeAlertMenuTwiML(writer http.ResponseWriter, request *http.
 	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", params), "1", "", menu.Timeout, []string{
 		twimlURL(request, "/ivr/v1/alert_audio", audioParams),
 	}, []string{
-		twimlPlay(promptURL(request, "error", "timeout", s.promptValues(nil))),
+		twimlTimeoutHangup(request, s.promptValues(nil)),
 	})
 	writeTwiML(writer, body)
 }
@@ -641,7 +685,7 @@ func (s *Service) handleAlertOptionTwiML(writer http.ResponseWriter, request *ht
 	}
 	digit := strings.TrimSpace(request.FormValue("Digits"))
 	if digit == "#" {
-		s.writeLocationMenu(writer, request, location)
+		s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 		return
 	}
 	alerts := s.activeIVRAlerts(request.Context(), location)
@@ -671,7 +715,7 @@ func (s *Service) writeConfiguredMenu(writer http.ResponseWriter, request *http.
 	menuID = strings.ToLower(strings.TrimSpace(menuID))
 	menu, ok := s.cfg.Prompts.Menu(menuID)
 	if !ok {
-		s.writeLocationMenu(writer, request, location)
+		s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 		return
 	}
 	params := locationTwiMLParams(location)
@@ -680,7 +724,7 @@ func (s *Service) writeConfiguredMenu(writer http.ResponseWriter, request *http.
 	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", params), "1", "", menu.Timeout, []string{
 		promptURL(request, menuID, "main", s.promptValues(map[string]string{"location": spokenLocationName(location), "feed_id": location.FeedID})),
 	}, []string{
-		twimlPlay(promptURL(request, "error", "timeout", s.promptValues(nil))),
+		twimlTimeoutHangup(request, s.promptValues(nil)),
 	})
 	writeTwiML(writer, body)
 }
@@ -694,7 +738,7 @@ func (s *Service) handleConfiguredMenuOptionTwiML(writer http.ResponseWriter, re
 	menuID := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("menu")))
 	digit := strings.TrimSpace(request.FormValue("Digits"))
 	if digit == "#" {
-		s.writeLocationMenu(writer, request, location)
+		s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 		return
 	}
 	option, ok := s.cfg.Prompts.Option(menuID, digit)
@@ -772,7 +816,7 @@ func (s *Service) broadcastAvailable(feedID string) bool {
 	if s == nil || s.broadcast == nil || strings.TrimSpace(feedID) == "" {
 		return false
 	}
-	return s.broadcast.HasRecent(feedID, 5*time.Second)
+	return s.broadcast.HasRecent(feedID, 5*time.Second) || s.broadcast.HasHTTPSource()
 }
 
 func (s *Service) locationBroadcastAvailable(location ResolvedLocation) bool {
@@ -1020,6 +1064,7 @@ func (s *Service) serveTextPromptAudio(writer http.ResponseWriter, request *http
 func (s *Service) serveTextPromptAudioWithFormat(writer http.ResponseWriter, request *http.Request, lineKey string, text string, format string, status int) {
 	audio, err := s.textPromptAudio(request.Context(), lineKey, text)
 	if err != nil {
+		log.Printf("IVR dynamic prompt %s failed: %v", lineKey, err)
 		http.Error(writer, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -1594,6 +1639,14 @@ func twimlRedirect(url string) string {
 		return ""
 	}
 	return "<Redirect>" + html.EscapeString(strings.TrimSpace(url)) + "</Redirect>"
+}
+
+func twimlHangup() string {
+	return "<Hangup/>"
+}
+
+func twimlTimeoutHangup(request *http.Request, values map[string]string) string {
+	return twimlPlay(promptURL(request, "error", "timeout", values)) + twimlHangup()
 }
 
 func writeTwiML(writer http.ResponseWriter, body string) {
