@@ -10,10 +10,59 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func acceptTestSIPInvite(service *Service, ctx context.Context, request sipRequest, remote *net.UDPAddr, local net.Addr) (*sipCall, string) {
 	return service.acceptSIPInvite(ctx, request, remote, nil, local)
+}
+
+func TestSIPListenBindingsSupportDomainBoundPort(t *testing.T) {
+	var root rootConfig
+	err := yaml.Unmarshal([]byte(`
+services:
+  go:
+    ivr:
+      sip:
+        listen: "0.0.0.0:5060"
+        listen_ports:
+          - port: 5060
+          - port: 5080
+            domain: teleweather.sip.rai.blue
+`), &root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := root.Services.Go.IVR
+	normalizeIVRConfig(&cfg)
+
+	bindings := cfg.SIP.listenBindings()
+	if len(bindings) != 2 {
+		t.Fatalf("bindings = %#v", bindings)
+	}
+	if bindings[0].Addr != "0.0.0.0:5060" || bindings[0].Domain != "" {
+		t.Fatalf("first binding = %#v", bindings[0])
+	}
+	if bindings[1].Addr != "0.0.0.0:5080" || bindings[1].Domain != "teleweather.sip.rai.blue" {
+		t.Fatalf("second binding = %#v", bindings[1])
+	}
+}
+
+func TestSIPDomainAllowedMatchesRequestURI(t *testing.T) {
+	service := &Service{}
+	request := sampleSIPInviteRequest()
+	request.URI = "sip:ivr@teleweather.sip.rai.blue:5080"
+
+	if !service.sipDomainAllowed(request, "teleweather.sip.rai.blue") {
+		t.Fatal("expected matching SIP domain to be allowed")
+	}
+	if service.sipDomainAllowed(request, "other.sip.rai.blue") {
+		t.Fatal("expected mismatched SIP domain to be rejected")
+	}
+	if !service.sipDomainAllowed(request, "") {
+		t.Fatal("expected blank listener domain to allow request")
+	}
 }
 
 func TestSIPInviteUsesConfiguredG722AndTelephoneEvents(t *testing.T) {

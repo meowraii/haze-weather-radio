@@ -112,7 +112,7 @@ function renderEntries() {
         return match.toLowerCase().includes(filter) || replacement.toLowerCase().includes(filter);
     });
     if (!rows.length) {
-        entriesBody.innerHTML = `<tr><td colspan="3" class="dictionary-empty">${filter ? 'No matching entries.' : 'No entries in this group.'}</td></tr>`;
+        entriesBody.innerHTML = `<tr><td colspan="3" class="dictionary-empty panel-empty-cell">${filter ? 'No matching entries.' : 'No entries in this group.'}</td></tr>`;
         return;
     }
     entriesBody.innerHTML = rows.map(([match, replacement]) => `

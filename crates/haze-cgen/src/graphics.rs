@@ -6,6 +6,12 @@ use crate::state::{
 };
 use crate::sunny_cat;
 
+const TICKER_SPEED_BASE_FPS: f64 = 30.0;
+
+pub(crate) fn ticker_speed_px_per_second(scroll_speed: u32) -> f64 {
+    f64::from(scroll_speed.max(1)) * TICKER_SPEED_BASE_FPS
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PresentationSnapshot {
     pub(crate) visual_mode: String,
@@ -241,6 +247,9 @@ fn banner_feed_id<'a>(feed: &'a FeedConfig, priority_feed_id: &'a str) -> &'a st
 }
 
 fn banner_visual_id(banner: &BannerPayload) -> String {
+    if let Some(signature) = non_empty_ref(&banner.signature) {
+        return signature.to_string();
+    }
     let mut parts = Vec::new();
     for alert in &banner.alerts {
         for key in [
@@ -263,7 +272,7 @@ fn banner_visual_id(banner: &BannerPayload) -> String {
     if !parts.is_empty() {
         return parts.join("|");
     }
-    banner.signature.trim().to_string()
+    String::new()
 }
 
 fn visual_mode(effective: &EffectivePresentation, has_visual_input: bool, no_signal: bool) -> &str {
@@ -562,6 +571,7 @@ mod tests {
     #[test]
     fn overlay_text_prefers_priority_audio_then_banner() {
         let mut feed = test_feed();
+        feed.state.mode = "overlay".to_string();
         feed.text.enabled = true;
         feed.text.content = "Manual".to_string();
         let audio = PriorityAudio {
@@ -723,6 +733,7 @@ mod tests {
             state: StateConfig::default(),
             standby: StandbyConfig::default(),
             sync: SyncConfig::default(),
+            encoder: Default::default(),
         }
     }
 }

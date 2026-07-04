@@ -83,7 +83,14 @@ function writeEditor(reader) {
     saveButton.disabled = empty;
     previewButton.disabled = empty;
     if (!reader) {
+        fields.id.value = '';
+        fields.provider.value = providers[0] || 'auto';
+        fields.voiceID.value = '';
+        fields.language.value = '';
+        fields.gender.value = 'male';
         selectedLabel.textContent = 'No reader selected';
+        providerMetric.textContent = 'none';
+        revokePreview();
         return;
     }
     fields.id.value = reader.id || '';
@@ -106,25 +113,28 @@ function renderProviders() {
 function renderTable() {
     countMetric.textContent = String(readers.length);
     if (!readers.length) {
-        tableBody.innerHTML = '<tr><td colspan="3">No readers configured.</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="3" class="panel-empty-cell">No readers configured.</td></tr>';
         writeEditor(null);
         return;
     }
     if (!selectedID || !readers.some((reader) => reader.id === selectedID)) {
         selectedID = readers[0].id;
     }
-    tableBody.innerHTML = readers.map((reader) => `
-        <tr class="tts-reader-row ${reader.id === selectedID ? 'active' : ''}" data-reader-id="${escapeHtml(reader.id)}">
+    tableBody.innerHTML = readers.map((reader) => {
+        const active = reader.id === selectedID;
+        return `
+        <tr class="tts-reader-row ${active ? 'active' : ''}" data-reader-id="${escapeHtml(reader.id)}" aria-selected="${active ? 'true' : 'false'}" tabindex="0">
             <td>
                 <div class="tts-reader-main">
                     <strong>${escapeHtml(reader.id)}</strong>
                     <span>${escapeHtml(reader.gender || 'male')} · ${escapeHtml(reader.language || 'en-us')}</span>
                 </div>
             </td>
-            <td>${escapeHtml(reader.provider || 'auto')}</td>
-            <td>${escapeHtml(reader.voice_id || '')}</td>
+            <td><span class="table-pill" data-state="tts">${escapeHtml(reader.provider || 'auto')}</span></td>
+            <td title="${escapeHtml(reader.voice_id || 'Auto voice')}">${reader.voice_id ? escapeHtml(reader.voice_id) : '<span class="table-muted">Auto voice</span>'}</td>
         </tr>
-    `).join('');
+    `;
+    }).join('');
     writeEditor(selected());
 }
 
@@ -239,6 +249,15 @@ function bind() {
     tableBody.addEventListener('click', (event) => {
         const row = event.target.closest('[data-reader-id]');
         if (!row) return;
+        updateSelectedFromEditor();
+        selectedID = row.dataset.readerId;
+        renderTable();
+    });
+    tableBody.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        const row = event.target.closest('[data-reader-id]');
+        if (!row) return;
+        event.preventDefault();
         updateSelectedFromEditor();
         selectedID = row.dataset.readerId;
         renderTable();

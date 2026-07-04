@@ -139,6 +139,9 @@ func TestSQLiteStoreRoundTripsPayloadsAndArchive(t *testing.T) {
 	if err := store.StoreCAPArchive(ctx, CAPArchiveRecord{AlertID: "urn:test:sqlite", FeedID: "sk-0001", Bucket: "accepted", Status: "accepted", Event: "SVR", RawXML: rawCAP}); err != nil {
 		t.Fatalf("StoreCAPArchive: %v", err)
 	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE archive_cap_xml SET reason = NULL, sender = NULL, source = NULL WHERE alert_id = ?`, "urn:test:sqlite"); err != nil {
+		t.Fatalf("force nullable archive fields: %v", err)
+	}
 	rows, err := store.ListCAPArchives(ctx, "accepted", time.Time{})
 	if err != nil {
 		t.Fatalf("ListCAPArchives: %v", err)

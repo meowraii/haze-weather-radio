@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
@@ -633,6 +634,41 @@ func TestStartupProductCanUseCachedAudioWithoutTTSBridge(t *testing.T) {
 	}
 	if item.PackageID != "station_id" || item.Source != "startup" {
 		t.Fatalf("cached startup item = %#v", item)
+	}
+}
+
+func TestPrepareLocalAlertAudioCopiesPreparedPCM(t *testing.T) {
+	dir := t.TempDir()
+	sourceRel := filepath.Join("runtime", "audio", "alerts", "uploads", "manual.pcm16le")
+	sourcePath := filepath.Join(dir, sourceRel)
+	raw := []byte{0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00}
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(dir, "runtime", "audio", "alerts", "out.pcm16le")
+	planner := &feedPlanner{
+		cfg: loadedConfig{BaseDir: dir},
+	}
+	err := planner.prepareLocalAlertAudio(context.Background(), filepath.ToSlash(sourceRel), outputPath, 48000, 1, map[string]any{
+		"audio_format":      "pcm_s16le",
+		"audio_sample_rate": float64(48000),
+		"audio_channels":    float64(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatalf("copied PCM = %v, want %v", got, raw)
+	}
+	if _, err := planner.resolveAlertAudioPath("../secret.pcm16le"); err == nil {
+		t.Fatal("expected path traversal to be rejected")
 	}
 }
 
@@ -1268,6 +1304,29 @@ func TestPriorityAlertRequestStaleSuppressesCancellations(t *testing.T) {
 	}
 	if !priorityAlertRequestStale(map[string]any{"title": "yellow warning - severe thunderstorm - ended"}, now) {
 		t.Fatal("ended headlines should be stale for priority queueing")
+	}
+}
+
+func TestMixedActiveAndEndedCAPIsRenderableForRoutine(t *testing.T) {
+	activeRaw := playlistCAP()
+	endedRaw := strings.ReplaceAll(activeRaw, "<responseType>Monitor</responseType>", "<responseType>AllClear</responseType>")
+	endedRaw = strings.ReplaceAll(endedRaw, "yellow warning - severe thunderstorm - in effect", "yellow warning - severe thunderstorm - ended")
+	infoStart := strings.Index(endedRaw, "<info>")
+	infoEnd := strings.LastIndex(endedRaw, "</info>")
+	if infoStart < 0 || infoEnd < 0 {
+		t.Fatal("ended fixture info block not found")
+	}
+	mixedRaw := strings.Replace(activeRaw, "</alert>", endedRaw[infoStart:infoEnd+len("</info>")]+"\n</alert>", 1)
+	alert, err := capmodel.ParseCAP([]byte(mixedRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if isExplicitCAPEnd(alert) {
+		t.Fatal("mixed active and ended CAP update was treated as a global cancellation")
+	}
+	if !isRenderableCAPEntry(capRegistryEntry{UpdatedAt: time.Now().UTC(), Alert: alert}, time.Now().UTC()) {
+		t.Fatal("mixed active and ended CAP update should remain routine-renderable")
 	}
 }
 

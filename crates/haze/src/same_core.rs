@@ -7,9 +7,11 @@ pub const MARK_FREQ_HZ: f32 = 6250.0 / 3.0;
 pub const SPACE_FREQ_HZ: f32 = 3125.0 / 2.0;
 pub const BIT_DURATION_S: f32 = 6.0 / 3125.0;
 
+const BIT_SAMPLE_NUMERATOR: u128 = SAMPLE_RATE as u128 * 6;
+const BIT_SAMPLE_DENOMINATOR: u128 = 3125;
 const PREAMBLE_BYTE: u8 = 0xAB;
 const PREAMBLE_LEN: usize = 16;
-const SEQUENCE_AMPLITUDE: f32 = 0.45;
+const MAX_OUTPUT_PEAK: f32 = 0.2737;
 const INTER_BURST_S: f32 = 1.0;
 const BURST_LEAD_S: f32 = 0.100;
 const PRE_ATTN_S: f32 = 1.0;
@@ -175,11 +177,7 @@ pub fn generate_same_header_attention_sequence_with_attention(
 
     if let Some(attention) = attention {
         samples.extend(silence(PRE_ATTN_S));
-        samples.extend_from_slice(attention);
-    }
-
-    for sample in &mut samples {
-        *sample *= SEQUENCE_AMPLITUDE;
+        extend_limited(&mut samples, attention, MAX_OUTPUT_PEAK);
     }
 
     SameAudio {
@@ -194,9 +192,6 @@ pub fn eom_sequence() -> SameAudio {
     samples.extend(silence(EOM_LEAD_S));
     samples.extend(triple_burst(&eom_burst()));
     samples.extend(silence(EOM_TAIL_S));
-    for sample in &mut samples {
-        *sample *= SEQUENCE_AMPLITUDE;
-    }
     SameAudio {
         sample_rate: SAMPLE_RATE,
         samples,
@@ -221,9 +216,11 @@ pub fn eom_burst() -> Vec<f32> {
 
 #[must_use]
 pub fn afsk_encode(data: &[u8]) -> Vec<f32> {
-    let bit_samples = (SAMPLE_RATE as f32 * BIT_DURATION_S).round() as usize;
-    let mut samples = Vec::with_capacity(data.len() * 8 * bit_samples);
-    for byte in data {
+    let bit_count = data.len().saturating_mul(8);
+    let mut samples = Vec::with_capacity(samples_for_bits(bit_count));
+    let mut phase = 0.0f32;
+
+    for (byte_index, byte) in data.iter().enumerate() {
         for bit_index in 0..8 {
             let bit = (byte >> bit_index) & 1;
             let frequency = if bit == 1 {
@@ -231,15 +228,19 @@ pub fn afsk_encode(data: &[u8]) -> Vec<f32> {
             } else {
                 SPACE_FREQ_HZ
             };
-            samples.extend(sine(frequency, bit_samples));
+            let absolute_bit = (byte_index * 8) + bit_index;
+            let sample_count = bit_sample_count(absolute_bit);
+            extend_sine_with_phase(&mut samples, frequency, sample_count, &mut phase);
         }
     }
+
+    debug_assert_eq!(samples.len(), samples_for_bits(bit_count));
     samples
 }
 
 #[must_use]
 pub fn attention_tone(tone_type: ToneType, duration_s: f32) -> Vec<f32> {
-    match tone_type {
+    let mut tone = match tone_type {
         ToneType::Wxr => sine_duration(1050.0, duration_s),
         ToneType::Quebec => mix_tones(&[1050.0, 650.0], duration_s),
         ToneType::Eas => {
@@ -249,7 +250,9 @@ pub fn attention_tone(tone_type: ToneType, duration_s: f32) -> Vec<f32> {
             tone
         }
         ToneType::EggTimer => egg_timer_tone(duration_s),
-    }
+    };
+    limit_peak_in_place(&mut tone, MAX_OUTPUT_PEAK);
+    tone
 }
 
 fn egg_timer_tone(duration_s: f32) -> Vec<f32> {
@@ -301,6 +304,19 @@ fn sine(freq_hz: f32, sample_count: usize) -> Vec<f32> {
         .collect()
 }
 
+fn extend_sine_with_phase(
+    samples: &mut Vec<f32>,
+    freq_hz: f32,
+    sample_count: usize,
+    phase: &mut f32,
+) {
+    let phase_step = TAU * freq_hz / SAMPLE_RATE as f32;
+    for _ in 0..sample_count {
+        samples.push(phase.sin() * MAX_OUTPUT_PEAK);
+        *phase = (*phase + phase_step).rem_euclid(TAU);
+    }
+}
+
 fn mix_tones(freqs: &[f32], duration_s: f32) -> Vec<f32> {
     let sample_count = (duration_s.max(0.0) * SAMPLE_RATE as f32).round() as usize;
     mix_tones_for_samples(freqs, sample_count)
@@ -340,6 +356,58 @@ fn apply_fade_out_place(samples: &mut [f32], duration_s: f32) {
     for index in 0..fade_samples {
         samples[start + index] *= 1.0 - (index as f32 / denom);
     }
+}
+
+fn extend_limited(output: &mut Vec<f32>, samples: &[f32], max_peak: f32) {
+    output.reserve(samples.len());
+    let peak = samples
+        .iter()
+        .copied()
+        .filter(|sample| sample.is_finite())
+        .map(f32::abs)
+        .fold(0.0, f32::max);
+    let gain = if peak > max_peak {
+        max_peak / peak
+    } else {
+        1.0
+    };
+    output.extend(samples.iter().map(|sample| {
+        if sample.is_finite() {
+            (*sample * gain).clamp(-max_peak, max_peak)
+        } else {
+            0.0
+        }
+    }));
+}
+
+fn limit_peak_in_place(samples: &mut [f32], max_peak: f32) {
+    let peak = samples
+        .iter()
+        .copied()
+        .filter(|sample| sample.is_finite())
+        .map(f32::abs)
+        .fold(0.0, f32::max);
+    let gain = if peak > max_peak {
+        max_peak / peak
+    } else {
+        1.0
+    };
+    for sample in samples {
+        if sample.is_finite() {
+            *sample = (*sample * gain).clamp(-max_peak, max_peak);
+        } else {
+            *sample = 0.0;
+        }
+    }
+}
+
+fn bit_sample_count(bit_index: usize) -> usize {
+    samples_for_bits(bit_index + 1) - samples_for_bits(bit_index)
+}
+
+fn samples_for_bits(bit_count: usize) -> usize {
+    let numerator = bit_count as u128 * BIT_SAMPLE_NUMERATOR;
+    ((numerator + (BIT_SAMPLE_DENOMINATOR / 2)) / BIT_SAMPLE_DENOMINATOR) as usize
 }
 
 fn silence(duration_s: f32) -> Vec<f32> {
@@ -389,10 +457,25 @@ mod tests {
     #[test]
     fn afsk_generates_lsb_first_samples() {
         let samples = afsk_encode(&[0b0000_0001]);
-        let bit_samples = (SAMPLE_RATE as f32 * BIT_DURATION_S).round() as usize;
 
-        assert_eq!(samples.len(), bit_samples * 8);
+        assert_eq!(samples.len(), samples_for_bits(8));
         assert!(samples[1].abs() > 0.0);
+    }
+
+    #[test]
+    fn afsk_uses_exact_average_baud_timing() {
+        let samples = afsk_encode(&[0xAB, 0xCD, 0xEF, 0x12]);
+
+        assert_eq!(samples.len(), samples_for_bits(32));
+        assert_eq!(samples_for_bits(25), 2_304);
+        assert_eq!(samples_for_bits(50), 4_608);
+    }
+
+    #[test]
+    fn afsk_output_stays_below_full_scale() {
+        let samples = afsk_encode(&[0xAB, 0xCD, 0xEF, 0x12]);
+
+        assert_peak_at_most(&samples, MAX_OUTPUT_PEAK);
     }
 
     #[test]
@@ -420,6 +503,20 @@ mod tests {
     }
 
     #[test]
+    fn builtin_attention_tones_stay_below_full_scale() {
+        for tone in [
+            ToneType::Wxr,
+            ToneType::Eas,
+            ToneType::EggTimer,
+            ToneType::Quebec,
+        ] {
+            let samples = attention_tone(tone, 1.0);
+
+            assert_peak_at_most(&samples, MAX_OUTPUT_PEAK);
+        }
+    }
+
+    #[test]
     fn same_sequence_uses_reduced_attention_amplitude() {
         let header = SameHeader::new("WXR", "RWT", ["065100"], "0015", "EC-GC-CA", "1661200")
             .expect("valid header");
@@ -430,6 +527,28 @@ mod tests {
             .iter()
             .map(|sample| sample.abs())
             .fold(0.0, f32::max);
-        assert!(peak <= SEQUENCE_AMPLITUDE + 0.001);
+        assert!(peak <= MAX_OUTPUT_PEAK + 0.001);
+    }
+
+    #[test]
+    fn custom_attention_is_limited_in_header_sequence() {
+        let header = SameHeader::new("WXR", "RWT", ["065100"], "0015", "EC-GC-CA", "1661200")
+            .expect("valid header");
+        let attention = [2.0, -2.0, f32::NAN, 0.5];
+
+        let audio =
+            generate_same_header_attention_sequence_with_attention(&header, Some(&attention));
+
+        assert!(audio.samples.iter().all(|sample| sample.is_finite()));
+        assert_peak_at_most(&audio.samples, MAX_OUTPUT_PEAK);
+    }
+
+    fn assert_peak_at_most(samples: &[f32], max_peak: f32) {
+        let peak = samples
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0, f32::max);
+
+        assert!(peak <= max_peak + f32::EPSILON);
     }
 }

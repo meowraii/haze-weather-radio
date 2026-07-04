@@ -3,6 +3,7 @@ package webgateway
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +21,10 @@ func (s *wsSession) broadcastAlert(payload map[string]any) (map[string]any, erro
 		stringPayload(payload, "alert_id", ""),
 		fmt.Sprintf("manual-%d", time.Now().UTC().UnixNano()),
 	))
+	payload, err = s.prepareBroadcastAlertAudioPayload(payload, alertID)
+	if err != nil {
+		return nil, err
+	}
 	scheduleAt := parseOptionalTime(stringPayload(payload, "schedule_at", ""))
 	data := s.broadcastAlertData(payload, targets, alertID, includeSame)
 
@@ -83,6 +88,7 @@ func (s *wsSession) broadcastAlertData(payload map[string]any, targets []string,
 		alertText = strings.TrimSpace(strings.Join(nonEmptyManualAlertParts(intro, baseSpeech), " "))
 	}
 	bannerText := bannerTextFromManualAlert(intro, customText, stringPayload(payload, "description", ""), stringPayload(payload, "instruction", ""))
+	audioMode := normalizeBroadcastAudioMode(stringPayload(payload, "audio_mode", "tts"))
 	data := map[string]any{
 		"feed_ids":                 targets,
 		"alert_id":                 alertID,
@@ -104,7 +110,22 @@ func (s *wsSession) broadcastAlertData(payload map[string]any, targets []string,
 		"same_callsign":            sameCallsignFromConfig(s.configPath, primaryFeed),
 		"alert_sent_at":            time.Now().UTC().Format(time.RFC3339Nano),
 		"source":                   "webpanel",
+		"audio_mode":               audioMode,
 		"prepend_same_translation": prependIntro,
+	}
+	if readerID := cleanReaderID(firstNonBlank(stringPayload(payload, "reader_id", ""), stringPayload(payload, "tts_reader_id", ""))); readerID != "" {
+		data["reader_id"] = readerID
+		data["tts_reader_id"] = readerID
+	}
+	if audioPath := strings.TrimSpace(stringPayload(payload, "audio_path", "")); audioPath != "" {
+		data["audio_path"] = filepath.ToSlash(audioPath)
+		data["audio_format"] = firstNonBlank(stringPayload(payload, "audio_format", ""), "pcm_s16le")
+		data["audio_sample_rate"] = intPayload(payload, "audio_sample_rate", 48000)
+		data["audio_channels"] = intPayload(payload, "audio_channels", 1)
+	}
+	if audioURL := strings.TrimSpace(firstNonBlank(stringPayload(payload, "audio_url", ""), stringPayload(payload, "authoritative_url", ""))); audioURL != "" {
+		data["audio_url"] = audioURL
+		data["authoritative_url"] = audioURL
 	}
 	if scheduleAt := parseOptionalTime(stringPayload(payload, "schedule_at", "")); !scheduleAt.IsZero() {
 		data["scheduled_for"] = scheduleAt.UTC().Format(time.RFC3339Nano)

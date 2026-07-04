@@ -58,6 +58,8 @@ pub(crate) struct FeedConfig {
     pub(crate) standby: StandbyConfig,
     #[serde(default)]
     pub(crate) sync: SyncConfig,
+    #[serde(skip)]
+    pub(crate) encoder: FeedEncoderSettings,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -137,6 +139,72 @@ pub(crate) struct AudioConfig {
     pub(crate) alert_mode: String,
     #[serde(rename = "@mute_standby_routine", default = "default_true")]
     pub(crate) mute_standby_routine: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct FeedEncoderSettings {
+    pub(crate) video: EncoderCodecSettings,
+    pub(crate) audio: EncoderCodecSettings,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EncoderCodecSettings {
+    pub(crate) codec: String,
+    pub(crate) bitrate_kbps: Option<u32>,
+    pub(crate) gop: Option<u32>,
+    pub(crate) bframes: Option<u32>,
+    pub(crate) preset: String,
+    pub(crate) tune: String,
+    pub(crate) profile: String,
+    pub(crate) level: String,
+    pub(crate) options: Vec<EncoderOptionConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub(crate) struct EncoderOptionConfig {
+    #[serde(rename = "@name", default)]
+    pub(crate) name: String,
+    #[serde(rename = "@value", default)]
+    pub(crate) value: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename = "cgenEncoders")]
+struct CgenEncodersConfig {
+    #[serde(rename = "feed", default)]
+    feeds: Vec<FeedEncoderConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct FeedEncoderConfig {
+    #[serde(rename = "@id", default)]
+    id: String,
+    #[serde(default)]
+    video: EncoderCodecConfig,
+    #[serde(default)]
+    audio: EncoderCodecConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct EncoderCodecConfig {
+    #[serde(rename = "@codec", default)]
+    codec: String,
+    #[serde(rename = "@bitrate_kbps", default)]
+    bitrate_kbps: Option<u32>,
+    #[serde(rename = "@gop", default)]
+    gop: Option<u32>,
+    #[serde(rename = "@bframes", default)]
+    bframes: Option<u32>,
+    #[serde(rename = "@preset", default)]
+    preset: String,
+    #[serde(rename = "@tune", default)]
+    tune: String,
+    #[serde(rename = "@profile", default)]
+    profile: String,
+    #[serde(rename = "@level", default)]
+    level: String,
+    #[serde(rename = "option", default)]
+    options: Vec<EncoderOptionConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -402,6 +470,21 @@ impl CgenConfig {
         }
     }
 
+    fn apply_encoder_settings(&mut self, encoders: CgenEncodersConfig) {
+        for encoder_feed in encoders.feeds {
+            if encoder_feed.id.trim().is_empty() {
+                continue;
+            }
+            if let Some(feed) = self
+                .feeds
+                .iter_mut()
+                .find(|feed| feed.id.eq_ignore_ascii_case(encoder_feed.id.trim()))
+            {
+                feed.encoder = FeedEncoderSettings::from_config(encoder_feed);
+            }
+        }
+    }
+
     pub(crate) fn enabled_feeds(&self) -> Result<Vec<FeedConfig>> {
         if !self.enabled {
             return Ok(Vec::new());
@@ -415,6 +498,47 @@ impl CgenConfig {
             out.push(feed.clone());
         }
         Ok(out)
+    }
+}
+
+impl FeedEncoderSettings {
+    fn from_config(config: FeedEncoderConfig) -> Self {
+        Self {
+            video: EncoderCodecSettings::from_config(config.video),
+            audio: EncoderCodecSettings::from_config(config.audio),
+        }
+    }
+}
+
+impl EncoderCodecSettings {
+    fn from_config(config: EncoderCodecConfig) -> Self {
+        Self {
+            codec: config.codec.trim().to_string(),
+            bitrate_kbps: config.bitrate_kbps.filter(|value| *value > 0),
+            gop: config.gop.filter(|value| *value > 0),
+            bframes: config.bframes,
+            preset: config.preset.trim().to_string(),
+            tune: config.tune.trim().to_string(),
+            profile: config.profile.trim().to_string(),
+            level: config.level.trim().to_string(),
+            options: config
+                .options
+                .into_iter()
+                .filter(|option| !option.name.trim().is_empty())
+                .map(|option| EncoderOptionConfig {
+                    name: option.name.trim().to_string(),
+                    value: option.value.trim().to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    pub(crate) fn applies_to(&self, codec: &str) -> bool {
+        self.codec.trim().is_empty() || self.codec.trim().eq_ignore_ascii_case(codec.trim())
+    }
+
+    pub(crate) fn bitrate_or(&self, fallback: Option<u32>) -> Option<u32> {
+        self.bitrate_kbps.or(fallback)
     }
 }
 
@@ -747,7 +871,26 @@ pub(crate) fn load_config(path: &Path) -> Result<CgenConfig> {
     let mut config: CgenConfig = quick_xml::de::from_str(&expanded)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     config.apply_nested_sections();
+    if let Some(encoders) = load_encoder_settings(path)? {
+        config.apply_encoder_settings(encoders);
+    }
     Ok(config)
+}
+
+fn load_encoder_settings(cgen_path: &Path) -> Result<Option<CgenEncodersConfig>> {
+    let Some(parent) = cgen_path.parent() else {
+        return Ok(None);
+    };
+    let path = parent.join("cgen-encoders.xml");
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("failed to read {}", path.display())),
+    };
+    let expanded = expand_env_vars(&raw);
+    let encoders: CgenEncodersConfig = quick_xml::de::from_str(&expanded)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(Some(encoders))
 }
 
 fn expand_env_vars(raw: &str) -> String {
@@ -1126,6 +1269,54 @@ mod tests {
     }
 
     #[test]
+    fn load_config_merges_cgen_encoder_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cgen.xml");
+        std::fs::write(
+            &path,
+            r#"
+<cgen enabled="true">
+  <feed id="CAP" enabled="true">
+    <program>
+      <input url="udp://in" format="mpegts"></input>
+      <output url="udp://out" format="mpegts" vcodec="x264enc" acodec="avenc_ac3"></output>
+    </program>
+    <media>
+      <video width="1280" height="720" fps="source"></video>
+      <audio idle="source" alert_mode="replace"></audio>
+    </media>
+    <ladder>
+      <video id="hd" enabled="true" width="1280" height="720" fps="source" vcodec="x264enc" bitrate_kbps="6000"/>
+      <audio id="stereo" enabled="true" channels="2" acodec="avenc_ac3" bitrate_kbps="192"/>
+    </ladder>
+  </feed>
+</cgen>"#,
+        )
+        .expect("write cgen");
+        std::fs::write(
+            dir.path().join("cgen-encoders.xml"),
+            r#"
+<cgenEncoders>
+  <feed id="CAP">
+    <video codec="x264enc" bitrate_kbps="7000" gop="30" bframes="2" preset="veryfast" tune="zerolatency"></video>
+    <audio codec="avenc_ac3" bitrate_kbps="256" profile="main"></audio>
+  </feed>
+</cgenEncoders>"#,
+        )
+        .expect("write encoders");
+
+        let config = load_config(&path).expect("config");
+        let feed = &config.feeds[0];
+
+        assert_eq!(feed.encoder.video.codec, "x264enc");
+        assert_eq!(feed.encoder.video.bitrate_kbps, Some(7000));
+        assert_eq!(feed.encoder.video.gop, Some(30));
+        assert_eq!(feed.encoder.video.bframes, Some(2));
+        assert_eq!(feed.encoder.video.preset, "veryfast");
+        assert_eq!(feed.encoder.audio.bitrate_kbps, Some(256));
+    }
+
+    #[test]
     fn load_config_accepts_nested_cgen_shape() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("cgen.xml");
@@ -1318,6 +1509,7 @@ mod tests {
                 acodec: String::new(),
                 video_bitrate_kbps: None,
                 audio_bitrate_kbps: None,
+                ..Default::default()
             },
             priority_input: PriorityInputConfig::default(),
             program_output: EndpointConfig {
@@ -1327,6 +1519,7 @@ mod tests {
                 acodec: String::new(),
                 video_bitrate_kbps: None,
                 audio_bitrate_kbps: None,
+                ..Default::default()
             },
             program: Default::default(),
             priority: Default::default(),
@@ -1377,6 +1570,7 @@ mod tests {
             state: StateConfig::default(),
             standby: StandbyConfig::default(),
             sync: SyncConfig::default(),
+            encoder: Default::default(),
         };
         assert!(feed.matches_feed("sk-0001"));
         assert!(feed.matches_feed("CAP-IT-ALL"));

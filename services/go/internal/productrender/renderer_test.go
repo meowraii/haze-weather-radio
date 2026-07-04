@@ -811,6 +811,26 @@ func TestThunderstormPeriodLabelUsesNaturalBroadcastWording(t *testing.T) {
 	}
 }
 
+func TestThunderstormRiskLabelUsesEnvironmentCanadaCategories(t *testing.T) {
+	tests := []struct {
+		value any
+		want  string
+	}{
+		{value: 0, want: "level 0"},
+		{value: 1, want: "minor"},
+		{value: 2, want: "moderate"},
+		{value: 3, want: "high"},
+		{value: 4, want: "extreme"},
+		{value: "moderate", want: "moderate"},
+	}
+	for _, test := range tests {
+		got := thunderstormRiskLabel(test.value)
+		if got != test.want {
+			t.Fatalf("thunderstormRiskLabel(%v) = %q, want %q", test.value, got, test.want)
+		}
+	}
+}
+
 func TestThunderstormOutlookSkipsNearbyPolygonRows(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
@@ -965,6 +985,41 @@ func TestAlertsProductUsesNativeCAPRegistry(t *testing.T) {
 	}
 	if len(rows) != 1 || !strings.Contains(rows[0].RawXML, `<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">`) {
 		t.Fatalf("archive is not storing native CAP payloads: %#v", rows)
+	}
+}
+
+func TestAlertsProductRendersMixedActiveAndEndedCAPUpdate(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	activeRaw := testCAP("urn:test:alert:mixed-render", "Update", "active", "2099-06-15T21:30:00-06:00", false)
+	endedRaw := testCAP("urn:test:alert:mixed-ended-info", "Update", "ended", "2099-06-15T21:30:00-06:00", true)
+	endedRaw = strings.ReplaceAll(endedRaw, "065522", "066999")
+	endedRaw = strings.ReplaceAll(endedRaw, "City of Saskatoon", "Off Feed County")
+	infoStart := strings.Index(endedRaw, "<info>")
+	infoEnd := strings.LastIndex(endedRaw, "</info>")
+	if infoStart < 0 || infoEnd < 0 {
+		t.Fatal("ended fixture info block not found")
+	}
+	mixedRaw := strings.Replace(activeRaw, "</alert>", endedRaw[infoStart:infoEnd+len("</info>")]+"\n</alert>", 1)
+	alert, err := capmodel.ParseCAP([]byte(mixedRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: cfg}
+	if _, err := service.recordCAPAlert(alert, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "alerts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(product.Text, "Yellow Warning - Severe Thunderstorm") {
+		t.Fatalf("mixed active/ended alert did not render active info:\n%s", product.Text)
+	}
+	if strings.Contains(product.Text, "Off Feed County") || strings.Contains(product.Text, "066999") {
+		t.Fatalf("mixed active/ended alert leaked ended area text:\n%s", product.Text)
 	}
 }
 

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
@@ -16,7 +17,7 @@ use tokio::time::sleep;
 use tokio::time::Duration;
 use tracing::{info, warn};
 
-use crate::config::FeedConfig;
+use crate::config::{EncoderCodecSettings, FeedConfig};
 use crate::state::RuntimeState;
 use crate::wgpu_renderer::{OverlayRenderState, WgpuFrameRenderer};
 
@@ -25,6 +26,7 @@ use gstreamer as gst;
 use gstreamer_app as gst_app;
 
 const DEFAULT_UDP_BUFFER_BYTES: u32 = 4 * 1024 * 1024;
+const GST_BUS_POLL_INTERVAL_MS: u64 = 10;
 const PRIORITY_AUDIO_RESTART_SUPPRESS: Duration = Duration::from_secs(300);
 
 pub(crate) async fn run_supervised(
@@ -34,6 +36,7 @@ pub(crate) async fn run_supervised(
     base_dir: PathBuf,
     status_tx: Option<mpsc::UnboundedSender<Value>>,
 ) -> Result<()> {
+    configure_portable_gstreamer_paths();
     gst::init().context("failed to initialize GStreamer")?;
     let restart = restart_backoff_bounds(&feed);
     let mut restart_delay = restart.initial;
@@ -105,6 +108,7 @@ fn sync_status_value(feed: &FeedConfig) -> Value {
 }
 
 pub(crate) fn gstreamer_catalog_json() -> Result<Value> {
+    configure_portable_gstreamer_paths();
     gst::init().context("failed to initialize GStreamer")?;
     Ok(json!({
         "formats": gstreamer_muxer_catalog(),
@@ -115,6 +119,45 @@ pub(crate) fn gstreamer_catalog_json() -> Result<Value> {
             "runtime": "gstreamer-rs",
         },
     }))
+}
+
+fn configure_portable_gstreamer_paths() {
+    let Ok(exe_path) = env::current_exe() else {
+        return;
+    };
+    let Some(exe_dir) = exe_path.parent() else {
+        return;
+    };
+    let plugin_dir = exe_dir.join("gstreamer-1.0");
+    if !plugin_dir.is_dir() {
+        return;
+    }
+    prepend_env_path("GST_PLUGIN_PATH", &plugin_dir);
+    prepend_env_path("GST_PLUGIN_SYSTEM_PATH_1_0", &plugin_dir);
+    prepend_env_path("GST_PLUGIN_PATH_1_0", &plugin_dir);
+
+    let scanner = plugin_dir.join(if cfg!(windows) {
+        "gst-plugin-scanner.exe"
+    } else {
+        "gst-plugin-scanner"
+    });
+    if scanner.is_file() {
+        env::set_var("GST_PLUGIN_SCANNER", scanner);
+    }
+}
+
+fn prepend_env_path(name: &str, path: &Path) {
+    let mut paths = env::var_os(name)
+        .map(|raw| env::split_paths(&raw).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if paths.iter().any(|existing| existing == path) {
+        return;
+    }
+    paths.insert(0, path.to_path_buf());
+    match env::join_paths(paths) {
+        Ok(joined) => env::set_var(name, joined),
+        Err(err) => warn!("failed to set {name} for GStreamer runtime: {err}"),
+    }
 }
 
 fn gstreamer_muxer_catalog() -> Vec<Value> {
@@ -317,6 +360,7 @@ fn run_pipeline_once(
         &status_tx,
         &feed,
         &state_rx,
+        false,
         json!({
             "media_backend": "gstreamer-rs",
             "input_connected": false,
@@ -333,6 +377,7 @@ fn run_pipeline_once(
             &status_tx,
             &feed,
             &state_rx,
+            false,
             json!({
                 "media_backend": "gstreamer-rs",
                 "input_connected": false,
@@ -378,6 +423,7 @@ fn run_pipeline_once(
                 &status_tx,
                 &feed,
                 &state_rx,
+                false,
                 json!({
                     "media_backend": "gstreamer-rs",
                     "graphics_backend": "wgpu",
@@ -397,8 +443,6 @@ fn run_pipeline_once(
         let audio_connected = input_audio_connected(&input_health, &feed);
         let feeder_status = priority_feeder.update(priority_audio_for_feed(&feed, &state));
         let video_mode = desired_video_selector_mode(&feed, &state, video_connected);
-        let audio_live = feeder_status.is_live_priority();
-        text_overlay.sync(&pipeline, &feed, &state, video_mode.no_signal(), audio_live)?;
         (
             desired_audio_selector_mode_with_status(&feed, audio_connected, &feeder_status),
             video_mode,
@@ -412,10 +456,22 @@ fn run_pipeline_once(
     pipeline
         .set_state(gst::State::Playing)
         .context("failed to set GStreamer CGEN pipeline to Playing")?;
+    {
+        let state = state_rx.borrow();
+        let feeder_status = priority_feeder.update(priority_audio_for_feed(&feed, &state));
+        text_overlay.sync(
+            &pipeline,
+            &feed,
+            &state,
+            current_video_mode.no_signal(),
+            feeder_status.is_live_priority(),
+        )?;
+    }
     publish_status(
         &status_tx,
         &feed,
         &state_rx,
+        current_video_mode.no_signal(),
         json!({
             "media_backend": "gstreamer-rs",
             "input_connected": false,
@@ -448,7 +504,9 @@ fn run_pipeline_once(
                 .context("failed to stop GStreamer CGEN pipeline during shutdown")?;
             return Ok(());
         }
-        while let Some(message) = bus.timed_pop(gst::ClockTime::from_mseconds(50)) {
+        while let Some(message) =
+            bus.timed_pop(gst::ClockTime::from_mseconds(GST_BUS_POLL_INTERVAL_MS))
+        {
             use gst::MessageView;
             match message.view() {
                 MessageView::Eos(..) => {
@@ -481,6 +539,7 @@ fn run_pipeline_once(
                             &status_tx,
                             &feed,
                             &state_rx,
+                            current_video_mode.no_signal(),
                             json!({
                                 "media_backend": "gstreamer-rs",
                                 "gst_state": format!("{:?}", state.current()),
@@ -567,6 +626,7 @@ fn run_pipeline_once(
                 &status_tx,
                 &feed,
                 &state_rx,
+                video_mode.no_signal(),
                 json!({
                     "media_backend": "gstreamer-rs",
                     "input_connected": true,
@@ -609,6 +669,7 @@ struct TextOverlayController {
     completed_passes: u32,
     audio_was_live: bool,
     post_audio_repeats_started: u32,
+    retaining_cleared_ticker: bool,
     last: Option<TextOverlayRenderState>,
     shared: Arc<Mutex<Option<TextOverlayRenderState>>>,
 }
@@ -646,13 +707,18 @@ impl TextOverlayController {
         let font_desc = format!("{} {}", snapshot.font, snapshot.font_size.max(16));
         let ypos = overlay_ypos(feed, snapshot.ticker_y);
         if text.is_empty() {
-            if let Some(last) = self.last.clone() {
-                if last.visual_mode == "ticker_alert" {
-                    if !ticker_state_done(&last) {
-                        return last;
-                    }
-                    if self.should_repeat_ticker(feed, audio_live) {
-                        return self.restart_ticker_pass(last);
+            if snapshot.visual_mode == "release" {
+                if let Some(last) = self.last.clone() {
+                    if last.visual_mode == "ticker_alert" {
+                        if !ticker_state_done(&last) {
+                            self.retaining_cleared_ticker = true;
+                            return last;
+                        }
+                        if self.should_repeat_ticker(feed, audio_live) {
+                            let next = self.restart_ticker_pass(last);
+                            self.retaining_cleared_ticker = true;
+                            return next;
+                        }
                     }
                 }
             }
@@ -703,7 +769,9 @@ impl TextOverlayController {
             feed.banner.scroll_repeat_mode,
             source_text
         );
-        if self.key.as_deref() != Some(key.as_str()) {
+        if self.retaining_cleared_ticker && snapshot.visual_mode == "ticker_alert" {
+            self.start_ticker_lifecycle(key);
+        } else if self.key.as_deref() != Some(key.as_str()) {
             self.start_ticker_lifecycle(key);
         } else if let Some(last) = self.last.clone() {
             if snapshot.visual_mode == "ticker_alert" && ticker_state_done(&last) {
@@ -765,6 +833,7 @@ impl TextOverlayController {
         self.pass_index = 0;
         self.completed_passes = 0;
         self.post_audio_repeats_started = 0;
+        self.retaining_cleared_ticker = false;
     }
 
     fn reset_ticker_lifecycle(&mut self) {
@@ -773,6 +842,7 @@ impl TextOverlayController {
         self.pass_index = 0;
         self.completed_passes = 0;
         self.post_audio_repeats_started = 0;
+        self.retaining_cleared_ticker = false;
     }
 
     fn restart_ticker_pass(&mut self, mut state: TextOverlayRenderState) -> TextOverlayRenderState {
@@ -951,14 +1021,24 @@ fn install_wgpu_overlay_probes(
         let probe_id = src_pad
             .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
                 let state = state_for_probe.lock().ok().and_then(|guard| guard.clone());
+                let overlay_active = overlay_render_state_needs_frame_mutation(state.as_ref());
+                let preview_due = preview_for_probe
+                    .as_ref()
+                    .and_then(|preview| preview.lock().ok().map(|preview| preview.write_due()))
+                    .unwrap_or(false);
+                if !overlay_active && !preview_due {
+                    return gst::PadProbeReturn::Ok;
+                }
                 if let Some(buffer) = info.buffer_mut() {
                     let frame_pts_ns = buffer.pts().map(|pts| pts.nseconds());
                     let buffer = buffer.make_mut();
                     match buffer.map_writable() {
                         Ok(mut map) => {
-                            if let Ok(mut renderer) = renderer_for_probe.lock() {
+                            if overlay_active {
+                                if let Ok(mut renderer) = renderer_for_probe.lock() {
                                 if let Err(err) = renderer.composite_bgrx(map.as_mut_slice(), frame_pts_ns, state.as_ref()) {
                                     warn!(feed_id = %feed_id, overlay = %overlay_for_probe, "wgpu compositor failed: {err:#}");
+                                }
                                 }
                             }
                             if let Some(preview) = &preview_for_probe {
@@ -986,6 +1066,16 @@ fn install_wgpu_overlay_probes(
     })
 }
 
+fn overlay_render_state_needs_frame_mutation(state: Option<&TextOverlayRenderState>) -> bool {
+    state.is_some_and(|state| {
+        state.sunny_cat
+            || (!state.silent && !state.text.trim().is_empty())
+            || !state.clock_text.trim().is_empty()
+    })
+}
+
+const FRAME_PREVIEW_INTERVAL: Duration = Duration::from_millis(66);
+
 struct FramePreviewWriter {
     path: PathBuf,
     source_width: u32,
@@ -1005,11 +1095,7 @@ impl FramePreviewWriter {
 
     fn maybe_write(&mut self, frame: &[u8]) -> Result<()> {
         let now = Instant::now();
-        if self
-            .last_write
-            .map(|last| now.saturating_duration_since(last) < Duration::from_millis(66))
-            .unwrap_or(false)
-        {
+        if !self.write_due_at(now) {
             return Ok(());
         }
         let width = usize::try_from(self.source_width).unwrap_or(0);
@@ -1018,9 +1104,19 @@ impl FramePreviewWriter {
         if width == 0 || height == 0 || frame.len() < expected {
             return Ok(());
         }
-        write_bgrx_preview_jpeg(&self.path, frame, width, height)?;
         self.last_write = Some(now);
+        write_bgrx_preview_jpeg(&self.path, frame, width, height)?;
         Ok(())
+    }
+
+    fn write_due(&self) -> bool {
+        self.write_due_at(Instant::now())
+    }
+
+    fn write_due_at(&self, now: Instant) -> bool {
+        self.last_write
+            .map(|last| now.saturating_duration_since(last) >= FRAME_PREVIEW_INTERVAL)
+            .unwrap_or(true)
     }
 }
 
@@ -1075,10 +1171,12 @@ fn safe_preview_id(value: &str) -> String {
 
 fn ticker_state_done(state: &TextOverlayRenderState) -> bool {
     let frame_width = f64::from(state.frame_width.max(1));
-    let pixels_per_second = f64::from(state.speed_px_per_frame.max(1)) * state.draw_fps.max(1.0);
+    let pixels_per_second = crate::graphics::ticker_speed_px_per_second(state.speed_px_per_frame);
     let elapsed = state.started_at.elapsed().as_secs_f64();
     let x_px = frame_width + 1.0 - (elapsed * pixels_per_second);
-    x_px < -state.text_width_px.max(1.0)
+    let text_width_px =
+        ticker_required_text_width_px(&state.source_text, state.font_size, state.text_width_px);
+    x_px < -ticker_exit_width_px(text_width_px, frame_width)
 }
 
 fn fixed_scroll_repeats_enabled(feed: &FeedConfig) -> bool {
@@ -1115,15 +1213,33 @@ fn ticker_x_absolute(
         return (0.5, false);
     }
     let frame_width = f64::from(feed.video.width.max(1));
-    let text_width = estimated_text_width_px(text, snapshot.font_size);
-    let pixels_per_second = f64::from(snapshot.ticker_speed_px_per_frame.max(1)) * feed_fps(feed);
+    let text_width = ticker_required_text_width_px(
+        text,
+        snapshot.font_size,
+        estimated_text_width_px(text, snapshot.font_size),
+    );
+    let pixels_per_second =
+        crate::graphics::ticker_speed_px_per_second(snapshot.ticker_speed_px_per_frame);
     let elapsed = ticker_elapsed_seconds(feed, started_at);
     let x_px = frame_width + 1.0 - (elapsed * pixels_per_second);
-    let done = x_px < -text_width;
+    let done = x_px < -ticker_exit_width_px(text_width, frame_width);
     if done {
         return (-1.0, true);
     }
     (x_px / frame_width, done)
+}
+
+fn ticker_exit_width_px(text_width_px: f64, frame_width_px: f64) -> f64 {
+    let tail_padding = (frame_width_px.max(1.0) * 0.15).clamp(96.0, 480.0);
+    text_width_px.max(1.0) + tail_padding
+}
+
+fn ticker_required_text_width_px(text: &str, font_size: u32, configured_width_px: f64) -> f64 {
+    let chars = text.chars().count().max(1) as f64;
+    configured_width_px
+        .max(estimated_text_width_px(text, font_size))
+        .max(chars * f64::from(font_size.max(16)) * 0.92)
+        .max(1.0)
 }
 
 fn ticker_elapsed_seconds(feed: &FeedConfig, started_at: Instant) -> f64 {
@@ -1490,6 +1606,8 @@ fn desired_audio_selector_mode_with_status(
         AudioSelectorMode::Priority
     } else if feeder_status.forces_silence() {
         AudioSelectorMode::Silence
+    } else if !feed.priority_input.routine_audio_enabled() {
+        AudioSelectorMode::Silence
     } else if !input_connected || mute_standby_routine_applies(feed) {
         AudioSelectorMode::Silence
     } else {
@@ -1635,11 +1753,9 @@ impl PriorityAudioFeeder {
     fn update(&mut self, audio: Option<&crate::state::PriorityAudio>) -> PriorityAudioSourceStatus {
         self.prune_completed();
         let Some(audio) = audio else {
-            if self
-                .active
-                .as_ref()
-                .is_some_and(|active| !self.active_ready_to_release(active))
-            {
+            if self.active.as_ref().is_some_and(|active| {
+                active.source_status != "silence" && !self.active_ready_to_release(active)
+            }) {
                 return self.active_status();
             }
             self.stop();
@@ -1768,7 +1884,7 @@ impl PriorityAudioFeeder {
 
     fn active_ready_to_release(&self, active: &ActivePriorityAudioFeeder) -> bool {
         if active.source_status == "silence" {
-            return true;
+            return false;
         }
         if active.finished.load(Ordering::Relaxed) {
             return true;
@@ -1971,9 +2087,10 @@ fn publish_status(
     status_tx: &Option<mpsc::UnboundedSender<Value>>,
     feed: &FeedConfig,
     state_rx: &watch::Receiver<RuntimeState>,
+    no_signal: bool,
     mut data: Value,
 ) {
-    let compositor = crate::graphics::compositor_status(feed, &state_rx.borrow(), false);
+    let compositor = crate::graphics::compositor_status(feed, &state_rx.borrow(), no_signal);
     if let (Some(target), Some(source)) = (data.as_object_mut(), compositor.as_object()) {
         for (key, value) in source {
             target.insert(key.clone(), value.clone());
@@ -2103,6 +2220,7 @@ struct PlannedVideoRendition {
     standard: String,
     codec: String,
     bitrate_kbps: Option<u32>,
+    encoder: EncoderCodecSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2114,6 +2232,7 @@ struct PlannedAudioRendition {
     codec: String,
     bitrate_bps: i64,
     language: String,
+    encoder: EncoderCodecSettings,
 }
 
 impl GstPipelinePlan {
@@ -2176,7 +2295,7 @@ impl GstPipelinePlan {
              input-selector name=audio_selector sync-streams=true sync-mode=clock cache-buffers=false drop-backwards=true ! {queue} ! audioconvert ! audioresample ! audiorate ! audio/x-raw,rate=48000,layout=interleaved ! tee name=audio_tee \
              audiotestsrc wave=silence is-live=true do-timestamp=true ! audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved ! {queue} ! audio_selector.sink_0 \
              {audio_input} ! {audio_live_queue} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,layout=interleaved ! {queue} ! audio_selector.sink_1 \
-             appsrc name=priority_audio_src is-live=true block=true stream-type=stream format=time do-timestamp=true min-latency=0 max-latency={priority_max_latency} max-bytes={priority_max_bytes} ! {queue} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,layout=interleaved ! {queue} ! audio_selector.sink_2 \
+             appsrc name=priority_audio_src is-live=true block=false leaky-type=downstream stream-type=stream format=time do-timestamp=true min-latency=0 max-latency={priority_max_latency} max-bytes={priority_max_bytes} ! {queue} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,layout=interleaved ! {queue} ! audio_selector.sink_2 \
              {video_branches} \
              {audio_branches} \
              {mux} ! {queue} ! {}"
@@ -2268,6 +2387,12 @@ impl PlannedVideoRendition {
         video: &crate::config::VideoRenditionConfig,
         index: usize,
     ) -> Self {
+        let codec = video.codec_name(feed.output().vcodec.as_str()).to_string();
+        let encoder = if feed.encoder.video.applies_to(codec.as_str()) {
+            feed.encoder.video.clone()
+        } else {
+            EncoderCodecSettings::default()
+        };
         Self {
             id: video.id.clone(),
             program: video.program_number(index),
@@ -2279,8 +2404,10 @@ impl PlannedVideoRendition {
             interlaced: video.interlaced,
             field_order: video.field_order.clone(),
             standard: video.standard.clone(),
-            codec: video.codec_name(feed.output().vcodec.as_str()).to_string(),
-            bitrate_kbps: video.bitrate_kbps.or(feed.output().video_bitrate_kbps),
+            codec,
+            bitrate_kbps: encoder
+                .bitrate_or(video.bitrate_kbps.or(feed.output().video_bitrate_kbps)),
+            encoder,
         }
     }
 
@@ -2309,14 +2436,27 @@ impl PlannedAudioRendition {
         program: i32,
         audio_pid: i32,
     ) -> Self {
+        let codec = audio.codec_name(feed.output().acodec.as_str()).to_string();
+        let encoder = if feed.encoder.audio.applies_to(codec.as_str()) {
+            feed.encoder.audio.clone()
+        } else {
+            EncoderCodecSettings::default()
+        };
+        let fallback_bitrate_kbps =
+            u32::try_from(audio.bitrate_bps().saturating_div(1_000)).unwrap_or(192);
         Self {
             id: audio.id.clone(),
             program,
             audio_pid,
             channels: audio.channels(),
-            codec: audio.codec_name(feed.output().acodec.as_str()).to_string(),
-            bitrate_bps: audio.bitrate_bps(),
+            codec,
+            bitrate_bps: i64::from(
+                encoder
+                    .bitrate_or(Some(fallback_bitrate_kbps))
+                    .unwrap_or(fallback_bitrate_kbps),
+            ) * 1_000,
             language: audio.language.clone(),
+            encoder,
         }
     }
 
@@ -2343,10 +2483,11 @@ fn video_rendition_branch(
     let caps = video_caps_fragment(feed, video);
     let overlay_name = gst_element_name("cgen_overlay", &video.id, index);
     let encoder = video_encoder_fragment(
-        video.codec_name(feed.output().vcodec.as_str()),
-        video.bitrate_kbps.or(feed.output().video_bitrate_kbps),
+        planned.codec.as_str(),
+        planned.bitrate_kbps,
         video.interlaced,
         video.field_order.as_str(),
+        &planned.encoder,
     );
     let interlace = if video.interlaced {
         if top_field_first(video.field_order.as_str()) {
@@ -2376,7 +2517,8 @@ fn audio_rendition_branch(
         &format!("{}_p{}_pid{}", audio.id, audio.program, audio.audio_pid),
         index,
     );
-    let encoder = audio_encoder_fragment_bps(audio.codec.as_str(), audio.bitrate_bps);
+    let encoder =
+        audio_encoder_fragment_bps(audio.codec.as_str(), audio.bitrate_bps, &audio.encoder);
     let queue = queue_fragment(feed, QueueLeak::None);
     let leaky_queue = queue_fragment(feed, QueueLeak::Downstream);
     let mux_pad = mux_kind.audio_sink_pad(audio);
@@ -2605,31 +2747,33 @@ impl SinkFragment {
 }
 
 fn video_caps_fragment(feed: &FeedConfig, video: &crate::config::VideoRenditionConfig) -> String {
-    let output_framerate = gst_fraction(video.frame_rate_text(feed.video.fps.as_str()))
-        .unwrap_or_else(|| "30000/1001".to_string());
-    let framerate = if video.interlaced {
-        doubled_gst_fraction(output_framerate.as_str()).unwrap_or("60000/1001".to_string())
-    } else {
-        output_framerate
+    let caps = format!("video/x-raw,width={},height={}", video.width, video.height);
+    let Some(output_framerate) = gst_fraction(video.frame_rate_text(feed.video.fps.as_str()))
+    else {
+        return caps;
     };
-    format!(
-        "video/x-raw,width={},height={},framerate={framerate}",
-        video.width, video.height
-    )
+    let framerate = rendition_framerate_for_caps(output_framerate.as_str(), video.interlaced);
+    format!("{caps},framerate={framerate}")
 }
 
 fn source_video_caps_fragment(feed: &FeedConfig) -> String {
-    let output_framerate =
-        gst_fraction(feed.video.fps.as_str()).unwrap_or_else(|| "30000/1001".to_string());
-    let framerate = if feed.video.interlaced {
-        doubled_gst_fraction(output_framerate.as_str()).unwrap_or("60000/1001".to_string())
-    } else {
-        output_framerate
-    };
-    format!(
-        "video/x-raw,width={},height={},framerate={framerate}",
+    let caps = format!(
+        "video/x-raw,width={},height={}",
         feed.video.width, feed.video.height
-    )
+    );
+    let Some(output_framerate) = gst_fraction(feed.video.fps.as_str()) else {
+        return caps;
+    };
+    let framerate = rendition_framerate_for_caps(output_framerate.as_str(), feed.video.interlaced);
+    format!("{caps},framerate={framerate}")
+}
+
+fn rendition_framerate_for_caps(framerate: &str, interlaced: bool) -> String {
+    if interlaced {
+        doubled_gst_fraction(framerate).unwrap_or_else(|| framerate.to_string())
+    } else {
+        framerate.to_string()
+    }
 }
 
 fn video_encoder_fragment(
@@ -2637,10 +2781,15 @@ fn video_encoder_fragment(
     bitrate_kbps: Option<u32>,
     interlaced: bool,
     field_order: &str,
+    settings: &EncoderCodecSettings,
 ) -> String {
-    let bitrate = bitrate_kbps.unwrap_or(12_000).saturating_mul(1_000);
+    let bitrate = settings
+        .bitrate_or(bitrate_kbps)
+        .unwrap_or(12_000)
+        .saturating_mul(1_000);
     match codec.trim().to_ascii_lowercase().as_str() {
         "mpeg2video" | "mpeg2" | "avenc_mpeg2video" => {
+            let gop = settings.gop.unwrap_or(15).clamp(1, 600);
             let interlace_flags = if interlaced {
                 let field_order = if top_field_first(field_order) {
                     "tt"
@@ -2653,12 +2802,24 @@ fn video_encoder_fragment(
             } else {
                 " field-order=progressive".to_string()
             };
-            format!("avenc_mpeg2video bitrate={bitrate} gop-size=15 qos=true{interlace_flags}")
+            format!("avenc_mpeg2video bitrate={bitrate} gop-size={gop} qos=true{interlace_flags}")
         }
-        "h264" | "avc" | "x264" | "libx264" | "x264enc" => format!(
-            "x264enc tune=zerolatency speed-preset=ultrafast bitrate={} qos=true",
-            bitrate / 1_000
-        ),
+        "h264" | "avc" | "x264" | "libx264" | "x264enc" => {
+            let preset = video_encoder_preset(settings.preset.as_str(), "ultrafast");
+            let tune = video_encoder_tune(settings.tune.as_str(), "zerolatency");
+            let keyint = settings
+                .gop
+                .map(|value| format!(" key-int-max={}", value.clamp(1, 600)))
+                .unwrap_or_default();
+            let bframes = settings
+                .bframes
+                .map(|value| format!(" bframes={}", value.min(16)))
+                .unwrap_or_default();
+            format!(
+                "x264enc tune={tune} speed-preset={preset} bitrate={} qos=true{keyint}{bframes}",
+                bitrate / 1_000
+            )
+        }
         "avenc_h264" | "h264_libav" => format!("avenc_h264 bitrate={bitrate}"),
         "h264_amf" | "amf_h264" | "amfh264enc" => {
             format!("amfh264enc bitrate={} qos=true", bitrate / 1_000)
@@ -2674,9 +2835,21 @@ fn video_encoder_fragment(
         }
         "openh264" | "h264_openh264" | "openh264enc" => format!("openh264enc bitrate={bitrate}"),
         "h265" | "hevc" | "x265" | "libx265" | "x265enc" => {
+            let preset = video_encoder_preset(settings.preset.as_str(), "ultrafast");
+            let tune = video_encoder_tune(settings.tune.as_str(), "zerolatency");
+            let mut options = vec![
+                format!("bframes={}", settings.bframes.unwrap_or(0).min(16)),
+                "rc-lookahead=0".to_string(),
+                "frame-threads=1".to_string(),
+                "pools=none".to_string(),
+            ];
+            if let Some(gop) = settings.gop {
+                options.push(format!("keyint={}", gop.clamp(1, 600)));
+            }
             format!(
-                "x265enc speed-preset=ultrafast tune=zerolatency bitrate={} option-string=\"bframes=0:rc-lookahead=0:frame-threads=1:pools=none\"",
-                bitrate / 1_000
+                "x265enc speed-preset={preset} tune={tune} bitrate={} option-string=\"{}\"",
+                bitrate / 1_000,
+                options.join(":")
             )
         }
         "h265_amf" | "hevc_amf" | "amf_h265" | "amf_hevc" | "amfh265enc" => {
@@ -2708,6 +2881,22 @@ fn generic_video_encoder_fragment(element: &str, bitrate: u32) -> String {
             format!("{name} bitrate={}", bitrate / 1_000)
         }
         name => name.to_string(),
+    }
+}
+
+fn video_encoder_preset(value: &str, fallback: &'static str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "ultrafast" | "superfast" | "veryfast" | "faster" | "fast" | "medium" | "slow"
+        | "slower" | "veryslow" => value.trim().to_ascii_lowercase(),
+        _ => fallback.to_string(),
+    }
+}
+
+fn video_encoder_tune(value: &str, fallback: &'static str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "zerolatency" | "film" | "animation" | "grain" | "stillimage" | "fastdecode" | "psnr"
+        | "ssim" => value.trim().to_ascii_lowercase(),
+        _ => fallback.to_string(),
     }
 }
 
@@ -2751,8 +2940,16 @@ fn video_encoder_element(codec: &str) -> String {
     }
 }
 
-fn audio_encoder_fragment_bps(codec: &str, bitrate_bps: i64) -> String {
+fn audio_encoder_fragment_bps(
+    codec: &str,
+    bitrate_bps: i64,
+    settings: &EncoderCodecSettings,
+) -> String {
     let bitrate = bitrate_bps.max(1);
+    let bitrate = settings
+        .bitrate_kbps
+        .map(|kbps| i64::from(kbps.max(1)) * 1_000)
+        .unwrap_or(bitrate);
     match codec.trim().to_ascii_lowercase().as_str() {
         "ac3" | "avenc_ac3" => format!("avenc_ac3 bitrate={bitrate}"),
         "eac3" | "e-ac3" | "e_ac3" | "enhanced_ac3" | "enhanced-ac3" | "avenc_eac3" => {
@@ -2868,9 +3065,9 @@ fn gst_quote(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{
-        AudioConfig, AudioRenditionConfig, BannerConfig, ClockConfig, EndpointConfig, FeedConfig,
-        GraphicsConfig, LadderConfig, PriorityInputConfig, StandbyConfig, StateConfig, SyncConfig,
-        TextConfig, VideoConfig, VideoRenditionConfig,
+        AudioConfig, AudioRenditionConfig, BannerConfig, ClockConfig, EncoderCodecSettings,
+        EndpointConfig, FeedConfig, GraphicsConfig, LadderConfig, PriorityInputConfig,
+        StandbyConfig, StateConfig, SyncConfig, TextConfig, VideoConfig, VideoRenditionConfig,
     };
 
     #[test]
@@ -2922,7 +3119,7 @@ mod tests {
         assert!(plan.description.contains("audiotestsrc wave=silence"));
         assert!(plan.description.contains("appsrc name=priority_audio_src"));
         assert!(plan.description.contains(
-            "appsrc name=priority_audio_src is-live=true block=true stream-type=stream format=time do-timestamp=true min-latency=0 max-latency=240000000"
+            "appsrc name=priority_audio_src is-live=true block=false leaky-type=downstream stream-type=stream format=time do-timestamp=true min-latency=0 max-latency=240000000"
         ));
         assert!(plan.description.contains("audio_selector.sink_0"));
         assert!(plan.description.contains("audio_selector.sink_1"));
@@ -2987,6 +3184,28 @@ mod tests {
         ));
         assert!(plan.description.contains("latency=320000000"));
         assert!(plan.description.contains("max-bytes=368640"));
+    }
+
+    #[test]
+    fn source_fps_omits_forced_ntsc_framerate_caps() {
+        let mut feed = test_feed();
+        feed.video.fps = "source".to_string();
+        feed.video.interlaced = false;
+        feed.ladder.videos[0].fps = "source".to_string();
+        feed.ladder.videos[0].interlaced = false;
+
+        assert_eq!(
+            source_video_caps_fragment(&feed),
+            "video/x-raw,width=1920,height=1080"
+        );
+        assert_eq!(
+            video_caps_fragment(&feed, &feed.ladder.videos[0]),
+            "video/x-raw,width=1920,height=1080"
+        );
+        let plan = GstPipelinePlan::from_feed(&feed).expect("plan");
+
+        assert!(!plan.description.contains("framerate=30000/1001"));
+        assert!(!plan.description.contains("framerate=60000/1001"));
     }
 
     #[test]
@@ -3098,7 +3317,7 @@ mod tests {
 
         assert!(
             plan.description
-                .contains("x265enc speed-preset=ultrafast bitrate=12000"),
+                .contains("x265enc speed-preset=ultrafast tune=zerolatency bitrate=12000"),
             "HEVC selection should not fall back to x264: {}",
             plan.description
         );
@@ -3106,6 +3325,36 @@ mod tests {
         assert!(plan.required_elements.contains(&"x265enc".to_string()));
         assert!(plan.required_elements.contains(&"avenc_eac3".to_string()));
         assert!(!plan.required_elements.contains(&"x264enc".to_string()));
+    }
+
+    #[test]
+    fn gstreamer_plan_applies_companion_encoder_settings() {
+        let mut feed = test_feed();
+        feed.program_output.vcodec = "x264enc".to_string();
+        feed.program_output.acodec = "avenc_ac3".to_string();
+        feed.ladder.videos[0].vcodec = "x264enc".to_string();
+        feed.ladder.audios[0].acodec = "avenc_ac3".to_string();
+        feed.encoder.video = EncoderCodecSettings {
+            codec: "x264enc".to_string(),
+            bitrate_kbps: Some(7_000),
+            gop: Some(30),
+            bframes: Some(2),
+            preset: "veryfast".to_string(),
+            tune: "zerolatency".to_string(),
+            ..Default::default()
+        };
+        feed.encoder.audio = EncoderCodecSettings {
+            codec: "avenc_ac3".to_string(),
+            bitrate_kbps: Some(256),
+            ..Default::default()
+        };
+
+        let plan = GstPipelinePlan::from_feed(&feed).expect("plan");
+
+        assert!(plan.description.contains(
+            "x264enc tune=zerolatency speed-preset=veryfast bitrate=7000 qos=true key-int-max=30 bframes=2"
+        ));
+        assert!(plan.description.contains("avenc_ac3 bitrate=256000"));
     }
 
     #[test]
@@ -3489,6 +3738,23 @@ mod tests {
     }
 
     #[test]
+    fn priority_only_input_silences_when_no_priority_audio_is_live() {
+        let mut feed = test_feed();
+        feed.audio.mute_standby_routine = false;
+        feed.priority_input.audio_source = "priority".to_string();
+        let status = PriorityAudioSourceStatus {
+            status: "idle",
+            queue_id: None,
+            error: None,
+        };
+
+        assert_eq!(
+            desired_audio_selector_mode_with_status(&feed, true, &status),
+            AudioSelectorMode::Silence
+        );
+    }
+
+    #[test]
     fn priority_audio_without_path_forces_silence() {
         let mut feed = test_feed();
         feed.audio.mute_standby_routine = false;
@@ -3508,6 +3774,42 @@ mod tests {
         );
         assert!(priority_audio_active(&feed, &state));
     }
+
+    #[test]
+    fn priority_audio_missing_path_holds_silence_until_state_clears() {
+        gst::init().expect("gst init");
+        let appsrc = gst::ElementFactory::make("appsrc")
+            .build()
+            .expect("appsrc")
+            .downcast::<gst_app::AppSrc>()
+            .expect("appsrc type");
+        let mut feeder = PriorityAudioFeeder::new(
+            appsrc,
+            PathBuf::new(),
+            "CAP-IT-ALL".to_string(),
+            Duration::from_millis(250),
+        );
+        let audio = crate::state::PriorityAudio {
+            queue_id: "q-missing".to_string(),
+            audio_path: None,
+            duration_ms: Some(60_000),
+            sample_rate: 48_000,
+            channels: 2,
+            alert_packet: None,
+            banner_text: None,
+            background_color: None,
+            priority: None,
+            started_at: chrono::Utc::now(),
+        };
+
+        let first = feeder.update(Some(&audio));
+        assert_eq!(first.status, "silence");
+        let held = feeder.update(Some(&audio));
+        assert_eq!(held.status, "silence");
+        let cleared = feeder.update(None);
+        assert_eq!(cleared.status, "idle");
+    }
+
     #[test]
     fn pcm_timing_helpers_make_realtime_chunks() {
         assert_eq!(pcm_chunk_bytes(48_000, 2, 20), 3840);
@@ -3595,6 +3897,102 @@ mod tests {
         assert!(!retained.silent);
         assert_eq!(retained.source_text, "Native CGEN crawl should finish");
         assert_eq!(retained.visual_id, "crawl-1");
+    }
+
+    #[test]
+    fn reissued_same_banner_restarts_after_retained_clear() {
+        let feed = test_feed();
+        let mut state = RuntimeState::default();
+        let mut controller = TextOverlayController::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "signature": "crawl-1",
+                "feed_id": "CAP-IT-ALL",
+                "alerts": [{"message": "Same crawl should restart"}]
+            }
+        })));
+        let mut active = controller.next_state(&feed, &state, false, true);
+        let old_start = Instant::now() - Duration::from_secs(12);
+        controller.started_at = Some(old_start);
+        active.started_at = old_start;
+        controller.last = Some(active);
+
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": false,
+                "signature": "crawl-1",
+                "feed_id": "CAP-IT-ALL",
+                "alerts": []
+            }
+        })));
+        let retained = controller.next_state(&feed, &state, false, true);
+        assert!(!retained.silent);
+        controller.last = Some(retained);
+
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "signature": "crawl-1",
+                "feed_id": "CAP-IT-ALL",
+                "alerts": [{"message": "Same crawl should restart"}]
+            }
+        })));
+        let reissued = controller.next_state(&feed, &state, false, true);
+
+        assert!(!reissued.silent);
+        assert!(reissued.x_absolute > 1.0);
+        assert_eq!(reissued.visual_id, "crawl-1");
+    }
+
+    #[test]
+    fn operator_visual_override_clears_stale_ticker() {
+        let feed = test_feed();
+        let mut state = RuntimeState::default();
+        let mut controller = TextOverlayController::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "signature": "crawl-1",
+                "feed_id": "CAP-IT-ALL",
+                "alerts": [{"message": "Native CGEN crawl should not linger"}]
+            }
+        })));
+        let active = controller.next_state(&feed, &state, false, true);
+        controller.last = Some(active);
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": false,
+                "signature": "crawl-1",
+                "feed_id": "CAP-IT-ALL",
+                "alerts": []
+            }
+        })));
+        assert!(state.apply_event(&json!({
+            "type": "cgen.control",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "feed_id": "CAP-IT-ALL",
+                "action": "smpte_bars",
+                "smpte_bars": true
+            }
+        })));
+
+        let cleared = controller.next_state(&feed, &state, false, true);
+
+        assert!(cleared.silent);
+        assert_eq!(cleared.visual_mode, "smpte");
+        assert_eq!(cleared.text, "");
     }
 
     #[test]
@@ -3702,6 +4100,36 @@ mod tests {
     }
 
     #[test]
+    fn ticker_scroll_speed_ignores_output_fps() {
+        let mut feed = test_feed();
+        feed.video.fps = "60000/1001".to_string();
+        feed.banner.scroll_speed = 12;
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "CAP-IT-ALL",
+            "data": {
+                "active": true,
+                "feed_id": "CAP-IT-ALL",
+                "alerts": [{"message": "Wallclock crawl"}]
+            }
+        })));
+        let snapshot = crate::graphics::presentation_snapshot(&feed, &state, false);
+
+        let (x_absolute, silent) = ticker_x_absolute(
+            &feed,
+            &snapshot,
+            &snapshot.overlay_text,
+            Instant::now() - Duration::from_secs(1),
+        );
+
+        let x_px = x_absolute * f64::from(feed.video.width);
+        let expected = f64::from(feed.video.width) + 1.0 - (12.0 * 30.0);
+        assert!(!silent);
+        assert!((x_px - expected).abs() < 2.0);
+    }
+
+    #[test]
     fn ticker_done_state_is_stable_after_full_exit() {
         let feed = test_feed();
         let mut state = RuntimeState::default();
@@ -3730,6 +4158,53 @@ mod tests {
 
         assert_eq!((x1, silent1), (-1.0, true));
         assert_eq!((x2, silent2), (-1.0, true));
+    }
+
+    #[test]
+    fn publish_status_uses_no_signal_compositor_state() {
+        let mut feed = test_feed();
+        feed.standby.mode = "banner".to_string();
+        feed.standby.text = "Standby Details Channel".to_string();
+        let (_state_tx, state_rx) = watch::channel(RuntimeState::default());
+        let (status_tx, mut status_rx) = mpsc::unbounded_channel();
+
+        publish_status(
+            &Some(status_tx),
+            &feed,
+            &state_rx,
+            true,
+            json!({"media_backend": "test"}),
+        );
+
+        let status = status_rx.try_recv().expect("status payload");
+        assert_eq!(status["no_signal"], true);
+        assert_eq!(status["visual_mode"], "banner");
+        assert_eq!(status["overlay_text"], "Standby Details Channel");
+    }
+
+    #[test]
+    fn idle_overlay_state_does_not_require_frame_mutation() {
+        let feed = test_feed();
+        let state = RuntimeState::default();
+        let idle = text_overlay_state(&feed, &state);
+
+        assert!(!overlay_render_state_needs_frame_mutation(None));
+        assert!(!overlay_render_state_needs_frame_mutation(Some(&idle)));
+
+        let mut clock = idle.clone();
+        clock.clock_text = "12:34".to_string();
+        assert!(overlay_render_state_needs_frame_mutation(Some(&clock)));
+    }
+
+    #[test]
+    fn preview_writer_due_check_rate_limits_attempts() {
+        let mut writer = FramePreviewWriter::new(PathBuf::from("unused.preview.jpg"), 1, 1);
+        let now = Instant::now();
+
+        assert!(writer.write_due_at(now));
+        writer.last_write = Some(now);
+        assert!(!writer.write_due_at(now + FRAME_PREVIEW_INTERVAL / 2));
+        assert!(writer.write_due_at(now + FRAME_PREVIEW_INTERVAL));
     }
 
     fn test_feed() -> FeedConfig {
@@ -3815,6 +4290,7 @@ mod tests {
             state: StateConfig::default(),
             standby: StandbyConfig::default(),
             sync: SyncConfig::default(),
+            encoder: Default::default(),
         }
     }
 }

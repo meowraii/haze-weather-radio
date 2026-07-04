@@ -1,6 +1,7 @@
 package productrender
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -514,6 +515,49 @@ func TestCAPPriorityBroadcastSuppressesEndedAlerts(t *testing.T) {
 	}
 	if !updates[0].Cancelled {
 		t.Fatalf("ended alert should emit cancellation cleanup metadata: %#v", updates[0])
+	}
+}
+
+func TestCAPMixedActiveAndEndedInfosDoNotCancelWholeAlert(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	activeRaw := testCAP("urn:test:mixed-active-ended", "Update", "active", "2099-06-15T21:30:00-06:00", false)
+	endedRaw := testCAP("urn:test:mixed-ended-info", "Update", "ended", "2099-06-15T21:30:00-06:00", true)
+	endedRaw = strings.ReplaceAll(endedRaw, "065522", "066999")
+	endedRaw = strings.ReplaceAll(endedRaw, "City of Saskatoon", "Off Feed County")
+	infoStart := strings.Index(endedRaw, "<info>")
+	infoEnd := strings.LastIndex(endedRaw, "</info>")
+	if infoStart < 0 || infoEnd < 0 {
+		t.Fatal("ended fixture info block not found")
+	}
+	endedInfo := endedRaw[infoStart : infoEnd+len("</info>")]
+	mixedRaw := strings.Replace(activeRaw, "</alert>", endedInfo+"\n</alert>", 1)
+	alert := parseTestAlert(t, mixedRaw)
+
+	if isExplicitCAPEnd(alert) {
+		t.Fatal("mixed active and ended CAP update was treated as a global cancellation")
+	}
+	if containsString(alertCoverageCodes(alert), "066999") {
+		t.Fatal("mixed active and ended CAP update used ended area codes for active coverage")
+	}
+	service := &Service{cfg: cfg}
+	updates, err := service.recordCAPAlert(alert, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 {
+		t.Fatalf("updates = %#v", updates)
+	}
+	if updates[0].Cancelled {
+		t.Fatalf("mixed active and ended CAP update emitted cancellation metadata: %#v", updates[0])
+	}
+	rows, err := cfg.Store.ListCAPArchives(context.Background(), "accepted", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].AlertID != alert.Identifier {
+		t.Fatalf("mixed active and ended CAP update was not retained as accepted: %#v", rows)
 	}
 }
 

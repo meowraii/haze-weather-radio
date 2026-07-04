@@ -66,6 +66,13 @@ type sipRegistrar struct {
 	responses chan sipResponse
 }
 
+type sipServerState struct {
+	calls        map[string]*sipCall
+	challenges   map[string]time.Time
+	callsMu      sync.Mutex
+	challengesMu sync.Mutex
+}
+
 type sipMediaOffer struct {
 	Host         string
 	Port         int
@@ -105,38 +112,67 @@ type sipCall struct {
 }
 
 func (s *Service) runSIP(ctx context.Context) error {
-	addr, err := net.ResolveUDPAddr("udp", s.cfg.IVR.SIP.Listen)
-	if err != nil {
-		return err
+	bindings := s.cfg.IVR.SIP.listenBindings()
+	if len(bindings) == 0 {
+		return fmt.Errorf("no SIP listen bindings configured")
 	}
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		return err
+	state := &sipServerState{calls: map[string]*sipCall{}, challenges: map[string]time.Time{}}
+	errCh := make(chan error, len(bindings))
+	conns := make([]*net.UDPConn, 0, len(bindings))
+	for index, binding := range bindings {
+		addr, err := net.ResolveUDPAddr("udp", binding.Addr)
+		if err != nil {
+			return err
+		}
+		conn, err := net.ListenUDP("udp", addr)
+		if err != nil {
+			for _, opened := range conns {
+				_ = opened.Close()
+			}
+			return err
+		}
+		conns = append(conns, conn)
+		domainSuffix := ""
+		if binding.Domain != "" {
+			domainSuffix = " domain=" + binding.Domain
+		}
+		log.Printf("IVR SIP listening on %s%s", conn.LocalAddr(), domainSuffix)
+		var registrar *sipRegistrar
+		if index == 0 && s.cfg.IVR.SIP.Registration.Enabled {
+			registrar = newSIPRegistrar(s, conn, conn.LocalAddr())
+			s.sipDebugf("registrar enabled listen=%s server=%s domain=%s username=%s contact_user=%s public_host=%s",
+				conn.LocalAddr(),
+				s.cfg.IVR.SIP.Registration.Server,
+				s.cfg.IVR.SIP.Registration.Domain,
+				s.cfg.IVR.SIP.Registration.Username,
+				s.cfg.IVR.SIP.Registration.ContactUser,
+				s.cfg.IVR.SIP.PublicHost,
+			)
+			go registrar.run(ctx)
+		}
+		go func(listener sipListenBinding, udpConn *net.UDPConn, sipRegistrar *sipRegistrar) {
+			errCh <- s.runSIPListener(ctx, listener, udpConn, state, sipRegistrar)
+		}(binding, conn, registrar)
 	}
-	defer conn.Close()
-	log.Printf("IVR SIP listening on %s", s.cfg.IVR.SIP.Listen)
-
 	go func() {
 		<-ctx.Done()
-		_ = conn.Close()
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
 	}()
-
-	calls := map[string]*sipCall{}
-	challenges := map[string]time.Time{}
-	var callsMu sync.Mutex
-	var registrar *sipRegistrar
-	if s.cfg.IVR.SIP.Registration.Enabled {
-		registrar = newSIPRegistrar(s, conn, conn.LocalAddr())
-		s.sipDebugf("registrar enabled listen=%s server=%s domain=%s username=%s contact_user=%s public_host=%s",
-			conn.LocalAddr(),
-			s.cfg.IVR.SIP.Registration.Server,
-			s.cfg.IVR.SIP.Registration.Domain,
-			s.cfg.IVR.SIP.Registration.Username,
-			s.cfg.IVR.SIP.Registration.ContactUser,
-			s.cfg.IVR.SIP.PublicHost,
-		)
-		go registrar.run(ctx)
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-errCh:
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+		return err
 	}
+}
+
+func (s *Service) runSIPListener(ctx context.Context, binding sipListenBinding, conn *net.UDPConn, state *sipServerState, registrar *sipRegistrar) error {
+	defer conn.Close()
 	buffer := make([]byte, 16384)
 	for {
 		n, remote, err := conn.ReadFromUDP(buffer)
@@ -162,6 +198,10 @@ func (s *Service) runSIP(ctx context.Context) error {
 			_, _ = conn.WriteToUDP([]byte(sipReply("403 Forbidden", request.Headers, "Warning: 399 haze \"SIP source is not allowed\"\r\n")), remote)
 			continue
 		}
+		if !s.sipDomainAllowed(request, binding.Domain) {
+			_, _ = conn.WriteToUDP([]byte(sipReply("404 Not Found", request.Headers, "Warning: 399 haze \"SIP domain is not served here\"\r\n")), remote)
+			continue
+		}
 		switch request.Method {
 		case "OPTIONS":
 			_, _ = conn.WriteToUDP([]byte(sipReply("200 OK", request.Headers, "Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, INFO\r\nAccept: application/sdp\r\n")), remote)
@@ -170,55 +210,58 @@ func (s *Service) runSIP(ctx context.Context) error {
 				_, _ = conn.WriteToUDP([]byte(sipReply("400 Bad Request", request.Headers, "Warning: 399 haze \"missing Call-ID\"\r\n")), remote)
 				continue
 			}
-			if ok, status, extra := s.sipAuthorizeInvite(request, challenges); !ok {
+			state.challengesMu.Lock()
+			ok, status, extra := s.sipAuthorizeInvite(request, state.challenges)
+			state.challengesMu.Unlock()
+			if !ok {
 				_, _ = conn.WriteToUDP([]byte(sipReply(status, request.Headers, extra)), remote)
 				continue
 			}
-			callsMu.Lock()
-			activeCalls := len(calls)
-			if calls[callID] != nil {
+			state.callsMu.Lock()
+			activeCalls := len(state.calls)
+			if state.calls[callID] != nil {
 				activeCalls--
 			}
 			if !s.sipCanAcceptCall(activeCalls) {
-				callsMu.Unlock()
+				state.callsMu.Unlock()
 				_, _ = conn.WriteToUDP([]byte(sipReply("486 Busy Here", request.Headers, "Warning: 399 haze \"too many active IVR calls\"\r\n")), remote)
 				continue
 			}
-			callsMu.Unlock()
+			state.callsMu.Unlock()
 			call, response := s.acceptSIPInvite(ctx, request, remote, conn, conn.LocalAddr())
 			_, _ = conn.WriteToUDP([]byte(response), remote)
 			if call == nil {
 				continue
 			}
-			callsMu.Lock()
-			if existing := calls[callID]; existing != nil {
+			state.callsMu.Lock()
+			if existing := state.calls[callID]; existing != nil {
 				existing.close()
 			}
-			calls[callID] = call
-			callsMu.Unlock()
+			state.calls[callID] = call
+			state.callsMu.Unlock()
 			go func(id string, c *sipCall) {
 				c.run()
-				callsMu.Lock()
-				if calls[id] == c {
-					delete(calls, id)
+				state.callsMu.Lock()
+				if state.calls[id] == c {
+					delete(state.calls, id)
 				}
-				callsMu.Unlock()
+				state.callsMu.Unlock()
 			}(callID, call)
 		case "ACK":
 		case "BYE", "CANCEL":
-			callsMu.Lock()
-			call := calls[callID]
-			delete(calls, callID)
-			callsMu.Unlock()
+			state.callsMu.Lock()
+			call := state.calls[callID]
+			delete(state.calls, callID)
+			state.callsMu.Unlock()
 			if call != nil {
 				call.close()
 			}
 			_, _ = conn.WriteToUDP([]byte(sipReply("200 OK", request.Headers, "")), remote)
 		case "INFO":
 			if digit := sipInfoDigit(request.Body); digit != "" {
-				callsMu.Lock()
-				call := calls[callID]
-				callsMu.Unlock()
+				state.callsMu.Lock()
+				call := state.calls[callID]
+				state.callsMu.Unlock()
 				if call != nil {
 					call.pushDigit(digit)
 				}
@@ -1610,6 +1653,11 @@ func sipHostNameOnly(value string) string {
 	if host, _, err := net.SplitHostPort(value); err == nil {
 		return host
 	}
+	if colon := strings.LastIndex(value, ":"); colon > 0 {
+		if _, err := strconv.Atoi(value[colon+1:]); err == nil {
+			return value[:colon]
+		}
+	}
 	return value
 }
 
@@ -1920,6 +1968,20 @@ func (s *Service) sipSourceAllowed(remote *net.UDPAddr) bool {
 			continue
 		}
 		if ip := net.ParseIP(source); ip != nil && ip.Equal(remote.IP) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) sipDomainAllowed(request sipRequest, domain string) bool {
+	domain = normalizeSIPDomain(domain)
+	if domain == "" {
+		return true
+	}
+	for _, value := range []string{request.URI, sipHeader(request.Headers, "to")} {
+		host := normalizeSIPDomain(sipHostNameOnly(sipContactURI(value)))
+		if host == domain {
 			return true
 		}
 	}

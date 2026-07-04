@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const mediaServiceWebRTCOfferTimeout = 1500 * time.Millisecond
+
 func (s *Server) mediaServiceWebRTCAnswer(ctx context.Context, payload map[string]any) (map[string]any, bool) {
 	baseURL := mediaServiceBaseURL(s.config)
 	return mediaServiceWebRTCAnswerFromBase(ctx, baseURL, payload)
@@ -23,7 +25,9 @@ func mediaServiceWebRTCAnswerFromBase(ctx context.Context, baseURL string, paylo
 	if err != nil {
 		return nil, false
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/webrtc/offer", bytes.NewReader(raw))
+	offerCtx, cancel := context.WithTimeout(ctx, mediaServiceWebRTCOfferTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(offerCtx, http.MethodPost, baseURL+"/api/v1/webrtc/offer", bytes.NewReader(raw))
 	if err != nil {
 		return nil, false
 	}

@@ -23,6 +23,8 @@ const fontPreview = document.getElementById('cgenFontPreview');
 const fontPicker = document.getElementById('cgenFontPicker');
 const fontPickerLabel = document.getElementById('cgenFontPickerLabel');
 const fontMenu = document.getElementById('cgenFontMenu');
+const cgenTabs = Array.from(document.querySelectorAll('[data-cgen-tab]'));
+const cgenTabPanels = Array.from(document.querySelectorAll('[data-cgen-panel]'));
 
 const fields = {
     id: document.getElementById('cgenID'),
@@ -33,12 +35,22 @@ const fields = {
     programInputFormat: document.getElementById('cgenProgramInputFormat'),
     priorityFeed: document.getElementById('cgenPriorityFeed'),
     audioSource: document.getElementById('cgenAudioSource'),
+    audioIdle: document.getElementById('cgenAudioIdle'),
     muteStandbyRoutine: document.getElementById('cgenMuteStandbyRoutine'),
     programOutput: document.getElementById('cgenProgramOutput'),
     outputFormat: document.getElementById('cgenOutputFormat'),
     vcodec: document.getElementById('cgenVCodec'),
     acodec: document.getElementById('cgenACodec'),
     hdBitrate: document.getElementById('cgenHdBitrate'),
+    videoGop: document.getElementById('cgenVideoGop'),
+    videoBFrames: document.getElementById('cgenVideoBFrames'),
+    videoPreset: document.getElementById('cgenVideoPreset'),
+    videoTune: document.getElementById('cgenVideoTune'),
+    videoProfile: document.getElementById('cgenVideoProfile'),
+    videoLevel: document.getElementById('cgenVideoLevel'),
+    audioEncoderBitrate: document.getElementById('cgenAudioEncoderBitrate'),
+    audioProfile: document.getElementById('cgenAudioProfile'),
+    audioLevel: document.getElementById('cgenAudioLevel'),
     p720Enabled: document.getElementById('cgenP720Enabled'),
     p720Bitrate: document.getElementById('cgenP720Bitrate'),
     sdEnabled: document.getElementById('cgenSdEnabled'),
@@ -47,6 +59,25 @@ const fields = {
     surroundBitrate: document.getElementById('cgenSurroundBitrate'),
     stereoEnabled: document.getElementById('cgenStereoEnabled'),
     stereoBitrate: document.getElementById('cgenStereoBitrate'),
+    serviceName: document.getElementById('cgenServiceName'),
+    providerName: document.getElementById('cgenProviderName'),
+    serviceID: document.getElementById('cgenServiceID'),
+    transportStreamID: document.getElementById('cgenTransportStreamID'),
+    hdProgram: document.getElementById('cgenHdProgram'),
+    hdVideoPID: document.getElementById('cgenHdVideoPID'),
+    hdPmtPID: document.getElementById('cgenHdPmtPID'),
+    p720Program: document.getElementById('cgenP720Program'),
+    p720VideoPID: document.getElementById('cgenP720VideoPID'),
+    p720PmtPID: document.getElementById('cgenP720PmtPID'),
+    sdProgram: document.getElementById('cgenSdProgram'),
+    sdVideoPID: document.getElementById('cgenSdVideoPID'),
+    sdPmtPID: document.getElementById('cgenSdPmtPID'),
+    stereoProgram: document.getElementById('cgenStereoProgram'),
+    stereoAudioPID: document.getElementById('cgenStereoAudioPID'),
+    stereoPmtPID: document.getElementById('cgenStereoPmtPID'),
+    surroundProgram: document.getElementById('cgenSurroundProgram'),
+    surroundAudioPID: document.getElementById('cgenSurroundAudioPID'),
+    surroundPmtPID: document.getElementById('cgenSurroundPmtPID'),
     syncHardReset: document.getElementById('cgenSyncHardReset'),
     syncMaxAudioFrames: document.getElementById('cgenSyncMaxAudioFrames'),
     syncSourceBuffer: document.getElementById('cgenSyncSourceBuffer'),
@@ -112,6 +143,46 @@ function setText(element, text) {
     if (element && element.textContent !== text) {
         element.textContent = text;
     }
+}
+
+function setCgenTab(tabID) {
+    const activeID = cgenTabs.some((tab) => tab.dataset.cgenTab === tabID)
+        ? tabID
+        : (cgenTabs[0]?.dataset.cgenTab || '');
+    for (const tab of cgenTabs) {
+        const active = tab.dataset.cgenTab === activeID;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', active ? 'true' : 'false');
+        tab.tabIndex = active ? 0 : -1;
+    }
+    for (const panel of cgenTabPanels) {
+        panel.hidden = panel.dataset.cgenPanel !== activeID;
+    }
+}
+
+function bindCgenTabs() {
+    if (!cgenTabs.length || !cgenTabPanels.length) return;
+    for (const tab of cgenTabs) {
+        tab.addEventListener('click', () => setCgenTab(tab.dataset.cgenTab || ''));
+        tab.addEventListener('keydown', (event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            const current = cgenTabs.indexOf(tab);
+            let next = current;
+            if (event.key === 'Home') {
+                next = 0;
+            } else if (event.key === 'End') {
+                next = cgenTabs.length - 1;
+            } else {
+                const delta = event.key === 'ArrowRight' ? 1 : -1;
+                next = (current + delta + cgenTabs.length) % cgenTabs.length;
+            }
+            const nextTab = cgenTabs[next];
+            setCgenTab(nextTab.dataset.cgenTab || '');
+            nextTab.focus();
+        });
+    }
+    setCgenTab(cgenTabs.find((tab) => tab.getAttribute('aria-selected') === 'true')?.dataset.cgenTab);
 }
 
 function scheduleRender({ preview: needsPreview = true, meta: needsMeta = true } = {}) {
@@ -203,23 +274,54 @@ function readEditor() {
         acodec: value('acodec', 'avenc_ac3'),
         video_bitrate_kbps: value('hdBitrate', '12000'),
         audio_bitrate_kbps: value('stereoBitrate', '192'),
+        video_encoder_codec: value('vcodec', 'avenc_mpeg2video'),
+        video_encoder_bitrate_kbps: value('hdBitrate', '12000'),
+        video_gop: value('videoGop', '15'),
+        video_bframes: value('videoBFrames', '0'),
+        video_preset: value('videoPreset'),
+        video_tune: value('videoTune'),
+        video_profile: value('videoProfile'),
+        video_level: value('videoLevel'),
+        audio_encoder_codec: value('acodec', 'avenc_ac3'),
+        audio_encoder_bitrate_kbps: value('audioEncoderBitrate', value('stereoBitrate', '192')),
+        audio_profile: value('audioProfile'),
+        audio_level: value('audioLevel'),
+        service_name: value('serviceName'),
+        provider_name: value('providerName'),
+        service_id: value('serviceID'),
+        transport_stream_id: value('transportStreamID'),
         hd_enabled: 'auto',
         hd_bitrate_kbps: value('hdBitrate', '12000'),
+        hd_program: value('hdProgram', '1'),
+        hd_video_pid: value('hdVideoPID', '256'),
+        hd_pmt_pid: value('hdPmtPID', '4096'),
         p720_enabled: value('p720Enabled'),
         p720_bitrate_kbps: value('p720Bitrate', '8000'),
+        p720_program: value('p720Program', '2'),
+        p720_video_pid: value('p720VideoPID', '288'),
+        p720_pmt_pid: value('p720PmtPID', '4097'),
         sd_enabled: value('sdEnabled'),
         sd_bitrate_kbps: value('sdBitrate', '5000'),
+        sd_program: value('sdProgram', '3'),
+        sd_video_pid: value('sdVideoPID', '320'),
+        sd_pmt_pid: value('sdPmtPID', '4098'),
         surround_enabled: value('surroundEnabled'),
         surround_bitrate_kbps: value('surroundBitrate', '384'),
+        surround_program: value('surroundProgram', '1'),
+        surround_audio_pid: value('surroundAudioPID', '258'),
+        surround_pmt_pid: value('surroundPmtPID', '4096'),
         stereo_enabled: value('stereoEnabled'),
         stereo_bitrate_kbps: value('stereoBitrate', '192'),
+        stereo_program: value('stereoProgram', '1'),
+        stereo_audio_pid: value('stereoAudioPID', '257'),
+        stereo_pmt_pid: value('stereoPmtPID', '4096'),
         width: value('width', '1920'),
         height: value('height', '1080'),
         fps: value('fps', '30000/1001'),
         interlaced: value('interlaced'),
         field_order: value('fieldOrder', 'tff'),
         standard: value('standard', 'atsc'),
-        audio_idle: 'source',
+        audio_idle: value('audioIdle', 'source'),
         audio_alert_mode: 'replace',
         mute_standby_routine: value('muteStandbyRoutine', true),
         banner_mode: value('bannerMode', 'auto'),
@@ -268,20 +370,49 @@ function writeEditor(feed) {
     setValue('programInputFormat', feed.program_input_format || 'mpegts');
     setValue('priorityFeed', feed.priority_feed_id || feed.id);
     setValue('audioSource', feed.audio_source || 'priority');
+    setValue('audioIdle', feed.audio_idle || 'source');
     setValue('muteStandbyRoutine', feed.mute_standby_routine !== false);
     setValue('programOutput', feed.program_output_url || '');
     setValue('outputFormat', feed.program_output_format || 'mpegts');
     setValue('vcodec', feed.vcodec || 'avenc_mpeg2video');
     setValue('acodec', feed.acodec || 'avenc_ac3');
     setValue('hdBitrate', feed.hd_bitrate_kbps || feed.video_bitrate_kbps || '12000');
+    setValue('videoGop', feed.video_gop || '15');
+    setValue('videoBFrames', feed.video_bframes || '0');
+    setValue('videoPreset', feed.video_preset || '');
+    setValue('videoTune', feed.video_tune || '');
+    setValue('videoProfile', feed.video_profile || '');
+    setValue('videoLevel', feed.video_level || '');
+    setValue('audioEncoderBitrate', feed.audio_encoder_bitrate_kbps || feed.stereo_bitrate_kbps || feed.audio_bitrate_kbps || '192');
+    setValue('audioProfile', feed.audio_profile || '');
+    setValue('audioLevel', feed.audio_level || '');
+    setValue('serviceName', feed.service_name || '');
+    setValue('providerName', feed.provider_name || '');
+    setValue('serviceID', feed.service_id || '1');
+    setValue('transportStreamID', feed.transport_stream_id || '1');
+    setValue('hdProgram', feed.hd_program || '1');
+    setValue('hdVideoPID', feed.hd_video_pid || '256');
+    setValue('hdPmtPID', feed.hd_pmt_pid || '4096');
     setValue('p720Enabled', Boolean(feed.p720_enabled));
     setValue('p720Bitrate', feed.p720_bitrate_kbps || '8000');
+    setValue('p720Program', feed.p720_program || '2');
+    setValue('p720VideoPID', feed.p720_video_pid || '288');
+    setValue('p720PmtPID', feed.p720_pmt_pid || '4097');
     setValue('sdEnabled', Boolean(feed.sd_enabled));
     setValue('sdBitrate', feed.sd_bitrate_kbps || '5000');
+    setValue('sdProgram', feed.sd_program || '3');
+    setValue('sdVideoPID', feed.sd_video_pid || '320');
+    setValue('sdPmtPID', feed.sd_pmt_pid || '4098');
     setValue('surroundEnabled', feed.surround_enabled !== false);
     setValue('surroundBitrate', feed.surround_bitrate_kbps || '384');
+    setValue('surroundProgram', feed.surround_program || '1');
+    setValue('surroundAudioPID', feed.surround_audio_pid || '258');
+    setValue('surroundPmtPID', feed.surround_pmt_pid || '4096');
     setValue('stereoEnabled', feed.stereo_enabled !== false);
     setValue('stereoBitrate', feed.stereo_bitrate_kbps || feed.audio_bitrate_kbps || '192');
+    setValue('stereoProgram', feed.stereo_program || '1');
+    setValue('stereoAudioPID', feed.stereo_audio_pid || '257');
+    setValue('stereoPmtPID', feed.stereo_pmt_pid || '4096');
     setValue('syncHardReset', feed.sync_hard_reset_ms || '250');
     setValue('syncMaxAudioFrames', feed.sync_max_audio_frames_per_video || '8');
     setValue('syncSourceBuffer', feed.sync_source_buffer_ms || '240');
@@ -315,6 +446,7 @@ function writeEditor(feed) {
     setValue('clockX', feed.clock_x || '48');
     setValue('clockY', feed.clock_y || '48');
     setValue('clockFontSize', feed.clock_font_size || '30');
+    updateEncoderControlVisibility();
     scheduleRender();
     editorDirty = false;
 }
@@ -386,6 +518,7 @@ function populateCgenCatalogSelectors() {
     ], { font: true });
     renderFontPicker();
     updateFontPreview();
+    updateEncoderControlVisibility();
 }
 
 function updateFontPreview() {
@@ -395,6 +528,27 @@ function updateFontPreview() {
     fontPreview.textContent = 'The quick brown fox 0123456789';
     fontPreview.title = family;
     updateFontPickerSelection();
+}
+
+function updateEncoderControlVisibility() {
+    const videoCodec = String(fields.vcodec?.value || '').trim().toLowerCase();
+    const audioCodec = String(fields.acodec?.value || '').trim().toLowerCase();
+    const supportsPreset = /(?:x264|x265|h264|h265|hevc)/.test(videoCodec);
+    const supportsBFrames = /(?:x264|x265|h264|h265|hevc)/.test(videoCodec);
+    const supportsProfile = /(?:x264|x265|h264|h265|hevc|aac)/.test(videoCodec);
+    const videoControls = [
+        [fields.videoPreset, supportsPreset],
+        [fields.videoTune, supportsPreset],
+        [fields.videoBFrames, supportsBFrames],
+        [fields.videoProfile, supportsProfile],
+        [fields.videoLevel, supportsProfile],
+    ];
+    for (const [field, enabled] of videoControls) {
+        if (field) field.disabled = !enabled;
+    }
+    const audioAdvanced = /(?:aac|opus|ac3|eac3|mp2|mp3)/.test(audioCodec);
+    if (fields.audioProfile) fields.audioProfile.disabled = !audioAdvanced;
+    if (fields.audioLevel) fields.audioLevel.disabled = !audioAdvanced;
 }
 
 function fontCssStack(family) {
@@ -526,7 +680,8 @@ function renderMeta() {
     const diagnostics = runtime.pipeline_diagnostics && typeof runtime.pipeline_diagnostics === 'object' ? runtime.pipeline_diagnostics : {};
     setText(metaProgramInput, feed.program_input_url || '-');
     const standbyMute = feed.mute_standby_routine === false ? 'standby routine live' : 'standby routine muted';
-    setText(metaPriority, `${feed.priority_feed_id || feed.id || '-'} / ${feed.audio_source || 'priority'} / ${standbyMute}`);
+    const standbyAudio = feed.audio_idle === 'routine' ? 'feed routine standby' : 'program input standby';
+    setText(metaPriority, `${feed.priority_feed_id || feed.id || '-'} / ${feed.audio_source || 'priority'} / ${standbyAudio} / ${standbyMute}`);
     setText(metaOutput, feed.program_output_url || '-');
     if (metaRuntime) {
         const videoLive = runtime.input_video_connected === true || inputHealth.video_connected === true;
@@ -871,6 +1026,7 @@ function defaultFeed() {
         program_input_format: 'mpegts',
         priority_feed_id: '*',
         audio_source: 'priority',
+        audio_idle: 'source',
         mute_standby_routine: true,
         program_output_url: 'udp://239.0.0.2:9001?pkt_size=1316&buffer_size=1048576&reuse=1',
         program_output_format: 'mpegts',
@@ -878,16 +1034,47 @@ function defaultFeed() {
         acodec: 'avenc_ac3',
         video_bitrate_kbps: '12000',
         audio_bitrate_kbps: '192',
+        video_encoder_codec: 'avenc_mpeg2video',
+        video_encoder_bitrate_kbps: '12000',
+        video_gop: '15',
+        video_bframes: '0',
+        video_preset: '',
+        video_tune: '',
+        video_profile: '',
+        video_level: '',
+        audio_encoder_codec: 'avenc_ac3',
+        audio_encoder_bitrate_kbps: '192',
+        audio_profile: '',
+        audio_level: '',
+        service_name: 'Haze CGEN',
+        provider_name: 'Haze',
+        service_id: '1',
+        transport_stream_id: '1',
         hd_enabled: 'auto',
         hd_bitrate_kbps: '12000',
+        hd_program: '1',
+        hd_video_pid: '256',
+        hd_pmt_pid: '4096',
         p720_enabled: false,
         p720_bitrate_kbps: '8000',
+        p720_program: '2',
+        p720_video_pid: '288',
+        p720_pmt_pid: '4097',
         sd_enabled: false,
         sd_bitrate_kbps: '5000',
+        sd_program: '3',
+        sd_video_pid: '320',
+        sd_pmt_pid: '4098',
         surround_enabled: true,
         surround_bitrate_kbps: '384',
+        surround_program: '1',
+        surround_audio_pid: '258',
+        surround_pmt_pid: '4096',
         stereo_enabled: true,
         stereo_bitrate_kbps: '192',
+        stereo_program: '1',
+        stereo_audio_pid: '257',
+        stereo_pmt_pid: '4096',
         sync_hard_reset_ms: '250',
         sync_max_audio_frames_per_video: '8',
         sync_source_buffer_ms: '240',
@@ -980,6 +1167,7 @@ function addInstance() {
 export function initCgenView() {
     if (bound) return;
     bound = true;
+    bindCgenTabs();
     addButton.addEventListener('click', addInstance);
     saveButton.addEventListener('click', () => saveCgen().catch((error) => setStatus(error.message || 'Unable to save CGEN config.', 'err')));
     instanceSelect.addEventListener('change', () => {
@@ -992,11 +1180,13 @@ export function initCgenView() {
             editorDirty = true;
             scheduleRender();
             if (field === fields.font) updateFontPreview();
+            if (field === fields.vcodec || field === fields.acodec) updateEncoderControlVisibility();
         });
         field?.addEventListener('change', () => {
             editorDirty = true;
             scheduleRender();
             if (field === fields.font) updateFontPreview();
+            if (field === fields.vcodec || field === fields.acodec) updateEncoderControlVisibility();
         });
     });
     refreshFontsButton?.addEventListener('click', () => {

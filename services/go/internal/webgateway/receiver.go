@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,6 +24,11 @@ import (
 )
 
 const defaultReceiverBasePath = "/api/receiver/v1"
+const maxReceiverWebSocketMessageBytes = webRTCOfferMaxSDPLength + 16<<10
+const receiverStatusTextLimit = 48
+const receiverStatusMaxMillis = int64(24 * 60 * 60 * 1000)
+const receiverStatusMaxBytes = int64(1 << 50)
+const receiverStatusMaxCount = int64(1 << 40)
 
 type ReceiverManager struct {
 	config     Config
@@ -63,6 +69,8 @@ type receiverActiveConnection struct {
 	LastSeenAt       time.Time
 	LastMessageType  string
 	Transport        string
+	LastStatusAt     time.Time
+	Status           map[string]any
 }
 
 type receiverStore struct {
@@ -273,20 +281,35 @@ func (m *ReceiverManager) HandleSession(writer http.ResponseWriter, request *htt
 		receiverError(writer, http.StatusForbidden, err.Error())
 		return
 	}
+	now := time.Now().UTC()
+	response := map[string]any{
+		"feed_id": payload.FeedID,
+	}
+	if m.receiverCredentialRequired(payload.FeedID) {
+		cookie, err := m.createSessionCookieFromCredential(payload, now)
+		if err != nil {
+			receiverError(writer, http.StatusForbidden, err.Error())
+			return
+		}
+		response["cookie"] = cookie
+		response["expires_at"] = now.Add(m.cookieTTL())
+	}
 	wsURL := m.receiverWSURL(request)
 	separator := "?"
 	if strings.Contains(wsURL, "?") {
 		separator = "&"
 	}
-	writeJSON(writer, map[string]any{
-		"feed_id": payload.FeedID,
-		"ws_url":  wsURL + separator + "feed_id=" + payload.FeedID,
-	})
+	response["ws_url"] = wsURL + separator + "feed_id=" + payload.FeedID
+	writeJSON(writer, response)
 }
 
 func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *http.Request) {
 	if !m.Enabled() {
 		http.NotFound(writer, request)
+		return
+	}
+	if m.config.Webpanel.Receiver.RequireTLS && !requestIsSecure(request) {
+		receiverError(writer, http.StatusForbidden, "receiver TLS is required")
 		return
 	}
 	feedID := strings.TrimSpace(request.URL.Query().Get("feed_id"))
@@ -295,10 +318,17 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 	if cookieOK {
 		if feedID == "" {
 			feedID = cookie.FeedID
+		} else if feedID != cookie.FeedID {
+			receiverError(writer, http.StatusForbidden, "receiver cookie does not match feed")
+			return
 		}
 	}
 	if feedID == "" {
 		receiverError(writer, http.StatusBadRequest, "feed_id is required")
+		return
+	}
+	if m.receiverCredentialRequired(feedID) && !cookieOK {
+		receiverError(writer, http.StatusUnauthorized, "receiver credential is required")
 		return
 	}
 	transmitter, err := m.receiverTransmitter(feedID)
@@ -312,7 +342,10 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 	if err != nil {
 		return
 	}
-	defer connection.CloseNow()
+	defer func() {
+		_ = connection.CloseNow()
+	}()
+	connection.SetReadLimit(maxReceiverWebSocketMessageBytes)
 	ctx := request.Context()
 	activeID := m.registerActiveReceiver(feedID, cookie, cookieOK, request.RemoteAddr)
 	defer m.unregisterActiveReceiver(activeID)
@@ -333,14 +366,36 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 			continue
 		}
 		messageType := stringValue(message, "type")
+		if messageType == "receiver_status" {
+			m.updateActiveReceiverStatus(activeID, message)
+			continue
+		}
 		m.updateActiveReceiver(activeID, messageType, "")
 		if messageType == "webrtc_offer" {
 			m.updateActiveReceiver(activeID, messageType, "webrtc")
-			offerSDP := normalizeWebRTCOfferSDP(stringValue(message, "sdp"))
+			offerSDP := normalizeWebRTCOfferSDP(firstNonBlank(
+				stringValue(message, "sdp"),
+				stringValue(mapValue(message, "data"), "sdp"),
+			))
 			if offerSDP == "" {
 				_ = writeReceiverWS(ctx, connection, map[string]any{
 					"type":   "webrtc_error",
 					"detail": "sdp is required",
+				})
+				continue
+			}
+			if len(offerSDP) > webRTCOfferMaxSDPLength {
+				_ = writeReceiverWS(ctx, connection, map[string]any{
+					"type":   "webrtc_error",
+					"detail": "sdp is too long",
+				})
+				continue
+			}
+			preferredCodec := firstNonBlank(stringValue(message, "codec"), stringValue(message, "preferred_codec"))
+			if len(strings.TrimSpace(preferredCodec)) > webRTCOfferMaxCodecLength {
+				_ = writeReceiverWS(ctx, connection, map[string]any{
+					"type":   "webrtc_error",
+					"detail": "codec is too long",
 				})
 				continue
 			}
@@ -353,7 +408,6 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 				})
 				continue
 			}
-			preferredCodec := firstNonBlank(stringValue(message, "codec"), stringValue(message, "preferred_codec"))
 			if answer, ok := mediaServiceWebRTCAnswerFromBase(ctx, mediaServiceURL, map[string]any{
 				"feed_id":         feedID,
 				"sdp":             offerSDP,
@@ -451,6 +505,30 @@ func (m *ReceiverManager) updateActiveReceiver(id string, messageType string, tr
 	m.active[id] = active
 }
 
+func (m *ReceiverManager) updateActiveReceiverStatus(id string, message map[string]any) {
+	if id == "" {
+		return
+	}
+	status := sanitizeReceiverStatus(message)
+	now := time.Now().UTC()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	active, ok := m.active[id]
+	if !ok {
+		return
+	}
+	active.LastSeenAt = now
+	active.LastMessageType = "receiver_status"
+	if transport, _ := status["transport"].(string); transport != "" {
+		active.Transport = transport
+	}
+	if len(status) > 0 {
+		active.LastStatusAt = now
+		active.Status = status
+	}
+	m.active[id] = active
+}
+
 func (m *ReceiverManager) unregisterActiveReceiver(id string) {
 	if id == "" {
 		return
@@ -482,6 +560,12 @@ func (m *ReceiverManager) ActiveSnapshots() []map[string]any {
 			"last_message_type": active.LastMessageType,
 			"transport":         active.Transport,
 		})
+		if len(active.Status) > 0 {
+			snapshot := out[len(out)-1]
+			snapshot["last_status_at"] = active.LastStatusAt
+			snapshot["last_status_ms"] = now.Sub(active.LastStatusAt).Milliseconds()
+			snapshot["status"] = copyReceiverStatus(active.Status)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return fmt.Sprint(out[i]["connected_at"]) < fmt.Sprint(out[j]["connected_at"])
@@ -489,9 +573,195 @@ func (m *ReceiverManager) ActiveSnapshots() []map[string]any {
 	return out
 }
 
+func sanitizeReceiverStatus(message map[string]any) map[string]any {
+	nested, _ := message["status"].(map[string]any)
+	out := map[string]any{}
+	stringFields := map[string][]string{
+		"state":                   {"active", "buffering", "degraded", "error", "failed", "idle", "ok", "ready", "receiving", "rebuffering", "reconnecting", "stalled", "starting", "stopped", "stopping", "streaming"},
+		"transport":               {"webrtc"},
+		"reason_code":             {"ffmpeg_exited", "ffmpeg_output_not_started", "ffmpeg_output_stalled", "input_audio_not_started", "input_audio_stalled", "pifm_exited", "pifm_output_not_started", "pifm_output_stalled", "unknown", "webrtc_closed", "webrtc_failed"},
+		"codec":                   {"aac", "g722", "mp3", "opus", "pcma", "pcmu", "pcm16", "pcm_s16le", "raw", "raw_pcm16", "s16le"},
+		"audio_format":            {"aac", "mp3", "opus", "pcm16", "pcm_s16le", "raw", "raw_pcm16", "s16le"},
+		"webrtc_connection_state": {"closed", "connected", "connecting", "disconnected", "failed", "new", "unknown"},
+		"webrtc_ice_state":        {"checking", "closed", "completed", "connected", "disconnected", "failed", "new", "unknown"},
+	}
+	for key, allowed := range stringFields {
+		if value, ok := receiverStatusToken(receiverStatusValue(message, nested, key), allowed); ok {
+			out[key] = value
+		}
+	}
+	for _, key := range []string{
+		"audio_recent",
+		"ffmpeg_output_seen",
+		"ffmpeg_running",
+		"ffmpeg_stdin_seen",
+		"input_audio_seen",
+		"pifm_output_seen",
+		"pifm_running",
+	} {
+		if value, ok := receiverStatusBool(receiverStatusValue(message, nested, key)); ok {
+			out[key] = value
+		}
+	}
+	intFields := map[string]struct {
+		min int64
+		max int64
+	}{
+		"sample_rate":                 {8000, 384000},
+		"channels":                    {1, 8},
+		"bytes_received":              {0, receiverStatusMaxBytes},
+		"bytes_written":               {0, receiverStatusMaxBytes},
+		"chunks_received":             {0, receiverStatusMaxCount},
+		"chunks_written":              {0, receiverStatusMaxCount},
+		"frames_received":             {0, receiverStatusMaxCount},
+		"frames_written":              {0, receiverStatusMaxCount},
+		"underruns":                   {0, receiverStatusMaxCount},
+		"buffer_ms":                   {0, receiverStatusMaxMillis},
+		"jitter_buffer_ms":            {0, receiverStatusMaxMillis},
+		"dropped_ms":                  {0, receiverStatusMaxMillis},
+		"last_audio_ms":               {0, receiverStatusMaxMillis},
+		"idle_ms":                     {0, receiverStatusMaxMillis},
+		"input_audio_age_ms":          {0, receiverStatusMaxMillis},
+		"input_audio_idle_ms":         {0, receiverStatusMaxMillis},
+		"ffmpeg_stdin_idle_ms":        {0, receiverStatusMaxMillis},
+		"ffmpeg_output_idle_ms":       {0, receiverStatusMaxMillis},
+		"pifm_output_idle_ms":         {0, receiverStatusMaxMillis},
+		"max_chunk_gap_ms":            {0, receiverStatusMaxMillis},
+		"max_drain_ms":                {0, receiverStatusMaxMillis},
+		"max_ffmpeg_stdin_drain_ms":   {0, receiverStatusMaxMillis},
+		"max_pifm_stdin_drain_ms":     {0, receiverStatusMaxMillis},
+		"pacing_lag_ms":               {0, receiverStatusMaxMillis},
+		"ffmpeg_returncode":           {-255, 255},
+		"pifm_returncode":             {-255, 255},
+		"ffmpeg_stdin_drain_timeouts": {0, receiverStatusMaxCount},
+		"pifm_stdin_drain_timeouts":   {0, receiverStatusMaxCount},
+		"ffmpeg_stdin_slow_drains":    {0, receiverStatusMaxCount},
+		"pifm_stdin_slow_drains":      {0, receiverStatusMaxCount},
+		"reconnects":                  {0, receiverStatusMaxCount},
+		"session_uptime_ms":           {0, receiverStatusMaxMillis},
+		"uptime_seconds":              {0, 365 * 24 * 60 * 60},
+		"stream_duration_ms":          {0, receiverStatusMaxMillis},
+	}
+	for key, limits := range intFields {
+		if value, ok := receiverStatusInt(receiverStatusValue(message, nested, key), limits.min, limits.max); ok {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func receiverStatusValue(message map[string]any, nested map[string]any, key string) any {
+	if nested != nil {
+		if value, ok := nested[key]; ok {
+			return value
+		}
+	}
+	return message[key]
+}
+
+func copyReceiverStatus(status map[string]any) map[string]any {
+	out := make(map[string]any, len(status))
+	for key, value := range status {
+		out[key] = value
+	}
+	return out
+}
+
+func receiverStatusToken(value any, allowed []string) (string, bool) {
+	text, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return "", false
+	}
+	runes := []rune(text)
+	if len(runes) > receiverStatusTextLimit {
+		return "", false
+	}
+	for _, ch := range runes {
+		if ch >= 'a' && ch <= 'z' {
+			continue
+		}
+		if ch >= 'A' && ch <= 'Z' {
+			continue
+		}
+		if ch >= '0' && ch <= '9' {
+			continue
+		}
+		if ch == '_' || ch == '-' || ch == '.' {
+			continue
+		}
+		return "", false
+	}
+	text = string(runes)
+	for _, candidate := range allowed {
+		if text == candidate {
+			return text, true
+		}
+	}
+	return "", false
+}
+
+func receiverStatusBool(value any) (bool, bool) {
+	switch typed := value.(type) {
+	case bool:
+		return typed, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "1", "true", "yes", "on", "enabled":
+			return true, true
+		case "0", "false", "no", "off", "disabled":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func receiverStatusInt(value any, minValue int64, maxValue int64) (int64, bool) {
+	var number int64
+	switch typed := value.(type) {
+	case int:
+		number = int64(typed)
+	case int64:
+		number = typed
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return 0, false
+		}
+		number = int64(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return 0, false
+		}
+		number = parsed
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		number = parsed
+	default:
+		return 0, false
+	}
+	if number < minValue {
+		number = minValue
+	}
+	if number > maxValue {
+		number = maxValue
+	}
+	return number, true
+}
+
 func (m *ReceiverManager) receiverRequestAllowed(writer http.ResponseWriter, request *http.Request, method string) bool {
 	if !m.Enabled() {
 		http.NotFound(writer, request)
+		return false
+	}
+	if m.config.Webpanel.Receiver.RequireTLS && !requestIsSecure(request) {
+		receiverError(writer, http.StatusForbidden, "receiver TLS is required")
 		return false
 	}
 	if request.Method != method {
@@ -542,6 +812,53 @@ func (m *ReceiverManager) matchPairingToken(payload receiverPairCompleteRequest,
 		}
 	}
 	return receiverPairingToken{}, "", fmt.Errorf("receiver pairing token is invalid, exhausted, or out of scope")
+}
+
+func (m *ReceiverManager) receiverCredentialRequired(feedID string) bool {
+	for _, token := range m.receiverPairingTokens() {
+		if token.enabled && token.allowsFeed(feedID) && token.secret() != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *ReceiverManager) createSessionCookieFromCredential(payload receiverSessionRequest, now time.Time) (string, error) {
+	if payload.CredentialID == "" || payload.ReceiverID == "" || payload.ReceiverHostname == "" || payload.Nonce == "" || payload.Proof == "" {
+		return "", fmt.Errorf("receiver credential proof is required")
+	}
+	store, err := m.loadStore()
+	if err != nil {
+		return "", fmt.Errorf("could not read receiver credentials")
+	}
+	credential, ok := store.Credentials[payload.CredentialID]
+	if !ok || credential.Secret == "" {
+		return "", fmt.Errorf("receiver credential is invalid")
+	}
+	if !credential.ExpiresAt.IsZero() && !credential.ExpiresAt.After(now) {
+		return "", fmt.Errorf("receiver credential is expired")
+	}
+	if credential.FeedID != payload.FeedID ||
+		credential.ReceiverID != payload.ReceiverID ||
+		credential.ReceiverHostname != payload.ReceiverHostname {
+		return "", fmt.Errorf("receiver credential fields do not match")
+	}
+	expected := receiverHMACHex(credential.Secret, receiverProofMessage("session-v1", map[string]string{
+		"credential_id":     credential.ID,
+		"feed_id":           credential.FeedID,
+		"receiver_id":       credential.ReceiverID,
+		"receiver_hostname": credential.ReceiverHostname,
+		"nonce":             payload.Nonce,
+	}))
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(payload.Proof)) != 1 {
+		return "", fmt.Errorf("receiver credential proof is invalid")
+	}
+	return m.issueCookie(receiverCookie{
+		FeedID:           credential.FeedID,
+		ReceiverID:       credential.ReceiverID,
+		ReceiverHostname: credential.ReceiverHostname,
+		ExpiresAt:        now.Add(m.cookieTTL()),
+	}, credential.ReceiverHostname)
 }
 
 func (m *ReceiverManager) createCredentialAndCookie(tokenID string, challenge receiverChallenge, now time.Time, request *http.Request) (receiverCredential, string, error) {
@@ -956,7 +1273,9 @@ func digestString(value string) string {
 }
 
 func decodeReceiverJSON(writer http.ResponseWriter, request *http.Request, target any) bool {
-	defer request.Body.Close()
+	defer func() {
+		_ = request.Body.Close()
+	}()
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {

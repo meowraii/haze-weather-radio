@@ -1054,7 +1054,14 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 	source := "cap-tts"
 	authoritativeURL := strings.TrimSpace(firstText(nil, data, "audio_url", "authoritative_url"))
 	var lastErr error
-	if authoritativeURL != "" {
+	if localAudioPath := strings.TrimSpace(firstText(nil, data, "audio_path")); localAudioPath != "" {
+		if err := p.prepareLocalAlertAudio(ctx, localAudioPath, voicePath, alertSampleRate, alertChannels, data); err == nil {
+			source = "cap-broadcast-audio"
+		} else {
+			lastErr = err
+		}
+	}
+	if source != "cap-broadcast-audio" && authoritativeURL != "" {
 		if err := p.downloadAndConvertAlertAudio(ctx, authoritativeURL, voicePath, alertSampleRate, alertChannels); err == nil {
 			source = "cap-broadcast-audio"
 		} else {
@@ -1062,7 +1069,7 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		}
 	}
 	if source != "cap-broadcast-audio" {
-		if err := p.renderAlertTTSAsPCM(ctx, queueID, voicePath, alertText, alertSampleRate, alertChannels); err != nil {
+		if err := p.renderAlertTTSAsPCM(ctx, queueID, voicePath, alertText, alertSampleRate, alertChannels, data); err != nil {
 			if lastErr != nil {
 				p.lastError = fmt.Sprintf("broadcast audio failed: %v; TTS fallback failed: %v", lastErr, err)
 			} else {
@@ -1130,7 +1137,7 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		manifest.Event = sameRequest.Event
 		manifest.Priority = "same"
 	}
-	if lastErr != nil && source != "cap-broadcast-audio" {
+	if lastErr != nil && !broadcastAudioSourceSucceeded(source) {
 		manifest.LastError = "broadcast audio fallback: " + lastErr.Error()
 	}
 	packet := p.alertPacketForManifest(data, manifest, alertText, sameHeader.Header)
@@ -1201,6 +1208,10 @@ func (p *feedPlanner) publishAlertAudioReady(manifest priorityAlertManifest, dat
 	}); err != nil {
 		log.Printf("[%s] alert webhook event publish failed: %v", p.feed.ID, err)
 	}
+}
+
+func broadcastAudioSourceSucceeded(source string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(source)), "broadcast-audio")
 }
 
 func (p *feedPlanner) cancelPriorityAlerts(data map[string]any) {
@@ -1319,7 +1330,72 @@ func (p *feedPlanner) downloadAndConvertAlertAudio(ctx context.Context, sourceUR
 	if err := downloadFile(ctx, sourceURL, inputPath, 10<<20); err != nil {
 		return err
 	}
-	return convertAudioToPCM(ctx, inputPath, outputPath, sampleRate, channels)
+	return convertAlertAudioToPCM(ctx, inputPath, outputPath, sampleRate, channels)
+}
+
+func (p *feedPlanner) prepareLocalAlertAudio(ctx context.Context, rawPath string, outputPath string, sampleRate int, channels int, data map[string]any) error {
+	sourcePath, err := p.resolveAlertAudioPath(rawPath)
+	if err != nil {
+		return err
+	}
+	audioFormat := strings.ToLower(strings.TrimSpace(firstText(nil, data, "audio_format", "format")))
+	sourceRate := intFromAny(firstValue(nil, data, "audio_sample_rate", "sample_rate"), 48000)
+	sourceChannels := intFromAny(firstValue(nil, data, "audio_channels", "channels"), 1)
+	if audioFormat == "pcm_s16le" || audioFormat == "raw" || audioFormat == "s16le" || strings.HasSuffix(strings.ToLower(sourcePath), ".pcm16le") || strings.HasSuffix(strings.ToLower(sourcePath), ".s16le") {
+		raw, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return err
+		}
+		if len(raw) == 0 {
+			return fmt.Errorf("alert audio is empty")
+		}
+		if sourceRate == sampleRate && sourceChannels == channels {
+			return writeAlertAudioFile(outputPath, raw)
+		}
+		convertCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		return convertRawPCM16FileToPCM(convertCtx, sourcePath, outputPath, sourceRate, sourceChannels, sampleRate, channels)
+	}
+	raw, err := os.ReadFile(sourcePath)
+	if err == nil {
+		if pcm, info, wavErr := wavPCM16(raw); wavErr == nil {
+			if info.SampleRate == sampleRate && info.Channels == channels {
+				return writeAlertAudioFile(outputPath, pcm)
+			}
+		}
+	}
+	convertCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	return convertAlertAudioToPCM(convertCtx, sourcePath, outputPath, sampleRate, channels)
+}
+
+func (p *feedPlanner) resolveAlertAudioPath(rawPath string) (string, error) {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return "", fmt.Errorf("audio path is required")
+	}
+	clean := filepath.Clean(rawPath)
+	if filepath.IsAbs(clean) {
+		return "", fmt.Errorf("alert audio path must be relative to the bundle directory")
+	}
+	slash := filepath.ToSlash(clean)
+	if slash == ".." || strings.HasPrefix(slash, "../") || strings.HasPrefix(slash, "/") {
+		return "", fmt.Errorf("alert audio path must stay inside the bundle directory")
+	}
+	target := filepath.Join(p.cfg.BaseDir, clean)
+	root, err := filepath.Abs(p.cfg.BaseDir)
+	if err != nil {
+		return "", err
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, absTarget)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("alert audio path must stay inside the bundle directory")
+	}
+	return absTarget, nil
 }
 
 func alertTextFromData(data map[string]any) string {
@@ -1626,6 +1702,39 @@ func intFromString(raw string, fallback int) int {
 	return value
 }
 
+func intFromAny(value any, fallback int) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+	case string:
+		return intFromString(typed, fallback)
+	}
+	return fallback
+}
+
+func writeAlertAudioFile(path string, data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("alert audio is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func nonEmptyStrings(values []string) []string {
 	out := values[:0]
 	for _, value := range values {
@@ -1656,8 +1765,11 @@ func alertAttentionToneEnabled(data map[string]any) bool {
 	}
 }
 
-func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, outputPath string, alertText string, sampleRate int, channels int) error {
-	readerID := "00"
+func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, outputPath string, alertText string, sampleRate int, channels int, data map[string]any) error {
+	readerID := strings.TrimSpace(firstText(nil, data, "reader_id", "tts_reader_id"))
+	if readerID == "" {
+		readerID = "00"
+	}
 	language := feedLanguage(p.feed)
 	if strings.TrimSpace(alertText) == "" {
 		renderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -1667,7 +1779,9 @@ func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, o
 			return err
 		}
 		alertText = product.Text
-		readerID = fallbackText(product.ReaderID, readerID)
+		if strings.TrimSpace(firstText(nil, data, "reader_id", "tts_reader_id")) == "" {
+			readerID = fallbackText(product.ReaderID, readerID)
+		}
 		language = fallbackText(product.Language, language)
 	}
 	if strings.TrimSpace(alertText) == "" {

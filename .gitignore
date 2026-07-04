@@ -78,3 +78,6 @@ bundle/webroot/site.webmanifest
 Cargo.lock
 services/go/internal/playlist/runtime/playlists/item.json
 services/go/internal/ivr/runtime/ivr/sip-debug.log
+
+# AI Slop
+.agents/

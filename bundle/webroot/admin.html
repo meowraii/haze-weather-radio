@@ -124,8 +124,24 @@
         .cgen-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
         .cgen-side { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 76px; }
         .cgen-instance-bar { display: grid; grid-template-columns: minmax(180px, 280px) auto auto minmax(0, 1fr); gap: 8px; align-items: end; }
+        .cgen-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 5px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--surface) 92%, var(--bg)); box-shadow: var(--bevel-sunken); }
+        .cgen-tab { min-height: 30px; padding: 5px 10px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; cursor: pointer; }
+        .cgen-tab:hover,
+        .cgen-tab:focus-visible { color: var(--text); border-color: rgba(255,255,255,.18); outline: 0; }
+        .cgen-tab.active,
+        .cgen-tab[aria-selected="true"] { color: #050505; background: #fff; border-color: rgba(255,255,255,.52); box-shadow: 0 1px 0 rgba(255,255,255,.25); }
+        .cgen-tab-panel[hidden] { display: none; }
         .cgen-editor-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
         .cgen-wide { grid-column: 1 / -1; }
+        .cgen-table-wrap { grid-column: 1 / -1; overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); box-shadow: var(--bevel-sunken); }
+        .cgen-stream-table { width: 100%; min-width: 760px; border-collapse: collapse; table-layout: fixed; }
+        .cgen-stream-table th,
+        .cgen-stream-table td { padding: 6px 7px; border-bottom: 1px solid var(--border-subtle); text-align: left; vertical-align: middle; }
+        .cgen-stream-table th { background: color-mix(in srgb, var(--surface) 92%, var(--bg)); color: var(--muted); font-size: 11px; font-weight: 600; }
+        .cgen-stream-table td { color: var(--text); font-size: 12px; }
+        .cgen-stream-table input,
+        .cgen-stream-table select { width: 100%; min-width: 0; }
+        .cgen-stream-table input[type="checkbox"] { width: auto; }
         .cgen-actions { display: flex; flex-wrap: wrap; gap: 6px; }
         .cgen-actions button { min-height: 30px; justify-content: center; }
         .cgen-preview-wrap { position: relative; padding: 8px; border: 1px solid var(--border-deep); border-radius: var(--radius-sm); background: #050505; box-shadow: var(--bevel-sunken); }
@@ -748,7 +764,7 @@
                                     <button id="feedSaveButton" class="btn-primary" type="button">Save XML</button>
                                 </div>
                                 <div class="table-scroll feeds-list">
-                                    <table class="data-table compact-table">
+                                    <table class="data-table compact-table panel-table">
                                         <thead>
                                             <tr>
                                                 <th>Feed</th>
@@ -920,7 +936,7 @@
                                     </button>
                                 </div>
                                 <div class="table-scroll tts-reader-list">
-                                    <table class="data-table compact-table">
+                                    <table class="data-table compact-table panel-table">
                                         <thead>
                                             <tr>
                                                 <th>Reader</th>
@@ -1044,8 +1060,13 @@
 
                     <div class="cgen-layout">
                         <div class="cgen-main">
-                            <section class="section-block">
-                                <div class="section-hd"><span>Program Routing</span></div>
+                            <div class="cgen-tabs" role="tablist" aria-label="CGEN configuration">
+                                <button class="cgen-tab active" id="cgenTabButtonProgramInput" type="button" role="tab" aria-selected="true" aria-controls="cgenTabProgramInput" data-cgen-tab="program-input">Program Input</button>
+                                <button class="cgen-tab" id="cgenTabButtonEncoder" type="button" role="tab" aria-selected="false" aria-controls="cgenTabEncoder" data-cgen-tab="encoder">Encoder</button>
+                                <button class="cgen-tab" id="cgenTabButtonRouting" type="button" role="tab" aria-selected="false" aria-controls="cgenTabRouting" data-cgen-tab="routing">Routing</button>
+                            </div>
+                            <section class="section-block cgen-tab-panel" id="cgenTabProgramInput" role="tabpanel" aria-labelledby="cgenTabButtonProgramInput" data-cgen-panel="program-input">
+                                <div class="section-hd"><span>Program Input</span></div>
                                 <div class="section-body cgen-editor-grid">
                                     <label class="daemon-field">
                                         <span>ID</span>
@@ -1081,17 +1102,168 @@
                                         <input id="cgenPriorityFeed" type="text" placeholder="CAP-IT-ALL">
                                     </label>
                                     <label class="daemon-field">
-                                        <span>Audio source</span>
+                                        <span>Alert audio source</span>
                                         <select id="cgenAudioSource">
                                             <option value="priority">Priority only</option>
                                             <option value="routine">Routine only</option>
                                             <option value="both">Priority + routine</option>
                                         </select>
                                     </label>
+                                    <label class="daemon-field">
+                                        <span>Default audio mode</span>
+                                        <select id="cgenAudioIdle">
+                                            <option value="source">Program Input</option>
+                                            <option value="routine">Feed Routine</option>
+                                        </select>
+                                    </label>
                                     <label class="daemon-field check-row">
                                         <input id="cgenMuteStandbyRoutine" type="checkbox" checked>
                                         <span>Mute routine audio during standby</span>
                                     </label>
+                                </div>
+                            </section>
+
+                            <section class="section-block cgen-tab-panel" id="cgenTabEncoder" role="tabpanel" aria-labelledby="cgenTabButtonEncoder" data-cgen-panel="encoder" hidden>
+                                <div class="section-hd"><span>Encoder</span></div>
+                                <div class="section-body cgen-editor-grid">
+                                    <label class="daemon-field">
+                                        <span>Video codec</span>
+                                        <select id="cgenVCodec">
+                                            <option value="avenc_mpeg2video">MPEG-2 Video - libav (avenc_mpeg2video)</option>
+                                            <option value="x264enc">H.264 / AVC - x264 software (x264enc)</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Main video kbps</span>
+                                        <input id="cgenHdBitrate" type="number" min="100" step="100" value="12000">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>GOP</span>
+                                        <input id="cgenVideoGop" type="number" min="1" max="600" step="1" value="15">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>B-frames</span>
+                                        <input id="cgenVideoBFrames" type="number" min="0" max="16" step="1" value="0">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Preset</span>
+                                        <select id="cgenVideoPreset">
+                                            <option value="">Auto</option>
+                                            <option value="ultrafast">ultrafast</option>
+                                            <option value="veryfast">veryfast</option>
+                                            <option value="fast">fast</option>
+                                            <option value="medium">medium</option>
+                                            <option value="slow">slow</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Tune</span>
+                                        <select id="cgenVideoTune">
+                                            <option value="">Auto</option>
+                                            <option value="zerolatency">zerolatency</option>
+                                            <option value="film">film</option>
+                                            <option value="animation">animation</option>
+                                            <option value="grain">grain</option>
+                                            <option value="fastdecode">fastdecode</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Profile</span>
+                                        <input id="cgenVideoProfile" type="text" placeholder="main">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Level</span>
+                                        <input id="cgenVideoLevel" type="text" placeholder="4.1">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Audio codec</span>
+                                        <select id="cgenACodec">
+                                            <option value="avenc_ac3">AC-3 - libav (avenc_ac3)</option>
+                                            <option value="avenc_aac">AAC - libav (avenc_aac)</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Main audio kbps</span>
+                                        <input id="cgenAudioEncoderBitrate" type="number" min="32" step="8" value="192">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Audio profile</span>
+                                        <input id="cgenAudioProfile" type="text" placeholder="main">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Audio level</span>
+                                        <input id="cgenAudioLevel" type="text">
+                                    </label>
+                                    <div class="cgen-table-wrap">
+                                        <table class="cgen-stream-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Video stream</th>
+                                                    <th>Enabled</th>
+                                                    <th>Frame</th>
+                                                    <th>FPS</th>
+                                                    <th>Codec</th>
+                                                    <th>kbps</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr>
+                                                    <td>720p</td>
+                                                    <td><input id="cgenP720Enabled" type="checkbox"></td>
+                                                    <td>1280x720</td>
+                                                    <td>Source</td>
+                                                    <td>Inherit</td>
+                                                    <td><input id="cgenP720Bitrate" type="number" min="100" step="100" value="8000"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td>SD letterbox</td>
+                                                    <td><input id="cgenSdEnabled" type="checkbox"></td>
+                                                    <td>720x480</td>
+                                                    <td>Source</td>
+                                                    <td>Inherit</td>
+                                                    <td><input id="cgenSdBitrate" type="number" min="100" step="100" value="5000"></td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div class="cgen-table-wrap">
+                                        <table class="cgen-stream-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Audio stream</th>
+                                                    <th>Enabled</th>
+                                                    <th>Channels</th>
+                                                    <th>Codec</th>
+                                                    <th>Language</th>
+                                                    <th>kbps</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr>
+                                                    <td>Stereo</td>
+                                                    <td><input id="cgenStereoEnabled" type="checkbox"></td>
+                                                    <td>2</td>
+                                                    <td>Inherit</td>
+                                                    <td>eng</td>
+                                                    <td><input id="cgenStereoBitrate" type="number" min="32" step="8" value="192"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td>5.1</td>
+                                                    <td><input id="cgenSurroundEnabled" type="checkbox"></td>
+                                                    <td>6</td>
+                                                    <td>Inherit</td>
+                                                    <td>eng</td>
+                                                    <td><input id="cgenSurroundBitrate" type="number" min="32" step="8" value="384"></td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="section-block cgen-tab-panel" id="cgenTabRouting" role="tabpanel" aria-labelledby="cgenTabButtonRouting" data-cgen-panel="routing" hidden>
+                                <div class="section-hd"><span>Routing</span></div>
+                                <div class="section-body cgen-editor-grid">
                                     <label class="daemon-field cgen-wide">
                                         <span>Program output</span>
                                         <input id="cgenProgramOutput" type="text" placeholder="udp://239.0.0.2:9001?pkt_size=1316">
@@ -1103,55 +1275,79 @@
                                         </select>
                                     </label>
                                     <label class="daemon-field">
-                                        <span>Video codec</span>
-                                        <select id="cgenVCodec">
-                                            <option value="avenc_mpeg2video">MPEG-2 Video - libav (avenc_mpeg2video)</option>
-                                            <option value="x264enc">H.264 / AVC - x264 software (x264enc)</option>
-                                        </select>
+                                        <span>Service name</span>
+                                        <input id="cgenServiceName" type="text" placeholder="Haze CGEN">
                                     </label>
                                     <label class="daemon-field">
-                                        <span>Audio codec</span>
-                                        <select id="cgenACodec">
-                                            <option value="avenc_ac3">AC-3 - libav (avenc_ac3)</option>
-                                            <option value="avenc_aac">AAC - libav (avenc_aac)</option>
-                                        </select>
+                                        <span>Provider name</span>
+                                        <input id="cgenProviderName" type="text" placeholder="Haze">
                                     </label>
                                     <label class="daemon-field">
-                                        <span>HD kbps</span>
-                                        <input id="cgenHdBitrate" type="number" min="100" step="100" value="12000">
+                                        <span>Service ID</span>
+                                        <input id="cgenServiceID" type="number" min="1" step="1" value="1">
                                     </label>
                                     <label class="daemon-field">
-                                        <span>720p</span>
-                                        <input id="cgenP720Enabled" type="checkbox">
+                                        <span>TS ID</span>
+                                        <input id="cgenTransportStreamID" type="number" min="1" step="1" value="1">
                                     </label>
-                                    <label class="daemon-field">
-                                        <span>720p kbps</span>
-                                        <input id="cgenP720Bitrate" type="number" min="100" step="100" value="8000">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>SD</span>
-                                        <input id="cgenSdEnabled" type="checkbox">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>SD kbps</span>
-                                        <input id="cgenSdBitrate" type="number" min="100" step="100" value="5000">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>5.1 AC-3</span>
-                                        <input id="cgenSurroundEnabled" type="checkbox">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>5.1 kbps</span>
-                                        <input id="cgenSurroundBitrate" type="number" min="32" step="8" value="384">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>Stereo AC-3</span>
-                                        <input id="cgenStereoEnabled" type="checkbox">
-                                    </label>
-                                    <label class="daemon-field">
-                                        <span>Stereo kbps</span>
-                                        <input id="cgenStereoBitrate" type="number" min="32" step="8" value="192">
-                                    </label>
+                                    <div class="cgen-table-wrap">
+                                        <table class="cgen-stream-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Video stream</th>
+                                                    <th>Program</th>
+                                                    <th>Video PID</th>
+                                                    <th>PMT PID</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr>
+                                                    <td>HD main</td>
+                                                    <td><input id="cgenHdProgram" type="number" min="1" step="1" value="1"></td>
+                                                    <td><input id="cgenHdVideoPID" type="number" min="16" step="1" value="256"></td>
+                                                    <td><input id="cgenHdPmtPID" type="number" min="16" step="1" value="4096"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td>720p</td>
+                                                    <td><input id="cgenP720Program" type="number" min="1" step="1" value="2"></td>
+                                                    <td><input id="cgenP720VideoPID" type="number" min="16" step="1" value="288"></td>
+                                                    <td><input id="cgenP720PmtPID" type="number" min="16" step="1" value="4097"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td>SD letterbox</td>
+                                                    <td><input id="cgenSdProgram" type="number" min="1" step="1" value="3"></td>
+                                                    <td><input id="cgenSdVideoPID" type="number" min="16" step="1" value="320"></td>
+                                                    <td><input id="cgenSdPmtPID" type="number" min="16" step="1" value="4098"></td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div class="cgen-table-wrap">
+                                        <table class="cgen-stream-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Audio stream</th>
+                                                    <th>Program</th>
+                                                    <th>Audio PID</th>
+                                                    <th>PMT PID</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr>
+                                                    <td>Stereo</td>
+                                                    <td><input id="cgenStereoProgram" type="number" min="1" step="1" value="1"></td>
+                                                    <td><input id="cgenStereoAudioPID" type="number" min="16" step="1" value="257"></td>
+                                                    <td><input id="cgenStereoPmtPID" type="number" min="16" step="1" value="4096"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td>5.1</td>
+                                                    <td><input id="cgenSurroundProgram" type="number" min="1" step="1" value="1"></td>
+                                                    <td><input id="cgenSurroundAudioPID" type="number" min="16" step="1" value="258"></td>
+                                                    <td><input id="cgenSurroundPmtPID" type="number" min="16" step="1" value="4096"></td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
                                 </div>
                             </section>
 
@@ -1232,7 +1428,7 @@
                                         <input id="cgenFontSize" type="number" min="8" max="220" value="58">
                                     </label>
                                     <label class="daemon-field">
-                                        <span>Scroll px/frame</span>
+                                        <span>Scroll speed</span>
                                         <input id="cgenScrollSpeed" type="number" min="1" max="64" value="8">
                                     </label>
                                     <label class="daemon-field">
@@ -1416,8 +1612,8 @@
                             </div>
                         </div>
                         <div class="section-body pad-none">
-                            <div class="bulletin-table-wrap">
-                                <table class="bulletin-table">
+                            <div class="bulletin-table-wrap panel-table-wrap">
+                                <table class="bulletin-table panel-table">
                                     <thead>
                                         <tr>
                                             <th>Enabled</th>
@@ -1622,20 +1818,22 @@
                                     </div>
                                 </div>
                                 <div class="section-body pad-none">
-                                    <table class="breakin-feed-table">
-                                        <thead>
-                                            <tr>
-                                                <th></th>
-                                                <th>Feed</th>
-                                                <th>Mode</th>
-                                                <th>Queue</th>
-                                                <th>Current</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody id="breakinFeedRows">
-                                            <tr><td colspan="5" class="breakin-empty">Loading feeds...</td></tr>
-                                        </tbody>
-                                    </table>
+                                    <div class="table-scroll breakin-feed-list">
+                                        <table class="breakin-feed-table panel-table">
+                                            <thead>
+                                                <tr>
+                                                    <th></th>
+                                                    <th>Feed</th>
+                                                    <th>Mode</th>
+                                                    <th>Queue</th>
+                                                    <th>Current</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="breakinFeedRows">
+                                                <tr><td colspan="5" class="breakin-empty">Loading feeds...</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
                                 </div>
                             </section>
 
@@ -1788,8 +1986,8 @@
                                     </button>
                                 </div>
 
-                                <div class="dictionary-table-box">
-                                    <table class="dictionary-table">
+                                <div class="dictionary-table-box panel-table-wrap">
+                                    <table class="dictionary-table panel-table">
                                         <thead>
                                             <tr>
                                                 <th>Match</th>

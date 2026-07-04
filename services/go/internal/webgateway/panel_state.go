@@ -349,11 +349,12 @@ func loadBasicFeedSummaries(configPath string) ([]map[string]any, error) {
 			continue
 		}
 		output := outputs[feed.ID]
+		httpStreamEnabled := outputHTTPStreamEnabled(output)
 		out = append(out, map[string]any{
 			"id":                  strings.TrimSpace(feed.ID),
 			"enabled":             xmlBool(feed.EnabledRaw, true),
 			"webrtc_enabled":      xmlBool(output.WebRTC.EnabledRaw, false),
-			"http_stream_enabled": true,
+			"http_stream_enabled": httpStreamEnabled,
 		})
 	}
 	return out, nil
@@ -378,6 +379,7 @@ func loadPublicFeedSummaries(configPath string) ([]map[string]any, error) {
 		station := stationTransmitter(feed)
 		output := outputs[id]
 		webrtcEnabled := xmlBool(output.WebRTC.EnabledRaw, false)
+		httpStreamEnabled := outputHTTPStreamEnabled(output)
 		out = append(out, map[string]any{
 			"id":                  id,
 			"name":                fallbackText(station.SiteName, id),
@@ -386,7 +388,7 @@ func loadPublicFeedSummaries(configPath string) ([]map[string]any, error) {
 			"transmitter":         publicTransmitterPayloadFromXML(station, feed),
 			"transmitters":        publicTransmitterPayloadsFromXML(feed),
 			"webrtc_enabled":      webrtcEnabled,
-			"http_stream_enabled": true,
+			"http_stream_enabled": httpStreamEnabled,
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -403,6 +405,7 @@ func feedSummary(feed feedXML, outputs outputXML, forecastNames map[string]strin
 	sameLocations := feedSameLocations(feed, clcNames, nwsFIPSNames)
 	outputLabels := outputLabels(outputs)
 	webrtcEnabled := xmlBool(outputs.WebRTC.EnabledRaw, false)
+	httpStreamEnabled := outputHTTPStreamEnabled(outputs)
 	queueDepth, recentQueue, latestQueue := alertQueueState(queueItems, feed.ID)
 	runtime := map[string]any{
 		"now_playing": "Idle",
@@ -428,7 +431,7 @@ func feedSummary(feed feedXML, outputs outputXML, forecastNames map[string]strin
 		"transmitters":        transmitterPayloads(feed),
 		"outputs":             outputLabels,
 		"webrtc_enabled":      webrtcEnabled,
-		"http_stream_enabled": true,
+		"http_stream_enabled": httpStreamEnabled,
 		"alert_queue_depth":   queueDepth,
 		"recent_alerts":       recentQueue,
 		"playlist_items":      []any{},
@@ -814,6 +817,10 @@ func outputLabels(output outputXML) []string {
 	addOutput("audio_device", output.AudioDevice)
 	addOutput("file", output.File)
 	return items
+}
+
+func outputHTTPStreamEnabled(output outputXML) bool {
+	return xmlBool(output.Stream.EnabledRaw, false)
 }
 
 func coverageRegionPayloads(feed feedXML, forecastNames map[string]string, clcNames map[string]string) []map[string]any {

@@ -15,6 +15,7 @@ import (
 )
 
 const defaultCgenFile = "managed/configs/cgen.xml"
+const defaultCgenEncodersFile = "managed/configs/cgen-encoders.xml"
 
 type cgenXML struct {
 	XMLName xml.Name      `xml:"cgen"`
@@ -43,12 +44,16 @@ type cgenFeedXML struct {
 }
 
 type cgenEndpointXML struct {
-	URL              string `xml:"url,attr,omitempty"`
-	Format           string `xml:"format,attr,omitempty"`
-	VCodec           string `xml:"vcodec,attr,omitempty"`
-	ACodec           string `xml:"acodec,attr,omitempty"`
-	VideoBitrateKbps string `xml:"video_bitrate_kbps,attr,omitempty"`
-	AudioBitrateKbps string `xml:"audio_bitrate_kbps,attr,omitempty"`
+	URL               string `xml:"url,attr,omitempty"`
+	Format            string `xml:"format,attr,omitempty"`
+	VCodec            string `xml:"vcodec,attr,omitempty"`
+	ACodec            string `xml:"acodec,attr,omitempty"`
+	VideoBitrateKbps  string `xml:"video_bitrate_kbps,attr,omitempty"`
+	AudioBitrateKbps  string `xml:"audio_bitrate_kbps,attr,omitempty"`
+	ServiceName       string `xml:"service_name,attr,omitempty"`
+	ProviderName      string `xml:"provider_name,attr,omitempty"`
+	ServiceID         string `xml:"service_id,attr,omitempty"`
+	TransportStreamID string `xml:"transport_stream_id,attr,omitempty"`
 }
 
 type cgenLadderXML struct {
@@ -79,6 +84,39 @@ type cgenAudioRenditionXML struct {
 	ACodec      string `xml:"acodec,attr,omitempty"`
 	BitrateKbps string `xml:"bitrate_kbps,attr,omitempty"`
 	Language    string `xml:"language,attr,omitempty"`
+	Program     string `xml:"program,attr,omitempty"`
+	AudioPID    string `xml:"audio_pid,attr,omitempty"`
+	PMTPID      string `xml:"pmt_pid,attr,omitempty"`
+}
+
+type cgenEncodersXML struct {
+	XMLName   xml.Name             `xml:"cgenEncoders"`
+	UpdatedAt string               `xml:"updated_at,attr,omitempty"`
+	Feeds     []cgenEncoderFeedXML `xml:"feed"`
+}
+
+type cgenEncoderFeedXML struct {
+	ID        string              `xml:"id,attr"`
+	Video     cgenEncoderCodecXML `xml:"video"`
+	Audio     cgenEncoderCodecXML `xml:"audio"`
+	UpdatedAt string              `xml:"updated_at,attr,omitempty"`
+}
+
+type cgenEncoderCodecXML struct {
+	Codec       string                 `xml:"codec,attr,omitempty"`
+	BitrateKbps string                 `xml:"bitrate_kbps,attr,omitempty"`
+	GOP         string                 `xml:"gop,attr,omitempty"`
+	BFrames     string                 `xml:"bframes,attr,omitempty"`
+	Preset      string                 `xml:"preset,attr,omitempty"`
+	Tune        string                 `xml:"tune,attr,omitempty"`
+	Profile     string                 `xml:"profile,attr,omitempty"`
+	Level       string                 `xml:"level,attr,omitempty"`
+	Options     []cgenEncoderOptionXML `xml:"option"`
+}
+
+type cgenEncoderOptionXML struct {
+	Name  string `xml:"name,attr"`
+	Value string `xml:"value,attr,omitempty"`
 }
 
 type cgenPriorityInputXML struct {
@@ -343,7 +381,12 @@ func loadCgenPayload(configPath string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cgenPayload(configPath, path, config), nil
+	encoderPath := cgenEncodersPath(configPath)
+	encoders, err := readCgenEncodersXML(encoderPath)
+	if err != nil {
+		return nil, err
+	}
+	return cgenPayload(configPath, path, config, encoderPath, encoders), nil
 }
 
 func saveCgenPayload(configPath string, payload map[string]any) (map[string]any, error) {
@@ -352,15 +395,24 @@ func saveCgenPayload(configPath string, payload map[string]any) (map[string]any,
 		return nil, fmt.Errorf("cgen feeds payload is required")
 	}
 	config := cgenXML{Enabled: boolText(boolFromAny(payload["enabled"], true))}
+	encoders := cgenEncodersXML{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	for _, raw := range rawFeeds {
 		feed, err := cgenFeedFromMap(raw)
 		if err != nil {
 			return nil, err
 		}
 		config.Feeds = append(config.Feeds, feed)
+		encoderFeed, err := cgenEncoderFeedFromMap(raw, feed)
+		if err != nil {
+			return nil, err
+		}
+		encoders.Feeds = append(encoders.Feeds, encoderFeed)
 	}
 	path := cgenPath(configPath)
 	if err := writeCgenXML(path, config); err != nil {
+		return nil, err
+	}
+	if err := writeCgenEncodersXML(cgenEncodersPath(configPath), encoders); err != nil {
 		return nil, err
 	}
 	return loadCgenPayload(configPath)
@@ -481,6 +533,10 @@ func cgenPath(configPath string) string {
 	return resolveConfigPath(configPath, defaultCgenFile)
 }
 
+func cgenEncodersPath(configPath string) string {
+	return resolveConfigPath(configPath, defaultCgenEncodersFile)
+}
+
 func readCgenXML(path string) (cgenXML, error) {
 	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
@@ -497,6 +553,41 @@ func readCgenXML(path string) (cgenXML, error) {
 		return cgenXML{}, fmt.Errorf("parse cgen XML: %w", err)
 	}
 	return normalizeCgen(config)
+}
+
+func readCgenEncodersXML(path string) (cgenEncodersXML, error) {
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cgenEncodersXML{}, nil
+		}
+		return cgenEncodersXML{}, err
+	}
+	var config cgenEncodersXML
+	if err := xml.Unmarshal(raw, &config); err != nil {
+		return cgenEncodersXML{}, fmt.Errorf("parse cgen encoders XML: %w", err)
+	}
+	return normalizeCgenEncoders(config), nil
+}
+
+func writeCgenEncodersXML(path string, config cgenEncodersXML) error {
+	config = normalizeCgenEncoders(config)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	raw, err := xml.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(xml.Header+string(raw)+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func rejectLegacyCgenXML(raw []byte, path string) error {
@@ -661,6 +752,96 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 	return config, nil
 }
 
+func normalizeCgenEncoders(config cgenEncodersXML) cgenEncodersXML {
+	config.UpdatedAt = strings.TrimSpace(config.UpdatedAt)
+	seen := map[string]int{}
+	out := make([]cgenEncoderFeedXML, 0, len(config.Feeds))
+	for _, feed := range config.Feeds {
+		feed.ID = cleanCgenID(feed.ID)
+		if feed.ID == "" {
+			continue
+		}
+		feed.Video = normalizeCgenEncoderCodec(feed.Video, true)
+		feed.Audio = normalizeCgenEncoderCodec(feed.Audio, false)
+		feed.UpdatedAt = strings.TrimSpace(feed.UpdatedAt)
+		if index, ok := seen[feed.ID]; ok {
+			out[index] = feed
+			continue
+		}
+		seen[feed.ID] = len(out)
+		out = append(out, feed)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i].ID) < strings.ToLower(out[j].ID) })
+	config.Feeds = out
+	return config
+}
+
+func normalizeCgenEncoderCodec(value cgenEncoderCodecXML, video bool) cgenEncoderCodecXML {
+	value.Codec = strings.TrimSpace(value.Codec)
+	value.BitrateKbps = cleanOptionalPositive(value.BitrateKbps)
+	value.GOP = cleanOptionalPositive(value.GOP)
+	value.BFrames = cleanNonNegative(value.BFrames, "")
+	value.Preset = normalizeCgenEncoderPreset(value.Preset)
+	value.Tune = normalizeCgenEncoderTune(value.Tune)
+	value.Profile = strings.TrimSpace(value.Profile)
+	value.Level = strings.TrimSpace(value.Level)
+	options := make([]cgenEncoderOptionXML, 0, len(value.Options))
+	seen := map[string]int{}
+	for _, option := range value.Options {
+		option.Name = normalizeCgenEncoderOptionName(option.Name)
+		if option.Name == "" {
+			continue
+		}
+		option.Value = strings.TrimSpace(option.Value)
+		if index, ok := seen[option.Name]; ok {
+			options[index] = option
+			continue
+		}
+		seen[option.Name] = len(options)
+		options = append(options, option)
+	}
+	sort.SliceStable(options, func(i, j int) bool { return options[i].Name < options[j].Name })
+	value.Options = options
+	if !video {
+		value.GOP = ""
+		value.BFrames = ""
+		value.Preset = ""
+		value.Tune = ""
+	}
+	return value
+}
+
+func normalizeCgenEncoderPreset(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow":
+		return value
+	default:
+		return ""
+	}
+}
+
+func normalizeCgenEncoderTune(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "zerolatency", "film", "animation", "grain", "stillimage", "fastdecode", "psnr", "ssim":
+		return value
+	default:
+		return ""
+	}
+}
+
+func normalizeCgenEncoderOptionName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, ch := range value {
+		if ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_' || ch == '.' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
 func normalizeCgenLadder(feed *cgenFeedXML) {
 	videos := map[string]cgenVideoRenditionXML{}
 	for _, video := range feed.Ladder.Videos {
@@ -731,6 +912,9 @@ func normalizeCgenLadder(feed *cgenFeedXML) {
 		ACodec:      feed.ProgramOutput.ACodec,
 		BitrateKbps: "384",
 		Language:    "eng",
+		Program:     "1",
+		AudioPID:    "258",
+		PMTPID:      "4096",
 	})
 	stereo := normalizeAudioRendition(audios["stereo"], cgenAudioRenditionXML{
 		ID:          "stereo",
@@ -739,6 +923,9 @@ func normalizeCgenLadder(feed *cgenFeedXML) {
 		ACodec:      feed.ProgramOutput.ACodec,
 		BitrateKbps: fallbackText(feed.ProgramOutput.AudioBitrateKbps, "192"),
 		Language:    "eng",
+		Program:     "1",
+		AudioPID:    "257",
+		PMTPID:      "4096",
 	})
 	feed.Ladder = cgenLadderXML{
 		Videos: []cgenVideoRenditionXML{hd, p720, sd},
@@ -772,6 +959,9 @@ func normalizeAudioRendition(value cgenAudioRenditionXML, fallback cgenAudioRend
 	value.ACodec = fallbackText(strings.TrimSpace(value.ACodec), fallback.ACodec)
 	value.BitrateKbps = cleanPositive(value.BitrateKbps, fallback.BitrateKbps)
 	value.Language = fallbackText(strings.TrimSpace(value.Language), fallback.Language)
+	value.Program = cleanPositive(value.Program, fallback.Program)
+	value.AudioPID = cleanPositive(value.AudioPID, fallback.AudioPID)
+	value.PMTPID = cleanPositive(value.PMTPID, fallback.PMTPID)
 	return value
 }
 
@@ -805,12 +995,16 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			Format:      stringFromAny(source["priority_input_format"]),
 		},
 		ProgramOutput: cgenEndpointXML{
-			URL:              stringFromAny(source["program_output_url"]),
-			Format:           stringFromAny(source["program_output_format"]),
-			VCodec:           stringFromAny(source["vcodec"]),
-			ACodec:           stringFromAny(source["acodec"]),
-			VideoBitrateKbps: firstStringFromAny(source, "hd_bitrate_kbps", "video_bitrate_kbps"),
-			AudioBitrateKbps: firstStringFromAny(source, "stereo_bitrate_kbps", "audio_bitrate_kbps"),
+			URL:               stringFromAny(source["program_output_url"]),
+			Format:            stringFromAny(source["program_output_format"]),
+			VCodec:            stringFromAny(source["vcodec"]),
+			ACodec:            stringFromAny(source["acodec"]),
+			VideoBitrateKbps:  firstStringFromAny(source, "hd_bitrate_kbps", "video_bitrate_kbps"),
+			AudioBitrateKbps:  firstStringFromAny(source, "stereo_bitrate_kbps", "audio_bitrate_kbps"),
+			ServiceName:       stringFromAny(source["service_name"]),
+			ProviderName:      stringFromAny(source["provider_name"]),
+			ServiceID:         stringFromAny(source["service_id"]),
+			TransportStreamID: stringFromAny(source["transport_stream_id"]),
 		},
 		Video: cgenVideoXML{
 			Width:      stringFromAny(source["width"]),
@@ -838,9 +1032,9 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 					Standard:    stringFromAny(source["standard"]),
 					VCodec:      stringFromAny(source["vcodec"]),
 					BitrateKbps: firstStringFromAny(source, "hd_bitrate_kbps", "video_bitrate_kbps"),
-					Program:     "1",
-					VideoPID:    "256",
-					PMTPID:      "4096",
+					Program:     fallbackText(stringFromAny(source["hd_program"]), "1"),
+					VideoPID:    fallbackText(stringFromAny(source["hd_video_pid"]), "256"),
+					PMTPID:      fallbackText(stringFromAny(source["hd_pmt_pid"]), "4096"),
 				},
 				{
 					ID:          "p720",
@@ -853,9 +1047,9 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 					Standard:    "atsc",
 					VCodec:      stringFromAny(source["vcodec"]),
 					BitrateKbps: fallbackText(stringFromAny(source["p720_bitrate_kbps"]), "8000"),
-					Program:     "2",
-					VideoPID:    "288",
-					PMTPID:      "4097",
+					Program:     fallbackText(stringFromAny(source["p720_program"]), "2"),
+					VideoPID:    fallbackText(stringFromAny(source["p720_video_pid"]), "288"),
+					PMTPID:      fallbackText(stringFromAny(source["p720_pmt_pid"]), "4097"),
 				},
 				{
 					ID:          "sd",
@@ -868,9 +1062,9 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 					Standard:    "atsc",
 					VCodec:      stringFromAny(source["vcodec"]),
 					BitrateKbps: fallbackText(stringFromAny(source["sd_bitrate_kbps"]), "5000"),
-					Program:     "3",
-					VideoPID:    "320",
-					PMTPID:      "4098",
+					Program:     fallbackText(stringFromAny(source["sd_program"]), "3"),
+					VideoPID:    fallbackText(stringFromAny(source["sd_video_pid"]), "320"),
+					PMTPID:      fallbackText(stringFromAny(source["sd_pmt_pid"]), "4098"),
 				},
 			},
 			Audios: []cgenAudioRenditionXML{
@@ -881,6 +1075,9 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 					ACodec:      stringFromAny(source["acodec"]),
 					BitrateKbps: firstStringFromAny(source, "stereo_bitrate_kbps", "audio_bitrate_kbps"),
 					Language:    "eng",
+					Program:     fallbackText(stringFromAny(source["stereo_program"]), "1"),
+					AudioPID:    fallbackText(stringFromAny(source["stereo_audio_pid"]), "257"),
+					PMTPID:      fallbackText(stringFromAny(source["stereo_pmt_pid"]), "4096"),
 				},
 				{
 					ID:          "surround_51",
@@ -889,6 +1086,9 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 					ACodec:      stringFromAny(source["acodec"]),
 					BitrateKbps: fallbackText(stringFromAny(source["surround_bitrate_kbps"]), "384"),
 					Language:    "eng",
+					Program:     fallbackText(stringFromAny(source["surround_program"]), "1"),
+					AudioPID:    fallbackText(stringFromAny(source["surround_audio_pid"]), "258"),
+					PMTPID:      fallbackText(stringFromAny(source["surround_pmt_pid"]), "4096"),
 				},
 			},
 		},
@@ -952,11 +1152,60 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 	return config.Feeds[0], nil
 }
 
-func cgenPayload(configPath string, path string, config cgenXML) map[string]any {
+func cgenEncoderFeedFromMap(raw any, feed cgenFeedXML) (cgenEncoderFeedXML, error) {
+	source, ok := raw.(map[string]any)
+	if !ok {
+		return cgenEncoderFeedXML{}, fmt.Errorf("cgen feed entries must be objects")
+	}
+	encoderFeed := cgenEncoderFeedXML{
+		ID:        feed.ID,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Video: cgenEncoderCodecXML{
+			Codec:       firstStringFromAny(source, "video_encoder_codec", "vcodec"),
+			BitrateKbps: firstStringFromAny(source, "video_encoder_bitrate_kbps", "hd_bitrate_kbps", "video_bitrate_kbps"),
+			GOP:         stringFromAny(source["video_gop"]),
+			BFrames:     stringFromAny(source["video_bframes"]),
+			Preset:      stringFromAny(source["video_preset"]),
+			Tune:        stringFromAny(source["video_tune"]),
+			Profile:     stringFromAny(source["video_profile"]),
+			Level:       stringFromAny(source["video_level"]),
+			Options:     encoderOptionsFromAny(source["video_encoder_options"]),
+		},
+		Audio: cgenEncoderCodecXML{
+			Codec:       firstStringFromAny(source, "audio_encoder_codec", "acodec"),
+			BitrateKbps: firstStringFromAny(source, "audio_encoder_bitrate_kbps", "stereo_bitrate_kbps", "audio_bitrate_kbps"),
+			Profile:     stringFromAny(source["audio_profile"]),
+			Level:       stringFromAny(source["audio_level"]),
+			Options:     encoderOptionsFromAny(source["audio_encoder_options"]),
+		},
+	}
+	return normalizeCgenEncoders(cgenEncodersXML{Feeds: []cgenEncoderFeedXML{encoderFeed}}).Feeds[0], nil
+}
+
+func encoderOptionsFromAny(raw any) []cgenEncoderOptionXML {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	options := make([]cgenEncoderOptionXML, 0, len(items))
+	for _, item := range items {
+		source, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		options = append(options, cgenEncoderOptionXML{
+			Name:  stringFromAny(source["name"]),
+			Value: stringFromAny(source["value"]),
+		})
+	}
+	return options
+}
+
+func cgenPayload(configPath string, path string, config cgenXML, encoderPath string, encoders cgenEncodersXML) map[string]any {
 	rows := make([]map[string]any, 0, len(config.Feeds))
 	for _, feed := range config.Feeds {
 		runtime := loadCgenRuntimeStatus(configPath, feed.ID)
-		rows = append(rows, map[string]any{
+		row := map[string]any{
 			"id":                              feed.ID,
 			"name":                            feed.Name,
 			"enabled":                         xmlBool(feed.Enabled, false),
@@ -978,16 +1227,35 @@ func cgenPayload(configPath string, path string, config cgenXML) map[string]any 
 			"acodec":                          feed.ProgramOutput.ACodec,
 			"video_bitrate_kbps":              feed.ProgramOutput.VideoBitrateKbps,
 			"audio_bitrate_kbps":              feed.ProgramOutput.AudioBitrateKbps,
+			"service_name":                    feed.ProgramOutput.ServiceName,
+			"provider_name":                   feed.ProgramOutput.ProviderName,
+			"service_id":                      feed.ProgramOutput.ServiceID,
+			"transport_stream_id":             feed.ProgramOutput.TransportStreamID,
 			"hd_enabled":                      videoRendition(feed.Ladder, "hd").Enabled,
 			"hd_bitrate_kbps":                 videoRendition(feed.Ladder, "hd").BitrateKbps,
+			"hd_program":                      videoRendition(feed.Ladder, "hd").Program,
+			"hd_video_pid":                    videoRendition(feed.Ladder, "hd").VideoPID,
+			"hd_pmt_pid":                      videoRendition(feed.Ladder, "hd").PMTPID,
 			"p720_enabled":                    xmlBool(videoRendition(feed.Ladder, "p720").Enabled, false),
 			"p720_bitrate_kbps":               videoRendition(feed.Ladder, "p720").BitrateKbps,
+			"p720_program":                    videoRendition(feed.Ladder, "p720").Program,
+			"p720_video_pid":                  videoRendition(feed.Ladder, "p720").VideoPID,
+			"p720_pmt_pid":                    videoRendition(feed.Ladder, "p720").PMTPID,
 			"sd_enabled":                      xmlBool(videoRendition(feed.Ladder, "sd").Enabled, false),
 			"sd_bitrate_kbps":                 videoRendition(feed.Ladder, "sd").BitrateKbps,
+			"sd_program":                      videoRendition(feed.Ladder, "sd").Program,
+			"sd_video_pid":                    videoRendition(feed.Ladder, "sd").VideoPID,
+			"sd_pmt_pid":                      videoRendition(feed.Ladder, "sd").PMTPID,
 			"surround_enabled":                xmlBool(audioRendition(feed.Ladder, "surround_51").Enabled, true),
 			"surround_bitrate_kbps":           audioRendition(feed.Ladder, "surround_51").BitrateKbps,
+			"surround_program":                audioRendition(feed.Ladder, "surround_51").Program,
+			"surround_audio_pid":              audioRendition(feed.Ladder, "surround_51").AudioPID,
+			"surround_pmt_pid":                audioRendition(feed.Ladder, "surround_51").PMTPID,
 			"stereo_enabled":                  xmlBool(audioRendition(feed.Ladder, "stereo").Enabled, true),
 			"stereo_bitrate_kbps":             audioRendition(feed.Ladder, "stereo").BitrateKbps,
+			"stereo_program":                  audioRendition(feed.Ladder, "stereo").Program,
+			"stereo_audio_pid":                audioRendition(feed.Ladder, "stereo").AudioPID,
+			"stereo_pmt_pid":                  audioRendition(feed.Ladder, "stereo").PMTPID,
 			"width":                           feed.Video.Width,
 			"height":                          feed.Video.Height,
 			"fps":                             feed.Video.FPS,
@@ -1026,16 +1294,63 @@ func cgenPayload(configPath string, path string, config cgenXML) map[string]any 
 			"sync_status_interval_ms":         feed.Sync.StatusIntervalMS,
 			"updated_at":                      fallbackText(feed.State.UpdatedAt, feed.UpdatedAt),
 			"runtime":                         runtime,
-		})
+		}
+		for key, value := range cgenEncoderPayload(encoders, feed.ID) {
+			row[key] = value
+		}
+		rows = append(rows, row)
 	}
 	return map[string]any{
-		"path":    filepath.ToSlash(path),
-		"enabled": xmlBool(config.Enabled, true),
-		"feeds":   rows,
+		"path":         filepath.ToSlash(path),
+		"encoder_path": filepath.ToSlash(encoderPath),
+		"enabled":      xmlBool(config.Enabled, true),
+		"feeds":        rows,
 		"summary": map[string]any{
 			"count": len(rows),
 		},
 	}
+}
+
+func cgenEncoderPayload(encoders cgenEncodersXML, feedID string) map[string]any {
+	feed := cgenEncoderFeed(encoders, feedID)
+	videoOptions := encoderOptionsPayload(feed.Video.Options)
+	audioOptions := encoderOptionsPayload(feed.Audio.Options)
+	return map[string]any{
+		"video_encoder_codec":        feed.Video.Codec,
+		"video_encoder_bitrate_kbps": feed.Video.BitrateKbps,
+		"video_gop":                  feed.Video.GOP,
+		"video_bframes":              feed.Video.BFrames,
+		"video_preset":               feed.Video.Preset,
+		"video_tune":                 feed.Video.Tune,
+		"video_profile":              feed.Video.Profile,
+		"video_level":                feed.Video.Level,
+		"video_encoder_options":      videoOptions,
+		"audio_encoder_codec":        feed.Audio.Codec,
+		"audio_encoder_bitrate_kbps": feed.Audio.BitrateKbps,
+		"audio_profile":              feed.Audio.Profile,
+		"audio_level":                feed.Audio.Level,
+		"audio_encoder_options":      audioOptions,
+	}
+}
+
+func cgenEncoderFeed(encoders cgenEncodersXML, feedID string) cgenEncoderFeedXML {
+	for _, feed := range encoders.Feeds {
+		if strings.EqualFold(feed.ID, feedID) {
+			return feed
+		}
+	}
+	return cgenEncoderFeedXML{}
+}
+
+func encoderOptionsPayload(options []cgenEncoderOptionXML) []map[string]any {
+	out := make([]map[string]any, 0, len(options))
+	for _, option := range options {
+		out = append(out, map[string]any{
+			"name":  option.Name,
+			"value": option.Value,
+		})
+	}
+	return out
 }
 
 func loadCgenRuntimeStatus(configPath string, feedID string) map[string]any {
@@ -1067,6 +1382,10 @@ func cleanCgenEndpoint(value cgenEndpointXML) cgenEndpointXML {
 	value.ACodec = strings.TrimSpace(value.ACodec)
 	value.VideoBitrateKbps = cleanOptionalPositive(value.VideoBitrateKbps)
 	value.AudioBitrateKbps = cleanOptionalPositive(value.AudioBitrateKbps)
+	value.ServiceName = strings.TrimSpace(value.ServiceName)
+	value.ProviderName = strings.TrimSpace(value.ProviderName)
+	value.ServiceID = cleanOptionalPositive(value.ServiceID)
+	value.TransportStreamID = cleanOptionalPositive(value.TransportStreamID)
 	return value
 }
 

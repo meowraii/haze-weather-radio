@@ -111,7 +111,15 @@ function writeEditor(item) {
     Object.values(fields).forEach((field) => {
         if (field !== fields.audioUpload) field.disabled = empty;
     });
-    if (!item) return;
+    if (!item) {
+        Object.entries(fields).forEach(([key, field]) => {
+            if (!field || field === fields.audioUpload) return;
+            if (field.type === 'checkbox') field.checked = key === 'endCycle';
+            else field.value = key === 'scheduleMode' ? 'always' : (key === 'contentType' ? 'tts' : '');
+        });
+        updateContentVisibility();
+        return;
+    }
     fields.id.value = item.id || '';
     fields.title.value = item.title || '';
     fields.enabled.checked = item.enabled !== false;
@@ -134,7 +142,7 @@ function renderTable() {
     countMetric.textContent = String(bulletins.length);
     enabledMetric.textContent = String(bulletins.filter((item) => item.enabled !== false).length);
     if (!bulletins.length) {
-        tableBody.innerHTML = '<tr><td colspan="7">No bulletins configured.</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="7" class="panel-empty-cell">No bulletins configured.</td></tr>';
         writeEditor(null);
         return;
     }
@@ -150,16 +158,19 @@ function renderTable() {
             ? `Audio ${item.audio_file || item.audio_url || ''}`
             : 'TTS';
         const feeds = (item.feeds || []).length ? csv(item.feeds) : 'All feeds';
+        const active = item.id === selectedID;
+        const enabledState = item.enabled !== false ? 'enabled' : 'disabled';
+        const contentState = item.content_type === 'audio' ? 'audio' : 'tts';
         return `
-            <tr class="${item.id === selectedID ? 'active' : ''}" data-bulletin-id="${escapeHtml(item.id)}">
-                <td><input type="checkbox" ${item.enabled !== false ? 'checked' : ''} data-bulletin-toggle></td>
+            <tr class="${active ? 'active' : ''}" data-bulletin-id="${escapeHtml(item.id)}" aria-selected="${active ? 'true' : 'false'}" tabindex="0">
+                <td><input type="checkbox" ${item.enabled !== false ? 'checked' : ''} data-bulletin-toggle aria-label="Enable ${escapeHtml(item.title || item.id)}"> <span class="table-pill" data-state="${enabledState}">${enabledState}</span></td>
                 <td class="bulletin-title-cell"><strong>${escapeHtml(item.title || item.id)}</strong><span>${escapeHtml(item.id)}</span></td>
-                <td>${escapeHtml(windowText)}</td>
-                <td>${escapeHtml(schedule)}</td>
-                <td>${escapeHtml(content)}</td>
-                <td>${escapeHtml(feeds)}</td>
+                <td title="${escapeHtml(windowText)}">${escapeHtml(windowText)}</td>
+                <td title="${escapeHtml(schedule)}">${escapeHtml(schedule)}</td>
+                <td title="${escapeHtml(content)}"><span class="table-pill" data-state="${contentState}">${escapeHtml(item.content_type === 'audio' ? 'Audio' : 'TTS')}</span></td>
+                <td title="${escapeHtml(feeds)}">${escapeHtml(feeds)}</td>
                 <td>
-                    <div class="bulletin-row-actions">
+                    <div class="bulletin-row-actions table-row-actions">
                         <button class="btn-action" type="button" data-bulletin-export>Export</button>
                         <button class="btn-danger" type="button" data-bulletin-delete>Delete</button>
                     </div>
@@ -291,9 +302,11 @@ export function initBulletinsView() {
         updateSelectedFromEditor();
         selectedID = row.dataset.bulletinId;
         if (event.target.closest('[data-bulletin-delete]')) {
+            const removedID = selectedID;
             bulletins = bulletins.filter((item) => item.id !== selectedID);
             selectedID = bulletins[0]?.id || '';
             renderTable();
+            setStatus(`Removed ${removedID}. Save to persist.`, 'pending');
             return;
         }
         if (event.target.closest('[data-bulletin-export]')) {
@@ -304,7 +317,18 @@ export function initBulletinsView() {
         if (toggle) {
             const item = selected();
             if (item) item.enabled = toggle.checked;
+            setStatus('Unsaved bulletin changes.', 'pending');
         }
+        renderTable();
+    });
+    tableBody.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        if (event.target.closest('button,input')) return;
+        const row = event.target.closest('[data-bulletin-id]');
+        if (!row) return;
+        event.preventDefault();
+        updateSelectedFromEditor();
+        selectedID = row.dataset.bulletinId;
         renderTable();
     });
     loadBulletins().catch((error) => setStatus(error.message || 'Unable to load bulletins.', 'err'));

@@ -13,8 +13,15 @@ type Config struct {
 	Version  string                  `yaml:"version"`
 	Storage  datastore.StorageConfig `yaml:"storage"`
 	Webpanel struct {
-		Host   string `yaml:"host"`
-		Port   int    `yaml:"port"`
+		Host         string   `yaml:"host"`
+		Port         int      `yaml:"port"`
+		AllowedHosts []string `yaml:"allowed_hosts"`
+		PublicPort   struct {
+			Enabled   bool   `yaml:"enabled"`
+			Host      string `yaml:"host"`
+			HTTPPort  int    `yaml:"http_port"`
+			HTTPSPort int    `yaml:"https_port"`
+		} `yaml:"public_port"`
 		Public struct {
 			SiteName      string `yaml:"site_name"`
 			AlertsArchive struct {

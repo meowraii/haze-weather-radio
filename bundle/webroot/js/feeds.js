@@ -81,6 +81,14 @@ function queueDepth(feed) {
     return Array.isArray(runtime.queue) ? runtime.queue.length : Number(runtime.queue_depth || 0);
 }
 
+function modeState(mode) {
+    const value = String(mode || '').toLowerCase();
+    if (['running', 'playing', 'active', 'live'].includes(value)) return 'running';
+    if (['paused', 'pending', 'queued', 'waiting'].includes(value)) return 'paused';
+    if (['stopped', 'disabled', 'error', 'failed'].includes(value)) return 'stopped';
+    return 'unknown';
+}
+
 function readEditor() {
     return {
         id: sanitizeID(fields.id.value),
@@ -136,6 +144,11 @@ function writeEditor(feed) {
     deleteButton.disabled = empty;
     saveButton.disabled = empty;
     if (!feed) {
+        Object.values(fields).forEach((field) => {
+            if (!field) return;
+            if (field.type === 'checkbox') field.checked = false;
+            else field.value = '';
+        });
         selectedLabel.textContent = 'No feed selected';
         selectedMetric.textContent = 'none';
         return;
@@ -174,7 +187,7 @@ function writeEditor(feed) {
 function renderTable() {
     countMetric.textContent = String(feeds.length);
     if (!feeds.length) {
-        tableBody.innerHTML = '<tr><td colspan="4">No feeds configured.</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="4" class="panel-empty-cell">No feeds configured.</td></tr>';
         writeEditor(null);
         return;
     }
@@ -183,18 +196,21 @@ function renderTable() {
         const mode = runtimeMode(feed);
         const pauseAction = mode === 'paused' ? 'unpause' : 'pause';
         const stopAction = mode === 'stopped' ? 'restart' : 'stop';
+        const active = feed.id === selectedID;
+        const enabledState = feed.enabled !== false ? 'enabled' : 'disabled';
+        const depth = queueDepth(feed);
         return `
-            <tr class="feed-row ${feed.id === selectedID ? 'active' : ''}" data-feed-id="${escapeHtml(feed.id)}">
+            <tr class="feed-row ${active ? 'active' : ''}" data-feed-id="${escapeHtml(feed.id)}" aria-selected="${active ? 'true' : 'false'}" tabindex="0">
                 <td>
                     <div class="feed-row-title">
                         <strong>${escapeHtml(feed.site_name || feed.id)}</strong>
-                        <span>${escapeHtml(feed.id)} · ${feed.enabled !== false ? 'enabled' : 'disabled'}</span>
+                        <span><code>${escapeHtml(feed.id)}</code> <span class="table-pill" data-state="${enabledState}">${enabledState}</span></span>
                     </div>
                 </td>
-                <td>${escapeHtml(mode)}</td>
-                <td>${escapeHtml(queueDepth(feed))}</td>
+                <td><span class="table-pill" data-state="${escapeHtml(modeState(mode))}" title="${escapeHtml(mode)}">${escapeHtml(mode)}</span></td>
+                <td><span class="table-queue" data-active="${depth > 0 ? 'true' : 'false'}">${escapeHtml(depth)}</span></td>
                 <td>
-                    <div class="feed-row-actions">
+                    <div class="feed-row-actions table-row-actions">
                         <button class="btn-action" type="button" data-feed-control="${pauseAction}">${pauseAction === 'pause' ? 'Pause' : 'Unpause'}</button>
                         <button class="${stopAction === 'stop' ? 'btn-danger' : 'btn-action'}" type="button" data-feed-control="${stopAction}">${stopAction === 'stop' ? 'Stop' : 'Restart'}</button>
                     </div>
@@ -284,6 +300,16 @@ function bind() {
         }
         const row = event.target.closest('[data-feed-id]');
         if (!row) return;
+        updateSelectedFromEditor();
+        selectedID = row.dataset.feedId;
+        renderTable();
+    });
+    tableBody.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        if (event.target.closest('button')) return;
+        const row = event.target.closest('[data-feed-id]');
+        if (!row) return;
+        event.preventDefault();
         updateSelectedFromEditor();
         selectedID = row.dataset.feedId;
         renderTable();

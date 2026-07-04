@@ -775,24 +775,44 @@ func IsCAPEnded(alert capmodel.Alert, now time.Time) bool {
 	if strings.EqualFold(alert.MessageType, "Cancel") {
 		return true
 	}
+	if len(alert.Infos) == 0 {
+		return false
+	}
+	allExplicitlyEnded := true
+	allExpired := !now.IsZero()
 	for _, info := range alert.Infos {
-		for _, response := range info.Response {
-			if strings.EqualFold(response, "AllClear") {
-				return true
-			}
+		explicitlyEnded := capInfoExplicitlyEnded(info)
+		if !explicitlyEnded {
+			allExplicitlyEnded = false
 		}
-		status := strings.ToLower(fallbackText(
-			CAPParam(info, "layer:EC-MSC-SMC:1.0:Alert_Location_Status"),
-			CAPParam(info, "layer:EC-MSC-SMC:1.1:Alert_Location_Status"),
-		))
-		if status == "ended" || strings.Contains(strings.ToLower(info.Headline), "ended") {
-			return true
+		expired := false
+		if expires := ParseCAPTime(info.Expires); !expires.IsZero() && !now.IsZero() {
+			expired = now.After(expires)
+		}
+		if !expired {
+			allExpired = false
+		}
+		if !explicitlyEnded && !expired {
+			return false
 		}
 	}
-	if expires := AlertExpiresAt(alert); !expires.IsZero() && !now.IsZero() && now.After(expires) {
+	if allExplicitlyEnded || allExpired {
 		return true
 	}
 	return false
+}
+
+func capInfoExplicitlyEnded(info capmodel.AlertInfo) bool {
+	for _, response := range info.Response {
+		if strings.EqualFold(response, "AllClear") {
+			return true
+		}
+	}
+	status := strings.ToLower(fallbackText(
+		CAPParam(info, "layer:EC-MSC-SMC:1.0:Alert_Location_Status"),
+		CAPParam(info, "layer:EC-MSC-SMC:1.1:Alert_Location_Status"),
+	))
+	return status == "ended" || strings.Contains(strings.ToLower(info.Headline), "ended")
 }
 
 // AlertExpiresAt returns the first CAP info expiry timestamp.

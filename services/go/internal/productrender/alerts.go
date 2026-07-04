@@ -1654,21 +1654,28 @@ func isExplicitCAPEnd(alert capmodel.Alert) bool {
 	if strings.EqualFold(alert.MessageType, "Cancel") {
 		return true
 	}
+	sawEnd := false
 	for _, info := range alert.Infos {
-		for _, response := range info.Response {
-			if strings.EqualFold(response, "AllClear") {
-				return true
-			}
+		if capInfoExplicitEnd(info) {
+			sawEnd = true
+			continue
 		}
-		status := strings.ToLower(alertParam(info, "layer:EC-MSC-SMC:1.0:Alert_Location_Status"))
-		if status == "" {
-			status = strings.ToLower(alertParam(info, "layer:EC-MSC-SMC:1.1:Alert_Location_Status"))
-		}
-		if status == "ended" || strings.Contains(strings.ToLower(info.Headline), "ended") {
+		return false
+	}
+	return sawEnd
+}
+
+func capInfoExplicitEnd(info capmodel.AlertInfo) bool {
+	for _, response := range info.Response {
+		if strings.EqualFold(response, "AllClear") {
 			return true
 		}
 	}
-	return false
+	status := strings.ToLower(alertParam(info, "layer:EC-MSC-SMC:1.0:Alert_Location_Status"))
+	if status == "" {
+		status = strings.ToLower(alertParam(info, "layer:EC-MSC-SMC:1.1:Alert_Location_Status"))
+	}
+	return status == "ended" || strings.Contains(strings.ToLower(info.Headline), "ended")
 }
 
 func feedAcceptsCAPSource(feed feedXML, alert capmodel.Alert) bool {
@@ -2375,7 +2382,7 @@ func alertCoverageCodes(alert capmodel.Alert) []string {
 			seen[value] = struct{}{}
 		}
 	}
-	for _, info := range alert.Infos {
+	for _, info := range capActiveOrAllInfos(alert.Infos) {
 		for _, param := range info.Parameters {
 			name := strings.ToLower(param.Name)
 			if strings.Contains(name, "newly_active_areas") || strings.Contains(name, "clc") || strings.Contains(name, "location") {
@@ -2490,7 +2497,8 @@ func renderCAPAlertSentence(entry capRegistryEntry, info capmodel.AlertInfo, fee
 }
 
 func chooseAlertInfo(alert capmodel.Alert, lang string) *capmodel.AlertInfo {
-	if len(alert.Infos) == 0 {
+	infos := capActiveOrAllInfos(alert.Infos)
+	if len(infos) == 0 {
 		return nil
 	}
 	lang = strings.ToLower(strings.TrimSpace(lang))
@@ -2498,19 +2506,35 @@ func chooseAlertInfo(alert capmodel.Alert, lang string) *capmodel.AlertInfo {
 	if idx := strings.Index(short, "-"); idx >= 0 {
 		short = short[:idx]
 	}
-	for i := range alert.Infos {
-		infoLang := strings.ToLower(strings.TrimSpace(alert.Infos[i].Language))
+	for i := range infos {
+		infoLang := strings.ToLower(strings.TrimSpace(infos[i].Language))
 		if infoLang == lang || infoLang == short || (short == "en" && strings.HasPrefix(infoLang, "en")) {
-			return &alert.Infos[i]
+			return &infos[i]
 		}
 	}
-	for i := range alert.Infos {
-		infoLang := strings.ToLower(strings.TrimSpace(alert.Infos[i].Language))
+	for i := range infos {
+		infoLang := strings.ToLower(strings.TrimSpace(infos[i].Language))
 		if strings.HasPrefix(infoLang, "en") {
-			return &alert.Infos[i]
+			return &infos[i]
 		}
 	}
-	return &alert.Infos[0]
+	return &infos[0]
+}
+
+func capActiveOrAllInfos(infos []capmodel.AlertInfo) []capmodel.AlertInfo {
+	active := make([]capmodel.AlertInfo, 0, len(infos))
+	sawEnd := false
+	for _, info := range infos {
+		if capInfoExplicitEnd(info) {
+			sawEnd = true
+			continue
+		}
+		active = append(active, info)
+	}
+	if sawEnd && len(active) > 0 {
+		return active
+	}
+	return infos
 }
 
 func alertSenderName(alert capmodel.Alert) string {
@@ -2771,12 +2795,13 @@ func isCAPEnded(alert capmodel.Alert, now time.Time) bool {
 }
 
 func alertExpiresAt(alert capmodel.Alert) time.Time {
-	for _, info := range alert.Infos {
-		if expires := parseCAPTime(info.Expires); !expires.IsZero() {
-			return expires
+	var latest time.Time
+	for _, info := range capActiveOrAllInfos(alert.Infos) {
+		if expires := parseCAPTime(info.Expires); !expires.IsZero() && expires.After(latest) {
+			latest = expires
 		}
 	}
-	return time.Time{}
+	return latest
 }
 
 func firstCAPTime(sent string, infos []capmodel.AlertInfo) time.Time {

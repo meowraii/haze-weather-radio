@@ -244,6 +244,97 @@ func convertAudioToPCM(ctx context.Context, inputPath string, outputPath string,
 	return os.Rename(tmp, outputPath)
 }
 
+func convertAlertAudioToPCM(ctx context.Context, inputPath string, outputPath string, sampleRate int, channels int) error {
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	if channels <= 0 {
+		channels = 1
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	tmp := outputPath + ".tmp"
+	_ = os.Remove(tmp)
+	ffmpeg := strings.TrimSpace(os.Getenv("FFMPEG"))
+	if ffmpeg == "" {
+		ffmpeg = "ffmpeg"
+	}
+	cmd := exec.CommandContext(
+		ctx,
+		ffmpeg,
+		"-hide_banner",
+		"-loglevel", "error",
+		"-nostdin",
+		"-y",
+		"-i", inputPath,
+		"-vn",
+		"-sn",
+		"-dn",
+		"-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+		"-ac", fmt.Sprintf("%d", channels),
+		"-ar", fmt.Sprintf("%d", sampleRate),
+		"-f", "s16le",
+		"-acodec", "pcm_s16le",
+		tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("ffmpeg alert audio conversion failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return os.Rename(tmp, outputPath)
+}
+
+func convertRawPCM16FileToPCM(ctx context.Context, inputPath string, outputPath string, sourceRate int, sourceChannels int, sampleRate int, channels int) error {
+	if sourceRate <= 0 {
+		sourceRate = 48000
+	}
+	if sourceChannels <= 0 {
+		sourceChannels = 1
+	}
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	if channels <= 0 {
+		channels = 1
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	tmp := outputPath + ".tmp"
+	_ = os.Remove(tmp)
+	ffmpeg := strings.TrimSpace(os.Getenv("FFMPEG"))
+	if ffmpeg == "" {
+		ffmpeg = "ffmpeg"
+	}
+	cmd := exec.CommandContext(
+		ctx,
+		ffmpeg,
+		"-hide_banner",
+		"-loglevel", "error",
+		"-nostdin",
+		"-y",
+		"-f", "s16le",
+		"-acodec", "pcm_s16le",
+		"-ar", fmt.Sprintf("%d", sourceRate),
+		"-ac", fmt.Sprintf("%d", sourceChannels),
+		"-i", inputPath,
+		"-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+		"-f", "s16le",
+		"-acodec", "pcm_s16le",
+		"-ar", fmt.Sprintf("%d", sampleRate),
+		"-ac", fmt.Sprintf("%d", channels),
+		tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("ffmpeg alert PCM conversion failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return os.Rename(tmp, outputPath)
+}
+
 func convertAudioToWAV(ctx context.Context, inputPath string, outputPath string, sampleRate int, channels int) error {
 	if sampleRate <= 0 {
 		sampleRate = 48000

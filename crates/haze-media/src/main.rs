@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::env;
+use std::net::IpAddr;
+#[cfg(feature = "gstreamer-backend")]
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket as StdUdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "gstreamer-backend")]
-use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,6 +16,8 @@ use haze_media::{normalize_pcm, pcm16_samples, push_i16, AudioFormat, Pcm};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+#[cfg(feature = "gstreamer-backend")]
+use tokio::net::UdpSocket;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, sleep, MissedTickBehavior};
@@ -37,22 +40,30 @@ const FRAME_SAMPLES: usize = SAMPLE_RATE as usize / 50;
 const FRAME_BYTES: usize = FRAME_SAMPLES * CHANNELS as usize * 2;
 const INPUT_QUEUE_CAPACITY: usize = 32;
 const PACED_FRAME_CAPACITY: usize = 64;
-const TARGET_SOURCE_QUEUE_MS: u64 = 280;
-const SOFT_SOURCE_QUEUE_MS: u64 = 440;
-const MAX_SOURCE_QUEUE_MS: u64 = 900;
-const SOURCE_DRIFT_TRIM_MS: u64 = 2;
-const MIN_SOURCE_DRIFT_TRIM_SAMPLES: usize = 4;
+const TARGET_SOURCE_QUEUE_MS: u64 = 600;
+const SOFT_SOURCE_QUEUE_MS: u64 = 1_500;
+const MAX_SOURCE_QUEUE_MS: u64 = 5_000;
+const SOURCE_DRIFT_TRIM_MS: u64 = 0;
+const FEED_CLOCK_REBASE_LAG_MS: u64 = 80;
 const CONCEALMENT_FRAMES: u8 = 3;
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 const HTTP_HEADER_LIMIT: usize = 16 * 1024;
 const HTTP_BODY_LIMIT: usize = 512 * 1024;
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
+const STR0M_WEBRTC_UDP_BUFFER: usize = 2_048;
+#[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
+const STR0M_WEBRTC_ENCODED_QUEUE_CAPACITY: usize = 12;
+#[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
+const STR0M_WEBRTC_PEER_PREROLL_FRAMES: usize = 3;
+#[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
+const STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES: usize = 12;
+#[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
+const STR0M_WEBRTC_PEER_DRAIN_LIMIT: usize = 32;
+#[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
 const ENCODED_HTTP_QUEUE_CAPACITY: usize = 64;
 const RAW_HTTP_LAG_RESYNC_SILENCE_FRAMES: u64 = 1;
-#[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
-const WEBRTC_OFFER_TIMEOUT: Duration = Duration::from_secs(8);
-#[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
-const WEBRTC_ICE_GATHER_WINDOW: Duration = Duration::from_millis(900);
+const WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
+const WEBRTC_CONNECTED_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const NEAR_SILENT_PEAK: u16 = 20;
 const CLIP_SAMPLE_PEAK: u16 = 32_760;
 const AUDIO_HEALTH_INPUT_STALE_MS: u128 = 1_000;
@@ -222,6 +233,13 @@ struct PcmChunk {
     sample_rate: u32,
     channels: u16,
     data: Vec<u8>,
+    bypass_loudness: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct QueuedSample {
+    value: i16,
+    bypass_loudness: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -263,24 +281,6 @@ impl WebRTCAudioCodec {
             (self, payload_type),
             (Self::G722, 9) | (Self::Pcmu, 0) | (Self::Pcma, 8)
         )
-    }
-
-    #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
-    fn webrtc_caps(self, payload_type: u8) -> String {
-        match self {
-            Self::Opus => format!(
-                "application/x-rtp,media=audio,encoding-name=OPUS,payload={payload_type},clock-rate=48000"
-            ),
-            Self::G722 => format!(
-                "application/x-rtp,media=audio,encoding-name=G722,payload={payload_type},clock-rate=8000"
-            ),
-            Self::Pcmu => format!(
-                "application/x-rtp,media=audio,encoding-name=PCMU,payload={payload_type},clock-rate=8000"
-            ),
-            Self::Pcma => format!(
-                "application/x-rtp,media=audio,encoding-name=PCMA,payload={payload_type},clock-rate=8000"
-            ),
-        }
     }
 }
 
@@ -510,6 +510,55 @@ struct WebRTCPeerSnapshot {
     dropped_frames: u64,
 }
 
+#[derive(Debug)]
+struct WebRTCPeerAudioPacer {
+    frames: VecDeque<Arc<[u8]>>,
+    silence: Arc<[u8]>,
+    primed: bool,
+}
+
+impl WebRTCPeerAudioPacer {
+    fn new() -> Self {
+        Self {
+            frames: VecDeque::with_capacity(STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES),
+            silence: Arc::from(vec![0u8; FRAME_BYTES]),
+            primed: false,
+        }
+    }
+
+    fn push(&mut self, frame: Arc<[u8]>) {
+        while self.frames.len() >= STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES {
+            self.frames.pop_front();
+        }
+        self.frames.push_back(frame);
+        if self.frames.len() >= STR0M_WEBRTC_PEER_PREROLL_FRAMES {
+            self.primed = true;
+        }
+    }
+
+    fn pop_paced(&mut self) -> (Arc<[u8]>, bool) {
+        if !self.primed {
+            if self.frames.len() >= STR0M_WEBRTC_PEER_PREROLL_FRAMES {
+                self.primed = true;
+            } else {
+                return (Arc::clone(&self.silence), false);
+            }
+        }
+        match self.frames.pop_front() {
+            Some(frame) => (frame, true),
+            None => {
+                self.primed = false;
+                (Arc::clone(&self.silence), false)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn queued_frames(&self) -> usize {
+        self.frames.len()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 struct WebRTCCodecSelection {
     codec: WebRTCAudioCodec,
@@ -737,7 +786,7 @@ impl MediaState {
     fn health(&self) -> Value {
         let http_clients = self.http_client_snapshots();
         let webrtc_peers = self.webrtc_peer_snapshots();
-        let webrtc_ready = self.gstreamer_available && self.webrtc_available;
+        let webrtc_ready = self.webrtc_available;
         let webrtc_codecs = self
             .webrtc_codecs
             .iter()
@@ -753,10 +802,11 @@ impl MediaState {
                 "encoded_http_audio": self.gstreamer_available,
                 "webrtc": webrtc_ready,
                 "webrtc_reason": if webrtc_ready { Value::Null } else if !self.gstreamer_available {
-                    json!("gstreamer backend is unavailable")
+                    json!("gstreamer encoder backend is unavailable")
                 } else {
-                    json!("gstreamer webrtc elements are unavailable")
+                    json!("str0m WebRTC encoder elements are unavailable")
                 },
+                "webrtc_backend": "str0m",
                 "webrtc_codecs": webrtc_codecs,
             },
             "audio_processing": audio_processing_health(),
@@ -997,14 +1047,28 @@ fn feed_clock_thread_name(feed_id: &str) -> String {
     format!("haze-media-clock-{}", feed_id.trim())
 }
 
+fn next_feed_clock_tick(scheduled_tick: Instant, ticked_at: Instant) -> Instant {
+    let schedule_lag = ticked_at.saturating_duration_since(scheduled_tick);
+    if schedule_lag > Duration::from_millis(FEED_CLOCK_REBASE_LAG_MS) {
+        ticked_at
+            .checked_add(FRAME_DURATION)
+            .unwrap_or_else(Instant::now)
+    } else {
+        scheduled_tick
+            .checked_add(FRAME_DURATION)
+            .unwrap_or_else(Instant::now)
+    }
+}
+
 fn feed_clock_thread(runtime: Arc<FeedRuntime>, mut input_rx: mpsc::Receiver<PcmChunk>) {
     let mut next_tick = Instant::now();
-    let mut samples = VecDeque::<i16>::with_capacity(FRAME_SAMPLES * 12);
+    let mut samples =
+        VecDeque::<QueuedSample>::with_capacity(max_source_queue_samples().max(FRAME_SAMPLES * 12));
     let mut frame = Vec::with_capacity(FRAME_BYTES);
     let mut last_real_frame = vec![0i16; FRAME_SAMPLES];
+    let mut last_real_bypass_loudness = false;
     let mut previous_output_frame = Vec::with_capacity(FRAME_BYTES);
     let mut concealment_remaining = 0u8;
-    let mut smooth_trim_budget_samples = 0usize;
     let mut primed = false;
     let mut sequence = 0u64;
     let mut last_input_at: Option<Instant> = None;
@@ -1017,16 +1081,7 @@ fn feed_clock_thread(runtime: Arc<FeedRuntime>, mut input_rx: mpsc::Receiver<Pcm
             thread::sleep(next_tick.duration_since(before_sleep));
         }
         let ticked_at = Instant::now();
-        let schedule_lag = ticked_at.saturating_duration_since(scheduled_tick);
-        next_tick = if schedule_lag > Duration::from_millis(80) {
-            ticked_at
-                .checked_add(FRAME_DURATION)
-                .unwrap_or_else(Instant::now)
-        } else {
-            scheduled_tick
-                .checked_add(FRAME_DURATION)
-                .unwrap_or_else(Instant::now)
-        };
+        next_tick = next_feed_clock_tick(scheduled_tick, ticked_at);
         let tick_gap = last_tick_at.map(|previous| ticked_at.duration_since(previous));
         last_tick_at = Some(ticked_at);
         let late_tick = tick_gap
@@ -1047,41 +1102,26 @@ fn feed_clock_thread(runtime: Arc<FeedRuntime>, mut input_rx: mpsc::Receiver<Pcm
                 Err(mpsc::error::TryRecvError::Disconnected) => return,
             }
         }
-        let (stale_dropped, smooth_trim_budget_hint) = trim_source_queue(&mut samples, primed);
-        smooth_trim_budget_samples = smooth_trim_budget_samples.max(smooth_trim_budget_hint);
+        let stale_dropped = trim_source_queue(&mut samples);
 
         frame.clear();
         let mut real = 0usize;
-        let mut soft_trimmed = 0u64;
         let mut concealed = false;
+        let frame_bypass_loudness;
         let target_samples = target_source_queue_samples();
         if !primed && samples.len() >= target_samples {
             primed = true;
             concealment_remaining = CONCEALMENT_FRAMES;
         }
         if primed && samples.len() >= FRAME_SAMPLES {
-            let correction_excess = samples
-                .len()
-                .saturating_sub(target_source_queue_samples() + FRAME_SAMPLES);
-            let trim_now = smooth_trim_budget_samples
-                .min(source_drift_trim_samples(correction_excess))
-                .min(samples.len().saturating_sub(FRAME_SAMPLES));
-            if trim_now > 0 {
-                render_exact_frame_with_trim(
-                    &mut samples,
-                    &mut frame,
-                    &mut last_real_frame,
-                    trim_now,
-                );
-                smooth_trim_budget_samples = smooth_trim_budget_samples.saturating_sub(trim_now);
-                soft_trimmed = trim_now as u64;
-            } else {
+            frame_bypass_loudness =
                 render_exact_frame(&mut samples, &mut frame, &mut last_real_frame);
-            }
+            last_real_bypass_loudness = frame_bypass_loudness;
             real = FRAME_SAMPLES;
             concealment_remaining = CONCEALMENT_FRAMES;
         } else if primed && concealment_remaining > 0 {
             render_concealment_frame(&last_real_frame, concealment_remaining, &mut frame);
+            frame_bypass_loudness = last_real_bypass_loudness;
             concealment_remaining = concealment_remaining.saturating_sub(1);
             concealed = true;
         } else {
@@ -1089,8 +1129,12 @@ fn feed_clock_thread(runtime: Arc<FeedRuntime>, mut input_rx: mpsc::Receiver<Pcm
                 push_i16(&mut frame, 0);
             }
             primed = false;
+            last_real_bypass_loudness = false;
+            frame_bypass_loudness = false;
         }
-        loudness.process(&mut frame);
+        if !frame_bypass_loudness {
+            loudness.process(&mut frame);
+        }
         sequence = sequence.saturating_add(1);
         let signal = analyze_pcm_frame(&frame, &previous_output_frame);
         previous_output_frame.clear();
@@ -1119,9 +1163,6 @@ fn feed_clock_thread(runtime: Arc<FeedRuntime>, mut input_rx: mpsc::Receiver<Pcm
                 stats.partial_frames = stats.partial_frames.saturating_add(1);
             }
             stats.stale_samples_dropped = stats.stale_samples_dropped.saturating_add(stale_dropped);
-            stats.source_drift_samples_trimmed = stats
-                .source_drift_samples_trimmed
-                .saturating_add(soft_trimmed);
             if signal.near_silent {
                 stats.near_silent_frames = stats.near_silent_frames.saturating_add(1);
                 stats.consecutive_near_silent_frames =
@@ -1164,6 +1205,7 @@ fn max_source_queue_samples() -> usize {
     (SAMPLE_RATE as u64 * MAX_SOURCE_QUEUE_MS / 1_000) as usize
 }
 
+#[cfg(test)]
 fn soft_source_queue_samples() -> usize {
     let target = target_source_queue_samples();
     let max = max_source_queue_samples();
@@ -1171,91 +1213,45 @@ fn soft_source_queue_samples() -> usize {
     soft.clamp(target + FRAME_SAMPLES, max)
 }
 
-fn max_source_drift_trim_samples() -> usize {
-    ((SAMPLE_RATE as u64 * SOURCE_DRIFT_TRIM_MS / 1_000) as usize).max(1)
-}
-
-fn source_drift_trim_samples(excess_samples: usize) -> usize {
-    if excess_samples == 0 {
-        return 0;
-    }
-    (excess_samples / 20)
-        .clamp(
-            MIN_SOURCE_DRIFT_TRIM_SAMPLES,
-            max_source_drift_trim_samples(),
-        )
-        .min(excess_samples)
-}
-
-fn trim_source_queue(samples: &mut VecDeque<i16>, primed: bool) -> (u64, usize) {
+fn trim_source_queue(samples: &mut VecDeque<QueuedSample>) -> u64 {
     let max_samples = max_source_queue_samples();
+    let target_samples = target_source_queue_samples();
     let mut stale_dropped = 0u64;
-    while samples.len() > max_samples {
+    let keep_samples = if samples.len() > max_samples && source_queue_prefix_near_silent(samples) {
+        target_samples
+    } else {
+        max_samples
+    };
+    while samples.len() > keep_samples {
         samples.pop_front();
         stale_dropped = stale_dropped.saturating_add(1);
     }
+    stale_dropped
+}
 
-    let mut smooth_trim_budget_hint = 0usize;
-    if primed && samples.len() > soft_source_queue_samples() {
-        let target_samples = target_source_queue_samples();
-        let trim_samples = samples
-            .len()
-            .saturating_sub(target_samples)
-            .min(max_source_queue_samples());
-        smooth_trim_budget_hint = trim_samples;
-    }
-    (stale_dropped, smooth_trim_budget_hint)
+fn source_queue_prefix_near_silent(samples: &VecDeque<QueuedSample>) -> bool {
+    samples.len() >= FRAME_SAMPLES
+        && samples
+            .iter()
+            .take(FRAME_SAMPLES)
+            .all(|sample| sample.value.unsigned_abs() <= NEAR_SILENT_PEAK)
 }
 
 fn render_exact_frame(
-    samples: &mut VecDeque<i16>,
+    samples: &mut VecDeque<QueuedSample>,
     frame: &mut Vec<u8>,
     last_real_frame: &mut [i16],
-) {
+) -> bool {
+    let mut bypass_loudness = false;
     for output_index in 0..FRAME_SAMPLES {
         let sample = samples.pop_front().unwrap_or_default();
         if let Some(slot) = last_real_frame.get_mut(output_index) {
-            *slot = sample;
+            *slot = sample.value;
         }
-        push_i16(frame, sample);
+        bypass_loudness |= sample.bypass_loudness;
+        push_i16(frame, sample.value);
     }
-}
-
-fn render_exact_frame_with_trim(
-    samples: &mut VecDeque<i16>,
-    frame: &mut Vec<u8>,
-    last_real_frame: &mut [i16],
-    trim_samples: usize,
-) {
-    let source_samples = FRAME_SAMPLES.saturating_add(trim_samples);
-    let mut dropped = 0usize;
-    let mut drop_accumulator = 0usize;
-    let mut output_index = 0usize;
-    for _ in 0..source_samples {
-        let sample = samples.pop_front().unwrap_or_default();
-        if dropped < trim_samples {
-            drop_accumulator = drop_accumulator.saturating_add(trim_samples);
-            if drop_accumulator >= source_samples {
-                drop_accumulator -= source_samples;
-                dropped += 1;
-                continue;
-            }
-        }
-        if output_index < FRAME_SAMPLES {
-            if let Some(slot) = last_real_frame.get_mut(output_index) {
-                *slot = sample;
-            }
-            push_i16(frame, sample);
-            output_index += 1;
-        }
-    }
-    while output_index < FRAME_SAMPLES {
-        if let Some(slot) = last_real_frame.get_mut(output_index) {
-            *slot = 0;
-        }
-        push_i16(frame, 0);
-        output_index += 1;
-    }
+    bypass_loudness
 }
 
 fn render_concealment_frame(last_real_frame: &[i16], remaining: u8, frame: &mut Vec<u8>) {
@@ -1381,7 +1377,7 @@ fn classify_audio_health(stats: &FeedStats) -> (bool, Vec<String>) {
     (warnings.is_empty(), warnings)
 }
 
-fn append_normalized_chunk(samples: &mut VecDeque<i16>, chunk: PcmChunk) {
+fn append_normalized_chunk(samples: &mut VecDeque<QueuedSample>, chunk: PcmChunk) {
     let pcm = normalize_pcm(
         Pcm {
             sample_rate: chunk.sample_rate,
@@ -1391,7 +1387,10 @@ fn append_normalized_chunk(samples: &mut VecDeque<i16>, chunk: PcmChunk) {
         SAMPLE_RATE,
         CHANNELS,
     );
-    samples.extend(pcm16_samples(&pcm.data));
+    samples.extend(pcm16_samples(&pcm.data).map(|value| QueuedSample {
+        value,
+        bypass_loudness: chunk.bypass_loudness,
+    }));
 }
 
 async fn run_status_bridge_loop(addr: String, state: MediaState) {
@@ -1576,7 +1575,16 @@ fn decode_pcm_event(raw: &[u8]) -> Option<PcmChunk> {
         #[serde(default)]
         channels: u16,
         #[serde(default)]
+        bypass_loudness: bool,
+        #[serde(default)]
+        audio_processing: AudioProcessingData,
+        #[serde(default)]
         pcm: String,
+    }
+    #[derive(Default, Deserialize)]
+    struct AudioProcessingData {
+        #[serde(default)]
+        bypass_loudness: bool,
     }
     let event = serde_json::from_slice::<Event>(raw).ok()?;
     if event.r#type != "playout.pcm" {
@@ -1604,6 +1612,7 @@ fn decode_pcm_event(raw: &[u8]) -> Option<PcmChunk> {
         sample_rate,
         channels,
         data: data[..aligned].to_vec(),
+        bypass_loudness: event.data.bypass_loudness || event.data.audio_processing.bypass_loudness,
     })
 }
 
@@ -1776,12 +1785,12 @@ async fn handle_webrtc_offer(
         write_text_response(stream, 405, "method not allowed\n").await?;
         return Ok(());
     }
-    if !state.gstreamer_available || !state.webrtc_available {
+    if !state.webrtc_available {
         write_json_response(
             stream,
             503,
             json!({
-                "error": "gstreamer webrtc backend is unavailable",
+                "error": "str0m WebRTC backend is unavailable",
             }),
         )
         .await?;
@@ -1838,15 +1847,16 @@ async fn handle_webrtc_offer(
         .last_input_age_ms
         .map(|age| age <= 5_000)
         .unwrap_or(false);
-    let setup = build_gstreamer_webrtc_peer(&offer_sdp, selection).await;
+    let request_peer_ip = stream.peer_addr().ok().map(|addr| addr.ip());
+    let setup = build_str0m_webrtc_peer(&offer_sdp, selection, request_peer_ip).await;
     let peer = match setup {
         Ok(peer) => peer,
         Err(err) => {
-            warn!(feed_id, "failed to create GStreamer WebRTC peer: {err:#}");
+            warn!(feed_id, "failed to create str0m WebRTC peer: {err:#}");
             write_json_response(
                 stream,
                 503,
-                json!({"error": format!("failed to create GStreamer WebRTC peer: {err:#}")}),
+                json!({"error": format!("failed to create str0m WebRTC peer: {err:#}")}),
             )
             .await?;
             return Ok(());
@@ -1872,174 +1882,293 @@ async fn handle_webrtc_offer(
 }
 
 #[cfg(feature = "gstreamer-backend")]
-struct GStreamerWebRTCPeer {
-    pipeline: gstreamer::Pipeline,
-    appsrc: gstreamer_app::AppSrc,
+struct Str0mWebRTCPeer {
+    rtc: str0m::Rtc,
+    socket: UdpSocket,
+    local_candidate_addr: SocketAddr,
     answer_sdp: String,
-    closed_rx: std_mpsc::Receiver<()>,
+    selection: WebRTCCodecSelection,
 }
 
 #[cfg(not(feature = "gstreamer-backend"))]
-struct GStreamerWebRTCPeer {
+struct Str0mWebRTCPeer {
     answer_sdp: String,
 }
 
 #[cfg(feature = "gstreamer-backend")]
-async fn build_gstreamer_webrtc_peer(
+async fn build_str0m_webrtc_peer(
     offer_sdp: &str,
     selection: WebRTCCodecSelection,
-) -> Result<GStreamerWebRTCPeer> {
+    request_peer_ip: Option<IpAddr>,
+) -> Result<Str0mWebRTCPeer> {
     let offer_sdp = offer_sdp.to_string();
-    tokio::task::spawn_blocking(move || build_gstreamer_webrtc_peer_sync(&offer_sdp, selection))
+    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .await
-        .context("GStreamer WebRTC setup task panicked")?
+        .context("failed to bind str0m WebRTC UDP socket")?;
+    let local_addr = socket
+        .local_addr()
+        .context("failed to read str0m WebRTC UDP socket address")?;
+    let candidate_ip = detect_webrtc_candidate_ip(&offer_sdp, request_peer_ip);
+    let candidate_addr = SocketAddr::new(candidate_ip.ip, local_addr.port());
+    warn!(
+        candidate = %candidate_addr,
+        source = candidate_ip.source,
+        "selected str0m WebRTC ICE host candidate"
+    );
+    let mut rtc = str0m::RtcConfig::new()
+        .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
+        .build(Instant::now());
+    let candidate = str0m::Candidate::host(candidate_addr, "udp")
+        .with_context(|| format!("failed to build host ICE candidate for {candidate_addr}"))?;
+    rtc.add_local_candidate(candidate);
+    let offer = str0m::change::SdpOffer::from_sdp_string(&offer_sdp)
+        .context("failed to parse WebRTC offer SDP")?;
+    let answer = rtc
+        .sdp_api()
+        .accept_offer(offer)
+        .context("failed to accept WebRTC offer")?;
+    let answer_sdp =
+        ensure_str0m_answer_codec_lines(&answer.to_sdp_string(), &offer_sdp, selection);
+    Ok(Str0mWebRTCPeer {
+        rtc,
+        socket,
+        local_candidate_addr: candidate_addr,
+        answer_sdp,
+        selection,
+    })
 }
 
 #[cfg(not(feature = "gstreamer-backend"))]
-async fn build_gstreamer_webrtc_peer(
+async fn build_str0m_webrtc_peer(
     _offer_sdp: &str,
     _selection: WebRTCCodecSelection,
-) -> Result<GStreamerWebRTCPeer> {
+    _request_peer_ip: Option<IpAddr>,
+) -> Result<Str0mWebRTCPeer> {
     bail!("haze-media was built without GStreamer support")
 }
 
 #[cfg(feature = "gstreamer-backend")]
-fn build_gstreamer_webrtc_peer_sync(
-    offer_sdp: &str,
-    selection: WebRTCCodecSelection,
-) -> Result<GStreamerWebRTCPeer> {
-    use gst::prelude::*;
-    use gstreamer as gst;
-    use gstreamer_app as gst_app;
-    use gstreamer_sdp as gst_sdp;
-    use gstreamer_webrtc as gst_webrtc;
-
-    let pipeline_description = gstreamer_webrtc_pipeline(selection);
-    let element = gst::parse::launch(&pipeline_description)
-        .context("failed to build GStreamer WebRTC pipeline")?;
-    let pipeline = element
-        .downcast::<gst::Pipeline>()
-        .map_err(|_| anyhow::anyhow!("GStreamer WebRTC description did not produce a pipeline"))?;
-    let appsrc = pipeline
-        .by_name("src")
-        .context("GStreamer WebRTC pipeline is missing appsrc")?
-        .downcast::<gst_app::AppSrc>()
-        .map_err(|_| anyhow::anyhow!("GStreamer WebRTC src is not appsrc"))?;
-    let webrtc = pipeline
-        .by_name("webrtc")
-        .context("GStreamer WebRTC pipeline is missing webrtcbin")?;
-    let (closed_tx, closed_rx) = std_mpsc::channel();
-    let closed_tx_notify = closed_tx.clone();
-    webrtc.connect_notify(Some("connection-state"), move |element, _| {
-        let state = element.property::<gst_webrtc::WebRTCPeerConnectionState>("connection-state");
-        if matches!(
-            state,
-            gst_webrtc::WebRTCPeerConnectionState::Failed
-                | gst_webrtc::WebRTCPeerConnectionState::Closed
-                | gst_webrtc::WebRTCPeerConnectionState::Disconnected
-        ) {
-            let _ = closed_tx_notify.send(());
-        }
-    });
-    let closed_tx_ice = closed_tx.clone();
-    webrtc.connect_notify(Some("ice-connection-state"), move |element, _| {
-        let state =
-            element.property::<gst_webrtc::WebRTCICEConnectionState>("ice-connection-state");
-        if matches!(
-            state,
-            gst_webrtc::WebRTCICEConnectionState::Failed
-                | gst_webrtc::WebRTCICEConnectionState::Closed
-                | gst_webrtc::WebRTCICEConnectionState::Disconnected
-        ) {
-            let _ = closed_tx_ice.send(());
-        }
-    });
-
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|err| anyhow::anyhow!("failed to start GStreamer WebRTC pipeline: {err:?}"))?;
-
-    let sdp = gst_sdp::SDPMessage::parse_buffer(offer_sdp.as_bytes())
-        .context("failed to parse WebRTC offer SDP")?;
-    let offer = gst_webrtc::WebRTCSessionDescription::new(gst_webrtc::WebRTCSDPType::Offer, sdp);
-    webrtc.emit_by_name::<()>("set-remote-description", &[&offer, &None::<gst::Promise>]);
-
-    let (answer_tx, answer_rx) = std::sync::mpsc::channel();
-    let promise = gst::Promise::with_change_func(move |reply| {
-        let result = reply
-            .map_err(|err| format!("create-answer promise failed: {err:?}"))
-            .and_then(|reply| reply.ok_or_else(|| "create-answer returned no reply".to_string()))
-            .and_then(|reply| {
-                reply
-                    .get::<gst_webrtc::WebRTCSessionDescription>("answer")
-                    .map_err(|err| format!("create-answer did not include an answer: {err}"))
-            });
-        let _ = answer_tx.send(result);
-    });
-    webrtc.emit_by_name::<()>("create-answer", &[&None::<gst::Structure>, &promise]);
-    let answer = answer_rx
-        .recv_timeout(WEBRTC_OFFER_TIMEOUT)
-        .context("timed out waiting for GStreamer WebRTC answer")?
-        .map_err(|err| anyhow::anyhow!(err))?;
-
-    webrtc.emit_by_name::<()>("set-local-description", &[&answer, &None::<gst::Promise>]);
-    std::thread::sleep(WEBRTC_ICE_GATHER_WINDOW);
-    let final_answer = webrtc
-        .property::<Option<gst_webrtc::WebRTCSessionDescription>>("local-description")
-        .unwrap_or(answer);
-    let answer_sdp = final_answer
-        .sdp()
-        .as_text()
-        .context("failed to serialize WebRTC answer SDP")?;
-    Ok(GStreamerWebRTCPeer {
-        pipeline,
-        appsrc,
-        answer_sdp,
-        closed_rx,
-    })
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct WebRTCCandidateIp {
+    ip: IpAddr,
+    source: &'static str,
 }
 
 #[cfg(feature = "gstreamer-backend")]
-fn gstreamer_webrtc_pipeline(selection: WebRTCCodecSelection) -> String {
-    let payload_type = selection.payload_type;
+fn detect_webrtc_candidate_ip(
+    offer_sdp: &str,
+    request_peer_ip: Option<IpAddr>,
+) -> WebRTCCandidateIp {
+    let overrides = [
+        (
+            "HAZE_MEDIA_WEBRTC_HOST",
+            env::var("HAZE_MEDIA_WEBRTC_HOST").ok(),
+        ),
+        ("HAZE_WEBRTC_HOST", env::var("HAZE_WEBRTC_HOST").ok()),
+        ("HAZE_PUBLIC_HOST", env::var("HAZE_PUBLIC_HOST").ok()),
+    ];
+    detect_webrtc_candidate_ip_inner(offer_sdp, request_peer_ip, &overrides)
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn detect_webrtc_candidate_ip_inner(
+    offer_sdp: &str,
+    request_peer_ip: Option<IpAddr>,
+    overrides: &[(&'static str, Option<String>)],
+) -> WebRTCCandidateIp {
+    for (name, raw) in overrides {
+        let Some(raw) = raw.as_deref() else {
+            continue;
+        };
+        match parse_webrtc_host_override(*name, raw) {
+            Some(ip) => {
+                return WebRTCCandidateIp { ip, source: *name };
+            }
+            None => continue,
+        }
+    }
+    if let Some(remote_ip) = request_peer_ip {
+        if let Some(ip) = local_ip_for_remote(remote_ip) {
+            return WebRTCCandidateIp {
+                ip,
+                source: "http_peer_route",
+            };
+        }
+    }
+    if let Some(remote_ip) = offered_host_candidate_ip(offer_sdp) {
+        if let Some(ip) = local_ip_for_remote(remote_ip) {
+            return WebRTCCandidateIp {
+                ip,
+                source: "offer_host_route",
+            };
+        }
+    }
+    let fallback = if let Some(ip) = local_ip_for_remote(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))) {
+        WebRTCCandidateIp {
+            ip,
+            source: "default_route",
+        }
+    } else {
+        WebRTCCandidateIp {
+            ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            source: "localhost_fallback",
+        }
+    };
+    warn!(
+        candidate = %fallback.ip,
+        source = fallback.source,
+        "WebRTC host candidate used fallback selection; set HAZE_MEDIA_WEBRTC_HOST for deterministic receiver access"
+    );
+    fallback
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn parse_webrtc_host_override(name: &'static str, raw: &str) -> Option<IpAddr> {
+    match raw.trim().parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) if ip.is_unspecified() => {
+            warn!("{name} is unspecified; ignoring WebRTC host override");
+            None
+        }
+        Ok(IpAddr::V4(ip)) => Some(IpAddr::V4(ip)),
+        Ok(IpAddr::V6(_)) => {
+            warn!("{name} is IPv6 but the str0m UDP socket is IPv4; ignoring WebRTC host override");
+            None
+        }
+        Err(_) => {
+            warn!("{name} is not an IP address; ignoring WebRTC host override");
+            None
+        }
+    }
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn local_ip_for_remote(remote_ip: IpAddr) -> Option<IpAddr> {
+    if remote_ip.is_unspecified() || remote_ip.is_loopback() {
+        return None;
+    }
+    if let Ok(socket) = StdUdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))) {
+        if socket.connect(SocketAddr::new(remote_ip, 9)).is_ok() {
+            if let Ok(addr) = socket.local_addr() {
+                let ip = addr.ip();
+                if !ip.is_unspecified() && !ip.is_loopback() {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn offered_host_candidate_ip(sdp: &str) -> Option<IpAddr> {
+    for line in sdp.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("a=candidate:") else {
+            continue;
+        };
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 8 || !parts[7].eq_ignore_ascii_case("host") {
+            continue;
+        }
+        let Ok(ip) = parts[4].parse::<IpAddr>() else {
+            continue;
+        };
+        if ip.is_unspecified() || ip.is_loopback() {
+            continue;
+        }
+        return Some(ip);
+    }
+    None
+}
+
+#[cfg(feature = "gstreamer-backend")]
+struct GStreamerWebRTCEncoder {
+    pipeline: gstreamer::Pipeline,
+    appsrc: gstreamer_app::AppSrc,
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn build_gstreamer_webrtc_encoder(
+    state: MediaState,
+    peer_id: u64,
+    selection: WebRTCCodecSelection,
+    encoded_tx: mpsc::Sender<Arc<[u8]>>,
+) -> Result<GStreamerWebRTCEncoder> {
+    use gst::prelude::*;
+    use gstreamer as gst;
+    use gstreamer_app as gst_app;
+
+    let pipeline_description = gstreamer_webrtc_encoder_pipeline(selection)?;
+    let element = gst::parse::launch(&pipeline_description)
+        .context("failed to build GStreamer WebRTC encoder pipeline")?;
+    let pipeline = element
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| anyhow::anyhow!("GStreamer WebRTC encoder did not produce a pipeline"))?;
+    let appsrc = pipeline
+        .by_name("src")
+        .context("GStreamer WebRTC encoder pipeline is missing appsrc")?
+        .downcast::<gst_app::AppSrc>()
+        .map_err(|_| anyhow::anyhow!("GStreamer WebRTC encoder src is not appsrc"))?;
+    let appsink = pipeline
+        .by_name("sink")
+        .context("GStreamer WebRTC encoder pipeline is missing appsink")?
+        .downcast::<gst_app::AppSink>()
+        .map_err(|_| anyhow::anyhow!("GStreamer WebRTC encoder sink is not appsink"))?;
+    appsink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let Some(buffer) = sample.buffer() else {
+                    return Err(gst::FlowError::Error);
+                };
+                let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                let data = Arc::<[u8]>::from(map.as_slice());
+                match encoded_tx.try_send(data) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        state.record_webrtc_peer_drop(peer_id);
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        return Err(gst::FlowError::Eos);
+                    }
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|err| anyhow::anyhow!("failed to start GStreamer WebRTC encoder: {err:?}"))?;
+    Ok(GStreamerWebRTCEncoder { pipeline, appsrc })
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn gstreamer_webrtc_encoder_pipeline(selection: WebRTCCodecSelection) -> Result<String> {
     let source = "appsrc name=src is-live=true block=true do-timestamp=false max-bytes=96000 format=time stream-type=stream \
          caps=audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=1 \
          ! queue max-size-time=800000000 max-size-buffers=50 max-size-bytes=0 \
          ! audioconvert ! audioresample quality=4";
-    let caps = selection.codec.webrtc_caps(payload_type);
-    match selection.codec {
+    let pipeline = match selection.codec {
         WebRTCAudioCodec::Opus => format!(
             "{source} \
-             ! opusenc bitrate=96000 bitrate-type=cbr frame-size=20 audio-type=generic dtx=false perfect-timestamp=true inband-fec=true \
-             ! rtpopuspay pt={payload_type} \
-             ! {caps} \
-             ! webrtcbin name=webrtc bundle-policy=max-bundle"
-        ),
-        WebRTCAudioCodec::G722 => format!(
-            "{source} \
-             ! audio/x-raw,format=S16LE,layout=interleaved,rate=16000,channels=1 \
-             ! avenc_g722 \
-             ! rtpg722pay pt={payload_type} \
-             ! {caps} \
-             ! webrtcbin name=webrtc bundle-policy=max-bundle"
+             ! opusenc bitrate=96000 bitrate-type=cbr frame-size=20 audio-type=generic dtx=false inband-fec=true \
+             ! appsink name=sink emit-signals=true sync=false"
         ),
         WebRTCAudioCodec::Pcmu => format!(
             "{source} \
              ! audio/x-raw,format=S16LE,layout=interleaved,rate=8000,channels=1 \
              ! mulawenc \
-             ! rtppcmupay pt={payload_type} \
-             ! {caps} \
-             ! webrtcbin name=webrtc bundle-policy=max-bundle"
+             ! appsink name=sink emit-signals=true sync=false"
         ),
         WebRTCAudioCodec::Pcma => format!(
             "{source} \
              ! audio/x-raw,format=S16LE,layout=interleaved,rate=8000,channels=1 \
              ! alawenc \
-             ! rtppcmapay pt={payload_type} \
-             ! {caps} \
-             ! webrtcbin name=webrtc bundle-policy=max-bundle"
+             ! appsink name=sink emit-signals=true sync=false"
         ),
-    }
+        WebRTCAudioCodec::G722 => bail!("str0m WebRTC does not expose G.722 packet writing"),
+    };
+    Ok(pipeline)
 }
 
 #[cfg(feature = "gstreamer-backend")]
@@ -2088,79 +2217,222 @@ fn start_webrtc_peer_feeder(
     state: MediaState,
     peer_id: u64,
     feed: Arc<FeedRuntime>,
-    peer: GStreamerWebRTCPeer,
+    peer: Str0mWebRTCPeer,
 ) {
     use gstreamer::prelude::*;
 
     tokio::spawn(async move {
+        let mut peer = peer;
         let frame_duration_ns = FRAME_DURATION.as_nanos() as u64;
         let mut next_pts_ns: Option<u64> = None;
-        let silence = vec![0u8; FRAME_BYTES];
-        sleep(Duration::from_millis(800)).await;
-        let mut rx = feed.subscribe();
-        'feed: loop {
-            if peer.closed_rx.try_recv().is_ok() {
-                break;
+        let (encoded_tx, mut encoded_rx) =
+            mpsc::channel::<Arc<[u8]>>(STR0M_WEBRTC_ENCODED_QUEUE_CAPACITY);
+        let encoder = match build_gstreamer_webrtc_encoder(
+            state.clone(),
+            peer_id,
+            peer.selection,
+            encoded_tx,
+        ) {
+            Ok(encoder) => encoder,
+            Err(err) => {
+                warn!("failed to start WebRTC audio encoder: {err:#}");
+                state.unregister_webrtc_peer(peer_id);
+                return;
             }
-            match rx.recv().await {
-                Ok(frame) => {
-                    let pts_ns = next_gst_audio_pts(
-                        &mut next_pts_ns,
-                        peer.pipeline
-                            .current_running_time()
-                            .map(|time| time.nseconds()),
-                        frame_duration_ns,
-                    );
-                    let buffer =
-                        match build_gst_audio_buffer(&frame.data, pts_ns, frame_duration_ns) {
-                            Ok(buffer) => buffer,
-                            Err(err) => {
-                                warn!("failed to build WebRTC audio buffer: {err:#}");
-                                break;
+        };
+        let encoder_appsrc = encoder.appsrc.clone();
+        let encoder_pipeline = encoder.pipeline.clone();
+        let feed_state = state.clone();
+        let mut rx = feed.subscribe();
+        let feed_task = tokio::spawn(async move {
+            let mut ticker = interval(FRAME_DURATION);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            let mut pacer = WebRTCPeerAudioPacer::new();
+            'feed: loop {
+                ticker.tick().await;
+                let mut drained = 0usize;
+                while drained < STR0M_WEBRTC_PEER_DRAIN_LIMIT {
+                    match rx.try_recv() {
+                        Ok(frame) => {
+                            pacer.push(frame.data);
+                            drained += 1;
+                        }
+                        Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                            for _ in 0..skipped {
+                                feed_state.record_webrtc_peer_drop(peer_id);
                             }
-                        };
-                    if peer.appsrc.push_buffer(buffer).is_err() {
+                            let skipped =
+                                usize::try_from(skipped).unwrap_or(STR0M_WEBRTC_PEER_DRAIN_LIMIT);
+                            drained = drained.saturating_add(skipped);
+                        }
+                        Err(broadcast::error::TryRecvError::Empty) => break,
+                        Err(broadcast::error::TryRecvError::Closed) => break 'feed,
+                    }
+                }
+                let (data, real_frame) = pacer.pop_paced();
+                if !real_frame {
+                    feed_state.record_webrtc_peer_drop(peer_id);
+                }
+                let pts_ns = next_gst_audio_pts(
+                    &mut next_pts_ns,
+                    encoder_pipeline
+                        .current_running_time()
+                        .map(|time| time.nseconds()),
+                    frame_duration_ns,
+                );
+                let buffer = match build_gst_audio_buffer(&data, pts_ns, frame_duration_ns) {
+                    Ok(buffer) => buffer,
+                    Err(err) => {
+                        warn!("failed to build WebRTC encoder buffer: {err:#}");
                         break;
                     }
-                    state.record_webrtc_peer_push(peer_id, frame.data.len());
+                };
+                if encoder_appsrc.push_buffer(buffer).is_err() {
+                    break;
                 }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    if let Some(pts_ns) = &mut next_pts_ns {
-                        *pts_ns =
-                            pts_ns.saturating_add(frame_duration_ns.saturating_mul(skipped.max(1)));
+                feed_state.record_webrtc_peer_push(peer_id, data.len());
+            }
+        });
+
+        let mut audio_mid: Option<str0m::media::Mid> = None;
+        let mut connected = false;
+        let mut next_timeout =
+            match drain_str0m_outputs(&mut peer.rtc, &peer.socket, &mut audio_mid, &mut connected)
+                .await
+            {
+                Ok(Some(timeout)) => timeout,
+                Ok(None) => Instant::now() + Duration::from_secs(1),
+                Err(err) => {
+                    warn!("failed to drain initial str0m WebRTC output: {err:#}");
+                    feed_task.abort();
+                    let _ = encoder.appsrc.end_of_stream();
+                    let _ = encoder.pipeline.set_state(gstreamer::State::Null);
+                    state.unregister_webrtc_peer(peer_id);
+                    return;
+                }
+            };
+        let mut udp_buf = vec![0u8; STR0M_WEBRTC_UDP_BUFFER];
+        let mut rtp_time = 0u64;
+        let started_at = Instant::now();
+        let mut last_network_at = started_at;
+        loop {
+            let stale_deadline = webrtc_peer_stale_deadline(started_at, last_network_at, connected);
+            let sleep_until = earlier_instant(next_timeout, stale_deadline);
+            let timeout_duration = sleep_until.saturating_duration_since(Instant::now());
+            tokio::select! {
+                received = peer.socket.recv_from(&mut udp_buf) => {
+                    let (len, source) = match received {
+                        Ok(result) => result,
+                        Err(err) => {
+                            warn!("str0m WebRTC UDP receive failed: {err:#}");
+                            break;
+                        }
+                    };
+                    let receive = match str0m::net::Receive::new(
+                        str0m::net::Protocol::Udp,
+                        source,
+                        peer.local_candidate_addr,
+                        &udp_buf[..len],
+                    ) {
+                        Ok(receive) => receive,
+                        Err(err) => {
+                            debug!("ignored invalid WebRTC datagram: {err}");
+                            continue;
+                        }
+                    };
+                    let received_at = Instant::now();
+                    last_network_at = received_at;
+                    if let Err(err) = peer.rtc.handle_input(str0m::Input::Receive(received_at, receive)) {
+                        warn!("str0m WebRTC input failed: {err:#}");
+                        break;
                     }
-                    for _ in 0..skipped {
+                    match drain_str0m_outputs(&mut peer.rtc, &peer.socket, &mut audio_mid, &mut connected).await {
+                        Ok(Some(timeout)) => next_timeout = timeout,
+                        Ok(None) => break,
+                        Err(err) => {
+                            warn!("str0m WebRTC output failed: {err:#}");
+                            break;
+                        }
+                    }
+                }
+                encoded = encoded_rx.recv() => {
+                    let Some(mut encoded) = encoded else {
+                        break;
+                    };
+                    let frame_ticks = str0m_audio_frame_ticks(peer.selection.codec);
+                    let mut skipped_encoded_frames = 0u64;
+                    while let Ok(newer_encoded) = encoded_rx.try_recv() {
+                        encoded = newer_encoded;
+                        skipped_encoded_frames = skipped_encoded_frames.saturating_add(1);
+                    }
+                    if skipped_encoded_frames > 0 {
+                        for _ in 0..skipped_encoded_frames {
+                            state.record_webrtc_peer_drop(peer_id);
+                        }
+                        rtp_time = rtp_time.saturating_add(frame_ticks.saturating_mul(skipped_encoded_frames));
+                    }
+                    if connected {
+                        if let Some(mid) = audio_mid {
+                            if let Err(err) = write_str0m_audio_frame(
+                                &mut peer.rtc,
+                                mid,
+                                peer.selection.codec,
+                                rtp_time,
+                                encoded,
+                            ) {
+                                warn!("str0m WebRTC audio write failed: {err:#}");
+                                break;
+                            }
+                            rtp_time = rtp_time.saturating_add(frame_ticks);
+                            match drain_str0m_outputs(&mut peer.rtc, &peer.socket, &mut audio_mid, &mut connected).await {
+                                Ok(Some(timeout)) => next_timeout = timeout,
+                                Ok(None) => break,
+                                Err(err) => {
+                                    warn!("str0m WebRTC output failed after media write: {err:#}");
+                                    break;
+                                }
+                            }
+                        } else {
+                            state.record_webrtc_peer_drop(peer_id);
+                        }
+                    } else {
                         state.record_webrtc_peer_drop(peer_id);
                     }
-                    let fill_frames = skipped.min(RAW_HTTP_LAG_RESYNC_SILENCE_FRAMES);
-                    for _ in 0..fill_frames {
-                        let pts_ns = next_gst_audio_pts(
-                            &mut next_pts_ns,
-                            peer.pipeline
-                                .current_running_time()
-                                .map(|time| time.nseconds()),
-                            frame_duration_ns,
-                        );
-                        let buffer =
-                            match build_gst_audio_buffer(&silence, pts_ns, frame_duration_ns) {
-                                Ok(buffer) => buffer,
-                                Err(err) => {
-                                    warn!("failed to build WebRTC silence buffer: {err:#}");
-                                    break 'feed;
-                                }
-                            };
-                        if peer.appsrc.push_buffer(buffer).is_err() {
-                            break 'feed;
-                        }
-                        state.record_webrtc_peer_push(peer_id, silence.len());
-                    }
-                    continue;
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
+                _ = sleep(timeout_duration) => {
+                    let now = Instant::now();
+                    if now >= stale_deadline {
+                        let stale_for = if connected {
+                            now.saturating_duration_since(last_network_at)
+                        } else {
+                            now.saturating_duration_since(started_at)
+                        };
+                        warn!(
+                            peer_id,
+                            connected,
+                            stale_ms = stale_for.as_millis(),
+                            "closing stale str0m WebRTC peer"
+                        );
+                        break;
+                    }
+                    if let Err(err) = peer.rtc.handle_input(str0m::Input::Timeout(now)) {
+                        warn!("str0m WebRTC timeout input failed: {err:#}");
+                        break;
+                    }
+                    match drain_str0m_outputs(&mut peer.rtc, &peer.socket, &mut audio_mid, &mut connected).await {
+                        Ok(Some(timeout)) => next_timeout = timeout,
+                        Ok(None) => break,
+                        Err(err) => {
+                            warn!("str0m WebRTC timeout output failed: {err:#}");
+                            break;
+                        }
+                    }
+                }
             }
         }
-        let _ = peer.appsrc.end_of_stream();
-        let _ = peer.pipeline.set_state(gstreamer::State::Null);
+        feed_task.abort();
+        let _ = encoder.appsrc.end_of_stream();
+        let _ = encoder.pipeline.set_state(gstreamer::State::Null);
         state.unregister_webrtc_peer(peer_id);
     });
 }
@@ -2170,8 +2442,111 @@ fn start_webrtc_peer_feeder(
     _state: MediaState,
     _peer_id: u64,
     _feed: Arc<FeedRuntime>,
-    _peer: GStreamerWebRTCPeer,
+    _peer: Str0mWebRTCPeer,
 ) {
+}
+
+fn earlier_instant(left: Instant, right: Instant) -> Instant {
+    if left <= right {
+        left
+    } else {
+        right
+    }
+}
+
+fn webrtc_peer_stale_deadline(
+    started_at: Instant,
+    last_network_at: Instant,
+    connected: bool,
+) -> Instant {
+    if connected {
+        last_network_at
+            .checked_add(WEBRTC_CONNECTED_IDLE_TIMEOUT)
+            .unwrap_or_else(Instant::now)
+    } else {
+        started_at
+            .checked_add(WEBRTC_CONNECT_TIMEOUT)
+            .unwrap_or_else(Instant::now)
+    }
+}
+
+#[cfg(feature = "gstreamer-backend")]
+async fn drain_str0m_outputs(
+    rtc: &mut str0m::Rtc,
+    socket: &UdpSocket,
+    audio_mid: &mut Option<str0m::media::Mid>,
+    connected: &mut bool,
+) -> Result<Option<Instant>> {
+    loop {
+        match rtc.poll_output().context("failed to poll str0m output")? {
+            str0m::Output::Timeout(timeout) => return Ok(Some(timeout)),
+            str0m::Output::Transmit(transmit) => {
+                socket
+                    .send_to(&transmit.contents, transmit.destination)
+                    .await
+                    .context("failed to send str0m WebRTC datagram")?;
+            }
+            str0m::Output::Event(event) => match event {
+                str0m::Event::Connected => {
+                    *connected = true;
+                }
+                str0m::Event::Closed => return Ok(None),
+                str0m::Event::IceConnectionStateChange(state) => {
+                    if matches!(state, str0m::IceConnectionState::Disconnected) {
+                        return Ok(None);
+                    }
+                }
+                str0m::Event::MediaAdded(media) => {
+                    if media.kind == str0m::media::MediaKind::Audio {
+                        *audio_mid = Some(media.mid);
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn write_str0m_audio_frame(
+    rtc: &mut str0m::Rtc,
+    mid: str0m::media::Mid,
+    codec: WebRTCAudioCodec,
+    rtp_time: u64,
+    data: Arc<[u8]>,
+) -> Result<()> {
+    let target = match codec {
+        WebRTCAudioCodec::Opus => str0m::format::Codec::Opus,
+        WebRTCAudioCodec::Pcmu => str0m::format::Codec::PCMU,
+        WebRTCAudioCodec::Pcma => str0m::format::Codec::PCMA,
+        WebRTCAudioCodec::G722 => bail!("str0m WebRTC does not expose G.722 packet writing"),
+    };
+    let writer = rtc
+        .writer(mid)
+        .context("str0m WebRTC media writer is unavailable")?;
+    let Some(params) = writer
+        .payload_params()
+        .find(|params| params.spec().codec == target)
+        .copied()
+    else {
+        bail!("str0m WebRTC writer did not negotiate {}", codec.id());
+    };
+    writer
+        .write(
+            params.pt(),
+            Instant::now(),
+            str0m::media::MediaTime::new(rtp_time, params.spec().clock_rate),
+            data,
+        )
+        .context("failed to write str0m WebRTC media frame")
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn str0m_audio_frame_ticks(codec: WebRTCAudioCodec) -> u64 {
+    match codec {
+        WebRTCAudioCodec::Opus => 960,
+        WebRTCAudioCodec::G722 | WebRTCAudioCodec::Pcmu | WebRTCAudioCodec::Pcma => 160,
+    }
 }
 
 fn select_webrtc_audio_codec(
@@ -2182,24 +2557,30 @@ fn select_webrtc_audio_codec(
     disable_g722: bool,
 ) -> Option<WebRTCCodecSelection> {
     let mut candidates = Vec::new();
+    let mut push_candidate = |codec: WebRTCAudioCodec| {
+        if !candidates.contains(&codec) {
+            candidates.push(codec);
+        }
+    };
     if let Some(codec) = parse_webrtc_audio_codec(preferred_codec) {
-        candidates.push(codec);
-    } else if require_opus {
-        candidates.push(WebRTCAudioCodec::Opus);
+        push_candidate(codec);
+    }
+    if require_opus {
+        push_candidate(WebRTCAudioCodec::Opus);
     } else {
         if let Some(codec) =
             parse_webrtc_audio_codec(&env::var("HAZE_WEBRTC_DEFAULT_CODEC").unwrap_or_default())
         {
-            candidates.push(codec);
+            push_candidate(codec);
         } else {
-            candidates.push(WebRTCAudioCodec::Opus);
+            push_candidate(WebRTCAudioCodec::Opus);
         }
         if !disable_g722 {
-            candidates.push(WebRTCAudioCodec::G722);
+            push_candidate(WebRTCAudioCodec::G722);
         }
-        candidates.push(WebRTCAudioCodec::Pcmu);
-        candidates.push(WebRTCAudioCodec::Pcma);
-        candidates.push(WebRTCAudioCodec::Opus);
+        push_candidate(WebRTCAudioCodec::Pcmu);
+        push_candidate(WebRTCAudioCodec::Pcma);
+        push_candidate(WebRTCAudioCodec::Opus);
     }
     for codec in candidates {
         if disable_g722 && codec == WebRTCAudioCodec::G722 {
@@ -2273,6 +2654,177 @@ fn offered_media_payload_types(sdp: &str) -> Vec<u8> {
         }
     }
     payload_types
+}
+
+fn ensure_str0m_answer_codec_lines(
+    answer_sdp: &str,
+    offer_sdp: &str,
+    selection: WebRTCCodecSelection,
+) -> String {
+    let answer_attrs = answer_audio_attribute_lines(answer_sdp);
+    let attrs = offer_audio_answer_attribute_lines(offer_sdp, selection.payload_type)
+        .into_iter()
+        .filter(|attr| {
+            !answer_attrs
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(attr))
+        })
+        .collect::<Vec<_>>();
+    let offer_bundle_group = offer_bundle_group_line(offer_sdp);
+    let mut out = Vec::new();
+    let mut patched_m_line = false;
+    let mut patched_bundle_group = false;
+    let mut pending_attrs = if attrs.is_empty() { None } else { Some(attrs) };
+    let mut in_audio = false;
+    for line in answer_sdp.replace("\r\n", "\n").lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower == "a=group:bundle" {
+            if let Some(group) = &offer_bundle_group {
+                out.push(group.clone());
+                patched_bundle_group = true;
+                continue;
+            }
+        }
+        if lower.starts_with("a=group:bundle ") {
+            patched_bundle_group = true;
+        }
+        if lower.starts_with("m=") {
+            if pending_attrs.is_some() && in_audio {
+                out.extend(pending_attrs.take().unwrap());
+            }
+            in_audio = lower.starts_with("m=audio ");
+        }
+        if lower.starts_with("m=audio ") {
+            out.push(accepted_audio_m_line(trimmed, selection.payload_type));
+            patched_m_line = true;
+            continue;
+        }
+        if in_audio && pending_attrs.is_some() && lower.starts_with("a=") {
+            out.extend(pending_attrs.take().unwrap());
+        }
+        if in_audio && is_unselected_audio_payload_attr(trimmed, selection.payload_type) {
+            continue;
+        }
+        out.push(line.to_string());
+        if in_audio && pending_attrs.is_some() && lower.starts_with("c=") {
+            out.extend(pending_attrs.take().unwrap());
+        }
+    }
+    if pending_attrs.is_some() && in_audio {
+        out.extend(pending_attrs.take().unwrap());
+    }
+    if !patched_bundle_group {
+        if let Some(group) = offer_bundle_group {
+            let insert_at = out
+                .iter()
+                .position(|line| line.trim().to_ascii_lowercase().starts_with("m="))
+                .unwrap_or(out.len());
+            out.insert(insert_at, group);
+        }
+    }
+    if !patched_m_line {
+        return answer_sdp.to_string();
+    }
+    let mut patched = out.join("\r\n");
+    if answer_sdp.ends_with('\n') {
+        patched.push_str("\r\n");
+    }
+    patched
+}
+
+fn is_unselected_audio_payload_attr(line: &str, selected_payload_type: u8) -> bool {
+    audio_payload_attr_type(line)
+        .map(|payload_type| payload_type != selected_payload_type)
+        .unwrap_or(false)
+}
+
+fn audio_payload_attr_type(line: &str) -> Option<u8> {
+    let lower = line.trim().to_ascii_lowercase();
+    for prefix in ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let payload = rest
+                .split(|ch: char| ch.is_ascii_whitespace())
+                .next()
+                .unwrap_or("");
+            if let Ok(payload_type) = payload.parse::<u8>() {
+                return Some(payload_type);
+            }
+        }
+    }
+    None
+}
+
+fn accepted_audio_m_line(line: &str, payload_type: u8) -> String {
+    let mut parts = line.split_whitespace();
+    let media = parts.next().unwrap_or("m=audio");
+    let _port = parts.next();
+    let proto = parts.next().unwrap_or("UDP/TLS/RTP/SAVPF");
+    format!("{media} 9 {proto} {payload_type}")
+}
+
+fn offer_audio_answer_attribute_lines(offer_sdp: &str, payload_type: u8) -> Vec<String> {
+    let payload_prefixes = [
+        format!("a=rtpmap:{payload_type} "),
+        format!("a=fmtp:{payload_type} "),
+        format!("a=rtcp-fb:{payload_type} "),
+    ];
+    let media_attrs = ["a=rtcp-mux", "a=rtcp-rsize"];
+    let mut in_audio = false;
+    let mut payload_attrs = Vec::new();
+    let mut transport_attrs = Vec::new();
+    for line in offer_sdp.replace("\r\n", "\n").lines() {
+        let line = line.trim();
+        if line.to_ascii_lowercase().starts_with("m=") {
+            in_audio = line.to_ascii_lowercase().starts_with("m=audio ");
+            continue;
+        }
+        if !in_audio {
+            continue;
+        }
+        if payload_prefixes
+            .iter()
+            .any(|prefix| line.starts_with(prefix))
+        {
+            payload_attrs.push(line.to_string());
+        } else if media_attrs
+            .iter()
+            .any(|attr| line.eq_ignore_ascii_case(attr))
+        {
+            transport_attrs.push(line.to_string());
+        }
+    }
+    let mut attrs = payload_attrs;
+    attrs.extend(transport_attrs);
+    attrs
+}
+
+fn offer_bundle_group_line(offer_sdp: &str) -> Option<String> {
+    for line in offer_sdp.replace("\r\n", "\n").lines() {
+        let line = line.trim();
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("a=group:bundle ") && line.split_whitespace().count() > 1 {
+            return Some(line.to_string());
+        }
+    }
+    None
+}
+
+fn answer_audio_attribute_lines(answer_sdp: &str) -> Vec<String> {
+    let mut in_audio = false;
+    let mut attrs = Vec::new();
+    for line in answer_sdp.replace("\r\n", "\n").lines() {
+        let line = line.trim();
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("m=") {
+            in_audio = lower.starts_with("m=audio ");
+            continue;
+        }
+        if in_audio && lower.starts_with("a=") {
+            attrs.push(line.to_string());
+        }
+    }
+    attrs
 }
 
 #[allow(dead_code)]
@@ -2829,13 +3381,12 @@ fn detect_gstreamer_webrtc_codecs(gstreamer_available: bool) -> Vec<WebRTCAudioC
 #[cfg(feature = "gstreamer-backend")]
 fn detect_gstreamer_webrtc_codecs_inner() -> Vec<WebRTCAudioCodec> {
     if let Err(err) = validate_gstreamer_webrtc_base_elements() {
-        warn!("GStreamer WebRTC backend unavailable: {err:#}");
+        warn!("str0m WebRTC encoder backend unavailable: {err:#}");
         return Vec::new();
     }
     let mut codecs = Vec::new();
     for codec in [
         WebRTCAudioCodec::Opus,
-        WebRTCAudioCodec::G722,
         WebRTCAudioCodec::Pcmu,
         WebRTCAudioCodec::Pcma,
     ] {
@@ -2850,12 +3401,12 @@ fn detect_gstreamer_webrtc_codecs_inner() -> Vec<WebRTCAudioCodec> {
             warn!(
                 codec = codec.id(),
                 missing = missing.join(", "),
-                "GStreamer WebRTC codec is unavailable"
+                "str0m WebRTC encoder codec is unavailable"
             );
         }
     }
     if codecs.is_empty() {
-        warn!("GStreamer WebRTC backend unavailable: no RTP audio codec branches are available");
+        warn!("str0m WebRTC encoder backend unavailable: no audio codec branches are available");
     }
     codecs
 }
@@ -2942,10 +3493,10 @@ fn validate_gstreamer_audio_elements() -> Result<()> {
 fn validate_gstreamer_webrtc_base_elements() -> Result<()> {
     let required = [
         "appsrc",
+        "appsink",
         "queue",
         "audioconvert",
         "audioresample",
-        "webrtcbin",
     ];
     let missing = required
         .iter()
@@ -2954,7 +3505,7 @@ fn validate_gstreamer_webrtc_base_elements() -> Result<()> {
         .collect::<Vec<_>>();
     if !missing.is_empty() {
         bail!(
-            "GStreamer runtime is missing required WebRTC element(s): {}",
+            "GStreamer runtime is missing required WebRTC encoder element(s): {}",
             missing.join(", ")
         );
     }
@@ -2964,10 +3515,10 @@ fn validate_gstreamer_webrtc_base_elements() -> Result<()> {
 #[cfg(feature = "gstreamer-backend")]
 fn webrtc_codec_elements(codec: WebRTCAudioCodec) -> &'static [&'static str] {
     match codec {
-        WebRTCAudioCodec::Opus => &["opusenc", "rtpopuspay"],
-        WebRTCAudioCodec::G722 => &["avenc_g722", "rtpg722pay"],
-        WebRTCAudioCodec::Pcmu => &["mulawenc", "rtppcmupay"],
-        WebRTCAudioCodec::Pcma => &["alawenc", "rtppcmapay"],
+        WebRTCAudioCodec::Opus => &["opusenc"],
+        WebRTCAudioCodec::G722 => &[],
+        WebRTCAudioCodec::Pcmu => &["mulawenc"],
+        WebRTCAudioCodec::Pcma => &["alawenc"],
     }
 }
 
@@ -2979,6 +3530,19 @@ fn initialize_gstreamer_inner() -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn queued_samples<I>(values: I, bypass_loudness: bool) -> VecDeque<QueuedSample>
+    where
+        I: IntoIterator<Item = i16>,
+    {
+        values
+            .into_iter()
+            .map(|value| QueuedSample {
+                value,
+                bypass_loudness,
+            })
+            .collect()
+    }
 
     #[test]
     fn decodes_playout_pcm_event() {
@@ -2997,6 +3561,27 @@ mod tests {
         assert_eq!(chunk.sample_rate, 48_000);
         assert_eq!(chunk.channels, 1);
         assert_eq!(chunk.data, raw_pcm);
+        assert!(!chunk.bypass_loudness);
+    }
+
+    #[test]
+    fn decodes_playout_pcm_event_loudness_bypass() {
+        let raw_pcm = vec![1u8, 0, 2, 0];
+        let event = json!({
+            "type": "playout.pcm",
+            "feed_id": "sk-0001",
+            "data": {
+                "sample_rate": 48000,
+                "channels": 1,
+                "audio_processing": {
+                    "bypass_loudness": true,
+                },
+                "pcm": base64::engine::general_purpose::STANDARD.encode(&raw_pcm),
+            }
+        });
+        let chunk = decode_pcm_event(serde_json::to_string(&event).unwrap().as_bytes()).unwrap();
+
+        assert!(chunk.bypass_loudness);
     }
 
     #[test]
@@ -3069,16 +3654,117 @@ mod tests {
     }
 
     #[test]
+    fn feed_clock_next_tick_keeps_scheduled_cadence_for_small_jitter() {
+        let scheduled_tick = Instant::now();
+        let ticked_at = scheduled_tick + Duration::from_millis(5);
+        let next_tick = next_feed_clock_tick(scheduled_tick, ticked_at);
+
+        assert_eq!(next_tick.duration_since(scheduled_tick), FRAME_DURATION);
+    }
+
+    #[test]
+    fn feed_clock_next_tick_rebases_after_large_scheduler_stall() {
+        let scheduled_tick = Instant::now();
+        let ticked_at =
+            scheduled_tick + Duration::from_millis(FEED_CLOCK_REBASE_LAG_MS).saturating_mul(2);
+        let next_tick = next_feed_clock_tick(scheduled_tick, ticked_at);
+
+        assert_eq!(next_tick.duration_since(ticked_at), FRAME_DURATION);
+    }
+
+    #[test]
+    fn webrtc_stale_deadline_waits_for_connection_before_idle_tracking() {
+        let started_at = Instant::now();
+        let last_network_at = started_at + Duration::from_secs(5);
+
+        let deadline = webrtc_peer_stale_deadline(started_at, last_network_at, false);
+
+        assert_eq!(deadline.duration_since(started_at), WEBRTC_CONNECT_TIMEOUT);
+    }
+
+    #[test]
+    fn earlier_instant_selects_the_nearest_deadline() {
+        let now = Instant::now();
+        let earlier = now + Duration::from_secs(1);
+        let later = now + Duration::from_secs(2);
+
+        assert_eq!(earlier_instant(later, earlier), earlier);
+        assert_eq!(earlier_instant(earlier, later), earlier);
+    }
+
+    #[test]
+    fn webrtc_stale_deadline_tracks_connected_network_idle() {
+        let started_at = Instant::now();
+        let last_network_at = started_at + Duration::from_secs(5);
+
+        let deadline = webrtc_peer_stale_deadline(started_at, last_network_at, true);
+
+        assert_eq!(
+            deadline.duration_since(last_network_at),
+            WEBRTC_CONNECTED_IDLE_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn webrtc_peer_audio_pacer_prerolls_then_outputs_in_order() {
+        let mut pacer = WebRTCPeerAudioPacer::new();
+
+        let (first, real) = pacer.pop_paced();
+
+        assert!(!real);
+        assert_eq!(first.len(), FRAME_BYTES);
+        for value in 1..=STR0M_WEBRTC_PEER_PREROLL_FRAMES {
+            pacer.push(Arc::from(vec![value as u8; FRAME_BYTES]));
+        }
+
+        let (first, real) = pacer.pop_paced();
+        let (second, real_second) = pacer.pop_paced();
+
+        assert!(real);
+        assert!(real_second);
+        assert_eq!(first[0], 1);
+        assert_eq!(second[0], 2);
+    }
+
+    #[test]
+    fn webrtc_peer_audio_pacer_bounds_backlog_and_uses_silence_when_starved() {
+        let mut pacer = WebRTCPeerAudioPacer::new();
+        for value in 0..(STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES + 3) {
+            pacer.push(Arc::from(vec![value as u8; FRAME_BYTES]));
+        }
+
+        assert_eq!(pacer.queued_frames(), STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES);
+
+        let (first, real) = pacer.pop_paced();
+        assert!(real);
+        assert_eq!(first[0], 3);
+
+        for _ in 0..STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES {
+            let _ = pacer.pop_paced();
+        }
+        let (silence, real) = pacer.pop_paced();
+
+        assert!(!real);
+        assert!(silence.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
     fn exact_frame_renderer_outputs_one_unstretched_pcm_frame() {
-        let mut samples = (0..(FRAME_SAMPLES - 4))
-            .map(|value| value as i16)
-            .collect::<VecDeque<_>>();
-        samples.extend((0..4).map(|value| (FRAME_SAMPLES + value) as i16));
+        let mut samples = queued_samples((0..(FRAME_SAMPLES - 4)).map(|value| value as i16), false);
+        samples.extend(
+            (0..4)
+                .map(|value| (FRAME_SAMPLES + value) as i16)
+                .map(|value| QueuedSample {
+                    value,
+                    bypass_loudness: false,
+                }),
+        );
         let mut frame = Vec::with_capacity(FRAME_BYTES);
         let mut last = vec![0i16; FRAME_SAMPLES];
 
-        render_exact_frame(&mut samples, &mut frame, &mut last);
+        let bypass_loudness = render_exact_frame(&mut samples, &mut frame, &mut last);
 
+        assert!(!bypass_loudness);
         assert_eq!(frame.len(), FRAME_BYTES);
         assert!(samples.is_empty());
         assert_eq!(last[0], 0);
@@ -3087,54 +3773,51 @@ mod tests {
     }
 
     #[test]
+    fn exact_frame_renderer_preserves_loudness_bypass() {
+        let mut samples = queued_samples((0..FRAME_SAMPLES).map(|value| value as i16), true);
+        let mut frame = Vec::with_capacity(FRAME_BYTES);
+        let mut last = vec![0i16; FRAME_SAMPLES];
+
+        let bypass_loudness = render_exact_frame(&mut samples, &mut frame, &mut last);
+
+        assert!(bypass_loudness);
+        assert_eq!(frame.len(), FRAME_BYTES);
+    }
+
+    #[test]
     fn source_queue_hard_drop_keeps_queue_bounded() {
         let max_samples = max_source_queue_samples();
-        let mut samples = (0..(max_samples + 10))
-            .map(|value| value as i16)
-            .collect::<VecDeque<_>>();
+        let mut samples = queued_samples((0..(max_samples + 10)).map(|value| value as i16), false);
 
-        let (stale_dropped, soft_trimmed) = trim_source_queue(&mut samples, false);
+        let stale_dropped = trim_source_queue(&mut samples);
 
         assert_eq!(stale_dropped, 10);
-        assert_eq!(soft_trimmed, 0);
         assert_eq!(samples.len(), max_samples);
     }
 
     #[test]
-    fn source_queue_soft_trim_corrects_primed_drift_gradually() {
-        let soft_samples = soft_source_queue_samples();
+    fn source_queue_silent_overflow_drops_back_to_target_latency() {
         let target_samples = target_source_queue_samples();
-        let mut samples = (0..(soft_samples + 500))
-            .map(|value| value as i16)
-            .collect::<VecDeque<_>>();
+        let max_samples = max_source_queue_samples();
+        let starting_samples = max_samples + FRAME_SAMPLES * 2;
+        let mut samples = VecDeque::from(vec![QueuedSample::default(); starting_samples]);
 
-        let (stale_dropped, soft_trim_budget) = trim_source_queue(&mut samples, true);
+        let stale_dropped = trim_source_queue(&mut samples);
 
-        assert_eq!(stale_dropped, 0);
-        assert_eq!(soft_trim_budget, soft_samples + 500 - target_samples);
-        assert_eq!(samples.len(), soft_samples + 500);
-        assert!(samples.len() > target_samples);
+        assert_eq!(stale_dropped as usize, starting_samples - target_samples);
+        assert_eq!(samples.len(), target_samples);
     }
 
     #[test]
-    fn exact_frame_renderer_smoothly_spreads_trimmed_samples() {
-        let trim_samples = 10usize;
-        let mut samples = (0..(FRAME_SAMPLES + trim_samples))
-            .map(|value| value as i16)
-            .collect::<VecDeque<_>>();
-        let mut frame = Vec::with_capacity(FRAME_BYTES);
-        let mut last = vec![0i16; FRAME_SAMPLES];
+    fn source_queue_soft_zone_does_not_speed_up_audio() {
+        let soft_samples = soft_source_queue_samples();
+        let mut samples =
+            queued_samples((0..(soft_samples + 500)).map(|value| value as i16), false);
 
-        render_exact_frame_with_trim(&mut samples, &mut frame, &mut last, trim_samples);
+        let stale_dropped = trim_source_queue(&mut samples);
 
-        let rendered = pcm16_samples(&frame).collect::<Vec<_>>();
-        assert_eq!(rendered.len(), FRAME_SAMPLES);
-        assert!(samples.is_empty());
-        assert_eq!(last.len(), FRAME_SAMPLES);
-        assert!(rendered[0] < rendered[FRAME_SAMPLES - 1]);
-        assert!(rendered
-            .windows(2)
-            .all(|pair| pair[1].saturating_sub(pair[0]) <= 2));
+        assert_eq!(stale_dropped, 0);
+        assert_eq!(samples.len(), soft_samples + 500);
     }
 
     #[test]
@@ -3210,6 +3893,22 @@ mod tests {
     }
 
     #[test]
+    fn webrtc_selection_falls_back_when_preferred_codec_is_unavailable() {
+        let offer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n";
+        let selection = select_webrtc_audio_codec(
+            offer,
+            &[WebRTCAudioCodec::Opus, WebRTCAudioCodec::Pcmu],
+            "g722",
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(selection.codec, WebRTCAudioCodec::Opus);
+        assert_eq!(selection.payload_type, 111);
+    }
+
+    #[test]
     fn webrtc_selection_falls_back_to_static_pcmu_payload() {
         let offer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\n";
         let selection =
@@ -3217,6 +3916,139 @@ mod tests {
 
         assert_eq!(selection.codec, WebRTCAudioCodec::Pcmu);
         assert_eq!(selection.payload_type, 0);
+    }
+
+    #[test]
+    fn str0m_answer_keeps_offer_codec_attributes_for_gstreamer() {
+        let offer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtcp-mux\r\na=rtcp-rsize\r\na=rtpmap:111 OPUS/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=rtcp-fb:111 transport-cc\r\n";
+        let answer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendonly\r\n";
+        let selection = WebRTCCodecSelection {
+            codec: WebRTCAudioCodec::Opus,
+            payload_type: 111,
+        };
+
+        let patched = ensure_str0m_answer_codec_lines(answer, offer, selection);
+
+        assert!(patched.contains("a=rtpmap:111 OPUS/48000/2"));
+        assert!(patched.contains("a=fmtp:111 minptime=10;useinbandfec=1"));
+        assert!(patched.contains("a=rtcp-fb:111 transport-cc"));
+        assert!(patched.contains("a=rtcp-mux"));
+        assert!(patched.contains("a=rtcp-rsize"));
+        assert!(patched.contains("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111"));
+    }
+
+    #[test]
+    fn str0m_answer_rewrites_rejected_sparse_audio_mline_for_gstreamer() {
+        let offer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtcp-mux\r\na=rtcp-rsize\r\na=rtpmap:111 OPUS/48000/2\r\na=rtcp-fb:111 transport-cc\r\n";
+        let answer = "v=0\r\nm=audio 0 UDP/TLS/RTP/SAVPF\r\nc=IN IP4 0.0.0.0\r\na=sendonly\r\n";
+        let selection = WebRTCCodecSelection {
+            codec: WebRTCAudioCodec::Opus,
+            payload_type: 111,
+        };
+
+        let patched = ensure_str0m_answer_codec_lines(answer, offer, selection);
+
+        assert!(patched.contains("m=audio 9 UDP/TLS/RTP/SAVPF 111"));
+        assert!(
+            patched.contains("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:111")
+        );
+        assert!(patched.contains("a=rtpmap:111 OPUS/48000/2"));
+        assert!(patched.contains("a=rtcp-fb:111 transport-cc"));
+        assert!(patched.contains("a=rtcp-mux"));
+        assert!(patched.contains("a=rtcp-rsize"));
+        assert!(!patched.contains("m=audio 0 UDP/TLS/RTP/SAVPF\r\n"));
+    }
+
+    #[test]
+    fn str0m_answer_adds_missing_webrtc_audio_transport_attributes() {
+        let offer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtcp-mux\r\na=rtcp-rsize\r\na=rtpmap:111 OPUS/48000/2\r\n";
+        let answer =
+            "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 OPUS/48000/2\r\na=sendonly\r\n";
+        let selection = WebRTCCodecSelection {
+            codec: WebRTCAudioCodec::Opus,
+            payload_type: 111,
+        };
+
+        let patched = ensure_str0m_answer_codec_lines(answer, offer, selection);
+
+        assert_eq!(patched.matches("a=rtpmap:111").count(), 1);
+        assert!(patched.contains("a=rtcp-mux"));
+        assert!(patched.contains("a=rtcp-rsize"));
+    }
+
+    #[test]
+    fn str0m_answer_drops_unselected_audio_payload_attributes() {
+        let offer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 0 8\r\na=rtcp-mux\r\na=rtpmap:111 OPUS/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n";
+        let answer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 0 8\r\na=rtpmap:111 OPUS/48000/2\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\na=sendonly\r\n";
+        let selection = WebRTCCodecSelection {
+            codec: WebRTCAudioCodec::Opus,
+            payload_type: 111,
+        };
+
+        let patched = ensure_str0m_answer_codec_lines(answer, offer, selection);
+
+        assert!(patched.contains("m=audio 9 UDP/TLS/RTP/SAVPF 111"));
+        assert!(patched.contains("a=rtpmap:111 OPUS/48000/2"));
+        assert!(patched.contains("a=fmtp:111 minptime=10;useinbandfec=1"));
+        assert!(patched.contains("a=sendonly"));
+        assert!(!patched.contains("a=rtpmap:0"));
+        assert!(!patched.contains("a=rtpmap:8"));
+    }
+
+    #[test]
+    fn str0m_answer_repairs_empty_bundle_group_for_gstreamer() {
+        let offer = "v=0\r\na=group:BUNDLE audio0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 OPUS/48000/2\r\n";
+        let answer = "v=0\r\na=group:BUNDLE\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendonly\r\n";
+        let selection = WebRTCCodecSelection {
+            codec: WebRTCAudioCodec::Opus,
+            payload_type: 111,
+        };
+
+        let patched = ensure_str0m_answer_codec_lines(answer, offer, selection);
+
+        assert!(patched.contains("a=group:BUNDLE audio0\r\nm=audio"));
+        assert!(!patched.contains("a=group:BUNDLE\r\nm=audio"));
+    }
+
+    #[cfg(feature = "gstreamer-backend")]
+    #[test]
+    fn offered_host_candidate_ip_reads_gstreamer_candidate() {
+        let offer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=candidate:1 1 UDP 2015363327 172.16.1.37 43521 typ host\r\n";
+
+        assert_eq!(
+            offered_host_candidate_ip(offer),
+            Some(IpAddr::V4(Ipv4Addr::new(172, 16, 1, 37)))
+        );
+    }
+
+    #[cfg(feature = "gstreamer-backend")]
+    #[test]
+    fn webrtc_candidate_ip_prefers_media_specific_override() {
+        let overrides = [
+            ("HAZE_MEDIA_WEBRTC_HOST", Some("172.16.1.30".to_string())),
+            ("HAZE_WEBRTC_HOST", Some("172.20.48.1".to_string())),
+            ("HAZE_PUBLIC_HOST", Some("203.0.113.10".to_string())),
+        ];
+
+        let selected = detect_webrtc_candidate_ip_inner("", None, &overrides);
+
+        assert_eq!(selected.ip, IpAddr::V4(Ipv4Addr::new(172, 16, 1, 30)));
+        assert_eq!(selected.source, "HAZE_MEDIA_WEBRTC_HOST");
+    }
+
+    #[cfg(feature = "gstreamer-backend")]
+    #[test]
+    fn webrtc_candidate_ip_ignores_invalid_override_before_generic_override() {
+        let overrides = [
+            ("HAZE_MEDIA_WEBRTC_HOST", Some("not-an-ip".to_string())),
+            ("HAZE_WEBRTC_HOST", Some("172.16.1.30".to_string())),
+            ("HAZE_PUBLIC_HOST", None),
+        ];
+
+        let selected = detect_webrtc_candidate_ip_inner("", None, &overrides);
+
+        assert_eq!(selected.ip, IpAddr::V4(Ipv4Addr::new(172, 16, 1, 30)));
+        assert_eq!(selected.source, "HAZE_WEBRTC_HOST");
     }
 
     #[test]

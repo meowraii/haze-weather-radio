@@ -264,6 +264,42 @@ func TestSerializeCAPAlertUsesHeadlineForBackgroundColor(t *testing.T) {
 	}
 }
 
+func TestIsCAPEndedRequiresEveryInfoToBeEndedOrExpired(t *testing.T) {
+	now := time.Date(2026, 7, 3, 21, 0, 0, 0, time.UTC)
+	alert := capmodel.Alert{
+		Identifier:  "mixed-active-ended",
+		MessageType: "Update",
+		Infos: []capmodel.AlertInfo{
+			{
+				Headline: "yellow watch - severe thunderstorm - in effect",
+				Expires:  now.Add(2 * time.Hour).Format(time.RFC3339),
+				Parameters: []capmodel.NameValue{{
+					Name:  "layer:EC-MSC-SMC:1.0:Alert_Location_Status",
+					Value: "Active",
+				}},
+			},
+			{
+				Headline: "yellow watch - severe thunderstorm - ended",
+				Expires:  now.Add(-1 * time.Minute).Format(time.RFC3339),
+				Parameters: []capmodel.NameValue{{
+					Name:  "layer:EC-MSC-SMC:1.0:Alert_Location_Status",
+					Value: "Ended",
+				}},
+			},
+		},
+	}
+
+	if IsCAPEnded(alert, now) {
+		t.Fatal("mixed active and ended info blocks should not end the whole alert")
+	}
+
+	alert.Infos[0].Headline = "yellow watch - severe thunderstorm - ended"
+	alert.Infos[0].Parameters[0].Value = "Ended"
+	if !IsCAPEnded(alert, now) {
+		t.Fatal("all explicitly ended info blocks should end the alert")
+	}
+}
+
 func TestSpeechFromDataRespectsDisabledSameIntro(t *testing.T) {
 	intro := "Environment Canada has issued a Practice/demo Warning for Saskatoon."
 	cases := []struct {

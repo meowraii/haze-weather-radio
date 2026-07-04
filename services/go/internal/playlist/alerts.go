@@ -123,21 +123,28 @@ func isExplicitCAPEnd(alert capmodel.Alert) bool {
 	if strings.EqualFold(alert.MessageType, "Cancel") {
 		return true
 	}
+	sawEnd := false
 	for _, info := range alert.Infos {
-		for _, response := range info.Response {
-			if strings.EqualFold(response, "AllClear") {
-				return true
-			}
+		if capInfoExplicitEnd(info) {
+			sawEnd = true
+			continue
 		}
-		status := strings.ToLower(alertParam(info, "layer:EC-MSC-SMC:1.0:Alert_Location_Status"))
-		if status == "" {
-			status = strings.ToLower(alertParam(info, "layer:EC-MSC-SMC:1.1:Alert_Location_Status"))
-		}
-		if status == "ended" || strings.Contains(strings.ToLower(info.Headline), "ended") {
+		return false
+	}
+	return sawEnd
+}
+
+func capInfoExplicitEnd(info capmodel.AlertInfo) bool {
+	for _, response := range info.Response {
+		if strings.EqualFold(response, "AllClear") {
 			return true
 		}
 	}
-	return false
+	status := strings.ToLower(alertParam(info, "layer:EC-MSC-SMC:1.0:Alert_Location_Status"))
+	if status == "" {
+		status = strings.ToLower(alertParam(info, "layer:EC-MSC-SMC:1.1:Alert_Location_Status"))
+	}
+	return status == "ended" || strings.Contains(strings.ToLower(info.Headline), "ended")
 }
 
 func isCAPEnded(alert capmodel.Alert, now time.Time) bool {
@@ -151,12 +158,29 @@ func isCAPEnded(alert capmodel.Alert, now time.Time) bool {
 }
 
 func alertExpiresAt(alert capmodel.Alert) time.Time {
-	for _, info := range alert.Infos {
-		if parsed := parseTime(info.Expires); !parsed.IsZero() {
-			return parsed
+	var latest time.Time
+	for _, info := range capActiveOrAllInfos(alert.Infos) {
+		if parsed := parseTime(info.Expires); !parsed.IsZero() && parsed.After(latest) {
+			latest = parsed
 		}
 	}
-	return time.Time{}
+	return latest
+}
+
+func capActiveOrAllInfos(infos []capmodel.AlertInfo) []capmodel.AlertInfo {
+	active := make([]capmodel.AlertInfo, 0, len(infos))
+	sawEnd := false
+	for _, info := range infos {
+		if capInfoExplicitEnd(info) {
+			sawEnd = true
+			continue
+		}
+		active = append(active, info)
+	}
+	if sawEnd && len(active) > 0 {
+		return active
+	}
+	return infos
 }
 
 func firstCAPTime(sent string, infos []capmodel.AlertInfo) time.Time {

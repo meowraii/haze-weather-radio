@@ -79,8 +79,8 @@ pub(crate) struct WgpuFrameRenderer {
     text_renderer: glyphon::TextRenderer,
     adapter_name: String,
     backend: String,
+    max_texture_width: u32,
     ticker_key: Option<String>,
-    ticker_start_frame: u64,
     ticker_start_pts_ns: Option<u64>,
     text_strip_cache: std::collections::BTreeMap<String, RenderedTextStrip>,
     text_strip_cache_bytes: usize,
@@ -137,6 +137,11 @@ impl WgpuFrameRenderer {
             wgpu::MultisampleState::default(),
             None,
         );
+        let max_texture_width = device
+            .limits()
+            .max_texture_dimension_2d
+            .min(65_535)
+            .max(width.max(1));
         Ok(Self {
             id,
             width,
@@ -153,8 +158,8 @@ impl WgpuFrameRenderer {
             text_renderer,
             adapter_name: info.name,
             backend: format!("{:?}", info.backend),
+            max_texture_width,
             ticker_key: None,
-            ticker_start_frame: 0,
             ticker_start_pts_ns: None,
             text_strip_cache: std::collections::BTreeMap::new(),
             text_strip_cache_bytes: 0,
@@ -240,16 +245,27 @@ impl WgpuFrameRenderer {
         if render_state.sunny_cat {
             draw_sunny_cat(frame, width, height);
         }
-        if render_state.text.trim().is_empty() && render_state.clock_text.trim().is_empty() {
+        if !is_ticker
+            && render_state.text.trim().is_empty()
+            && render_state.clock_text.trim().is_empty()
+        {
             return Ok(());
         }
         if is_ticker && !render_state.text.trim().is_empty() {
-            let Some((text, x_absolute)) = self.ticker_window_for_frame(state, width, frame_pts_ns)
+            let Some(x_absolute) = self.ticker_position_for_frame(state, width, frame_pts_ns)
             else {
+                self.draw_gradient(
+                    frame,
+                    width,
+                    height,
+                    y,
+                    banner_height,
+                    &render_state.gradient,
+                );
                 self.draw_clock(frame, width, height, &render_state)?;
                 return Ok(());
             };
-            render_state.text = text;
+            render_state.text = state.source_text.trim().to_string();
             render_state.x_absolute = x_absolute;
         } else if !is_ticker {
             self.ticker_key = None;
@@ -266,10 +282,21 @@ impl WgpuFrameRenderer {
                 &render_state.gradient,
             );
             let text_x = (render_state.x_absolute * width as f64).round() as isize;
-            let strip_width = ticker_strip_width(&render_state, width);
-            let strip =
-                self.ensure_ticker_strip(strip_width, banner_height as u32, &render_state)?;
-            blend_text_strip_at(frame, width, height, text_x, y as isize, strip);
+            let strip_width = ticker_strip_width(&render_state, width, self.max_texture_width);
+            if ticker_strip_holds_full_text(&render_state, strip_width) {
+                let strip =
+                    self.ensure_ticker_strip(strip_width, banner_height as u32, &render_state)?;
+                blend_text_strip_at(frame, width, height, text_x, y as isize, strip);
+            } else {
+                let strip = self.render_text_strip(
+                    width as u32,
+                    banner_height as u32,
+                    text_x,
+                    y as isize,
+                    &render_state,
+                )?;
+                blend_text_strip_at(frame, width, height, 0, y as isize, &strip);
+            }
             self.draw_clock(frame, width, height, &render_state)?;
             return Ok(());
         }
@@ -334,61 +361,39 @@ impl WgpuFrameRenderer {
         Ok(())
     }
 
-    fn ticker_window_for_frame(
+    fn ticker_position_for_frame(
         &mut self,
         state: &OverlayRenderState,
         frame_width: usize,
         frame_pts_ns: Option<u64>,
-    ) -> Option<(String, f64)> {
+    ) -> Option<f64> {
         let source_text = state.source_text.trim();
         if source_text.is_empty() {
             return None;
         }
-        let key = format!(
-            "{}|{}|{}|{}|{}|{}|{}",
-            state.visual_mode,
-            state.font_family,
-            state.font_weight,
-            state.font_size,
-            state.banner_height,
-            state.speed_px_per_frame,
-            if state.visual_id.trim().is_empty() {
-                source_text
-            } else {
-                state.visual_id.trim()
-            }
-        );
+        let key = ticker_render_key(state, source_text);
         if self.ticker_key.as_deref() != Some(key.as_str()) {
             self.ticker_key = Some(key);
-            self.ticker_start_frame = self.rendered_frames;
-            self.ticker_start_pts_ns = frame_pts_ns;
+            self.ticker_start_pts_ns = ticker_start_pts_ns(frame_pts_ns, state.started_at);
             self.clear_text_strip_cache();
+        } else if self.ticker_start_pts_ns.is_none() {
+            self.ticker_start_pts_ns = ticker_start_pts_ns(frame_pts_ns, state.started_at);
         }
         let frame_width_f = frame_width.max(1) as f64;
-        let frames_since_start = self.rendered_frames.saturating_sub(self.ticker_start_frame);
-        let elapsed_seconds = ticker_elapsed_for_compositor_frame(
-            frame_pts_ns,
-            self.ticker_start_pts_ns,
-            frames_since_start,
-            state.draw_fps,
-        );
+        let elapsed_seconds =
+            ticker_elapsed_seconds(frame_pts_ns, self.ticker_start_pts_ns, state.started_at);
         let x_px = ticker_x_for_compositor_time(
             frame_width_f,
             state.text_width_px,
             state.speed_px_per_frame,
-            state.draw_fps,
             elapsed_seconds,
         );
-        if x_px < -state.text_width_px.max(1.0) {
+        let text_width_px =
+            ticker_required_text_width_px(source_text, state.font_size, state.text_width_px);
+        if x_px < -ticker_exit_width_px(text_width_px, frame_width_f) {
             return None;
         }
-        Some(ticker_text_window(
-            source_text,
-            state.text_width_px,
-            state.font_size,
-            x_px,
-            frame_width_f,
-        ))
+        Some(x_px / frame_width_f)
     }
 
     fn ensure_ticker_strip(
@@ -461,23 +466,30 @@ impl WgpuFrameRenderer {
         strip_width: u32,
         strip_height: u32,
         x: isize,
-        y: isize,
+        _y: isize,
         state: &OverlayRenderState,
     ) -> Result<RenderedTextStrip> {
         let strip_width = strip_width.max(1);
         let strip_height = strip_height.max(1);
         let line_height = (state.font_size as f32 * 1.16).max(14.0);
         let font_size = state.font_size.max(12) as f32;
-        let text_area_width = (state.text_width_px as f32 + strip_width as f32 * 2.0)
-            .max(strip_width as f32)
-            .min(65_535.0);
+        let text_area_width = if state.visual_mode == "ticker_alert" {
+            None
+        } else {
+            Some(
+                (state.text_width_px as f32 + strip_width as f32 * 2.0)
+                    .max(strip_width as f32)
+                    .min(65_535.0),
+            )
+        };
         let mut buffer = glyphon::Buffer::new(
             &mut self.font_system,
             glyphon::Metrics::new(font_size, line_height),
         );
+        buffer.set_wrap(&mut self.font_system, glyphon::Wrap::None);
         buffer.set_size(
             &mut self.font_system,
-            Some(text_area_width),
+            text_area_width,
             Some(strip_height as f32),
         );
         buffer.set_text(
@@ -498,11 +510,7 @@ impl WgpuFrameRenderer {
                 height: strip_height,
             },
         );
-        let top = if state.visual_mode == "ticker_alert" {
-            ((strip_height as f32 - line_height) * 0.5).max(0.0)
-        } else {
-            y.max(0) as f32
-        };
+        let top = text_strip_top_px(strip_height, line_height);
         let left = x as f32;
         let bounds = glyphon::TextBounds {
             left: 0,
@@ -646,67 +654,18 @@ impl WgpuFrameRenderer {
 }
 
 #[cfg(feature = "gpu-wgpu")]
-fn ticker_text_window(
-    text: &str,
-    text_width_px: f64,
-    font_size: u32,
-    x_px: f64,
-    frame_width: f64,
-) -> (String, f64) {
-    let frame_width = frame_width.max(1.0);
-    let char_count = text.chars().count();
-    if char_count == 0 {
-        return (String::new(), 1.0);
-    }
-    let estimated_width = text_width_px
-        .max(f64::from(font_size.max(16)) * char_count as f64 * 0.48)
-        .max(1.0);
-    let char_width = (estimated_width / char_count as f64).max(8.0);
-    let first_visible_px = (-x_px).max(0.0);
-    let page_width_px = (frame_width * 2.0).max(char_width * 32.0);
-    let page_left_px = (first_visible_px / page_width_px).floor() * page_width_px;
-    let first_char = ((page_left_px / char_width).floor() as usize).saturating_sub(8);
-    let char_offset_px = first_char as f64 * char_width;
-    let window_left_px = x_px + char_offset_px;
-    let visible_width_px = (frame_width - window_left_px).max(frame_width) + page_width_px;
-    let max_chars = ((visible_width_px / char_width).ceil() as usize)
-        .saturating_add(24)
-        .min(char_count.saturating_sub(first_char));
-    let window_text = text.chars().skip(first_char).take(max_chars).collect();
-    (window_text, window_left_px / frame_width)
-}
-
-#[cfg(feature = "gpu-wgpu")]
-fn ticker_x_for_compositor_frame(
-    frame_width: f64,
-    text_width_px: f64,
-    speed_px_per_frame: u32,
-    interlaced: bool,
-    frames_since_start: u64,
-) -> f64 {
-    let _ = interlaced;
-    ticker_x_for_compositor_time(
-        frame_width,
-        text_width_px,
-        speed_px_per_frame,
-        1.0,
-        frames_since_start as f64,
+fn ticker_render_key(state: &OverlayRenderState, source_text: &str) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}",
+        state.visual_mode,
+        state.font_family,
+        state.font_weight,
+        state.font_size,
+        state.banner_height,
+        state.speed_px_per_frame,
+        state.visual_id.trim(),
+        source_text
     )
-}
-
-#[cfg(feature = "gpu-wgpu")]
-fn ticker_elapsed_for_compositor_frame(
-    frame_pts_ns: Option<u64>,
-    start_pts_ns: Option<u64>,
-    frames_since_start: u64,
-    draw_fps: f64,
-) -> f64 {
-    if let (Some(frame_pts_ns), Some(start_pts_ns)) = (frame_pts_ns, start_pts_ns) {
-        if frame_pts_ns >= start_pts_ns {
-            return frame_pts_ns.saturating_sub(start_pts_ns) as f64 / 1_000_000_000.0;
-        }
-    }
-    frames_since_start as f64 / draw_fps.max(1.0)
 }
 
 #[cfg(feature = "gpu-wgpu")]
@@ -714,20 +673,84 @@ fn ticker_x_for_compositor_time(
     frame_width: f64,
     _text_width_px: f64,
     speed_px_per_frame: u32,
-    draw_fps: f64,
     elapsed_seconds: f64,
 ) -> f64 {
     let start_x = frame_width.max(1.0) + 1.0;
-    let pixels_per_second = f64::from(speed_px_per_frame.max(1)) * draw_fps.max(1.0);
+    let pixels_per_second = crate::graphics::ticker_speed_px_per_second(speed_px_per_frame);
     start_x - (elapsed_seconds.max(0.0) * pixels_per_second)
 }
 
 #[cfg(feature = "gpu-wgpu")]
-fn ticker_strip_width(state: &OverlayRenderState, frame_width: usize) -> u32 {
-    let chars = state.text.chars().count().max(1) as f64;
-    let estimate = chars * f64::from(state.font_size.max(16)) * 0.92 + 32.0;
-    let max_width = frame_width.saturating_mul(2).clamp(512, 8_192) as f64;
-    estimate.ceil().clamp(64.0, max_width) as u32
+fn ticker_elapsed_seconds(
+    frame_pts_ns: Option<u64>,
+    start_pts_ns: Option<u64>,
+    fallback_started_at: std::time::Instant,
+) -> f64 {
+    if let (Some(frame_pts_ns), Some(start_pts_ns)) = (frame_pts_ns, start_pts_ns) {
+        if frame_pts_ns >= start_pts_ns {
+            return frame_pts_ns.saturating_sub(start_pts_ns) as f64 / 1_000_000_000.0;
+        }
+    }
+    fallback_started_at.elapsed().as_secs_f64()
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_start_pts_ns(
+    frame_pts_ns: Option<u64>,
+    fallback_started_at: std::time::Instant,
+) -> Option<u64> {
+    let frame_pts_ns = frame_pts_ns?;
+    let elapsed_ns = duration_ns_u64(fallback_started_at.elapsed());
+    if frame_pts_ns >= elapsed_ns {
+        Some(frame_pts_ns - elapsed_ns)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn duration_ns_u64(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_exit_width_px(text_width_px: f64, frame_width_px: f64) -> f64 {
+    let tail_padding = (frame_width_px.max(1.0) * 0.15).clamp(96.0, 480.0);
+    text_width_px.max(1.0) + tail_padding
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_required_text_width_px(text: &str, font_size: u32, configured_width_px: f64) -> f64 {
+    let chars = text.chars().count().max(1) as f64;
+    configured_width_px
+        .max(estimated_text_width_px(text, font_size))
+        .max(chars * f64::from(font_size.max(16)) * 0.92)
+        .max(1.0)
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_required_strip_width_px(state: &OverlayRenderState) -> f64 {
+    ticker_required_text_width_px(&state.text, state.font_size, state.text_width_px)
+        + f64::from(state.font_size.max(16)) * 4.0
+        + 96.0
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_strip_width(
+    state: &OverlayRenderState,
+    frame_width: usize,
+    max_texture_width: u32,
+) -> u32 {
+    let min_width = frame_width.max(64) as f64;
+    let max_width = f64::from(max_texture_width.max(frame_width.max(1) as u32));
+    ticker_required_strip_width_px(state)
+        .ceil()
+        .clamp(min_width, max_width) as u32
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn ticker_strip_holds_full_text(state: &OverlayRenderState, strip_width: u32) -> bool {
+    f64::from(strip_width) >= ticker_required_strip_width_px(state).ceil()
 }
 
 #[cfg(feature = "gpu-wgpu")]
@@ -897,6 +920,11 @@ fn lerp(a: u8, b: u8, t: f32) -> u8 {
 }
 
 #[cfg(feature = "gpu-wgpu")]
+fn text_strip_top_px(strip_height: u32, line_height: f32) -> f32 {
+    ((strip_height as f32 - line_height) * 0.5).max(0.0)
+}
+
+#[cfg(feature = "gpu-wgpu")]
 fn estimated_text_width_px(text: &str, font_size: u32) -> f64 {
     let font_size = f64::from(font_size.max(16));
     let units = text.chars().fold(0.0, |sum, ch| {
@@ -920,92 +948,156 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ticker_window_keeps_rendering_tail_when_leading_text_is_offscreen() {
-        let text = "Environment Canada has issued a Severe Thunderstorm Warning. ".repeat(20);
-        let text_width = text.chars().count() as f64 * 48.0 * 0.56;
+    fn ticker_strip_width_can_hold_long_text_without_paging() {
+        let mut state = test_overlay_state();
+        state.text = "Environment Canada has issued a Severe Thunderstorm Warning. ".repeat(20);
+        state.source_text = state.text.clone();
+        state.text_width_px = estimated_text_width_px(&state.text, state.font_size);
 
-        let (window, x_absolute) = ticker_text_window(&text, text_width, 48, -19_000.0, 1_920.0);
+        let width = ticker_strip_width(&state, 1_920, 65_535);
 
-        assert!(!window.trim().is_empty());
+        assert!(ticker_strip_holds_full_text(&state, width));
         assert!(
-            x_absolute > -1.0,
-            "window x should keep the visible suffix on-screen"
-        );
-        assert!(
-            window.len() < text.len(),
-            "renderer should draw a bounded text window"
+            width > 3_840,
+            "ticker strip should not be capped at two frame widths"
         );
     }
 
     #[test]
-    fn ticker_window_uses_stable_pages_for_adjacent_frames() {
-        let text = "Environment Canada has issued a Severe Thunderstorm Warning. ".repeat(20);
-        let text_width = text.chars().count() as f64 * 48.0 * 0.56;
+    fn ticker_strip_width_reports_texture_limit_fallback() {
+        let mut state = test_overlay_state();
+        state.text = "Environment Canada has issued a Severe Thunderstorm Warning. ".repeat(40);
+        state.source_text = state.text.clone();
+        state.text_width_px = estimated_text_width_px(&state.text, state.font_size);
 
-        let (first, first_x) = ticker_text_window(&text, text_width, 48, -320.0, 1_920.0);
-        let (second, second_x) = ticker_text_window(&text, text_width, 48, -332.0, 1_920.0);
+        let width = ticker_strip_width(&state, 1_920, 4_096);
 
-        assert_eq!(first, second);
-        assert!(
-            second_x < first_x,
-            "the cached page should slide smoothly between frame positions"
-        );
+        assert_eq!(width, 4_096);
+        assert!(!ticker_strip_holds_full_text(&state, width));
     }
 
     #[test]
-    fn ticker_x_uses_exact_compositor_frame_steps() {
+    fn ticker_exit_width_uses_full_strip_estimate() {
+        let text = "Environment Canada has issued a Severe Thunderstorm Warning. ".repeat(20);
+        let configured = text.chars().count() as f64 * 48.0 * 0.56;
+
+        let required = ticker_required_text_width_px(&text, 48, configured);
+
+        assert!(required > configured);
+    }
+
+    #[test]
+    fn ticker_render_key_changes_when_text_changes_under_same_visual_id() {
+        let mut state = test_overlay_state();
+        state.visual_id = "same-signature".to_string();
+
+        let first = ticker_render_key(&state, "First crawl");
+        let second = ticker_render_key(&state, "Updated crawl");
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn ticker_x_uses_wallclock_seconds() {
         assert_eq!(
-            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, false, 0),
+            ticker_x_for_compositor_time(1_920.0, 800.0, 12, 0.0),
             1_921.0
         );
-        assert_eq!(
-            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, false, 1),
-            1_909.0
-        );
-        assert_eq!(
-            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, false, 10),
-            1_801.0
-        );
+        let one_frame = ticker_x_for_compositor_time(1_920.0, 800.0, 12, 1.0 / 30.0);
+        let ten_frames = ticker_x_for_compositor_time(1_920.0, 800.0, 12, 10.0 / 30.0);
+        assert!((one_frame - 1_909.0).abs() < 0.000_001);
+        assert!((ten_frames - 1_801.0).abs() < 0.000_001);
     }
 
     #[test]
-    fn ticker_x_uses_full_steps_for_interlaced_output() {
-        assert_eq!(
-            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, true, 0),
-            1_921.0
-        );
-        assert_eq!(
-            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, true, 1),
-            1_909.0
-        );
-        assert_eq!(
-            ticker_x_for_compositor_frame(1_920.0, 800.0, 12, true, 2),
-            1_897.0
-        );
+    fn ticker_x_ignores_output_framerate() {
+        let x = ticker_x_for_compositor_time(1_920.0, 800.0, 12, 1.0);
+        let expected = 1_921.0 - (12.0 * 30.0);
+        assert!((x - expected).abs() < 0.000_001);
     }
 
     #[test]
-    fn ticker_elapsed_prefers_buffer_pts_over_callback_count() {
-        let elapsed = ticker_elapsed_for_compositor_frame(
+    fn ticker_elapsed_uses_buffer_pts_when_available() {
+        let fallback_started_at = std::time::Instant::now() - std::time::Duration::from_secs(30);
+
+        let elapsed = ticker_elapsed_seconds(
             Some(2_500_000_000),
             Some(1_000_000_000),
-            120,
-            60.0,
+            fallback_started_at,
         );
+
         assert!((elapsed - 1.5).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn ticker_elapsed_falls_back_to_draw_fps_without_pts() {
-        let elapsed = ticker_elapsed_for_compositor_frame(None, None, 30, 30.0);
-        assert!((elapsed - 1.0).abs() < f64::EPSILON);
+    fn ticker_pts_anchor_matches_existing_wallclock_elapsed() {
+        let fallback_started_at = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        let start_pts_ns =
+            ticker_start_pts_ns(Some(10_000_000_000), fallback_started_at).expect("pts anchor");
+        let elapsed = ticker_elapsed_seconds(
+            Some(10_000_000_000),
+            Some(start_pts_ns),
+            fallback_started_at,
+        );
+
+        assert!((1.90..=2.10).contains(&elapsed));
     }
 
     #[test]
-    fn ticker_x_uses_media_time_and_configured_draw_fps() {
-        let fps = 30_000.0 / 1_001.0;
-        let x = ticker_x_for_compositor_time(1_920.0, 800.0, 12, fps, 1.0);
-        let expected = 1_921.0 - (12.0 * fps);
-        assert!((x - expected).abs() < 0.000_001);
+    fn ticker_pts_anchor_rejects_pts_behind_wallclock_elapsed() {
+        let fallback_started_at = std::time::Instant::now() - std::time::Duration::from_secs(30);
+
+        assert_eq!(
+            ticker_start_pts_ns(Some(2_500_000_000), fallback_started_at),
+            None
+        );
+    }
+
+    #[test]
+    fn ticker_elapsed_falls_back_to_wallclock_without_pts() {
+        let fallback_started_at = std::time::Instant::now() - std::time::Duration::from_millis(250);
+
+        let elapsed = ticker_elapsed_seconds(None, None, fallback_started_at);
+
+        assert!((0.20..=0.35).contains(&elapsed));
+    }
+
+    #[test]
+    fn text_strip_uses_local_vertical_position() {
+        assert_eq!(text_strip_top_px(96, 24.0), 36.0);
+        assert_eq!(text_strip_top_px(12, 24.0), 0.0);
+    }
+
+    fn test_overlay_state() -> OverlayRenderState {
+        OverlayRenderState {
+            visual_id: String::new(),
+            source_text: "Test crawl".to_string(),
+            visual_mode: "ticker_alert".to_string(),
+            font_family: "Arial".to_string(),
+            font_weight: "normal".to_string(),
+            font_size: 48,
+            clock_text: String::new(),
+            clock_x: 48,
+            clock_y: 48,
+            clock_font_size: 30,
+            clock_color: "#ffffff".to_string(),
+            banner_height: 96,
+            speed_px_per_frame: 12,
+            frame_width: 1920,
+            draw_fps: 30.0,
+            text_width_px: 800.0,
+            started_at: std::time::Instant::now(),
+            text: "Test crawl".to_string(),
+            font_desc: "Arial 48".to_string(),
+            ypos: 0.08,
+            x_absolute: 1.0,
+            silent: false,
+            gradient: [
+                "#111827".to_string(),
+                "#111827".to_string(),
+                "#111827".to_string(),
+            ],
+            sunny_cat: false,
+        }
     }
 }

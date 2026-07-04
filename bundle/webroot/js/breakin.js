@@ -78,6 +78,14 @@ function feedID(feed) {
     return feed.feed_id || feed.id || '';
 }
 
+function modeState(mode) {
+    const value = String(mode || '').toLowerCase();
+    if (['running', 'playing', 'active', 'live'].includes(value)) return 'running';
+    if (['paused', 'pending', 'queued', 'waiting'].includes(value)) return 'paused';
+    if (['stopped', 'disabled', 'error', 'failed'].includes(value)) return 'stopped';
+    return 'unknown';
+}
+
 function selectedFeedIDs() {
     return [...selectedFeeds].filter(Boolean);
 }
@@ -85,24 +93,29 @@ function selectedFeedIDs() {
 function renderFeeds() {
     const feeds = Array.isArray(state.feeds) ? state.feeds : [];
     if (!feeds.length) {
-        feedRows.innerHTML = '<tr><td colspan="5" class="breakin-empty">No feeds are available.</td></tr>';
+        selectedFeeds.clear();
+        feedRows.innerHTML = '<tr><td colspan="5" class="breakin-empty panel-empty-cell">No feeds are available.</td></tr>';
         selectedMetric.textContent = '0';
         return;
     }
-    for (const feed of feeds) {
-        const id = feedID(feed);
-        if (id && !selectedFeeds.size) selectedFeeds.add(id);
+    const availableFeedIDs = new Set(feeds.map(feedID).filter(Boolean));
+    selectedFeeds = new Set([...selectedFeeds].filter((id) => availableFeedIDs.has(id)));
+    if (!selectedFeeds.size) {
+        const firstID = feedID(feeds[0]);
+        if (firstID) selectedFeeds.add(firstID);
     }
     feedRows.innerHTML = feeds.map((feed) => {
         const id = feedID(feed);
         const queue = Array.isArray(feed.queue) ? feed.queue.length : 0;
+        const mode = feed.mode || 'unknown';
+        const current = feed.current?.title || 'Idle';
         return `
             <tr>
-                <td><input type="checkbox" data-breakin-feed="${escapeHtml(id)}" ${selectedFeeds.has(id) ? 'checked' : ''}></td>
-                <td>${escapeHtml(feedName(feed))}<br><code>${escapeHtml(id)}</code></td>
-                <td>${escapeHtml(feed.mode || 'unknown')}</td>
-                <td>${escapeHtml(queue)}</td>
-                <td>${escapeHtml(feed.current?.title || 'Idle')}</td>
+                <td><input type="checkbox" data-breakin-feed="${escapeHtml(id)}" ${selectedFeeds.has(id) ? 'checked' : ''} aria-label="Select ${escapeHtml(feedName(feed))}"></td>
+                <td title="${escapeHtml(feedName(feed))}"><strong>${escapeHtml(feedName(feed))}</strong><br><code>${escapeHtml(id)}</code></td>
+                <td><span class="table-pill" data-state="${escapeHtml(modeState(mode))}" title="${escapeHtml(mode)}">${escapeHtml(mode)}</span></td>
+                <td><span class="table-queue" data-active="${queue > 0 ? 'true' : 'false'}">${escapeHtml(queue)}</span></td>
+                <td title="${escapeHtml(current)}">${escapeHtml(current)}</td>
             </tr>
         `;
     }).join('');

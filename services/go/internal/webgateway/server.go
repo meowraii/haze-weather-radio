@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -103,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/banner/webrtc/offer", s.bannerWebRTCOffer)
 		mux.HandleFunc("/api/v1/cgen/preview", s.cgenPreview)
 		mux.HandleFunc("/api/v1/alerts/archive/cap.xml", s.alertsArchiveCAPXML)
+		mux.HandleFunc("/api/v1/alert/audio", s.alertAudioUpload)
 		mux.HandleFunc("/api/v1/wx-on-demand/generate", s.wxOnDemandGenerate)
 		mux.HandleFunc("/api/v1/wx-on-demand/packages", s.wxOnDemandPackages)
 		mux.HandleFunc("/api/v1/wx-on-demand/readers", s.wxOnDemandReaders)
@@ -112,11 +115,13 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.surface.allowsAdmin() && s.receiver != nil && s.receiver.Enabled() {
 		base := s.receiver.BasePath()
+		mux.HandleFunc(base+"/pair/challenge", s.receiver.HandlePairChallenge)
+		mux.HandleFunc(base+"/pair/complete", s.receiver.HandlePairComplete)
 		mux.HandleFunc(base+"/session", s.receiver.HandleSession)
 		mux.HandleFunc(base+"/ws", s.receiver.HandleWebSocket)
 	}
 	mux.HandleFunc("/assets/", s.staticAsset)
-	return s.withSecurityHeaders(mux)
+	return s.withSecurityHeaders(s.withAllowedHosts(mux))
 }
 
 func (s *Server) publicIndex(writer http.ResponseWriter, request *http.Request) {
@@ -1030,6 +1035,95 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+func (s *Server) withAllowedHosts(next http.Handler) http.Handler {
+	allowed := normalizedAllowedHosts(s.config.Webpanel.AllowedHosts)
+	if len(allowed) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !requestHostAllowed(request, allowed) && !s.receiverPrivateIPHostAllowed(request) {
+			http.Error(writer, "misdirected request", http.StatusMisdirectedRequest)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func requestHostAllowed(request *http.Request, allowed map[string]struct{}) bool {
+	return hostAllowed(requestHostName(request), allowed)
+}
+
+func (s *Server) receiverPrivateIPHostAllowed(request *http.Request) bool {
+	if s.receiver == nil || !s.receiver.Enabled() || !requestPathUnder(request.URL.Path, s.receiver.BasePath()) {
+		return false
+	}
+	hostIP := net.ParseIP(requestHostName(request))
+	if !privateOrLoopbackIP(hostIP) {
+		return false
+	}
+	return privateOrLoopbackIP(requestRemoteIP(request))
+}
+
+func requestPathUnder(rawPath string, basePath string) bool {
+	cleanPath := path.Clean("/" + strings.Trim(rawPath, "/"))
+	cleanBase := path.Clean("/" + strings.Trim(basePath, "/"))
+	return cleanPath == cleanBase || strings.HasPrefix(cleanPath, cleanBase+"/")
+}
+
+func requestRemoteIP(request *http.Request) net.IP {
+	remote := strings.TrimSpace(request.RemoteAddr)
+	if remote == "" {
+		return nil
+	}
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		remote = host
+	}
+	return net.ParseIP(strings.Trim(remote, "[]"))
+}
+
+func privateOrLoopbackIP(ip net.IP) bool {
+	return ip != nil && (ip.IsPrivate() || ip.IsLoopback())
+}
+
+func hostAllowed(host string, allowed map[string]struct{}) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	_, ok := allowed[normalizeAllowedHost(host)]
+	return ok
+}
+
+func normalizedAllowedHosts(values []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, value := range values {
+		host := normalizeAllowedHost(value)
+		if host != "" {
+			out[host] = struct{}{}
+		}
+	}
+	return out
+}
+
+func normalizeAllowedHost(value string) string {
+	host := strings.TrimSpace(value)
+	if host == "" {
+		return ""
+	}
+	if strings.Contains(host, "://") {
+		parsed, err := url.Parse(host)
+		if err != nil || parsed.Host == "" {
+			return ""
+		}
+		host = parsed.Host
+	}
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	host = strings.TrimSuffix(host, ".")
+	return strings.ToLower(host)
 }
 
 func requestMethodGETOrHEAD(writer http.ResponseWriter, request *http.Request) bool {

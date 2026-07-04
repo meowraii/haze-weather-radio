@@ -27,11 +27,26 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 				"program_input_format":            "mpegts",
 				"priority_feed_id":                "CAP-IT-ALL",
 				"audio_source":                    "both",
+				"audio_idle":                      "routine",
 				"mute_standby_routine":            false,
 				"program_output_url":              "udp://239.0.0.2:9001?pkt_size=1316",
 				"program_output_format":           "mpegts",
 				"vcodec":                          "libx264",
 				"acodec":                          "aac",
+				"video_bitrate_kbps":              "12000",
+				"audio_bitrate_kbps":              "192",
+				"video_gop":                       "30",
+				"video_bframes":                   "2",
+				"video_preset":                    "veryfast",
+				"video_tune":                      "zerolatency",
+				"audio_encoder_bitrate_kbps":      "256",
+				"service_name":                    "Haze CGEN",
+				"provider_name":                   "Haze",
+				"service_id":                      "7",
+				"transport_stream_id":             "9",
+				"hd_program":                      "11",
+				"hd_video_pid":                    "300",
+				"hd_pmt_pid":                      "4300",
 				"width":                           "1280",
 				"height":                          "720",
 				"fps":                             "source",
@@ -70,8 +85,27 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 	if feeds[0]["audio_source"] != "both" {
 		t.Fatalf("audio source = %#v", feeds[0]["audio_source"])
 	}
+	if feeds[0]["audio_idle"] != "routine" {
+		t.Fatalf("audio idle = %#v", feeds[0]["audio_idle"])
+	}
 	if feeds[0]["mute_standby_routine"] != false {
 		t.Fatalf("standby routine mute = %#v", feeds[0]["mute_standby_routine"])
+	}
+	if feeds[0]["service_name"] != "Haze CGEN" ||
+		feeds[0]["provider_name"] != "Haze" ||
+		feeds[0]["service_id"] != "7" ||
+		feeds[0]["transport_stream_id"] != "9" ||
+		feeds[0]["hd_program"] != "11" ||
+		feeds[0]["hd_video_pid"] != "300" ||
+		feeds[0]["hd_pmt_pid"] != "4300" {
+		t.Fatalf("routing controls = %#v", feeds[0])
+	}
+	if feeds[0]["video_gop"] != "30" ||
+		feeds[0]["video_bframes"] != "2" ||
+		feeds[0]["video_preset"] != "veryfast" ||
+		feeds[0]["video_tune"] != "zerolatency" ||
+		feeds[0]["audio_encoder_bitrate_kbps"] != "256" {
+		t.Fatalf("encoder controls = %#v", feeds[0])
 	}
 	if feeds[0]["interlaced"] != true || feeds[0]["field_order"] != "bff" || feeds[0]["standard"] != "atsc" {
 		t.Fatalf("video flags = %#v", feeds[0])
@@ -107,6 +141,19 @@ func TestCgenSaveAndActionsRoundTripXML(t *testing.T) {
 	}
 	if strings.Count(string(rawXML), "<program>") != 1 {
 		t.Fatalf("written XML must have one program section:\n%s", rawXML)
+	}
+	rawEncoders, err := os.ReadFile(filepath.Join(dir, defaultCgenEncodersFile))
+	if err != nil {
+		t.Fatalf("read cgen encoders xml: %v", err)
+	}
+	for _, want := range []string{
+		"<cgenEncoders",
+		"<video codec=\"libx264\" bitrate_kbps=\"12000\" gop=\"30\" bframes=\"2\" preset=\"veryfast\" tune=\"zerolatency\"></video>",
+		"<audio codec=\"aac\" bitrate_kbps=\"256\"></audio>",
+	} {
+		if !strings.Contains(string(rawEncoders), want) {
+			t.Fatalf("written encoders XML missing %q:\n%s", want, rawEncoders)
+		}
 	}
 	if feeds[0]["standby_mode"] != "smpte" ||
 		feeds[0]["standby_text"] != "EAS Details Channel" ||

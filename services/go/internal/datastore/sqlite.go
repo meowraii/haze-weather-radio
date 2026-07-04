@@ -480,27 +480,34 @@ WHERE bucket = ?`
 	out := []StoredCAPArchive{}
 	for rows.Next() {
 		var record StoredCAPArchive
+		var status, reason, sender, source, event, headline sql.NullString
 		var sentAt, updatedAt, expiresAt, storedAt, metadataRaw sql.NullString
 		var compressed []byte
 		if err := rows.Scan(
 			&record.AlertID,
 			&record.FeedID,
 			&record.Bucket,
-			&record.Status,
-			&record.Reason,
-			&record.Sender,
-			&record.Source,
+			&status,
+			&reason,
+			&sender,
+			&source,
 			&sentAt,
 			&updatedAt,
 			&expiresAt,
-			&record.Event,
-			&record.Headline,
+			&event,
+			&headline,
 			&compressed,
 			&storedAt,
 			&metadataRaw,
 		); err != nil {
 			return nil, err
 		}
+		record.Status = status.String
+		record.Reason = reason.String
+		record.Sender = sender.String
+		record.Source = source.String
+		record.Event = event.String
+		record.Headline = headline.String
 		raw, err := DecodeCAPXMLArchive(compressed)
 		if err != nil {
 			return nil, err

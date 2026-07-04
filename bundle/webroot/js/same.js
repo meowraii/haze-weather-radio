@@ -1,4 +1,5 @@
-import { apiCommand, apiGet } from './lib/api.js';
+import { apiCommand, apiGet, session } from './lib/api.js';
+import { panelClient } from './lib/ws-client.js';
 import { getDashboardState, refreshDashboard, waitForDashboardState } from './dashboard.js';
 
 const TEST_CODES = new Set(['DMO', 'RWT', 'RMT']);
@@ -23,6 +24,7 @@ let allFeedsData = [];
 let sameMapping = {};
 let locationNames = {};
 let alertTemplates = {};
+let ttsReaders = [];
 let configuredCallsign = 'HAZE';
 let selectedFeedIds = new Set();
 let selectedLocationCodes = new Set();
@@ -34,6 +36,17 @@ let confirmTimer = null;
 let confirmPending = false;
 let stateListenerBound = false;
 let previewObjectUrl = '';
+let uploadedAudio = null;
+let breakInSession = null;
+let streamSession = null;
+let audioContext = null;
+let mediaStream = null;
+let sourceNode = null;
+let processorNode = null;
+let flushTimer = null;
+let pendingPCM = [];
+let pendingBytes = 0;
+let sendChain = Promise.resolve();
 
 const TABLE_SIZE_KEYS = {
     feeds: 'haze.broadcastAlert.feedsTableHeight',
@@ -142,6 +155,21 @@ function buildLayout() {
                 </div>
                 <div class="section-body ba-audio-grid">
                     <div class="ba-option-group">
+                        <label class="ba-field">
+                            <span>Audio source</span>
+                            <select id="baAudioSource">
+                                <option value="tts">TTS</option>
+                                <option value="file">Audio File</option>
+                                <option value="operator">Operator Break-In</option>
+                                <option value="stream">Audio Stream</option>
+                            </select>
+                        </label>
+                        <label class="ba-field" data-ba-audio-panel="tts">
+                            <span>TTS reader</span>
+                            <select id="baReader">
+                                <option value="">Default reader</option>
+                            </select>
+                        </label>
                         <label class="ba-switch">
                             <input id="baIncludeSame" type="checkbox" checked>
                             <span>Enable SAME</span>
@@ -160,6 +188,32 @@ function buildLayout() {
                         </div>
                     </div>
                     <div class="ba-message-box">
+                        <div class="ba-audio-source-panel" data-ba-audio-panel="file" hidden>
+                            <label class="ba-field">
+                                <span>Upload audio</span>
+                                <input id="baAudioFile" type="file" accept="audio/*,.wav,.mp3,.ogg,.opus,.m4a,.aac,.flac">
+                            </label>
+                            <label class="ba-field">
+                                <span>Audio URL</span>
+                                <input id="baAudioUrl" type="url" placeholder="https://example.invalid/alert.wav">
+                            </label>
+                        </div>
+                        <div class="ba-audio-source-panel" data-ba-audio-panel="operator" hidden>
+                            <label class="ba-field">
+                                <span>Break-in title</span>
+                                <input id="baBreakInTitle" type="text" placeholder="Operator Break-In">
+                            </label>
+                        </div>
+                        <div class="ba-audio-source-panel" data-ba-audio-panel="stream" hidden>
+                            <label class="ba-field">
+                                <span>Stream title</span>
+                                <input id="baStreamTitle" type="text" placeholder="Operator Break-In Stream">
+                            </label>
+                            <label class="ba-field">
+                                <span>Stream URL</span>
+                                <input id="baStreamUrl" type="url" placeholder="https://example.invalid/live.mp3">
+                            </label>
+                        </div>
                         <label class="ba-field">
                             <span>SAME-to-text intro</span>
                             <textarea id="baIntro" rows="3" readonly></textarea>
@@ -199,6 +253,7 @@ function buildLayout() {
                     <div><dt>Event</dt><dd id="baPlanEvent">ADR</dd></div>
                     <div><dt>Feeds</dt><dd id="baPlanFeeds">0</dd></div>
                     <div><dt>Locations</dt><dd id="baPlanLocations">0</dd></div>
+                    <div><dt>Audio</dt><dd id="baPlanAudio">TTS</dd></div>
                     <div><dt>SAME</dt><dd id="baPlanSame">Enabled</dd></div>
                     <div><dt>Timing</dt><dd id="baPlanTiming">Now</dd></div>
                 </dl>
@@ -216,6 +271,8 @@ function buildLayout() {
                 <div class="ba-action-grid">
                     <button id="baPreviewSame" class="btn-action" type="button">Preview alert audio</button>
                     <button id="baQueue" class="btn-danger" type="button">Broadcast</button>
+                    <button id="baFinishBreakIn" class="btn-primary" type="button" hidden>Finish Break-In</button>
+                    <button id="baCancelBreakIn" class="btn-action" type="button" hidden>Cancel Break-In</button>
                 </div>
                 <audio id="baPreviewPlayer" class="ba-preview-player" controls hidden></audio>
             </section>
@@ -241,6 +298,13 @@ const customName = document.getElementById('baCustomName');
 const addCustom = document.getElementById('baAddCustom');
 const includeSame = document.getElementById('baIncludeSame');
 const prependIntro = document.getElementById('baPrependIntro');
+const audioSource = document.getElementById('baAudioSource');
+const readerSelect = document.getElementById('baReader');
+const audioFile = document.getElementById('baAudioFile');
+const audioUrl = document.getElementById('baAudioUrl');
+const breakInTitle = document.getElementById('baBreakInTitle');
+const streamTitle = document.getElementById('baStreamTitle');
+const streamUrl = document.getElementById('baStreamUrl');
 const toneList = document.getElementById('baToneList');
 const introBox = document.getElementById('baIntro');
 const messageBox = document.getElementById('baMessage');
@@ -249,6 +313,7 @@ const scheduleAt = document.getElementById('baScheduleAt');
 const planEvent = document.getElementById('baPlanEvent');
 const planFeeds = document.getElementById('baPlanFeeds');
 const planLocations = document.getElementById('baPlanLocations');
+const planAudio = document.getElementById('baPlanAudio');
 const planSame = document.getElementById('baPlanSame');
 const planTiming = document.getElementById('baPlanTiming');
 const headerPreview = document.getElementById('baHeaderPreview');
@@ -256,6 +321,8 @@ const railIntro = document.getElementById('baRailIntro');
 const statusBanner = document.getElementById('baStatus');
 const previewSame = document.getElementById('baPreviewSame');
 const queueButton = document.getElementById('baQueue');
+const finishBreakIn = document.getElementById('baFinishBreakIn');
+const cancelBreakIn = document.getElementById('baCancelBreakIn');
 const previewPlayer = document.getElementById('baPreviewPlayer');
 
 function eventCatalog() {
@@ -286,6 +353,19 @@ function populateEventSelect() {
     )).join('');
     if (events.some((item) => item.code === 'DMO')) {
         eventSelect.value = 'DMO';
+    }
+}
+
+function populateReaderSelect() {
+    const current = readerSelect.value;
+    const rows = Array.isArray(ttsReaders) ? ttsReaders : [];
+    readerSelect.innerHTML = '<option value="">Default reader</option>' + rows.map((reader) => {
+        const id = reader.id || '';
+        const label = reader.label || [reader.id, reader.provider, reader.language, reader.voice_id].filter(Boolean).join(' · ') || id;
+        return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+    }).join('');
+    if (current && rows.some((reader) => reader.id === current)) {
+        readerSelect.value = current;
     }
 }
 
@@ -473,6 +553,8 @@ function initResizableTables() {
 
 function renderFeeds() {
     if (!allFeedsData.length) {
+        selectedFeedIds.clear();
+        feedCount.textContent = '0';
         feedRows.innerHTML = '<tr><td colspan="4" class="ba-empty-cell">No feeds configured.</td></tr>';
         return;
     }
@@ -553,10 +635,27 @@ function scheduleISOString() {
     return date.toISOString();
 }
 
+function audioMode() {
+    return audioSource.value || 'tts';
+}
+
+function audioModeLabel(mode = audioMode()) {
+    switch (mode) {
+    case 'file':
+        return 'Audio file';
+    case 'operator':
+        return 'Operator break-in';
+    case 'stream':
+        return 'Audio stream';
+    default:
+        return readerSelect.value ? `TTS ${readerSelect.value}` : 'TTS';
+    }
+}
+
 function payload() {
     const feedIds = [...selectedFeedIds];
     const locs = selectedLocationCodes.has('000000') ? ['000000'] : [...selectedLocationCodes];
-    return {
+    const base = {
         originator: originator.value,
         event: eventSelect.value,
         same_event: eventSelect.value,
@@ -575,7 +674,21 @@ function payload() {
         callsign: configuredCallsign,
         schedule_at: scheduleISOString(),
         mimic_endec: 'SAGE',
+        audio_mode: audioMode(),
     };
+    if (audioMode() === 'tts') {
+        base.reader_id = readerSelect.value;
+    }
+    if (audioMode() === 'file') {
+        base.audio_url = audioUrl.value.trim();
+        if (uploadedAudio?.path) {
+            base.audio_path = uploadedAudio.path;
+            base.audio_format = uploadedAudio.format || 'pcm_s16le';
+            base.audio_sample_rate = uploadedAudio.sample_rate || 48000;
+            base.audio_channels = uploadedAudio.channels || 1;
+        }
+    }
+    return base;
 }
 
 function setStatus(message, kind = '') {
@@ -610,15 +723,21 @@ async function refreshIntro() {
 }
 
 function updateAll() {
+    const mode = audioMode();
     feedCount.textContent = selectedFeedIds.size;
     locationCount.textContent = selectedLocationCodes.size;
     planEvent.textContent = `${eventSelect.value} - ${eventName(eventSelect.value)}`;
     planFeeds.textContent = String(selectedFeedIds.size);
     planLocations.textContent = String(selectedLocationCodes.size);
+    planAudio.textContent = audioModeLabel(mode);
     planSame.textContent = includeSame.checked ? `${selectedTone}` : 'Disabled';
     planTiming.textContent = scheduleEnabled.checked && scheduleAt.value ? new Date(scheduleAt.value).toLocaleString() : 'Now';
     headerPreview.textContent = includeSame.checked ? headerText() : 'SAME disabled for this broadcast.';
-    queueButton.textContent = scheduleEnabled.checked ? 'Schedule Alert' : 'Broadcast';
+    if (!breakInSession && !streamSession) {
+        if (mode === 'operator') queueButton.textContent = 'Start Break-In';
+        else if (mode === 'stream') queueButton.textContent = 'Start Stream';
+        else queueButton.textContent = scheduleEnabled.checked ? 'Schedule Alert' : 'Broadcast';
+    }
     refreshIntroSoon();
 }
 
@@ -628,7 +747,9 @@ function resetConfirm() {
     confirmPending = false;
     queueButton.className = 'btn-danger';
     queueButton.disabled = false;
-    queueButton.textContent = scheduleEnabled.checked ? 'Schedule Alert' : 'Broadcast';
+    if (audioMode() === 'operator') queueButton.textContent = 'Start Break-In';
+    else if (audioMode() === 'stream') queueButton.textContent = 'Start Stream';
+    else queueButton.textContent = scheduleEnabled.checked ? 'Schedule Alert' : 'Broadcast';
 }
 
 function startConfirm() {
@@ -648,10 +769,15 @@ function startConfirm() {
 
 function validatePayload() {
     if (!selectedFeedIds.size) return 'Select at least one feed.';
-    if (!selectedLocationCodes.size) return 'Select at least one location.';
-    if (!includeSame.checked && !messageBox.value.trim() && !prependIntro.checked) {
+    const mode = audioMode();
+    if (mode !== 'operator' && mode !== 'stream' && !selectedLocationCodes.size) return 'Select at least one location.';
+    if (mode === 'tts' && !includeSame.checked && !messageBox.value.trim() && !prependIntro.checked) {
         return 'Add message text or enable the generated intro.';
     }
+    if (mode === 'file' && !audioFile.files?.[0] && !audioUrl.value.trim() && !uploadedAudio?.path) {
+        return 'Choose an audio file or enter an audio URL.';
+    }
+    if (mode === 'stream' && !streamUrl.value.trim()) return 'Enter an audio stream URL.';
     if (scheduleEnabled.checked) {
         const date = new Date(scheduleAt.value);
         if (Number.isNaN(date.getTime()) || date <= new Date()) {
@@ -661,6 +787,197 @@ function validatePayload() {
     return '';
 }
 
+function bytesToBase64(bytes) {
+    let binary = '';
+    const step = 0x8000;
+    for (let i = 0; i < bytes.length; i += step) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + step));
+    }
+    return btoa(binary);
+}
+
+function floatToPCM16(input) {
+    const out = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i += 1) {
+        const sample = Math.max(-1, Math.min(1, input[i]));
+        out[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    }
+    return new Uint8Array(out.buffer);
+}
+
+function appendPCM(bytes) {
+    pendingPCM.push(bytes);
+    pendingBytes += bytes.byteLength;
+}
+
+function drainPCM() {
+    if (!pendingPCM.length) return null;
+    const out = new Uint8Array(pendingBytes);
+    let offset = 0;
+    for (const chunk of pendingPCM) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    pendingPCM = [];
+    pendingBytes = 0;
+    return out;
+}
+
+function enqueueChunkSend(bytes) {
+    if (!breakInSession || !bytes?.length) return;
+    const sessionID = breakInSession.id;
+    sendChain = sendChain.then(() => panelClient.command('operator_breakin.chunk', {
+        session_id: sessionID,
+        data: bytesToBase64(bytes),
+    }, 12000));
+}
+
+function flushPCM() {
+    const chunk = drainPCM();
+    if (chunk) enqueueChunkSend(chunk);
+}
+
+function stopCaptureNodes() {
+    if (flushTimer) window.clearInterval(flushTimer);
+    flushTimer = null;
+    if (processorNode) processorNode.disconnect();
+    if (sourceNode) sourceNode.disconnect();
+    processorNode = null;
+    sourceNode = null;
+    if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop());
+    mediaStream = null;
+    if (audioContext) audioContext.close().catch(() => {});
+    audioContext = null;
+}
+
+function setLiveUI(active, source = audioMode()) {
+    queueButton.hidden = active;
+    previewSame.disabled = active;
+    finishBreakIn.hidden = !active;
+    cancelBreakIn.hidden = !active || source === 'stream';
+    audioSource.disabled = active;
+}
+
+async function startOperatorBreakIn() {
+    const feedIds = [...selectedFeedIds];
+    pendingPCM = [];
+    pendingBytes = 0;
+    sendChain = Promise.resolve();
+    const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1,
+        },
+    });
+    audioContext = new AudioContext();
+    mediaStream = stream;
+    const started = await panelClient.command('operator_breakin.start', {
+        feed_ids: feedIds,
+        title: breakInTitle.value.trim() || 'Operator Break-In',
+        sample_rate: Math.round(audioContext.sampleRate),
+        channels: 1,
+    }, 12000);
+    breakInSession = { id: started.session_id, feed_ids: started.feed_ids || feedIds };
+    sourceNode = audioContext.createMediaStreamSource(stream);
+    processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+    processorNode.onaudioprocess = (event) => {
+        if (!breakInSession) return;
+        appendPCM(floatToPCM16(event.inputBuffer.getChannelData(0)));
+    };
+    sourceNode.connect(processorNode);
+    processorNode.connect(audioContext.destination);
+    flushTimer = window.setInterval(flushPCM, 100);
+    setLiveUI(true, 'operator');
+    setStatus(`Operator break-in started for ${breakInSession.feed_ids.length} feed(s).`, 'pending');
+}
+
+async function finishActiveBreakIn() {
+    if (breakInSession) {
+        const active = breakInSession;
+        stopCaptureNodes();
+        flushPCM();
+        await sendChain;
+        const result = await panelClient.command('operator_breakin.finish', { session_id: active.id }, 15000);
+        breakInSession = null;
+        setLiveUI(false);
+        setStatus(`Operator break-in ended for ${result?.feed_ids?.length || active.feed_ids.length} feed(s).`, 'ok');
+        refreshDashboard({ force: true }).catch(() => {});
+        return;
+    }
+    if (streamSession) {
+        const active = streamSession;
+        const result = await panelClient.command('operator_breakin.finish', { session_id: active.id }, 15000);
+        streamSession = null;
+        setLiveUI(false);
+        setStatus(`Audio stream stopped for ${result?.feed_ids?.length || active.feed_ids.length} feed(s).`, 'ok');
+        refreshDashboard({ force: true }).catch(() => {});
+    }
+}
+
+async function cancelActiveBreakIn() {
+    if (!breakInSession) return;
+    const active = breakInSession;
+    stopCaptureNodes();
+    breakInSession = null;
+    await panelClient.command('operator_breakin.cancel', { session_id: active.id }, 8000);
+    setLiveUI(false);
+    setStatus('Operator break-in cancelled.', 'warn');
+}
+
+async function startAudioStream() {
+    const feedIds = [...selectedFeedIds];
+    const result = await panelClient.command('operator_breakin.url', {
+        feed_ids: feedIds,
+        title: streamTitle.value.trim() || 'Operator Break-In Stream',
+        audio_url: streamUrl.value.trim(),
+    }, 15000);
+    streamSession = { id: result.session_id, feed_ids: result.feed_ids || feedIds };
+    setLiveUI(true, 'stream');
+    setStatus(`Audio stream started for ${streamSession.feed_ids.length} feed(s).`, 'pending');
+    refreshDashboard({ force: true }).catch(() => {});
+}
+
+function audioFileSignature(file) {
+    if (!file) return '';
+    return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+async function uploadBroadcastAudio(file) {
+    const form = new FormData();
+    form.set('file', file, file.name);
+    const response = await fetch('/api/v1/alert/audio', {
+        method: 'POST',
+        headers: session.authHeaders(),
+        body: form,
+    });
+    if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || `Audio upload failed: ${response.status}`);
+    }
+    return response.json();
+}
+
+async function payloadWithPreparedAudio() {
+    const body = payload();
+    if (audioMode() !== 'file') return body;
+    const file = audioFile.files?.[0] || null;
+    if (file) {
+        const signature = audioFileSignature(file);
+        if (!uploadedAudio || uploadedAudio.signature !== signature) {
+            setStatus('Preparing uploaded audio...', 'pending');
+            const result = await uploadBroadcastAudio(file);
+            uploadedAudio = { ...result, signature };
+        }
+        body.audio_path = uploadedAudio.path;
+        body.audio_format = uploadedAudio.format || 'pcm_s16le';
+        body.audio_sample_rate = uploadedAudio.sample_rate || 48000;
+        body.audio_channels = uploadedAudio.channels || 1;
+    }
+    return body;
+}
+
 async function queueBroadcast() {
     const validation = validatePayload();
     if (validation) {
@@ -668,10 +985,36 @@ async function queueBroadcast() {
         return;
     }
     setStatus('');
+    if (audioMode() === 'operator') {
+        queueButton.disabled = true;
+        try {
+            await startOperatorBreakIn();
+        } catch (err) {
+            stopCaptureNodes();
+            breakInSession = null;
+            setStatus(`Break-in failed: ${err.message}`, 'err');
+        } finally {
+            resetConfirm();
+        }
+        return;
+    }
+    if (audioMode() === 'stream') {
+        queueButton.disabled = true;
+        try {
+            await startAudioStream();
+        } catch (err) {
+            streamSession = null;
+            setLiveUI(false);
+            setStatus(`Stream failed: ${err.message}`, 'err');
+        } finally {
+            resetConfirm();
+        }
+        return;
+    }
     queueButton.disabled = true;
     queueButton.textContent = scheduleEnabled.checked ? 'Scheduling...' : 'Queueing...';
     try {
-        const result = await apiCommand('alert.broadcast', payload(), 20000);
+        const result = await apiCommand('alert.broadcast', await payloadWithPreparedAudio(), 120000);
         if (result.scheduled) {
             setStatus(`Scheduled for ${new Date(result.schedule_at).toLocaleString()}.`, 'ok');
         } else {
@@ -691,6 +1034,29 @@ async function previewSameAudio() {
         setStatus(validation, 'err');
         return;
     }
+    if (audioMode() === 'operator' || audioMode() === 'stream') {
+        setStatus('Live audio sources cannot be previewed here.', 'warn');
+        return;
+    }
+    if (audioMode() === 'file') {
+        if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+        const file = audioFile.files?.[0];
+        if (file) {
+            previewObjectUrl = URL.createObjectURL(file);
+            previewPlayer.src = previewObjectUrl;
+            previewPlayer.hidden = false;
+            setStatus('Audio file preview ready.', 'ok');
+            previewPlayer.play().catch(() => {});
+            return;
+        }
+        if (audioUrl.value.trim()) {
+            previewPlayer.src = audioUrl.value.trim();
+            previewPlayer.hidden = false;
+            setStatus('Audio URL preview ready.', 'ok');
+            previewPlayer.play().catch(() => {});
+            return;
+        }
+    }
     previewSame.disabled = true;
     previewSame.textContent = 'Generating...';
     try {
@@ -709,6 +1075,22 @@ async function previewSameAudio() {
         previewSame.disabled = false;
         previewSame.textContent = 'Preview alert audio';
     }
+}
+
+function updateAudioPanels() {
+    const mode = audioMode();
+    document.querySelectorAll('[data-ba-audio-panel]').forEach((panel) => {
+        panel.hidden = panel.dataset.baAudioPanel !== mode;
+    });
+    const live = mode === 'operator' || mode === 'stream';
+    scheduleEnabled.disabled = live;
+    if (live) {
+        scheduleEnabled.checked = false;
+        scheduleAt.disabled = true;
+    } else {
+        scheduleAt.disabled = !scheduleEnabled.checked;
+    }
+    updateAll();
 }
 
 function applyPanelState(panelState) {
@@ -791,12 +1173,38 @@ function bindEvents() {
         scheduleAt.disabled = !scheduleEnabled.checked;
         updateAll();
     });
+    audioSource.addEventListener('change', () => {
+        uploadedAudio = null;
+        updateAudioPanels();
+        setStatus(`${audioModeLabel()} selected.`, 'ok');
+    });
+    readerSelect.addEventListener('change', updateAll);
+    audioFile.addEventListener('change', () => {
+        uploadedAudio = null;
+        updateAll();
+    });
+    [audioUrl, breakInTitle, streamTitle, streamUrl].forEach((element) => {
+        element.addEventListener('input', updateAll);
+        element.addEventListener('change', updateAll);
+    });
     queueButton.addEventListener('click', () => {
         if (!TEST_CODES.has(eventSelect.value) && !confirmPending) {
             startConfirm();
             return;
         }
         queueBroadcast();
+    });
+    finishBreakIn.addEventListener('click', () => {
+        finishBreakIn.disabled = true;
+        finishActiveBreakIn().catch((error) => setStatus(error.message || 'Unable to finish live audio.', 'err')).finally(() => {
+            finishBreakIn.disabled = false;
+        });
+    });
+    cancelBreakIn.addEventListener('click', () => {
+        cancelBreakIn.disabled = true;
+        cancelActiveBreakIn().catch((error) => setStatus(error.message || 'Unable to cancel break-in.', 'err')).finally(() => {
+            cancelBreakIn.disabled = false;
+        });
     });
     previewSame.addEventListener('click', previewSameAudio);
     [originator, eventSelect, hoursInput, minutesInput, includeSame, prependIntro, messageBox, scheduleAt]
@@ -815,6 +1223,7 @@ export function initSameView() {
         apiGet('/same/event-codes').then((mapping) => { sameMapping = mapping; }).catch(() => { sameMapping = {}; }),
         apiGet('/same/location-names').then((names) => { locationNames = names; }).catch(() => { locationNames = {}; }),
         apiGet('/same/templates').then((templates) => { alertTemplates = templates || {}; }).catch(() => { alertTemplates = {}; }),
+        apiCommand('wx.readers', {}, 10000).then((payload) => { ttsReaders = payload.readers || []; }).catch(() => { ttsReaders = []; }),
         (async () => {
             try {
                 refreshDashboard().catch(() => {});
@@ -824,15 +1233,17 @@ export function initSameView() {
                 return null;
             }
         })(),
-    ]).then(([, , , panelState]) => {
+    ]).then(([, , , , panelState]) => {
         populateEventSelect();
         populateTemplateSelect();
+        populateReaderSelect();
         if (panelState) applyPanelState(panelState);
         else {
             renderFeeds();
             renderLocations();
             updateAll();
         }
+        updateAudioPanels();
         window.lucide?.createIcons();
     });
 }

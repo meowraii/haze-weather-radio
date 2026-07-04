@@ -1075,12 +1075,10 @@ func thunderstormRiskLabel(value any) string {
 	case 1:
 		return "minor"
 	case 2:
-		return "slight"
-	case 3:
 		return "moderate"
-	case 4:
+	case 3:
 		return "high"
-	case 5:
+	case 4:
 		return "extreme"
 	default:
 		return "level " + rounded(numeric)

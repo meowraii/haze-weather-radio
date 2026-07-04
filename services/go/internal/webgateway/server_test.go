@@ -60,6 +60,95 @@ webpanel:
 	}
 }
 
+func TestAllowedHostsGateRequests(t *testing.T) {
+	var config Config
+	config.Webpanel.AllowedHosts = []string{"haze.rai.blue"}
+	server := NewServer(config, ".")
+
+	allowed := httptest.NewRequest(http.MethodGet, "http://haze.rai.blue:8086/api/public/v1/health", nil)
+	allowed.Host = "haze.rai.blue:8086"
+	allowedResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(allowedResponse, allowed)
+	if allowedResponse.Code == http.StatusMisdirectedRequest {
+		t.Fatalf("expected configured host to pass")
+	}
+
+	rejected := httptest.NewRequest(http.MethodGet, "http://wrong.example/api/public/v1/health", nil)
+	rejected.Host = "wrong.example"
+	rejectedResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rejectedResponse, rejected)
+	if rejectedResponse.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("expected wrong host to be rejected, got %d", rejectedResponse.Code)
+	}
+}
+
+func TestAllowedHostsAllowsReceiverPrivateIPDirectPath(t *testing.T) {
+	var config Config
+	config.Webpanel.AllowedHosts = []string{"haze.rai.blue"}
+	config.Webpanel.Receiver.Enabled = true
+	config.Webpanel.Receiver.BasePath = "/api/receiver/v1"
+	server := NewServer(config, ".")
+
+	receiverRequest := httptest.NewRequest(http.MethodPost, "http://172.16.1.30:8086/api/receiver/v1/session", strings.NewReader(`{}`))
+	receiverRequest.Host = "172.16.1.30:8086"
+	receiverRequest.RemoteAddr = "172.16.1.42:42123"
+	receiverResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(receiverResponse, receiverRequest)
+	if receiverResponse.Code == http.StatusMisdirectedRequest {
+		t.Fatalf("expected receiver API from private IP to pass host gate")
+	}
+
+	adminRequest := httptest.NewRequest(http.MethodGet, "http://172.16.1.30:8086/admin", nil)
+	adminRequest.Host = "172.16.1.30:8086"
+	adminRequest.RemoteAddr = "172.16.1.42:42123"
+	adminResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(adminResponse, adminRequest)
+	if adminResponse.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("expected non-receiver private IP request to keep host gate, got %d", adminResponse.Code)
+	}
+}
+
+func TestLoadConfigReadsPublicPortAndAllowedHosts(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	mustWrite(t, configPath, `webpanel:
+  allowed_hosts:
+    - haze.rai.blue
+  public_port:
+    enabled: true
+    host: "0.0.0.0"
+    http_port: 80
+    https_port: 443
+  tls:
+    domains:
+      - haze.rai.blue
+`)
+
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Webpanel.AllowedHosts) != 1 || config.Webpanel.AllowedHosts[0] != "haze.rai.blue" {
+		t.Fatalf("allowed hosts = %#v", config.Webpanel.AllowedHosts)
+	}
+	if !config.Webpanel.PublicPort.Enabled || config.Webpanel.PublicPort.HTTPPort != 80 || config.Webpanel.PublicPort.HTTPSPort != 443 {
+		t.Fatalf("public port = %#v", config.Webpanel.PublicPort)
+	}
+	if len(config.Webpanel.TLS.Domains) != 1 || config.Webpanel.TLS.Domains[0] != "haze.rai.blue" {
+		t.Fatalf("tls domains = %#v", config.Webpanel.TLS.Domains)
+	}
+}
+
+func TestAllowedHostsNormalizeCaseAndTrailingDot(t *testing.T) {
+	allowed := normalizedAllowedHosts([]string{"Haze.Rai.Blue."})
+	if !hostAllowed("haze.rai.blue", allowed) {
+		t.Fatal("expected lowercase host to match normalized allowed host")
+	}
+	if !hostAllowed("HAZE.RAI.BLUE:443", allowed) {
+		t.Fatal("expected host with port to match normalized allowed host")
+	}
+}
+
 func TestCachedInterfaceServerIPUsesTTL(t *testing.T) {
 	interfaceServerIPMu.Lock()
 	previousIP := interfaceServerIPCached
@@ -521,7 +610,7 @@ webpanel:
 `)
 	mustWrite(t, filepath.Join(dir, "managed", "configs", "output.xml"), `<?xml version="1.0" encoding="UTF-8"?>
 <outputs>
-  <feed id="sk-0001"><webrtc enabled="false"/></feed>
+  <feed id="sk-0001"><webrtc enabled="false"/><stream enabled="true"/></feed>
 </outputs>
 `)
 	configPath := filepath.Join(dir, "config.yaml")
@@ -1392,6 +1481,42 @@ func TestPublicFeedAudioHEADValidatesFeedAndCodec(t *testing.T) {
 	}
 }
 
+func TestPublicFeedAudioRejectsWebRTCOnlyFeed(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	mustWrite(t, filepath.Join(dir, "managed", "configs", "output.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<outputs>
+  <feed id="sk-0001"><webrtc enabled="true"/><stream enabled="false"/></feed>
+</outputs>
+`)
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, ".")
+	server.media = newMemoryMediaHub()
+
+	audio := httptest.NewRecorder()
+	server.Handler().ServeHTTP(audio, httptest.NewRequest(http.MethodHead, "/api/public/v1/feed/audio?feed=sk-0001&codec=pcm16", nil))
+	if audio.Code != http.StatusForbidden {
+		t.Fatalf("WebRTC-only audio HEAD status = %d", audio.Code)
+	}
+
+	state, err := publicStatePayload(config, configPath, time.Now().UTC(), httptest.NewRequest(http.MethodGet, "/api/public/v1/panel/ws?feeds=1", nil), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := state["summary"].(map[string]any)
+	publicFeeds := summary["feeds"].([]map[string]any)
+	if len(publicFeeds) != 1 {
+		t.Fatalf("public feeds = %#v", publicFeeds)
+	}
+	if publicFeeds[0]["webrtc_enabled"] != true || publicFeeds[0]["http_stream_enabled"] != false {
+		t.Fatalf("WebRTC-only public feed flags = %#v", publicFeeds[0])
+	}
+}
+
 func TestPublicFeedAudioHEADRejectsUnavailableNativeMediaService(t *testing.T) {
 	dir := t.TempDir()
 	writePublicFixture(t, dir, "public")
@@ -1689,6 +1814,147 @@ func TestReceiverSessionAndWebSocketUseFeedID(t *testing.T) {
 	conn.CloseNow()
 }
 
+func TestReceiverStatusSnapshotIsSanitizedAndShownInAdminHealth(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	writeReceiverFixture(t, dir)
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, ".")
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	sessionStatus, session := postReceiverJSON(t, httpServer.URL+"/api/receiver/v1/session", map[string]any{
+		"feed_id":           "sk-0001",
+		"receiver_id":       "rx-1",
+		"receiver_hostname": "pi-one",
+	})
+	if sessionStatus != http.StatusOK {
+		t.Fatalf("session status = %d payload=%#v", sessionStatus, session)
+	}
+	conn, _, err := websocket.Dial(context.Background(), stringMapValue(session, "ws_url"), nil)
+	if err != nil {
+		t.Fatalf("receiver ws dial: %v", err)
+	}
+	defer func() {
+		_ = conn.CloseNow()
+	}()
+	_ = readType(t, context.Background(), conn, "receiver_ready")
+
+	writeWS(t, context.Background(), conn, map[string]any{
+		"type":      "receiver_status",
+		"transport": "webrtc",
+		"status": map[string]any{
+			"state":                       "ok",
+			"transport":                   "webrtc",
+			"reason_code":                 "pifm_output_stalled",
+			"audio_format":                "pcm_s16le",
+			"input_audio_seen":            true,
+			"ffmpeg_output_seen":          true,
+			"pifm_output_seen":            true,
+			"ffmpeg_running":              true,
+			"pifm_running":                true,
+			"webrtc_connection_state":     "connected",
+			"webrtc_ice_state":            "completed",
+			"session_uptime_ms":           float64(receiverStatusMaxMillis + 1),
+			"input_audio_idle_ms":         "42",
+			"ffmpeg_output_idle_ms":       float64(19),
+			"pifm_output_idle_ms":         float64(23),
+			"ffmpeg_stdin_drain_timeouts": float64(1),
+			"pifm_stdin_slow_drains":      float64(2),
+			"max_pifm_stdin_drain_ms":     float64(144),
+			"credential_secret":           strings.Repeat("s", 200),
+			"reason":                      "https://example.invalid/audio?token=secret",
+			"url":                         "https://example.invalid/audio?token=secret",
+			"unsafe_text":                 "leak-me",
+			"webrtc_state":                "connected;secret",
+		},
+	})
+
+	snapshot := waitForReceiverSnapshot(t, server.receiver, func(snapshot map[string]any) bool {
+		return snapshot["last_message_type"] == "receiver_status"
+	})
+	if snapshot["transport"] != "webrtc" {
+		t.Fatalf("receiver transport = %#v", snapshot)
+	}
+	status, ok := snapshot["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing status snapshot: %#v", snapshot)
+	}
+	if status["state"] != "ok" || status["transport"] != "webrtc" || status["reason_code"] != "pifm_output_stalled" || status["audio_format"] != "pcm_s16le" {
+		t.Fatalf("safe status fields = %#v", status)
+	}
+	if status["input_audio_seen"] != true || status["ffmpeg_output_seen"] != true || status["pifm_output_seen"] != true {
+		t.Fatalf("pipeline seen fields = %#v", status)
+	}
+	if status["webrtc_connection_state"] != "connected" || status["webrtc_ice_state"] != "completed" {
+		t.Fatalf("webrtc status fields = %#v", status)
+	}
+	if status["session_uptime_ms"] != receiverStatusMaxMillis ||
+		status["input_audio_idle_ms"] != int64(42) ||
+		status["ffmpeg_output_idle_ms"] != int64(19) ||
+		status["pifm_output_idle_ms"] != int64(23) ||
+		status["ffmpeg_stdin_drain_timeouts"] != int64(1) ||
+		status["pifm_stdin_slow_drains"] != int64(2) ||
+		status["max_pifm_stdin_drain_ms"] != int64(144) {
+		t.Fatalf("bounded status fields = %#v", status)
+	}
+	for _, key := range []string{"credential_secret", "reason", "url", "unsafe_text", "webrtc_state"} {
+		if _, ok := status[key]; ok {
+			t.Fatalf("unsafe status field %s leaked: %#v", key, status)
+		}
+	}
+
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminHealth := httptest.NewRecorder()
+	adminRequest := httptest.NewRequest(http.MethodGet, "/api/v1/health?token="+url.QueryEscape(token), nil)
+	server.Handler().ServeHTTP(adminHealth, adminRequest)
+	if adminHealth.Code != http.StatusOK {
+		t.Fatalf("admin health status = %d", adminHealth.Code)
+	}
+	var adminPayload map[string]any
+	if err := json.Unmarshal(adminHealth.Body.Bytes(), &adminPayload); err != nil {
+		t.Fatalf("admin health json: %v", err)
+	}
+	connections, ok := adminPayload["receiver_connections"].([]any)
+	if !ok || len(connections) != 1 {
+		t.Fatalf("receiver_connections = %#v", adminPayload["receiver_connections"])
+	}
+	adminConnection, ok := connections[0].(map[string]any)
+	if !ok {
+		t.Fatalf("receiver connection = %#v", connections[0])
+	}
+	adminStatus, ok := adminConnection["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("admin receiver status = %#v", adminConnection)
+	}
+	if adminStatus["state"] != "ok" || adminStatus["session_uptime_ms"] != float64(receiverStatusMaxMillis) {
+		t.Fatalf("admin receiver status fields = %#v", adminStatus)
+	}
+	if _, ok := adminStatus["credential_secret"]; ok {
+		t.Fatalf("admin receiver status leaked credential_secret: %#v", adminStatus)
+	}
+
+	publicHealth := httptest.NewRecorder()
+	server.Handler().ServeHTTP(publicHealth, httptest.NewRequest(http.MethodGet, "/api/public/v1/health", nil))
+	if publicHealth.Code != http.StatusOK {
+		t.Fatalf("public health status = %d", publicHealth.Code)
+	}
+	var publicPayload map[string]any
+	if err := json.Unmarshal(publicHealth.Body.Bytes(), &publicPayload); err != nil {
+		t.Fatalf("public health json: %v", err)
+	}
+	if _, ok := publicPayload["receiver_connections"]; ok {
+		t.Fatalf("public health leaked receiver_connections: %#v", publicPayload)
+	}
+}
+
 func TestReceiverRejectsUnknownFeed(t *testing.T) {
 	dir := t.TempDir()
 	writeReceiverFixture(t, dir)
@@ -1898,6 +2164,40 @@ func TestBroadcastAlertDataDoesNotUseSameIntroFallbackWhenSameEnabled(t *testing
 	bannerText, _ := data["banner_text"].(string)
 	if !strings.Contains(bannerText, "Environment Canada has issued") {
 		t.Fatalf("banner_text should still include SAME intro: %q", bannerText)
+	}
+}
+
+func TestBroadcastAlertDataCarriesAudioSourceFields(t *testing.T) {
+	dir := t.TempDir()
+	writePanelFixture(t, dir)
+	session := wsSession{configPath: filepath.Join(dir, "config.yaml")}
+	data := session.broadcastAlertData(map[string]any{
+		"originator":        "WXR",
+		"event":             "RWT",
+		"locations":         []any{"065522"},
+		"include_same":      true,
+		"voice_message":     "This is only a drill.",
+		"duration_hours":    float64(0),
+		"duration_minutes":  float64(15),
+		"audio_mode":        "file",
+		"audio_path":        "runtime/audio/alerts/uploads/manual.pcm16le",
+		"audio_format":      "pcm_s16le",
+		"audio_sample_rate": float64(48000),
+		"audio_channels":    float64(1),
+		"reader_id":         "02",
+	}, []string{"sk-0001"}, "manual-test", true)
+
+	if data["audio_mode"] != "file" {
+		t.Fatalf("audio_mode = %#v", data["audio_mode"])
+	}
+	if data["audio_path"] != "runtime/audio/alerts/uploads/manual.pcm16le" {
+		t.Fatalf("audio_path = %#v", data["audio_path"])
+	}
+	if data["audio_format"] != "pcm_s16le" || data["audio_sample_rate"] != 48000 || data["audio_channels"] != 1 {
+		t.Fatalf("audio format fields = %#v %#v %#v", data["audio_format"], data["audio_sample_rate"], data["audio_channels"])
+	}
+	if data["reader_id"] != "02" || data["tts_reader_id"] != "02" {
+		t.Fatalf("reader fields = %#v %#v", data["reader_id"], data["tts_reader_id"])
 	}
 }
 
@@ -2138,6 +2438,21 @@ func writeWS(t *testing.T, ctx context.Context, conn *websocket.Conn, payload ma
 	}
 }
 
+func waitForReceiverSnapshot(t *testing.T, manager *ReceiverManager, predicate func(map[string]any) bool) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, snapshot := range manager.ActiveSnapshots() {
+			if predicate(snapshot) {
+				return snapshot
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("receiver snapshot did not match before timeout: %#v", manager.ActiveSnapshots())
+	return nil
+}
+
 func writePanelFixture(t *testing.T, dir string) {
 	t.Helper()
 	mustWrite(t, filepath.Join(dir, "config.yaml"), `version: test
@@ -2309,7 +2624,7 @@ operator:
 `)
 	mustWrite(t, filepath.Join(dir, "managed", "configs", "output.xml"), `<?xml version="1.0" encoding="UTF-8"?>
 <outputs>
-  <feed id="sk-0001"><webrtc enabled="true"/></feed>
+  <feed id="sk-0001"><webrtc enabled="true"/><stream enabled="true"/></feed>
 </outputs>
 `)
 }

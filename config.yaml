@@ -121,6 +121,10 @@ services:
       sip:
         enabled: true
         listen: "0.0.0.0:5060"
+        listen_ports:
+          - port: 5060
+          - port: 5080
+            domain: "teleweather.sip.rai.blue"
         public_host: "71.17.68.130"
         allowed_sources: []
         auth:
@@ -289,6 +293,16 @@ webpanel:
   enabled: true
   host: "0.0.0.0"
   port: 8086
+  allowed_hosts:
+    - "haze.rai.blue"
+    - "localhost"
+    - "127.0.0.1"
+    - "::1"
+  public_port:
+    enabled: true
+    host: "0.0.0.0"
+    http_port: 80
+    https_port: 443
   public:
     enabled: true
     host: "0.0.0.0"
@@ -307,7 +321,7 @@ webpanel:
   tls:
     enabled: false
     mode: acme # acme or manual
-    domains: [] # example: ["radio.example.com"]
+    domains: ["haze.rai.blue"] # example: ["radio.example.com"]
     email: "" # optional Let's Encrypt account email
     cache_dir: runtime/tls/acme
     cert_file: "" # manual mode only

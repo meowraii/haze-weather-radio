@@ -4,8 +4,10 @@ import (
 	"encoding/csv"
 	"encoding/xml"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,16 +78,57 @@ type httpConfig struct {
 }
 
 type sipConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	Listen         string   `yaml:"listen"`
-	PublicHost     string   `yaml:"public_host"`
-	AllowedSources []string `yaml:"allowed_sources"`
+	Enabled        bool           `yaml:"enabled"`
+	Listen         string         `yaml:"listen"`
+	ListenPorts    sipListenPorts `yaml:"listen_ports"`
+	Domain         string         `yaml:"domain"`
+	PublicHost     string         `yaml:"public_host"`
+	AllowedSources []string       `yaml:"allowed_sources"`
 	Auth           struct {
 		Enabled     bool   `yaml:"enabled"`
 		Username    string `yaml:"username"`
 		PasswordEnv string `yaml:"password_env"`
 	} `yaml:"auth"`
 	Registration sipRegistrationConfig `yaml:"registration"`
+}
+
+type sipListenPort struct {
+	Port   int    `yaml:"port"`
+	Domain string `yaml:"domain"`
+}
+
+type sipListenPorts []sipListenPort
+
+type sipListenBinding struct {
+	Addr   string
+	Domain string
+}
+
+func (ports *sipListenPorts) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.SequenceNode {
+		return fmt.Errorf("listen_ports must be a sequence")
+	}
+	out := make([]sipListenPort, 0, len(value.Content))
+	for _, item := range value.Content {
+		switch item.Kind {
+		case yaml.ScalarNode:
+			port, err := strconv.Atoi(strings.TrimSpace(item.Value))
+			if err != nil {
+				return fmt.Errorf("invalid SIP listen port %q", item.Value)
+			}
+			out = append(out, sipListenPort{Port: port})
+		case yaml.MappingNode:
+			var port sipListenPort
+			if err := item.Decode(&port); err != nil {
+				return err
+			}
+			out = append(out, port)
+		default:
+			return fmt.Errorf("invalid SIP listen_ports entry")
+		}
+	}
+	*ports = out
+	return nil
 }
 
 type sipRegistrationConfig struct {
@@ -233,6 +276,7 @@ func loadConfig(path string, overrides Options) (loadedConfig, error) {
 	}
 	if overrides.SIPAddr != "" {
 		cfg.SIP.Listen = overrides.SIPAddr
+		cfg.SIP.ListenPorts = nil
 	}
 	if overrides.CacheDir != "" {
 		cfg.Cache.Dir = overrides.CacheDir
@@ -336,6 +380,77 @@ func normalizeIVRConfig(cfg *Config) {
 	if cfg.MaxRenderInflight == 0 {
 		cfg.MaxRenderInflight = 8
 	}
+}
+
+func (cfg sipConfig) listenBindings() []sipListenBinding {
+	host, fallbackPort := sipListenHostPort(cfg.Listen)
+	if len(cfg.ListenPorts) == 0 {
+		return []sipListenBinding{{
+			Addr:   net.JoinHostPort(host, strconv.Itoa(fallbackPort)),
+			Domain: normalizeSIPDomain(cfg.Domain),
+		}}
+	}
+	seen := map[string]struct{}{}
+	bindings := make([]sipListenBinding, 0, len(cfg.ListenPorts))
+	for _, configured := range cfg.ListenPorts {
+		port := configured.Port
+		if port <= 0 || port > 65535 {
+			continue
+		}
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		bindings = append(bindings, sipListenBinding{
+			Addr:   addr,
+			Domain: normalizeSIPDomain(firstNonBlank(configured.Domain, cfg.Domain)),
+		})
+	}
+	if len(bindings) == 0 {
+		return []sipListenBinding{{
+			Addr:   net.JoinHostPort(host, strconv.Itoa(fallbackPort)),
+			Domain: normalizeSIPDomain(cfg.Domain),
+		}}
+	}
+	return bindings
+}
+
+func (cfg sipConfig) listenAddrs() []string {
+	bindings := cfg.listenBindings()
+	addrs := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		addrs = append(addrs, binding.Addr)
+	}
+	return addrs
+}
+
+func sipListenHostPort(listen string) (string, int) {
+	listen = strings.TrimSpace(listen)
+	if listen == "" {
+		return "0.0.0.0", 5060
+	}
+	host, portText, err := net.SplitHostPort(listen)
+	if err == nil {
+		port, portErr := strconv.Atoi(portText)
+		if portErr == nil && port > 0 && port <= 65535 {
+			if strings.TrimSpace(host) == "" {
+				host = "0.0.0.0"
+			}
+			return host, port
+		}
+	}
+	if port, err := strconv.Atoi(listen); err == nil && port > 0 && port <= 65535 {
+		return "0.0.0.0", port
+	}
+	return "0.0.0.0", 5060
+}
+
+func normalizeSIPDomain(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "<>[]")
+	value = strings.TrimSuffix(value, ".")
+	return strings.ToLower(value)
 }
 
 func (cfg loadedConfig) enabled() bool {
