@@ -12,12 +12,12 @@ func TestLoadReadersAcceptsVoiceIDAndLegacyPath(t *testing.T) {
 	raw := `<Readers>
   <reader id="tom" provider="sapi5">
     <gender>male</gender>
-    <language>en-CA</language>
+    <language>en-US</language>
     <voice_id>Nuance Tom</voice_id>
   </reader>
   <reader id="ava" provider="sapi5">
     <gender>female</gender>
-    <language>en_CA</language>
+    <language>en_US</language>
     <path>Nuance Ava</path>
   </reader>
 </Readers>`
@@ -35,7 +35,7 @@ func TestLoadReadersAcceptsVoiceIDAndLegacyPath(t *testing.T) {
 	if readers[0].Provider != "sapi5" || readers[0].VoiceID != "Nuance Tom" {
 		t.Fatalf("unexpected reader: %+v", readers[0])
 	}
-	if readers[1].Provider != "sapi5" || readers[1].VoiceID != "Nuance Ava" || readers[1].Language != "en-ca" {
+	if readers[1].Provider != "sapi5" || readers[1].VoiceID != "Nuance Ava" || readers[1].Language != "en-us" {
 		t.Fatalf("unexpected reader: %+v", readers[1])
 	}
 }
@@ -46,7 +46,7 @@ func TestLoadReadersAcceptsAutoReaderWithoutVoiceID(t *testing.T) {
 	raw := `<Readers>
   <reader id="00" provider="auto">
     <gender>male</gender>
-    <language>en-CA</language>
+    <language>en-US</language>
   </reader>
 </Readers>`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
@@ -91,11 +91,11 @@ func TestNormalizeProviderSpeakyAPIAliases(t *testing.T) {
 
 func TestSelectReaderPrefersExplicitReaderID(t *testing.T) {
 	readers := []Reader{
-		{ID: "00", Provider: "auto", Gender: "male", Language: "en-ca"},
-		{ID: "wxr_tom", Provider: "sapi5", Gender: "male", Language: "en-ca", VoiceID: "Nuance Tom"},
+		{ID: "00", Provider: "auto", Gender: "male", Language: "en-us"},
+		{ID: "wxr_tom", Provider: "sapi5", Gender: "male", Language: "en-us", VoiceID: "Nuance Tom"},
 	}
 
-	reader, ok := SelectReader(readers, "wxr_tom", "en-CA", "")
+	reader, ok := SelectReader(readers, "wxr_tom", "en-US", "")
 	if !ok {
 		t.Fatal("reader not found")
 	}
@@ -106,11 +106,11 @@ func TestSelectReaderPrefersExplicitReaderID(t *testing.T) {
 
 func TestSelectReaderFallsBackByLanguageAndGender(t *testing.T) {
 	readers := []Reader{
-		{ID: "male", Provider: "auto", Gender: "male", Language: "en-ca"},
+		{ID: "male", Provider: "auto", Gender: "male", Language: "en-us"},
 		{ID: "female", Provider: "auto", Gender: "female", Language: "en"},
 	}
 
-	reader, ok := SelectReader(readers, "female", "en-CA", "")
+	reader, ok := SelectReader(readers, "female", "en-US", "")
 	if !ok {
 		t.Fatal("reader not found")
 	}

@@ -20,6 +20,41 @@ func TestDataIngestHTTPClientUsesReusableTransport(t *testing.T) {
 	}
 }
 
+func TestDataIngestCycleTimeoutIsBounded(t *testing.T) {
+	tests := []struct {
+		name           string
+		interval       time.Duration
+		requestTimeout time.Duration
+		want           time.Duration
+	}{
+		{
+			name:           "caps long default interval",
+			interval:       45 * time.Minute,
+			requestTimeout: 20 * time.Second,
+			want:           maxDataIngestCycleTimeout,
+		},
+		{
+			name:           "allows short intervals enough request room",
+			interval:       time.Minute,
+			requestTimeout: 45 * time.Second,
+			want:           135 * time.Second,
+		},
+		{
+			name:           "keeps normal midrange interval",
+			interval:       5 * time.Minute,
+			requestTimeout: 20 * time.Second,
+			want:           5 * time.Minute,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := dataIngestCycleTimeout(test.interval, test.requestTimeout); got != test.want {
+				t.Fatalf("timeout = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
 func TestBuildECCCForecastUsesForecastLocationCSVNames(t *testing.T) {
 	raw := map[string]any{
 		"properties": map[string]any{

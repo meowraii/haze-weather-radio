@@ -85,7 +85,7 @@ func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
 		Title:       title,
 		Text:        strings.Join(texts, "\n\n"),
 		ReaderID:    readerID,
-		Language:    fallbackText(language, "en-CA"),
+		Language:    fallbackText(language, "en-US"),
 		Segments:    segments,
 		Inputs:      inputs,
 		GeneratedAt: now,
@@ -1632,22 +1632,14 @@ func reportTime(raw string, timezone string) string {
 	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
-	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
-	if err != nil {
-		for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
-			parsed, err = time.Parse(layout, strings.TrimSpace(raw))
-			if err == nil {
-				break
-			}
-		}
-	}
+	parsed, err := parseLooseTime(strings.TrimSpace(raw))
 	if err != nil {
 		return strings.TrimSpace(raw)
 	}
 	if loc, locErr := time.LoadLocation(fallbackText(timezone, "Local")); locErr == nil {
 		parsed = parsed.In(loc)
 	}
-	return strings.TrimSpace(parsed.Format("3:04 PM ") + timezoneName(parsed.Format("MST")))
+	return strings.TrimSpace(compactClock(parsed) + " " + timezoneName(parsed.Format("MST")))
 }
 
 func timezoneName(abbrev string) string {

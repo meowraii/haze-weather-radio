@@ -23,12 +23,12 @@
     </alerts>
 
     <languages>
-      <lang code="en-CA" interval="0"/>
+      <lang code="en-US" interval="0"/>
       <!-- <lang code="fr-CA" interval="0"/> -->
     </languages>
 
     <description>
-      <lang code="en-CA"
+      <lang code="en-US"
             text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
             suffix="We do not imply any association with Environment Canada."/>
     </description>
@@ -121,12 +121,12 @@
     </alerts>
 
     <languages>
-      <lang code="en-CA" interval="0"/>
+      <lang code="en-US" interval="0"/>
       <!-- <lang code="fr-CA" interval="0"/> -->
     </languages>
 
     <description>
-      <lang code="en-CA"
+      <lang code="en-US"
             text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
             suffix="We do not imply any association with Environment Canada."/>
     </description>
@@ -187,12 +187,12 @@
     </alerts>
 
     <languages>
-      <lang code="en-CA" interval="0"/>
+      <lang code="en-US" interval="0"/>
       <!-- <lang code="fr-CA" interval="0"/> -->
     </languages>
 
     <description>
-      <lang code="en-CA"
+      <lang code="en-US"
             text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
             suffix="We do not imply any association with Environment Canada."/>
     </description>
@@ -255,12 +255,12 @@
     </alerts>
 
     <languages>
-      <lang code="en-CA" interval="0"/>
+      <lang code="en-US" interval="0"/>
       <!-- <lang code="fr-CA" interval="0"/> -->
     </languages>
 
     <description>
-      <lang code="en-CA"
+      <lang code="en-US"
             text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
             suffix="We do not imply any association with Environment Canada."/>
     </description>

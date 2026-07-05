@@ -500,7 +500,7 @@ func feedLanguage(feed feedXML) string {
 			return code
 		}
 	}
-	return "en-CA"
+	return "en-US"
 }
 
 func feedSiteName(feed feedXML) string {

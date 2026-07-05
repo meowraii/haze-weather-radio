@@ -52,7 +52,7 @@ func TestCurrentConditionsProductUsesOpenerPackageAndRepeatSegments(t *testing.T
 		t.Fatalf("title = %q", product.Title)
 	}
 	for _, wanted := range []string{
-		"The current weather conditions. Issued by Environment and Climate Change Canada at 8:00 PM Central Standard Time",
+		"The current weather conditions. Issued by Environment and Climate Change Canada at 8 PM Central Standard Time",
 		"The weather at Saskatoon Diefenbaker Int'l Airport was Mostly Cloudy",
 		"Outlook, 24 degrees, winds were north west at 17 kilometres per hour",
 		"Again, at Saskatoon Diefenbaker Int'l Airport",
@@ -63,6 +63,14 @@ func TestCurrentConditionsProductUsesOpenerPackageAndRepeatSegments(t *testing.T
 	}
 	if len(product.Segments) < 4 {
 		t.Fatalf("segments = %#v", product.Segments)
+	}
+}
+
+func TestReportTimeConvertsUTCProductTimestampsToFeedTimezone(t *testing.T) {
+	for _, raw := range []string{"2026 Jul 05 1700 UTC", "2026-07-05T17:00:00Z"} {
+		if got := reportTime(raw, "America/Regina"); got != "11 AM Central Standard Time" {
+			t.Fatalf("reportTime(%q) = %q", raw, got)
+		}
 	}
 }
 
@@ -303,7 +311,7 @@ func TestTelephoneWxOnDemandUsesTelephoneForecastAndSkipsConditionRepeat(t *test
 	}
 	for _, wanted := range []string{
 		"The weather at Regina International Airport was Clear",
-		"The official Environment Canada forecast for the Regina area issued at 11:00 PM Central Standard Time.",
+		"The official Environment Canada forecast for the Regina area issued at 11 PM Central Standard Time.",
 		"Tonight. Clear.",
 	} {
 		if !strings.Contains(product.Text, wanted) {
@@ -368,7 +376,7 @@ func TestTelephoneWxOnDemandUsesStoredForecastIssueTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(product.Text, "issued at 11:00 PM Central Standard Time.") {
+	if !strings.Contains(product.Text, "issued at 11 PM Central Standard Time.") {
 		t.Fatalf("telephone product missing stored issue time:\n%s", product.Text)
 	}
 	if strings.Contains(product.Text, "latest issue time") {
@@ -549,7 +557,7 @@ func TestAirQualityProductUsesLegacyAQHINarrative(t *testing.T) {
 	}
 
 	for _, wanted := range []string{
-		"The air quality health index was observed at Saskatoon and reported a value of 4 at 3:00 PM Central Standard Time.",
+		"The air quality health index was observed at Saskatoon and reported a value of 4 at 3 PM Central Standard Time.",
 		"This is acceptable air quality for outdoor activities for most people.",
 		"Smoke may cause fluctuating air quality conditions.",
 		"The air quality health index forecast for Saskatoon is 4 for Tonight and is considered Moderate.",

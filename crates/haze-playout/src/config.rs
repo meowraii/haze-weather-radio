@@ -604,7 +604,7 @@ impl FeedConfig {
                 let code = lang.code.trim();
                 (!code.is_empty()).then(|| code.to_string())
             })
-            .unwrap_or_else(|| "en-CA".to_string())
+            .unwrap_or_else(|| "en-US".to_string())
     }
 
     pub(crate) fn site_name(&self) -> String {
@@ -778,7 +778,7 @@ mod tests {
 <feeds>
   <feed id="sk-0001" enabled="true" timezone="America/Regina">
     <playout routine="true" same="false"/>
-    <languages><lang code="en-CA"/></languages>
+    <languages><lang code="en-US"/></languages>
     <transmitter_metadata>
       <transmitter><site_name>Saskatoon</site_name><relationship>primary</relationship><frequency_mhz>162.550</frequency_mhz></transmitter>
       <transmitter><site_name>Saskatoon</site_name><relationship>fm</relationship><frequency_mhz gpclk="2" gpio="6">87.900</frequency_mhz></transmitter>
@@ -794,7 +794,7 @@ mod tests {
         assert!(feed.is_enabled());
         assert!(feed.routine_enabled());
         assert!(!feed.same_enabled());
-        assert_eq!(feed.language(), "en-CA");
+        assert_eq!(feed.language(), "en-US");
         assert_eq!(feed.site_name(), "Saskatoon");
         assert_eq!(feed.station_callsign(), "");
         assert_eq!(feed.station_frequency_mhz(), "162.550");

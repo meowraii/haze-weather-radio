@@ -40,7 +40,7 @@ func run() error {
 	dictionaryPath := flag.String("dictionary", envOrDefault("HAZE_TTS_DICTIONARY", filepath.Join("managed", "dictionary.json")), "dictionary.json path")
 	providerID := flag.String("provider", "auto", "provider to use: auto, piper, kokoro, sapi5, espeak, f5tts, chatterbox, or speakyapi")
 	readerID := flag.String("reader-id", "", "reader id from readers.xml")
-	lang := flag.String("lang", "en-CA", "requested language")
+	lang := flag.String("lang", "en-US", "requested language")
 	timezone := flag.String("timezone", envOrDefault("HAZE_TTS_TIMEZONE", "Local"), "timezone for spoken timestamps")
 	_ = flag.String("piper-exe", "", "deprecated; Piper uses the native sherpa-onnx runtime")
 	piperVoicesDir := flag.String("piper-voices-dir", envOrDefault("HAZE_PIPER_VOICES_DIR", filepath.Join("managed", "voices", "piper")), "Piper voice model directory")
@@ -185,7 +185,7 @@ func runService(ctx context.Context, cfg serviceConfig) error {
 		return errors.New("missing host bridge address")
 	}
 	if strings.TrimSpace(cfg.Language) == "" {
-		cfg.Language = "en-CA"
+		cfg.Language = "en-US"
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 60 * time.Second

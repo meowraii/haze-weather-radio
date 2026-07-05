@@ -22,12 +22,12 @@
     </alerts>
 
     <languages>
-      <lang code="en-CA" interval="0"/>
+      <lang code="en-US" interval="0"/>
       <!-- <lang code="fr-CA" interval="0"/> -->
     </languages>
 
     <description>
-      <lang code="en-CA"
+      <lang code="en-US"
             text="This is an automated broadcast, servicing the city of Saskatoon with the latest weather alerts and forecasts originating from Environment Canada."
             suffix="This service is not affiliated with Environment Canada."/>
       <lang code="fr-CA"
@@ -132,11 +132,11 @@
     </alerts>
 
     <languages>
-      <lang code="en-CA" interval="0"/>
+      <lang code="en-US" interval="0"/>
     </languages>
 
     <description>
-      <lang code="en-CA"
+      <lang code="en-US"
             text="CAP-IT-ALL standby alert relay."
             suffix=""/>
     </description>

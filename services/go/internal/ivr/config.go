@@ -352,7 +352,7 @@ func normalizeIVRConfig(cfg *Config) {
 		cfg.PromptsFile = "managed/configs/ivr.xml"
 	}
 	if cfg.DefaultLanguage == "" {
-		cfg.DefaultLanguage = "en-CA"
+		cfg.DefaultLanguage = "en-US"
 	}
 	if len(cfg.DefaultPackages) == 0 {
 		cfg.DefaultPackages = []string{"current_conditions", "forecast"}

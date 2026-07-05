@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ivr>
   <defaults provider="fast"
-            language="en-CA"
+            language="en-US"
             rate="0"
             volume="100"
             sentence_silence="0.15"
@@ -15,7 +15,7 @@
   <menu id="entry" timeout="8s" retries="2">
     <line key="main">This is the {telephone_service_name}. {language_options}, or press star for your NOAA Geophysical Alert Message.</line>
     <line key="main_single_language">Enter your province, or enter a former Hello Weather location code.</line>
-    <option digit="1" action="language" language="en-CA" next="location_code"/>
+    <option digit="1" action="language" language="en-US" next="location_code"/>
     <option digit="2" action="language" language="fr-CA" next="location_code"/>
     <option digit="3" action="language" language="es" next="location_code"/>
     <option digit="0" action="product" packages="geophysical_alert"/>

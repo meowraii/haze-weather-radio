@@ -2983,7 +2983,7 @@ mod tests {
                         SharedAudioKey::Synth {
                             text: "shared package".to_string(),
                             reader_id: "00".to_string(),
-                            language: "en-CA".to_string(),
+                            language: "en-US".to_string(),
                             sample_rate: 48_000,
                             channels: 1,
                         },
@@ -3065,7 +3065,7 @@ mod tests {
         SharedAudioKey::Synth {
             text: text.to_string(),
             reader_id: "00".to_string(),
-            language: "en-CA".to_string(),
+            language: "en-US".to_string(),
             sample_rate: 48_000,
             channels: 1,
         }

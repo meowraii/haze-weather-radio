@@ -1042,7 +1042,17 @@ func newestObservationTime(observations []observation) string {
 
 func parseLooseTime(raw string) (time.Time, error) {
 	raw = strings.TrimSpace(raw)
-	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05-0700", "2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05-0700",
+		"2006-01-02 15:04:05 MST",
+		"2006-01-02 15:04 MST",
+		"2006 Jan 02 1504 MST",
+		"2006 Jan 02 15:04 MST",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+	} {
 		if parsed, err := time.Parse(layout, raw); err == nil {
 			return parsed, nil
 		}

@@ -10,6 +10,9 @@ use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+#[cfg(windows)]
+use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
+
 #[cfg(not(windows))]
 use std::process::Command;
 
@@ -37,6 +40,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
     init_tracing();
+    let _timer_resolution = TimerResolutionGuard::request();
     let options = engine::Options {
         config_path: args.config,
         bridge_addr: args.bridge,
@@ -72,6 +76,44 @@ fn init_tracing() {
         "media backend ready"
     );
 }
+
+struct TimerResolutionGuard;
+
+impl TimerResolutionGuard {
+    fn request() -> Self {
+        request_timer_resolution();
+        Self
+    }
+}
+
+impl Drop for TimerResolutionGuard {
+    fn drop(&mut self) {
+        release_timer_resolution();
+    }
+}
+
+#[cfg(windows)]
+fn request_timer_resolution() {
+    let result = unsafe { timeBeginPeriod(1) };
+    if result == 0 {
+        tracing::info!("haze-playout requested 1 ms Windows timer resolution");
+    } else {
+        tracing::warn!("haze-playout failed to request 1 ms Windows timer resolution: {result}");
+    }
+}
+
+#[cfg(not(windows))]
+fn request_timer_resolution() {}
+
+#[cfg(windows)]
+fn release_timer_resolution() {
+    unsafe {
+        timeEndPeriod(1);
+    }
+}
+
+#[cfg(not(windows))]
+fn release_timer_resolution() {}
 
 fn parse_duration_ms(raw: &str, fallback: Duration) -> Duration {
     let value = raw.trim();

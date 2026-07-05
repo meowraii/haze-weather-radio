@@ -723,6 +723,33 @@ func TestMediaHubUsesIndependentFeedIngressQueues(t *testing.T) {
 	}
 }
 
+func TestAppendWAVSamplesDropsStaleHTTPBacklog(t *testing.T) {
+	if httpWAVMaxQueuedSamples != httpWAVSampleRate*26/10 {
+		t.Fatalf("http WAV max queued samples = %d, want 2.6 seconds", httpWAVMaxQueuedSamples)
+	}
+
+	sampleCount := httpWAVMaxQueuedSamples + 20
+	data := make([]byte, sampleCount*2)
+	for i := 0; i < sampleCount; i++ {
+		binary.LittleEndian.PutUint16(data[i*2:i*2+2], uint16(int16(i)))
+	}
+
+	queue := appendWAVSamples(nil, PCMChunk{
+		FeedID:     "sk-0001",
+		SampleRate: httpWAVSampleRate,
+		Channels:   1,
+		Duration:   time.Second,
+		Data:       data,
+	})
+
+	if len(queue) != httpWAVMaxQueuedSamples {
+		t.Fatalf("queued samples = %d, want %d", len(queue), httpWAVMaxQueuedSamples)
+	}
+	if queue[0] != 20 {
+		t.Fatalf("first queued sample = %d, want newest retained sample 20", queue[0])
+	}
+}
+
 func TestMediaHubSharesWebRTCFrameSourcePerFeedCodec(t *testing.T) {
 	hub := newMemoryMediaHub()
 	left, unsubscribeLeft, err := hub.SubscribeWebRTCFrames("sk-0001", webRTCAudioG722)

@@ -17,14 +17,16 @@ import (
 )
 
 const (
-	httpWAVSampleRate    = 48000
-	httpWAVChannels      = 1
-	httpWAVBitsPerSample = 16
-	httpWAVFrameSamples  = httpWAVSampleRate / 50
-	httpAudioMaxFeedID   = 128
-	httpAudioMaxCodecID  = 64
-	httpAudioDrainLimit  = 64
-	httpAudioProxyBuffer = httpWAVFrameSamples * httpWAVChannels * (httpWAVBitsPerSample / 8) * 16
+	httpWAVSampleRate       = 48000
+	httpWAVChannels         = 1
+	httpWAVBitsPerSample    = 16
+	httpWAVFrameSamples     = httpWAVSampleRate / 50
+	httpWAVMaxQueuedMS      = 2600
+	httpWAVMaxQueuedSamples = httpWAVSampleRate * httpWAVMaxQueuedMS / 1000
+	httpAudioMaxFeedID      = 128
+	httpAudioMaxCodecID     = 64
+	httpAudioDrainLimit     = 64
+	httpAudioProxyBuffer    = httpWAVFrameSamples * httpWAVChannels * (httpWAVBitsPerSample / 8) * 16
 )
 
 type httpAudioFormat struct {
@@ -527,9 +529,8 @@ func appendWAVSamples(queue []int16, chunk PCMChunk) []int16 {
 		return queue
 	}
 	queue = append(queue, samples...)
-	const maxQueuedSamples = httpWAVSampleRate * 5
-	if len(queue) > maxQueuedSamples {
-		queue = queue[len(queue)-maxQueuedSamples:]
+	if len(queue) > httpWAVMaxQueuedSamples {
+		queue = queue[len(queue)-httpWAVMaxQueuedSamples:]
 	}
 	return queue
 }

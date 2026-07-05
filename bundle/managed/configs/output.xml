@@ -3,12 +3,13 @@
   <feed id="sk-0001">
     <webrtc enabled="true"/>
 
-    <stream enabled="false">
+    <stream enabled="true">
       <type>icecast</type>
       <host>icecast.almora.tv</host>
       <port>8443</port>
       <username>source</username>
       <password>aluser</password>
+      <mount>/cwxr-sk01</mount>
       <ssl>false</ssl>
       <format>opus</format>
       <bitrate_kbps>64</bitrate_kbps>

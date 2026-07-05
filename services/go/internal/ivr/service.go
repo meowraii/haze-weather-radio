@@ -1367,7 +1367,7 @@ func (s *Service) staticPromptPolicy() TTSProfile {
 		policy.ReaderID = fallbackText(s.cfg.IVR.DefaultReaderID, "00")
 	}
 	if strings.TrimSpace(policy.Language) == "" {
-		policy.Language = fallbackText(s.cfg.IVR.DefaultLanguage, "en-CA")
+		policy.Language = fallbackText(s.cfg.IVR.DefaultLanguage, "en-US")
 	}
 	if policy.Volume <= 0 {
 		policy.Volume = 100

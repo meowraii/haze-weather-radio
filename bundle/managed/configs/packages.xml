@@ -42,7 +42,7 @@
   <package id="geophysical_alert" enabled="true">
     <reader_id>01</reader_id>
     <languages>
-      <lang>en-CA</lang>
+      <lang>en-US</lang>
     </languages>
   </package>
 

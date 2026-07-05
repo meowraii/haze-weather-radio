@@ -236,7 +236,7 @@ func parseWxGeneratePayload(configPath string, raw map[string]any) (wxGeneratePa
 		FeedID:   feedID,
 		Code:     code,
 		Source:   strings.TrimSpace(firstNonBlank(stringAny(raw["source"]), stringAny(raw["weather_source"]))),
-		Language: strings.TrimSpace(firstNonBlank(stringAny(raw["language"]), stringAny(raw["lang"]), "en-CA")),
+		Language: strings.TrimSpace(firstNonBlank(stringAny(raw["language"]), stringAny(raw["lang"]), "en-US")),
 		ReaderID: strings.TrimSpace(firstNonBlank(stringAny(raw["reader_id"]), stringAny(raw["voice"]))),
 		Format:   format,
 		Packages: packages,

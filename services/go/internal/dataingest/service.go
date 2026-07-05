@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,6 +28,7 @@ import (
 
 const serviceID = "haze-data-ingest"
 const thunderstormOutlookCoverageToleranceKM = 0.5
+const maxDataIngestCycleTimeout = 10 * time.Minute
 
 type Options struct {
 	ConfigPath string
@@ -141,9 +143,20 @@ func Run(ctx context.Context, options Options) error {
 	defer store.Close()
 
 	client := dataIngestHTTPClient(timeout)
+	cycleTimeout := dataIngestCycleTimeout(interval, timeout)
 	for {
-		if err := fetchOnce(ctx, cfg, client, publisher, store); err != nil {
-			log.Printf("data ingest cycle failed: %v", err)
+		cycleCtx, cancel := context.WithTimeout(ctx, cycleTimeout)
+		err := fetchOnce(cycleCtx, cfg, client, publisher, store)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				log.Printf("data ingest cycle timed out after %s", cycleTimeout)
+			} else {
+				log.Printf("data ingest cycle failed: %v", err)
+			}
 		}
 		if options.Once {
 			return nil
@@ -156,6 +169,27 @@ func Run(ctx context.Context, options Options) error {
 		case <-timer.C:
 		}
 	}
+}
+
+func dataIngestCycleTimeout(interval time.Duration, requestTimeout time.Duration) time.Duration {
+	if interval <= 0 {
+		interval = 45 * time.Minute
+	}
+	if requestTimeout <= 0 {
+		requestTimeout = 20 * time.Second
+	}
+	minimum := requestTimeout * 3
+	if minimum < 2*time.Minute {
+		minimum = 2 * time.Minute
+	}
+	timeout := interval
+	if timeout > maxDataIngestCycleTimeout {
+		timeout = maxDataIngestCycleTimeout
+	}
+	if timeout < minimum {
+		return minimum
+	}
+	return timeout
 }
 
 func dataIngestHTTPClient(timeout time.Duration) *http.Client {
@@ -177,7 +211,13 @@ func dataIngestHTTPClient(timeout time.Duration) *http.Client {
 func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publisher events.Publisher, store datastore.Store) error {
 	ecccCache := map[string]map[string]any{}
 	for _, feed := range cfg.enabledFeeds() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		for _, loc := range feed.Locations.ObservationLocations.Locations {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if strings.TrimSpace(loc.ID) == "" {
 				continue
 			}
@@ -200,6 +240,9 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 			publishDataReady(publisher, feed.ID, "current_conditions", loc.ID)
 		}
 		for _, region := range feed.Locations.Coverage.Regions {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if sourceKind(region.Source) != "eccc" {
 				continue
 			}
@@ -228,6 +271,9 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 			publishDataReady(publisher, feed.ID, "forecast", forecastID)
 		}
 		for _, loc := range feed.Locations.AirQualityLocations.Locations {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if sourceKind(loc.Source) != "eccc" || strings.TrimSpace(loc.ID) == "" {
 				continue
 			}
@@ -243,6 +289,9 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 			publishDataReady(publisher, feed.ID, "air_quality", loc.ID)
 		}
 		for _, loc := range feed.Locations.ClimateLocations.Locations {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if sourceKind(loc.Source) != "eccc" || strings.TrimSpace(loc.ID) == "" {
 				continue
 			}
@@ -258,6 +307,9 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 			publishDataReady(publisher, feed.ID, "climate_summary", loc.ID)
 		}
 		fetchFeedSpecialtyProducts(ctx, client, publisher, store, feed, ecccCache)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if text, err := fetchText(ctx, client, "https://services.swpc.noaa.gov/text/wwv.txt"); err == nil && strings.TrimSpace(text) != "" {
 		if err := store.StoreTextProduct(ctx, datastore.TextProductRecord{Source: "nws", ID: "wwv", Text: text, Metadata: map[string]any{"source_url": "https://services.swpc.noaa.gov/text/wwv.txt"}}); err == nil {
@@ -574,7 +626,9 @@ func loadForecastRegionNames(path string) map[string]forecastRegionName {
 	if err != nil {
 		return map[string]forecastRegionName{}
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 	reader := csv.NewReader(file)
 	reader.FieldsPerRecord = -1
 	_, _ = reader.Read()
@@ -1496,6 +1550,9 @@ func fetchFeedSpecialtyProducts(ctx context.Context, client *http.Client, publis
 		{"precipitation_analysis", fetchPrecipitationAnalysisProduct},
 	}
 	for _, fetcher := range fetchers {
+		if ctx.Err() != nil {
+			return
+		}
 		payload, err := fetcher.fn(ctx, client, feed, ecccCache)
 		if err != nil {
 			log.Printf("%s fetch failed for feed %s: %v", fetcher.kind, feed.ID, err)
@@ -1951,7 +2008,9 @@ func fetchJSON(ctx context.Context, client *http.Client, url string, target any)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("%s returned %s", url, resp.Status)
 	}
@@ -1968,7 +2027,9 @@ func fetchText(ctx context.Context, client *http.Client, url string) (string, er
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("%s returned %s", url, resp.Status)
 	}
@@ -2102,12 +2163,14 @@ func loadDotEnv(path string) {
 }
 
 func publishDataReady(publisher events.Publisher, feedID string, kind string, subject string) {
-	_ = publisher.Publish(events.Event{
+	if err := publisher.Publish(events.Event{
 		Type:    "data.ready",
 		Source:  serviceID,
 		Subject: subject,
 		Data:    map[string]any{"feed_id": feedID, "kind": kind, "id": subject},
-	})
+	}); err != nil {
+		log.Printf("data ready publish failed for %s/%s: %v", kind, subject, err)
+	}
 }
 
 func openStore(ctx context.Context, cfg loadedConfig) (datastore.Store, error) {
@@ -2366,17 +2429,4 @@ func xmlBool(raw string, fallback bool) bool {
 	default:
 		return fallback
 	}
-}
-
-func safeID(value string) string {
-	var builder strings.Builder
-	for _, ch := range value {
-		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_' || ch == '.' {
-			builder.WriteRune(ch)
-		}
-	}
-	if builder.Len() == 0 {
-		return "item"
-	}
-	return builder.String()
 }

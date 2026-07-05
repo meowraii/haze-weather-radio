@@ -637,13 +637,13 @@ func TestServePromptAudioPreservesFallbackStatus(t *testing.T) {
 func TestStaticPromptPolicyUsesConfiguredDefaultReader(t *testing.T) {
 	service := &Service{cfg: loadedConfig{
 		IVR: Config{
-			DefaultLanguage: "en-CA",
+			DefaultLanguage: "en-US",
 			DefaultReaderID: "some-sapi-reader",
 		},
 		Prompts: defaultPromptConfig(),
 	}}
 	policy := service.staticPromptPolicy()
-	if policy.ReaderID != "some-sapi-reader" || policy.Provider != "fast" || policy.Language != "en-CA" {
+	if policy.ReaderID != "some-sapi-reader" || policy.Provider != "fast" || policy.Language != "en-US" {
 		t.Fatalf("static policy = %+v", policy)
 	}
 	if policy.SentenceSilence != 0 {

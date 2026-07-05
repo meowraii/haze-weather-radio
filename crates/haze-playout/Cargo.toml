@@ -28,6 +28,9 @@ tokio = { version = "1.48", features = ["fs", "io-util", "macros", "net", "rt-mu
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Media"] }
+
 [features]
 default = []
 ffmpeg-rsmpeg = ["haze-media/ffmpeg-rsmpeg"]

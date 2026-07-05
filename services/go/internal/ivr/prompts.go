@@ -121,7 +121,7 @@ func loadPromptConfig(path string) (PromptConfig, error) {
 func normalizePromptConfig(parsed promptConfigXML) (PromptConfig, error) {
 	defaults := normalizeTTSProfile(parsed.Defaults.TTSProfile, TTSProfile{
 		Provider: "fast",
-		Language: "en-CA",
+		Language: "en-US",
 		Volume:   100,
 		CacheTTL: 24 * time.Hour,
 	})
@@ -187,7 +187,7 @@ func normalizePromptConfig(parsed promptConfigXML) (PromptConfig, error) {
 func defaultPromptConfig() PromptConfig {
 	raw := promptConfigXML{
 		Defaults: promptDefaults{
-			TTSProfile: TTSProfile{Provider: "fast", Language: "en-CA", VolumeRaw: "100", CacheTTLRaw: "24h"},
+			TTSProfile: TTSProfile{Provider: "fast", Language: "en-US", VolumeRaw: "100", CacheTTLRaw: "24h"},
 			Lines: []promptLine{
 				{Key: "one_moment", Text: "One moment."},
 				{Key: "enter_code", Text: "Enter your province, or enter a former Hello Weather location code."},
@@ -200,7 +200,7 @@ func defaultPromptConfig() PromptConfig {
 				{Key: "main", Text: "This is the {telephone_service_name}. {language_options}, or press star for your NOAA Geophysical Alert Message."},
 				{Key: "main_single_language", Text: "Enter your province, or enter a former Hello Weather location code."},
 			}, Options: []menuOption{
-				{Digit: "1", Action: "language", Language: "en-CA", Next: "location_code"},
+				{Digit: "1", Action: "language", Language: "en-US", Next: "location_code"},
 				{Digit: "2", Action: "language", Language: "fr-CA", Next: "location_code"},
 				{Digit: "3", Action: "language", Language: "es", Next: "location_code"},
 				{Digit: "0", Action: "product", Packages: "geophysical_alert"},

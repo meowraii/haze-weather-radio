@@ -1,10 +1,13 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::env;
-use std::hash::{DefaultHasher, Hash, Hasher};
-use std::net::IpAddr;
 #[cfg(feature = "gstreamer-backend")]
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket as StdUdpSocket};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::net::{IpAddr, SocketAddr};
+#[cfg(feature = "gstreamer-backend")]
+use std::net::{Ipv4Addr, UdpSocket as StdUdpSocket};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "gstreamer-backend")]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -63,6 +66,10 @@ const STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES: usize = 16;
 const STR0M_WEBRTC_PEER_DRAIN_LIMIT: usize = 16;
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
 const ENCODED_HTTP_QUEUE_CAPACITY: usize = 64;
+#[cfg(feature = "gstreamer-backend")]
+const HTTP_AUDIO_GSTREAMER_QUEUE_MS: u64 = 1_900;
+#[cfg(feature = "gstreamer-backend")]
+const HTTP_AUDIO_GSTREAMER_QUEUE_BUFFERS: u64 = HTTP_AUDIO_GSTREAMER_QUEUE_MS / 20;
 #[cfg(feature = "gstreamer-backend")]
 const ICECAST_RETRY_BASE: Duration = Duration::from_secs(5);
 #[cfg(feature = "gstreamer-backend")]
@@ -1268,7 +1275,6 @@ fn max_source_queue_samples() -> usize {
     (SAMPLE_RATE as u64 * MAX_SOURCE_QUEUE_MS / 1_000) as usize
 }
 
-#[cfg(test)]
 fn soft_source_queue_samples() -> usize {
     let target = target_source_queue_samples();
     let max = max_source_queue_samples();
@@ -1279,8 +1285,11 @@ fn soft_source_queue_samples() -> usize {
 fn trim_source_queue(samples: &mut VecDeque<QueuedSample>) -> u64 {
     let max_samples = max_source_queue_samples();
     let target_samples = target_source_queue_samples();
+    let soft_samples = soft_source_queue_samples();
     let mut stale_dropped = 0u64;
-    let keep_samples = if samples.len() > max_samples && source_queue_prefix_near_silent(samples) {
+    let keep_samples = if samples.len() > soft_samples
+        || (samples.len() > max_samples && source_queue_prefix_near_silent(samples))
+    {
         target_samples
     } else {
         max_samples
@@ -2103,12 +2112,10 @@ fn detect_webrtc_candidate_ip_inner(
     fallback
 }
 
-#[cfg(feature = "gstreamer-backend")]
 fn parse_webrtc_request_peer_ip(payload: &WebRTCOfferRequest) -> Option<IpAddr> {
     parse_ip_hint(&payload.client_ip).or_else(|| parse_ip_hint(&payload.remote_addr))
 }
 
-#[cfg(feature = "gstreamer-backend")]
 fn parse_ip_hint(raw: &str) -> Option<IpAddr> {
     let value = raw.trim();
     if value.is_empty() {
@@ -2257,7 +2264,7 @@ fn build_gstreamer_webrtc_encoder(
 
 #[cfg(feature = "gstreamer-backend")]
 fn gstreamer_webrtc_encoder_pipeline(selection: WebRTCCodecSelection) -> Result<String> {
-    let source = "appsrc name=src is-live=true block=true do-timestamp=false max-bytes=19200 format=time stream-type=stream \
+    let source = "appsrc name=src is-live=true block=false leaky-type=downstream do-timestamp=false max-bytes=19200 format=time stream-type=stream \
          caps=audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=1 \
          ! queue max-size-time=200000000 max-size-buffers=10 max-size-bytes=0 leaky=downstream \
          ! audioconvert ! audioresample quality=4";
@@ -3194,8 +3201,12 @@ async fn stream_gstreamer_encoded(
 
 #[cfg(feature = "gstreamer-backend")]
 fn gstreamer_audio_pipeline(codec: &str) -> Result<String> {
-    let source = "appsrc name=src is-live=true block=true do-timestamp=false max-bytes=38400 format=time stream-type=stream caps=audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=1";
-    let common = "queue max-size-time=1000000000 max-size-buffers=100 ! audioconvert ! audioresample quality=4";
+    let source = "appsrc name=src is-live=true block=false leaky-type=downstream do-timestamp=false max-bytes=38400 format=time stream-type=stream caps=audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=1";
+    let common = format!(
+        "queue max-size-time={} max-size-buffers={} max-size-bytes=0 leaky=downstream ! audioconvert ! audioresample quality=4",
+        HTTP_AUDIO_GSTREAMER_QUEUE_MS * 1_000_000,
+        HTTP_AUDIO_GSTREAMER_QUEUE_BUFFERS
+    );
     match codec {
         "opus" => Ok(format!(
             "{source} ! {common} ! opusenc bitrate=96000 frame-size=20 inband-fec=true ! oggmux ! appsink name=sink emit-signals=true sync=false"
@@ -3246,6 +3257,8 @@ async fn run_icecast_output(runtime: Arc<FeedRuntime>, config: IcecastOutput) {
             Ok((pipeline, appsrc, appsink)) => {
                 let (encoded_tx, mut encoded_rx) =
                     mpsc::channel::<Vec<u8>>(ENCODED_HTTP_QUEUE_CAPACITY);
+                let encoder_backpressured = Arc::new(AtomicBool::new(false));
+                let callback_encoder_backpressured = Arc::clone(&encoder_backpressured);
                 appsink.set_callbacks(
                     gst_app::AppSinkCallbacks::builder()
                         .new_sample(move |sink| {
@@ -3257,7 +3270,8 @@ async fn run_icecast_output(runtime: Arc<FeedRuntime>, config: IcecastOutput) {
                             match encoded_tx.try_send(map.as_slice().to_vec()) {
                                 Ok(()) => Ok(gst::FlowSuccess::Ok),
                                 Err(mpsc::error::TrySendError::Full(_)) => {
-                                    Err(gst::FlowError::Error)
+                                    callback_encoder_backpressured.store(true, Ordering::Relaxed);
+                                    Ok(gst::FlowSuccess::Ok)
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
                                     Err(gst::FlowError::Eos)
@@ -3302,6 +3316,14 @@ async fn run_icecast_output(runtime: Arc<FeedRuntime>, config: IcecastOutput) {
                 let frame_duration_ns = FRAME_DURATION.as_nanos() as u64;
                 let silence = vec![0u8; FRAME_BYTES];
                 loop {
+                    if encoder_backpressured.swap(false, Ordering::Relaxed) {
+                        warn!(
+                            feed_id = %feed_id,
+                            mount = %config.mount,
+                            "Icecast encoded queue filled; reconnecting to drop stale stream backlog"
+                        );
+                        break;
+                    }
                     tokio::select! {
                         frame = rx.recv() => {
                             match frame {
@@ -4056,6 +4078,56 @@ mod tests {
     }
 
     #[test]
+    fn parses_enabled_icecast_output() {
+        let parsed: OutputsXml = quick_xml::de::from_str(
+            r#"
+            <outputs>
+              <feed id="sk-0001">
+                <stream enabled="true">
+                  <type>icecast</type>
+                  <host>icecast.example.test</host>
+                  <port>8000</port>
+                  <password>secret</password>
+                  <mount>sk-0001</mount>
+                  <format>opus</format>
+                </stream>
+              </feed>
+            </outputs>
+            "#,
+        )
+        .unwrap();
+
+        let icecast = icecast_output_from_node(&parsed.feeds[0].stream).unwrap();
+
+        assert_eq!(icecast.host, "icecast.example.test");
+        assert_eq!(icecast.port, 8000);
+        assert_eq!(icecast.username, "source");
+        assert_eq!(icecast.mount, "/sk-0001");
+        assert_eq!(icecast.format, "opus");
+        assert_eq!(icecast.acodec, "libopus");
+    }
+
+    #[test]
+    fn icecast_output_requires_mount() {
+        let parsed: OutputsXml = quick_xml::de::from_str(
+            r#"
+            <outputs>
+              <feed id="sk-0001">
+                <stream enabled="true">
+                  <type>icecast</type>
+                  <host>icecast.example.test</host>
+                  <password>secret</password>
+                </stream>
+              </feed>
+            </outputs>
+            "#,
+        )
+        .unwrap();
+
+        assert!(icecast_output_from_node(&parsed.feeds[0].stream).is_none());
+    }
+
+    #[test]
     fn wav_header_uses_streaming_lengths() {
         let header = wav_stream_header();
         assert_eq!(&header[0..4], b"RIFF");
@@ -4245,14 +4317,17 @@ mod tests {
     }
 
     #[test]
-    fn source_queue_hard_drop_keeps_queue_bounded() {
+    fn source_queue_hard_drop_returns_to_target_latency() {
         let max_samples = max_source_queue_samples();
         let mut samples = queued_samples((0..(max_samples + 10)).map(|value| value as i16), false);
 
         let stale_dropped = trim_source_queue(&mut samples);
 
-        assert_eq!(stale_dropped, 10);
-        assert_eq!(samples.len(), max_samples);
+        assert_eq!(
+            stale_dropped as usize,
+            max_samples + 10 - target_source_queue_samples()
+        );
+        assert_eq!(samples.len(), target_source_queue_samples());
     }
 
     #[test]
@@ -4269,15 +4344,29 @@ mod tests {
     }
 
     #[test]
-    fn source_queue_soft_zone_does_not_speed_up_audio() {
+    fn source_queue_soft_overflow_drops_back_to_target_latency() {
         let soft_samples = soft_source_queue_samples();
         let mut samples =
             queued_samples((0..(soft_samples + 500)).map(|value| value as i16), false);
 
         let stale_dropped = trim_source_queue(&mut samples);
 
+        assert_eq!(
+            stale_dropped as usize,
+            soft_samples + 500 - target_source_queue_samples()
+        );
+        assert_eq!(samples.len(), target_source_queue_samples());
+    }
+
+    #[test]
+    fn source_queue_under_soft_limit_preserves_real_audio() {
+        let soft_samples = soft_source_queue_samples();
+        let mut samples = queued_samples((0..soft_samples).map(|value| value as i16), false);
+
+        let stale_dropped = trim_source_queue(&mut samples);
+
         assert_eq!(stale_dropped, 0);
-        assert_eq!(samples.len(), soft_samples + 500);
+        assert_eq!(samples.len(), soft_samples);
     }
 
     #[test]
@@ -4658,5 +4747,7 @@ mod tests {
         let pipeline = gstreamer_audio_pipeline("opus").unwrap();
         assert!(pipeline.contains("bitrate=96000"));
         assert!(pipeline.contains("frame-size=20"));
+        assert!(pipeline.contains("max-size-time=1900000000"));
+        assert!(pipeline.contains("max-size-buffers=95"));
     }
 }

@@ -356,7 +356,7 @@ func feedLanguage(feed feedXML) string {
 			return code
 		}
 	}
-	return "en-CA"
+	return "en-US"
 }
 
 func feedLocation(feed feedXML) *time.Location {

@@ -38,19 +38,20 @@ func TestLoadDictionaryAppliesLanguageWildcardAndWordBoundaries(t *testing.T) {
   "en-*": {
     "XLF322": "X L F three twenty two",
     "N": "north",
-    "km/h": "kilometres per hour"
+    "km/h": "kilometers per hour",
+    "kilometres": "kilometers"
   }
 }`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dictionary, err := LoadDictionary(path, "en-CA")
+	dictionary, err := LoadDictionary(path, "en-US")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	got := NormalizeText("XLF322 winds N at 20 km/h near North Battleford.", dictionary, "UTC")
-	want := "X L F three twenty two winds north at 20 kilometres per hour near North Battleford."
+	got := NormalizeText("XLF322 winds N at 20 km/h near North Battleford. Visibility 10 kilometres.", dictionary, "UTC")
+	want := "X L F three twenty two winds north at 20 kilometers per hour near North Battleford. Visibility 10 kilometers."
 	if got != want {
 		t.Fatalf("normalized = %q, want %q", got, want)
 	}

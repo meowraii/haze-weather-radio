@@ -18,6 +18,14 @@ func TestSAPI5SynthesizeHonorsCanceledContextBeforeCOM(t *testing.T) {
 	}
 }
 
+func TestPrepareSAPI5TextFixesWeatherPronunciations(t *testing.T) {
+	got := prepareSAPI5Text("Winds north at 40 kilometers per hour and 10 kilometres near Windsor.")
+	want := "windz north at 40 killometers per hour and 10 killometers near Windsor."
+	if got != want {
+		t.Fatalf("SAPI5 text = %q, want %q", got, want)
+	}
+}
+
 func TestSAPIRateAndVolumeClampToCOMRange(t *testing.T) {
 	if got := sapiRate(-99); got != -10 {
 		t.Fatalf("low rate = %d", got)

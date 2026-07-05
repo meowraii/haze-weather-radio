@@ -24,7 +24,7 @@ func TestLoadPromptConfigParsesMenusAndOverrides(t *testing.T) {
 		t.Fatalf("location prompt = %q", text)
 	}
 	entry, ok := cfg.Option("entry", "1")
-	if !ok || entry.Action != "language" || entry.Language != "en-CA" {
+	if !ok || entry.Action != "language" || entry.Language != "en-US" {
 		t.Fatalf("entry option = %+v ok=%v", entry, ok)
 	}
 	weather := cfg.TTSForMenu("weather_product")
@@ -78,13 +78,13 @@ func TestStaticPromptLinesExcludeDynamicPrompts(t *testing.T) {
 func validPromptXML() string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <ivr>
-  <defaults provider="sapi5" language="en-CA" volume="80" cache_ttl="24h">
+  <defaults provider="sapi5" language="en-US" volume="80" cache_ttl="24h">
     <line key="one_moment">One moment.</line>
   </defaults>
   <menu id="entry">
     <line key="main">Entry.</line>
     <line key="main_single_language">Entry single language.</line>
-    <option digit="1" action="language" language="en-CA" next="location_code"/>
+    <option digit="1" action="language" language="en-US" next="location_code"/>
   </menu>
   <menu id="language_select">
     <line key="main">Language.</line>

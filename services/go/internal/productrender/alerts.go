@@ -748,7 +748,7 @@ func routineCAPAlertAllowed(alert capmodel.Alert) bool {
 	case "test", "exercise", "draft":
 		return false
 	}
-	info := chooseAlertInfo(alert, "en-CA")
+	info := chooseAlertInfo(alert, "en-US")
 	if info == nil {
 		return true
 	}
@@ -1220,7 +1220,7 @@ func storeCAPArchiveRecord(store datastore.Store, bucket string, record capArchi
 	if strings.TrimSpace(rawXML) == "" {
 		return
 	}
-	info := chooseAlertInfo(record.Alert, "en-CA")
+	info := chooseAlertInfo(record.Alert, "en-US")
 	event := ""
 	headline := ""
 	expires := ""
