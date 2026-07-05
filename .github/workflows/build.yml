@@ -34,10 +34,55 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libopus-dev pkg-config \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+            libswresample-dev libswscale-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-libav gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly
+          pkg-config --exists libavcodec opus gstreamer-1.0 gstreamer-app-1.0
+
+      - name: Install Windows native build dependencies
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-ffmpeg
+            mingw-w64-clang-x86_64-gstreamer
+            mingw-w64-clang-x86_64-gst-libav
+            mingw-w64-clang-x86_64-gst-plugins-base
+            mingw-w64-clang-x86_64-gst-plugins-good
+            mingw-w64-clang-x86_64-gst-plugins-bad
+            mingw-w64-clang-x86_64-gst-plugins-ugly
+            mingw-w64-clang-x86_64-libunwind
+            mingw-w64-clang-x86_64-opus
+            mingw-w64-clang-x86_64-opusfile
+            mingw-w64-clang-x86_64-pkgconf
+
+      - name: Configure Windows native build environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $clang64 = "C:\msys64\clang64"
+          $bin = Join-Path $clang64 "bin"
+          $pkgConfig = Join-Path $bin "pkg-config.exe"
+          if (-not (Test-Path -LiteralPath $pkgConfig)) {
+            throw "Missing pkg-config.exe at $pkgConfig"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          "PKG_CONFIG=$pkgConfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PKG_CONFIG_PATH=$clang64\lib\pkgconfig;$clang64\share\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PKG_CONFIG_LIBDIR=$clang64\lib\pkgconfig;$clang64\share\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "FFMPEG_PKG_CONFIG_PATH=$clang64\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=x86_64-w64-mingw32-clang.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CC_x86_64_pc_windows_gnullvm=x86_64-w64-mingw32-clang.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CXX_x86_64_pc_windows_gnullvm=x86_64-w64-mingw32-clang++.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "AR_x86_64_pc_windows_gnullvm=llvm-ar.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $pkgConfig --exists glib-2.0 libavcodec opus gstreamer-1.0 gstreamer-app-1.0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -48,7 +93,14 @@ jobs:
           cache-dependency-path: services/go/go.sum
 
       - name: Set up Rust
+        if: runner.os != 'Windows'
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Rust for Windows
+        if: runner.os == 'Windows'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnullvm
 
       - name: Cache Rust build output
         uses: Swatinem/rust-cache@v2
@@ -66,7 +118,7 @@ jobs:
         run: go test -count=1 ./...
 
       - name: Test Rust workspace
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked ${{ runner.os == 'Windows' && '--target x86_64-pc-windows-gnullvm' || '' }}
 
   windows-bundle:
     name: Build Windows Bundle
@@ -167,10 +219,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libopus-dev pkg-config \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+            libswresample-dev libswscale-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-libav gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly
+          pkg-config --exists libavcodec opus gstreamer-1.0 gstreamer-app-1.0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -226,7 +281,8 @@ jobs:
           release: "14.2"
           usesh: true
           prepare: |
-            pkg install -y bash ca_root_nss curl rust pkgconf gstreamer1 gstreamer1-plugins gstreamer1-libav
+            pkg install -y bash ca_root_nss curl rust pkgconf ffmpeg opus gstreamer1 gstreamer1-plugins gstreamer1-libav
+            pkgconf --exists libavcodec opus gstreamer-1.0 gstreamer-app-1.0
             GO_VERSION="$(awk '/^go / { print $2; exit }' services/go/go.mod)"
             fetch -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.freebsd-amd64.tar.gz"
             rm -rf /usr/local/go
