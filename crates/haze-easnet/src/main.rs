@@ -1,20 +1,16 @@
 #![recursion_limit = "256"]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::CString;
+use std::env;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use rsmpeg::avcodec::{AVCodec, AVCodecContext};
-use rsmpeg::avformat::AVFormatContextOutput;
-use rsmpeg::avutil::{AVChannelLayout, AVFrame, AVRational};
-use rsmpeg::error::RsmpegError;
-use rsmpeg::ffi;
 use russh::{client, ChannelMsg, Disconnect};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -35,7 +31,6 @@ const DEFAULT_MAX_MESSAGE_BYTES: usize = 256 * 1024;
 const DEFAULT_MAX_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_AUDIO_TTL: Duration = Duration::from_secs(15 * 60);
-const AVERROR_EAGAIN: i32 = -11;
 const SAME_SAMPLE_RATE: u32 = 48_000;
 const SAME_BIT_SAMPLES: usize = 92;
 const SAME_PREAMBLE_BYTES: usize = 16;
@@ -841,7 +836,7 @@ async fn prepare_outbound_audio(
         encode_pcm_s16le_to_ogg_vorbis(&input, &output, sample_rate, channels)
     })
     .await
-    .context("EAS NET rsmpeg audio conversion task failed")??;
+    .context("EAS NET ffmpeg audio conversion task failed")??;
     Ok(out_path)
 }
 
@@ -1117,228 +1112,78 @@ fn encode_pcm_s16le_to_ogg_vorbis(
     sample_rate: u32,
     channels: u16,
 ) -> Result<()> {
-    let bytes = std::fs::read(input_path)
-        .with_context(|| format!("failed to read EAS NET PCM audio {}", input_path.display()))?;
-    let channels = usize::from(channels.clamp(1, 8));
-    let sample_rate = i32::try_from(sample_rate.clamp(8_000, 96_000)).unwrap_or(48_000);
-    let complete_i16_len = bytes.len() / 2;
-    let complete_frame_len = complete_i16_len - (complete_i16_len % channels);
-    if complete_frame_len == 0 {
+    let channels = channels.clamp(1, 8);
+    let sample_rate = sample_rate.clamp(8_000, 96_000);
+    let len = std::fs::metadata(input_path)
+        .with_context(|| format!("failed to stat EAS NET PCM audio {}", input_path.display()))?
+        .len();
+    let block_align = u64::from(channels) * 2;
+    if len < block_align {
         bail!("EAS NET PCM audio is empty: {}", input_path.display());
     }
-    let mut samples = Vec::with_capacity(complete_frame_len);
-    for chunk in bytes[..complete_frame_len * 2].chunks_exact(2) {
-        samples.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+
+    let mut failures = Vec::new();
+    for codec in ["libvorbis", "vorbis"] {
+        match run_ffmpeg_pcm_to_ogg(input_path, output_path, sample_rate, channels, codec) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                failures.push(format!("{codec}: {err:#}"));
+                let _ = std::fs::remove_file(output_path);
+            }
+        }
     }
+    bail!(
+        "failed to encode EAS NET Ogg/Vorbis audio {}: {}",
+        output_path.display(),
+        failures.join("; ")
+    )
+}
 
-    let encoder = find_vorbis_encoder()?;
-    let sample_fmt = encoder
-        .sample_fmts()
-        .and_then(|formats| {
-            formats
-                .iter()
-                .copied()
-                .find(|fmt| *fmt == ffi::AV_SAMPLE_FMT_FLTP)
-                .or_else(|| formats.first().copied())
-        })
-        .unwrap_or(ffi::AV_SAMPLE_FMT_FLTP);
-    let layout = AVChannelLayout::from_nb_channels(channels as i32);
-    let time_base = AVRational {
-        num: 1,
-        den: sample_rate,
-    };
-    let output_name = cstring_path(output_path)?;
-    let mut output = AVFormatContextOutput::builder()
-        .format_name(c"ogg")
-        .filename(output_name.as_c_str())
-        .build()
-        .with_context(|| format!("failed to create Ogg muxer for {}", output_path.display()))?;
-
-    let mut codec_context = AVCodecContext::new(&encoder);
-    codec_context.set_sample_rate(sample_rate);
-    codec_context.set_sample_fmt(sample_fmt);
-    codec_context.set_ch_layout(layout.clone().into_inner());
-    codec_context.set_time_base(time_base);
-    codec_context.set_pkt_timebase(time_base);
-    codec_context.set_bit_rate(128_000);
-    if output.oformat().flags & ffi::AVFMT_GLOBALHEADER as i32 != 0 {
-        codec_context.set_flags(codec_context.flags | ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32);
+fn run_ffmpeg_pcm_to_ogg(
+    input_path: &Path,
+    output_path: &Path,
+    sample_rate: u32,
+    channels: u16,
+    codec: &str,
+) -> Result<()> {
+    let ffmpeg = env::var("HAZE_FFMPEG")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "ffmpeg".to_string());
+    let output = Command::new(&ffmpeg)
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-f")
+        .arg("s16le")
+        .arg("-ar")
+        .arg(sample_rate.to_string())
+        .arg("-ac")
+        .arg(channels.to_string())
+        .arg("-i")
+        .arg(input_path)
+        .arg("-vn")
+        .arg("-c:a")
+        .arg(codec)
+        .arg("-b:a")
+        .arg("128k")
+        .arg("-f")
+        .arg("ogg")
+        .arg(output_path)
+        .output()
+        .with_context(|| format!("failed to run {ffmpeg} for EAS NET audio conversion"))?;
+    if output.status.success() {
+        return Ok(());
     }
-    codec_context
-        .open(None)
-        .context("failed to open native Vorbis encoder for EAS NET audio")?;
-
-    let stream_index;
-    let stream_time_base;
-    {
-        let mut stream = output.new_stream();
-        stream.set_time_base(time_base);
-        stream.codecpar_mut().from_context(&codec_context);
-        stream_index = stream.index;
-        stream_time_base = stream.time_base;
-    }
-    let mut muxer_options = None;
-    output
-        .write_header(&mut muxer_options)
-        .context("failed to write EAS NET Ogg/Vorbis header")?;
-
-    let frame_size = if codec_context.frame_size > 0 {
-        codec_context.frame_size as usize
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let detail = if stderr.is_empty() {
+        "no stderr output".to_string()
     } else {
-        1024
+        stderr
     };
-    let samples_per_channel = samples.len() / channels;
-    let mut cursor = 0usize;
-    let mut pts = 0i64;
-    while cursor < samples_per_channel {
-        let count = frame_size.min(samples_per_channel - cursor);
-        let offset = cursor * channels;
-        let end = offset + count * channels;
-        let mut frame = AVFrame::new();
-        frame.set_nb_samples(count as i32);
-        frame.set_format(sample_fmt);
-        frame.set_ch_layout(layout.clone().into_inner());
-        frame.set_sample_rate(sample_rate);
-        frame.set_pts(pts);
-        frame
-            .get_buffer(0)
-            .context("failed to allocate native EAS NET audio frame")?;
-        fill_audio_frame(
-            &mut frame,
-            &samples[offset..end],
-            count,
-            channels,
-            sample_fmt,
-        )?;
-        codec_context
-            .send_frame(Some(&frame))
-            .context("failed to feed EAS NET audio frame to native Vorbis encoder")?;
-        drain_audio_encoder(
-            &mut codec_context,
-            &mut output,
-            stream_index,
-            time_base,
-            stream_time_base,
-        )?;
-        cursor += count;
-        pts += count as i64;
-    }
-    codec_context
-        .send_frame(None)
-        .context("failed to flush native EAS NET Vorbis encoder")?;
-    drain_audio_encoder(
-        &mut codec_context,
-        &mut output,
-        stream_index,
-        time_base,
-        stream_time_base,
-    )?;
-    output
-        .write_trailer()
-        .context("failed to finalize EAS NET Ogg/Vorbis audio")?;
-    Ok(())
-}
-
-fn find_vorbis_encoder() -> Result<rsmpeg::avcodec::AVCodecRef<'static>> {
-    AVCodec::find_encoder_by_name(c"libvorbis")
-        .or_else(|| AVCodec::find_encoder_by_name(c"vorbis"))
-        .or_else(|| AVCodec::find_encoder(ffi::AV_CODEC_ID_VORBIS))
-        .context("native FFmpeg Vorbis encoder is unavailable in this bundle")
-}
-
-fn cstring_path(path: &Path) -> Result<CString> {
-    CString::new(path.to_string_lossy().as_bytes())
-        .with_context(|| format!("path contains an interior NUL byte: {}", path.display()))
-}
-
-fn fill_audio_frame(
-    frame: &mut AVFrame,
-    interleaved_s16: &[i16],
-    samples_per_channel: usize,
-    channels: usize,
-    sample_fmt: ffi::AVSampleFormat,
-) -> Result<()> {
-    match sample_fmt {
-        ffi::AV_SAMPLE_FMT_FLTP => {
-            let data = frame.data_mut();
-            for channel in 0..channels {
-                let plane = unsafe {
-                    std::slice::from_raw_parts_mut(data[channel].cast::<f32>(), samples_per_channel)
-                };
-                for sample in 0..samples_per_channel {
-                    plane[sample] =
-                        f32::from(interleaved_s16[sample * channels + channel]) / 32768.0;
-                }
-            }
-        }
-        ffi::AV_SAMPLE_FMT_FLT => {
-            let data = frame.data_mut();
-            let packed = unsafe {
-                std::slice::from_raw_parts_mut(
-                    data[0].cast::<f32>(),
-                    samples_per_channel * channels,
-                )
-            };
-            for (dst, src) in packed.iter_mut().zip(interleaved_s16.iter()) {
-                *dst = f32::from(*src) / 32768.0;
-            }
-        }
-        ffi::AV_SAMPLE_FMT_S16P => {
-            let data = frame.data_mut();
-            for channel in 0..channels {
-                let plane = unsafe {
-                    std::slice::from_raw_parts_mut(data[channel].cast::<i16>(), samples_per_channel)
-                };
-                for sample in 0..samples_per_channel {
-                    plane[sample] = interleaved_s16[sample * channels + channel];
-                }
-            }
-        }
-        ffi::AV_SAMPLE_FMT_S16 => {
-            let data = frame.data_mut();
-            let packed = unsafe {
-                std::slice::from_raw_parts_mut(
-                    data[0].cast::<i16>(),
-                    samples_per_channel * channels,
-                )
-            };
-            packed.copy_from_slice(interleaved_s16);
-        }
-        other => {
-            bail!("native Vorbis encoder selected unsupported sample format {other}");
-        }
-    }
-    Ok(())
-}
-
-fn drain_audio_encoder(
-    codec_context: &mut AVCodecContext,
-    output: &mut AVFormatContextOutput,
-    stream_index: i32,
-    codec_time_base: AVRational,
-    stream_time_base: AVRational,
-) -> Result<()> {
-    loop {
-        match codec_context.receive_packet() {
-            Ok(mut packet) => {
-                packet.set_stream_index(stream_index);
-                packet.rescale_ts(codec_time_base, stream_time_base);
-                output
-                    .interleaved_write_frame(&mut packet)
-                    .context("failed to mux native EAS NET Ogg/Vorbis packet")?;
-            }
-            Err(err)
-                if err == RsmpegError::EncoderDrainError
-                    || err == RsmpegError::EncoderFlushedError
-                    || err.raw_error() == Some(AVERROR_EAGAIN)
-                    || err.raw_error() == Some(ffi::AVERROR_EOF) =>
-            {
-                break;
-            }
-            Err(err) => return Err(err).context("native EAS NET Vorbis encoder failed"),
-        }
-    }
-    Ok(())
+    bail!("{ffmpeg} exited with {}: {detail}", output.status)
 }
 
 async fn send_to_peer(peer: &PeerConfig, message: &EasNetMessage) -> Result<()> {
@@ -2347,7 +2192,7 @@ mod tests {
     }
 
     #[test]
-    fn native_audio_encoder_writes_ogg_vorbis() {
+    fn ffmpeg_audio_encoder_writes_ogg_vorbis() {
         let dir = std::env::temp_dir().join(format!("haze-easnet-audio-{}", unix_now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("alert.pcm");

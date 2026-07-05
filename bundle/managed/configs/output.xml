@@ -3,18 +3,6 @@
   <feed id="sk-0001">
     <webrtc enabled="true"/>
 
-    <stream enabled="true">
-      <type>icecast</type>
-      <host>icecast.almora.tv</host>
-      <port>8443</port>
-      <username>source</username>
-      <password>aluser</password>
-      <mount>/cwxr-sk01</mount>
-      <ssl>false</ssl>
-      <format>opus</format>
-      <bitrate_kbps>64</bitrate_kbps>
-    </stream>
-
     <udp enabled="false">
       <ip>127.0.0.1</ip>
       <port>8898</port>
@@ -55,7 +43,7 @@
     <audio_device enabled="false"/>
   </feed>
 
-  <feed id="CAP-IT-ALL">
+  <feed id="CFSP-CAP">
     <webrtc enabled="true"/>
   </feed>
 </outputs>

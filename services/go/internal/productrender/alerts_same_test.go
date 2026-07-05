@@ -228,6 +228,28 @@ func TestCoverageMatchesLinkedSGCToCLC(t *testing.T) {
 	}
 }
 
+func TestCoverageMatchesProvinceWildcardPrefix(t *testing.T) {
+	db := alertGeoDB{
+		CAPCPToCLC: map[string][]string{
+			"4711066": []string{"065100"},
+		},
+	}
+	coverage := map[string]struct{}{
+		"06*": {},
+		"07*": {},
+	}
+
+	if !coverageMatchesAlertCode(db, coverage, "065100") {
+		t.Fatal("expected direct Saskatchewan CLC coverage to match 06*")
+	}
+	if !coverageMatchesAlertCode(db, coverage, "4711066") {
+		t.Fatal("expected linked Saskatchewan SGC coverage to match 06*")
+	}
+	if coverageMatchesAlertCode(db, coverage, "081100") {
+		t.Fatal("did not expect Manitoba CLC coverage to match 06* or 07*")
+	}
+}
+
 func TestNWSCAPUsesEASEventNameInsteadOfHeadline(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "managed", "sameMapping.json"), `{"eas":{"SPS":"Special Weather Statement"}}`)

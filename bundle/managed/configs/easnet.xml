@@ -4,7 +4,7 @@
   <audio_server
     enabled="true"
     addr="0.0.0.0:41801"
-    public_base_url="http://172.16.1.30:41801"
+    public_base_url="http://172.16.1.31:41801"
     token_ttl="15m"
     max_audio_bytes="26214400" />
 
@@ -25,7 +25,7 @@
         <ip>172.16.1.42</ip>
       </allow>
       <filters>
-        <feed>CAP-IT-ALL</feed>
+        <feed>CFSP-CAP</feed>
         <location>*</location>
         <severity>*</severity>
         <event>*</event>

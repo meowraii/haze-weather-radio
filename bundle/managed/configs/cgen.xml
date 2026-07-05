@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <cgen enabled="true">
-  <feed id="CAP-IT-ALL" name="CAP-IT-ALL CGEN" enabled="true" updated_at="2026-07-03T17:43:17Z">
+  <feed id="CFSP-CAP" name="CFSP/CAP CGEN" enabled="true" updated_at="2026-07-03T17:43:17Z">
     <program>
       <input url="udp://172.16.1.30:9098?fifo_size=2000000&amp;overrun_nonfatal=1&amp;reuse=1&amp;buffer_size=1048576" format="mpegts"></input>
       <output url="${MIST_RTMP_SSPWXR01}" format="rtmp" vcodec="x264enc" acodec="avenc_aac" video_bitrate_kbps="12000" audio_bitrate_kbps="192" service_id="1" transport_stream_id="1"></output>

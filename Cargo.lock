@@ -1839,7 +1839,6 @@ dependencies = [
  "chrono",
  "clap",
  "quick-xml",
- "rsmpeg",
  "russh",
  "serde",
  "serde_json",

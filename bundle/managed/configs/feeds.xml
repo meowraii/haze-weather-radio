@@ -102,13 +102,13 @@
     </transmitter_metadata>
   </feed>
 
-  <feed id="CAP-IT-ALL" enabled="true" timezone="America/Regina">
+  <feed id="CFSP-CAP" enabled="true" timezone="America/Regina">
 
     <playout routine="false" same="true" same_originator="EAS" same_attention_tone="EAS"/>
 
     <alerts>
       <cap_cp enabled="true">
-        <filter use_feed_locations="false">
+        <filter use_feed_locations="true">
           <allowlist>
 			<severity>Moderate</severity>
             <severity>Severe</severity>
@@ -120,7 +120,7 @@
         </filter>
       </cap_cp>
       <nws_cap enabled="false">
-        <filter use_feed_locations="false">
+        <filter use_feed_locations="true">
           <allowlist>
             <severity>Extreme</severity>
             <urgency>Immediate</urgency>
@@ -137,18 +137,21 @@
 
     <description>
       <lang code="en-US"
-            text="CAP-IT-ALL standby alert relay."
+            text="CFSP/CAP standby alert relay."
             suffix=""/>
     </description>
 
     <locations>
-      <coverage/>
+      <coverage>
+        <region id="06*" source="eccc"/>
+        <region id="07*" source="eccc"/>
+      </coverage>
     </locations>
 
     <transmitter_metadata>
       <transmitter>
-        <site_name>CAP-IT-ALL</site_name>
-        <callsign>CAPALL</callsign>
+        <site_name>CFSP/CAP</site_name>
+        <callsign>CFSPCAP</callsign>
         <relationship>primary</relationship>
       </transmitter>
     </transmitter_metadata>

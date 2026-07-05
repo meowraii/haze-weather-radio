@@ -302,10 +302,10 @@
 
     <transmitter_metadata>
       <transmitter>
-        <site_name>Highvale</site_name>
-        <callsign>VBU829</callsign>
+        <site_name>Winnipeg</site_name>
+        <callsign>XLM538</callsign>
         <relationship>primary</relationship>
-        <frequency_mhz>162.475</frequency_mhz>
+        <frequency_mhz>162.550</frequency_mhz>
       </transmitter>
     </transmitter_metadata>
 

@@ -246,8 +246,8 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 			if sourceKind(region.Source) != "eccc" {
 				continue
 			}
-			forecastID := fallbackText(region.DeriveForecast, region.ID)
-			if strings.TrimSpace(forecastID) == "" {
+			forecastID := forecastRegionFetchID(region)
+			if forecastID == "" {
 				continue
 			}
 			raw := ecccCache[forecastID]
@@ -1879,9 +1879,12 @@ func feedReferencePoint(ctx context.Context, client *http.Client, feed feedXML, 
 		}
 	}
 	for _, region := range feed.Locations.Coverage.Regions {
-		forecastID := fallbackText(region.DeriveForecast, region.ID)
+		forecastID := forecastRegionFetchID(region)
+		if forecastID == "" {
+			continue
+		}
 		raw := ecccCache[forecastID]
-		if raw == nil && strings.TrimSpace(forecastID) != "" {
+		if raw == nil {
 			fetched, err := fetchECCCCitypage(ctx, client, forecastID)
 			if err != nil {
 				continue
@@ -1894,6 +1897,14 @@ func feedReferencePoint(ctx context.Context, client *http.Client, feed feedXML, 
 		}
 	}
 	return 0, 0, "", false
+}
+
+func forecastRegionFetchID(region coverageRegionXML) string {
+	forecastID := strings.TrimSpace(fallbackText(region.DeriveForecast, region.ID))
+	if forecastID == "" || strings.ContainsAny(forecastID, "*?") {
+		return ""
+	}
+	return forecastID
 }
 
 func configuredPoint(loc locationXML) (float64, float64, bool) {

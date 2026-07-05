@@ -1018,8 +1018,8 @@ async function saveCgen() {
 
 function defaultFeed() {
     return {
-        id: 'CAP-IT-ALL',
-        name: 'CAP-IT-ALL CGEN',
+        id: 'CFSP-CAP',
+        name: 'CFSP/CAP CGEN',
         enabled: true,
         mode: 'release',
         program_input_url: 'udp://239.0.0.1:9000?fifo_size=2000000&overrun_nonfatal=1&reuse=1&buffer_size=1048576',

@@ -124,6 +124,20 @@ func TestBuildECCCForecastIncludesIssueAndUpdateTimes(t *testing.T) {
 	}
 }
 
+func TestForecastRegionFetchIDSkipsWildcardCoverage(t *testing.T) {
+	region := coverageRegionXML{ID: "06*", Source: "eccc"}
+	if got := forecastRegionFetchID(region); got != "" {
+		t.Fatalf("forecast id = %q, want empty", got)
+	}
+}
+
+func TestForecastRegionFetchIDAllowsDerivedForecastForWildcardCoverage(t *testing.T) {
+	region := coverageRegionXML{ID: "06*", Source: "eccc", DeriveForecast: "sk-37"}
+	if got := forecastRegionFetchID(region); got != "sk-37" {
+		t.Fatalf("forecast id = %q, want sk-37", got)
+	}
+}
+
 func TestBuildTWCConditionsUsesWeatherComLocationName(t *testing.T) {
 	payload := buildTWCConditions(map[string]any{
 		"_twc_location_name": "Lake Lenore",
