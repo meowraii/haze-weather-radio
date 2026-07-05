@@ -114,6 +114,8 @@ pub(crate) fn gstreamer_catalog_json() -> Result<Value> {
         "formats": gstreamer_muxer_catalog(),
         "video_codecs": gstreamer_encoder_catalog(gst::ElementFactoryType::VIDEO_ENCODER, "video"),
         "audio_codecs": gstreamer_encoder_catalog(gst::ElementFactoryType::AUDIO_ENCODER, "audio"),
+        "video_decoders": gstreamer_decoder_catalog(),
+        "browser_sources": gstreamer_browser_source_catalog(),
         "gstreamer": {
             "source": "haze-cgen-registry",
             "runtime": "gstreamer-rs",
@@ -214,6 +216,72 @@ fn gstreamer_encoder_catalog(
         }));
     }
     sort_catalog_values(entries)
+}
+
+fn gstreamer_decoder_catalog() -> Vec<Value> {
+    let mut entries = Vec::new();
+    for factory in
+        gst::ElementFactory::factories_with_type(gst::ElementFactoryType::DECODER, gst::Rank::NONE)
+    {
+        let element = factory.name().to_string();
+        let lower = catalog_lower(
+            element.as_str(),
+            factory.longname(),
+            factory.klass(),
+            factory.description(),
+        );
+        if !lower.contains("video") && !looks_like_video_decoder(element.as_str(), lower.as_str()) {
+            continue;
+        }
+        let label = encoder_catalog_label(
+            element.as_str(),
+            factory.longname(),
+            factory.klass(),
+            factory.description(),
+        );
+        let source = factory
+            .plugin_name()
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| "gstreamer".to_string());
+        entries.push(json!({
+            "id": element,
+            "label": label,
+            "kind": "video",
+            "element": element,
+            "source": source,
+        }));
+    }
+    sort_catalog_values(entries)
+}
+
+fn gstreamer_browser_source_catalog() -> Vec<Value> {
+    if gst::ElementFactory::find("cefsrc").is_none() {
+        return Vec::new();
+    }
+    vec![json!({
+        "id": "cefsrc",
+        "label": "CEF browser source (cefsrc)",
+        "kind": "browser",
+        "element": "cefsrc",
+        "source": "gstreamer",
+    })]
+}
+
+fn looks_like_video_decoder(element: &str, lower: &str) -> bool {
+    element.starts_with("avdec_")
+        || element.starts_with("nv")
+        || element.starts_with("qsv")
+        || lower.contains("h.264")
+        || lower.contains("h264")
+        || lower.contains("avc")
+        || lower.contains("h.265")
+        || lower.contains("h265")
+        || lower.contains("hevc")
+        || lower.contains("mpeg-2")
+        || lower.contains("mpeg2")
+        || lower.contains("av1")
+        || lower.contains("vp9")
+        || lower.contains("vp8")
 }
 
 fn sort_catalog_values(mut entries: Vec<Value>) -> Vec<Value> {
@@ -2237,7 +2305,7 @@ struct PlannedAudioRendition {
 
 impl GstPipelinePlan {
     fn from_feed(feed: &FeedConfig) -> Result<Self> {
-        let source = InputSourceFragment::from_url(feed.program_input_url(), feed)?;
+        let source = InputSourceFragment::from_feed(feed)?;
         let sink = SinkFragment::from_url(feed.program_output_url(), feed)?;
         let mut videos = feed.enabled_video_renditions(feed.video.width, feed.video.height);
         let mut audios = feed.enabled_audio_renditions();
@@ -2651,18 +2719,73 @@ fn gst_element_name(prefix: &str, id: &str, index: usize) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InputSourceFragment {
     description: String,
-    pad_name: &'static str,
-    decode_chain: &'static str,
+    video_pad: &'static str,
+    audio_pad: &'static str,
+    video_decode_chain: String,
+    audio_decode_chain: String,
     required_elements: Vec<String>,
 }
 
 impl InputSourceFragment {
-    fn from_url(url: &str, _feed: &FeedConfig) -> Result<Self> {
+    fn from_feed(feed: &FeedConfig) -> Result<Self> {
+        if feed.program_input.is_browser_source() {
+            return Self::from_browser(feed);
+        }
+        Self::from_stream(feed)
+    }
+
+    fn from_browser(feed: &FeedConfig) -> Result<Self> {
+        let url = feed.program_input_url().trim();
+        if url.is_empty() {
+            bail!("gstreamer cgen browser input url is empty");
+        }
+        let (width, height) = feed
+            .program_input
+            .browser_size(feed.video.width, feed.video.height);
+        let fps = feed.program_input.browser_fps();
+        let fps_property = if fps == 0 {
+            String::new()
+        } else {
+            format!(",framerate={fps}/1")
+        };
+        Ok(Self {
+            description: format!(
+                "cefsrc url={} do-timestamp=true ! video/x-raw,width={},height={}{} ! cefdemux name=src",
+                gst_quote(url),
+                width,
+                height,
+                fps_property
+            ),
+            video_pad: "src.video",
+            audio_pad: "src.audio",
+            video_decode_chain: String::new(),
+            audio_decode_chain: String::new(),
+            required_elements: vec!["cefdemux".to_string(), "cefsrc".to_string()],
+        })
+    }
+
+    fn from_stream(feed: &FeedConfig) -> Result<Self> {
+        let url = feed.program_input_url();
         let url = url.trim();
         if url.is_empty() {
             bail!("gstreamer cgen input url is empty");
         }
+        let mut video_decode_chain = " ! parsebin ! decodebin".to_string();
+        let mut required_decoder = None;
+        if let Some(decoder) = feed.program_input.hardware_decoder() {
+            video_decode_chain = format!(" ! parsebin ! {decoder}");
+            required_decoder = Some(decoder.to_string());
+        }
         if let Some(endpoint) = UdpEndpoint::parse(url) {
+            let mut required_elements = vec![
+                "parsebin".to_string(),
+                "tsdemux".to_string(),
+                "udpsrc".to_string(),
+                "decodebin".to_string(),
+            ];
+            if let Some(decoder) = required_decoder {
+                required_elements.push(decoder);
+            }
             return Ok(Self {
                 description: format!(
                     "udpsrc address={} port={} auto-multicast=true reuse={} buffer-size={} retrieve-sender-address=false ! tsdemux name=src",
@@ -2671,20 +2794,19 @@ impl InputSourceFragment {
                     endpoint.reuse,
                     endpoint.buffer_size.unwrap_or(DEFAULT_UDP_BUFFER_BYTES)
                 ),
-                pad_name: "src",
-                decode_chain: " ! parsebin ! decodebin",
-                required_elements: vec![
-                    "decodebin".to_string(),
-                    "parsebin".to_string(),
-                    "tsdemux".to_string(),
-                    "udpsrc".to_string(),
-                ],
+                video_pad: "src.",
+                audio_pad: "src.",
+                video_decode_chain,
+                audio_decode_chain: " ! parsebin ! decodebin".to_string(),
+                required_elements,
             });
         }
         Ok(Self {
             description: format!("uridecodebin uri={} name=src", gst_quote(url)),
-            pad_name: "src",
-            decode_chain: "",
+            video_pad: "src.",
+            audio_pad: "src.",
+            video_decode_chain: String::new(),
+            audio_decode_chain: String::new(),
             required_elements: vec!["uridecodebin".to_string()],
         })
     }
@@ -2703,7 +2825,17 @@ impl InputSourceFragment {
         } else {
             " ! audio/x-raw"
         };
-        format!("{}.{}{}", self.pad_name, self.decode_chain, caps)
+        let decode_chain = if kind == "video" {
+            self.video_decode_chain.as_str()
+        } else {
+            self.audio_decode_chain.as_str()
+        };
+        let pad = if kind == "video" {
+            self.video_pad
+        } else {
+            self.audio_pad
+        };
+        format!("{pad}{decode_chain}{caps}")
     }
 }
 
@@ -2734,12 +2866,13 @@ impl SinkFragment {
             });
         }
         if url.to_ascii_lowercase().starts_with("rtmp://") {
+            let sink_element = rtmp_sink_element();
             return Ok(Self {
                 description: format!(
-                    "rtmpsink location={} sync=true async=false qos=true max-lateness={max_lateness_ns}",
+                    "{sink_element} location={} sync=true async=false qos=true max-lateness={max_lateness_ns}",
                     gst_quote(url)
                 ),
-                required_elements: vec!["rtmpsink".to_string()],
+                required_elements: vec![sink_element],
                 mux_kind: MuxKind::Flv,
             });
         }
@@ -2748,6 +2881,14 @@ impl SinkFragment {
             required_elements: vec!["filesink".to_string()],
             mux_kind: MuxKind::MpegTs,
         });
+    }
+}
+
+fn rtmp_sink_element() -> String {
+    if gst::ElementFactory::find("rtmp2sink").is_some() {
+        "rtmp2sink".to_string()
+    } else {
+        "rtmpsink".to_string()
     }
 }
 
@@ -3174,6 +3315,42 @@ mod tests {
         assert!(plan.required_elements.contains(&"avenc_ac3".to_string()));
         assert!(plan.required_elements.contains(&"videotestsrc".to_string()));
         assert!(plan.required_elements.contains(&"udpsink".to_string()));
+    }
+
+    #[test]
+    fn gstreamer_plan_uses_selected_stream_video_decoder() {
+        let mut feed = test_feed();
+        feed.program_input.hardware_decoder_enabled = "true".to_string();
+        feed.program_input.hardware_decoder = "nvh264dec".to_string();
+
+        let plan = GstPipelinePlan::from_feed(&feed).expect("plan");
+
+        assert!(plan
+            .description
+            .contains("src. ! parsebin ! nvh264dec ! video/x-raw"));
+        assert!(plan
+            .description
+            .contains("src. ! parsebin ! decodebin ! audio/x-raw"));
+        assert!(plan.required_elements.contains(&"nvh264dec".to_string()));
+    }
+
+    #[test]
+    fn gstreamer_plan_uses_cef_browser_source() {
+        let mut feed = test_feed();
+        feed.program_input.input_type = "browser".to_string();
+        feed.program_input.url = "http://127.0.0.1:6444/cgen/program".to_string();
+        feed.program_input.browser_auto_size = "false".to_string();
+        feed.program_input.browser_width = Some(1280);
+        feed.program_input.browser_height = Some(720);
+        feed.program_input.browser_fps = Some(60);
+
+        let plan = GstPipelinePlan::from_feed(&feed).expect("plan");
+
+        assert!(plan.description.contains(
+            "cefsrc url=\"http://127.0.0.1:6444/cgen/program\" do-timestamp=true ! video/x-raw,width=1280,height=720,framerate=60/1 ! cefdemux name=src"
+        ));
+        assert!(plan.required_elements.contains(&"cefsrc".to_string()));
+        assert!(plan.required_elements.contains(&"cefdemux".to_string()));
     }
 
     #[test]
@@ -4235,6 +4412,7 @@ mod tests {
                 acodec: "ac3".to_string(),
                 video_bitrate_kbps: Some(12_000),
                 audio_bitrate_kbps: Some(192),
+                ..Default::default()
             },
             program: Default::default(),
             priority: Default::default(),

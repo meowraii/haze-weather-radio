@@ -66,6 +66,8 @@ pub(crate) struct FeedConfig {
 pub(crate) struct EndpointConfig {
     #[serde(rename = "@url", default)]
     pub(crate) url: String,
+    #[serde(rename = "@type", default)]
+    pub(crate) input_type: String,
     #[serde(rename = "@format", default)]
     pub(crate) format: String,
     #[serde(rename = "@vcodec", default)]
@@ -76,17 +78,85 @@ pub(crate) struct EndpointConfig {
     pub(crate) video_bitrate_kbps: Option<u32>,
     #[serde(rename = "@audio_bitrate_kbps", default)]
     pub(crate) audio_bitrate_kbps: Option<u32>,
+    #[serde(rename = "@browser_auto_size", default)]
+    pub(crate) browser_auto_size: String,
+    #[serde(rename = "@browser_width", default)]
+    pub(crate) browser_width: Option<u32>,
+    #[serde(rename = "@browser_height", default)]
+    pub(crate) browser_height: Option<u32>,
+    #[serde(rename = "@browser_fps", default)]
+    pub(crate) browser_fps: Option<u32>,
+    #[serde(rename = "@hardware_decoder_enabled", default)]
+    pub(crate) hardware_decoder_enabled: String,
+    #[serde(rename = "@hardware_decoder", default)]
+    pub(crate) hardware_decoder: String,
 }
 
 impl EndpointConfig {
     fn has_values(&self) -> bool {
         !self.url.trim().is_empty()
+            || !self.input_type.trim().is_empty()
             || !self.format.trim().is_empty()
             || !self.vcodec.trim().is_empty()
             || !self.acodec.trim().is_empty()
             || self.video_bitrate_kbps.is_some()
             || self.audio_bitrate_kbps.is_some()
+            || !self.browser_auto_size.trim().is_empty()
+            || self.browser_width.is_some()
+            || self.browser_height.is_some()
+            || self.browser_fps.is_some()
+            || !self.hardware_decoder_enabled.trim().is_empty()
+            || !self.hardware_decoder.trim().is_empty()
     }
+
+    pub(crate) fn input_type(&self) -> &str {
+        match self.input_type.trim().to_ascii_lowercase().as_str() {
+            "browser" | "cef" | "browser_source" => "browser",
+            _ => "stream",
+        }
+    }
+
+    pub(crate) fn is_browser_source(&self) -> bool {
+        self.input_type() == "browser"
+    }
+
+    pub(crate) fn browser_auto_size(&self) -> bool {
+        xml_bool_text(&self.browser_auto_size, true)
+    }
+
+    pub(crate) fn browser_size(&self, fallback_width: u32, fallback_height: u32) -> (u32, u32) {
+        if self.browser_auto_size() {
+            return (fallback_width, fallback_height);
+        }
+        (
+            self.browser_width.unwrap_or(fallback_width).clamp(1, 7680),
+            self.browser_height
+                .unwrap_or(fallback_height)
+                .clamp(1, 4320),
+        )
+    }
+
+    pub(crate) fn browser_fps(&self) -> u32 {
+        match self.browser_fps.unwrap_or(60) {
+            0 => 0,
+            value => value.clamp(5, 120),
+        }
+    }
+
+    pub(crate) fn hardware_decoder(&self) -> Option<&str> {
+        if !xml_bool_text(&self.hardware_decoder_enabled, false) {
+            return None;
+        }
+        let decoder = self.hardware_decoder.trim();
+        if decoder.is_empty() || !decoder.chars().all(gst_element_char) {
+            return None;
+        }
+        Some(decoder)
+    }
+}
+
+fn gst_element_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

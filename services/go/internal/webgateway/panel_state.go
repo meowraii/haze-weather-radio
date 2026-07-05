@@ -857,7 +857,9 @@ func coverageRegionPayloads(feed feedXML, forecastNames map[string]string, clcNa
 func feedCoverageCodes(feed feedXML, clcNames map[string]string) map[string]struct{} {
 	codes := map[string]struct{}{}
 	for _, region := range feed.Locations.Coverage.Regions {
-		addCode(codes, region.ID)
+		for _, code := range expandedCoverageRegionIDs(region.ID, clcNames) {
+			addCode(codes, code)
+		}
 		for _, subregion := range expandedCoverageSubregionIDs(region, clcNames) {
 			addCode(codes, subregion)
 		}
@@ -871,7 +873,9 @@ func feedSameLocations(feed feedXML, clcNames map[string]string, nwsFIPSNames ma
 	}
 	codes := map[string]struct{}{}
 	for _, region := range feed.Locations.Coverage.Regions {
-		addCode(codes, region.ID)
+		for _, code := range expandedCoverageRegionIDs(region.ID, clcNames) {
+			addCode(codes, code)
+		}
 		for _, subregion := range expandedCoverageSubregionIDs(region, clcNames) {
 			addCode(codes, subregion)
 		}
@@ -920,6 +924,56 @@ func expandedCoverageSubregionIDs(region coverageRegionXML, clcNames map[string]
 		addCode(codes, subregion)
 	}
 	return sortedKeys(codes)
+}
+
+func expandedCoverageRegionIDs(raw string, clcNames map[string]string) []string {
+	if wildcardLocationPrefix(raw) != "" {
+		return alertWildcardCoverageIDs(raw, clcNames)
+	}
+	code := cleanLocationCode(raw)
+	if code == "" {
+		return nil
+	}
+	return []string{code}
+}
+
+func alertWildcardCoverageIDs(raw string, clcNames map[string]string) []string {
+	prefix := wildcardLocationPrefix(raw)
+	if prefix == "" {
+		return nil
+	}
+	out := []string{}
+	for candidate := range clcNames {
+		candidateCode := cleanLocationCode(candidate)
+		if candidateCode == "" {
+			continue
+		}
+		if strings.HasPrefix(candidateCode, prefix) {
+			out = append(out, candidateCode)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func wildcardLocationPrefix(raw string) string {
+	text := strings.ToUpper(strings.TrimSpace(raw))
+	star := strings.IndexRune(text, '*')
+	if star < 0 {
+		return ""
+	}
+	text = text[:star]
+	builder := strings.Builder{}
+	for _, r := range text {
+		if r >= '0' && r <= '9' {
+			builder.WriteRune(r)
+		}
+	}
+	prefix := builder.String()
+	if len(prefix) >= 1 && len(prefix) < 6 {
+		return prefix
+	}
+	return ""
 }
 
 func alertWildcardSubregions(raw string, clcNames map[string]string) []string {

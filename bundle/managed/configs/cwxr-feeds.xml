@@ -233,6 +233,69 @@
     </transmitter_metadata>
 
   </feed>
+
+  <feed id="cwxr-ab02" enabled="true" timezone="America/Edmonton">
+
+    <playout routine="true" same="true" same_originator="EAS"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="true">
+          <blocklist>
+            <severity>Minor</severity>
+            <severity>Unknown</severity>
+            <certainty>Unknown</certainty>
+            <certainty>Past</certainty>
+            <naads_event>fog</naads_event>
+            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
+          </blocklist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <languages>
+      <lang code="en-US" interval="0"/>
+      <lang code="fr-CA" interval="1"/>
+    </languages>
+
+    <description>
+      <lang code="en-US"
+            text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
+            suffix="We do not imply any association with Environment Canada."/>
+    </description>
+
+    <locations>
+      <coverage>
+        <region id="072100" source="eccc" derive_forecast="ab-29"/>
+      </coverage>
+
+      <observationLocations>
+        <location id="ab-29" source="eccc"/>
+        <location id="ab-39" source="eccc"/>
+        <location id="ab-5" source="eccc"/>
+      </observationLocations>
+
+      <airQualityLocations>
+        <location id="IAEJS" source="eccc"/>
+      </airQualityLocations>
+
+      <climateLocations>
+        <location id="VSAB29V" source="eccc"/>
+      </climateLocations>
+
+    </locations>
+
+    <transmitter_metadata>
+      <transmitter>
+        <site_name>Red Deer</site_name>
+        <callsign>VBC336</callsign>
+        <relationship>primary</relationship>
+        <frequency_mhz>162.550</frequency_mhz>
+      </transmitter>
+    </transmitter_metadata>
+
+  </feed>
   
   <feed id="cwxr-mb01" enabled="true" timezone="America/Winnipeg">
 
@@ -304,6 +367,75 @@
       <transmitter>
         <site_name>Winnipeg</site_name>
         <callsign>XLM538</callsign>
+        <relationship>primary</relationship>
+        <frequency_mhz>162.550</frequency_mhz>
+      </transmitter>
+    </transmitter_metadata>
+
+  </feed>
+
+  <feed id="cwxr-qc01" enabled="true" timezone="America/Toronto">
+
+    <playout routine="true" same="true" same_originator="EAS"/>
+
+    <alerts>
+      <cap_cp enabled="true">
+        <filter use_feed_locations="true">
+          <blocklist>
+            <severity>Minor</severity>
+            <severity>Unknown</severity>
+            <certainty>Unknown</certainty>
+            <certainty>Past</certainty>
+            <naads_event>fog</naads_event>
+            <other value_name="layer:EC-MSC-SMC:1.0:Alert_Type" value="advisory"/>
+          </blocklist>
+        </filter>
+      </cap_cp>
+      <nws_cap enabled="false"/>
+    </alerts>
+
+    <languages>
+      <lang code="en-US" interval="0"/>
+      <!-- <lang code="fr-CA" interval="0"/> -->
+    </languages>
+
+    <description>
+      <lang code="en-US"
+            text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
+            suffix="We do not imply any association with Environment Canada."/>
+    </description>
+
+    <locations>
+      <coverage>
+        <region id="032800" source="eccc" derive_forecast="qc-33"/>
+        <region id="034800" source="eccc" derive_forecast="qc-33"/>
+        <region id="032700" source="eccc" derive_forecast="qc-130"/>
+        <region id="037200" source="eccc" derive_forecast="qc-165"/>
+      </coverage>
+
+      <observationLocations>
+        <location id="qc-33" source="eccc"/>
+        <location id="qc-41" source="eccc"/>
+        <location id="qc-78" source="eccc"/>
+        <location id="qc-65" source="eccc"/>
+        <location id="qc-124" source="eccc"/>
+        <location id="qc-130" source="eccc"/>
+      </observationLocations>
+
+      <airQualityLocations>
+        <location id="EHTWR" source="eccc"/>
+      </airQualityLocations>
+
+      <climateLocations>
+        <location id="VSQC33V" source="eccc"/>
+      </climateLocations>
+
+    </locations>
+
+    <transmitter_metadata>
+      <transmitter>
+        <site_name>Québec City</site_name>
+        <callsign>XLM369</callsign>
         <relationship>primary</relationship>
         <frequency_mhz>162.550</frequency_mhz>
       </transmitter>

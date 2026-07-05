@@ -1100,6 +1100,35 @@ func TestAllLocationFeedSameLocationsIncludeNationalCanadaAndUS(t *testing.T) {
 	}
 }
 
+func TestWildcardCoverageFeedSameLocationsExpandCLCRegions(t *testing.T) {
+	clcNames := map[string]string{
+		"065522": "City of Saskatoon",
+		"075520": "City of Calgary",
+		"085500": "Brandon",
+	}
+	feed := feedXML{}
+	feed.Locations.Coverage.Regions = []coverageRegionXML{
+		{ID: "06*", Source: "eccc"},
+		{ID: "07*", Source: "eccc"},
+	}
+
+	codes := feedCoverageCodes(feed, clcNames)
+	if _, ok := codes["065522"]; !ok {
+		t.Fatalf("expected SK CLC in coverage codes: %#v", sortedKeys(codes))
+	}
+	if _, ok := codes["075520"]; !ok {
+		t.Fatalf("expected AB CLC in coverage codes: %#v", sortedKeys(codes))
+	}
+	if _, ok := codes["085500"]; ok {
+		t.Fatalf("unexpected MB CLC in coverage codes: %#v", sortedKeys(codes))
+	}
+
+	locations := feedSameLocations(feed, clcNames, nil)
+	if strings.Join(locations, ",") != "065522,075520" {
+		t.Fatalf("same locations = %#v", locations)
+	}
+}
+
 func TestPublicWebSocketSendsPublicState(t *testing.T) {
 	dir := t.TempDir()
 	writePublicFixture(t, dir, "public")

@@ -25,27 +25,35 @@ type cgenCatalogEntry struct {
 }
 
 type cgenCatalogBuilder struct {
-	formats map[string]cgenCatalogEntry
-	video   map[string]cgenCatalogEntry
-	audio   map[string]cgenCatalogEntry
+	formats       map[string]cgenCatalogEntry
+	video         map[string]cgenCatalogEntry
+	audio         map[string]cgenCatalogEntry
+	videoDecoders map[string]cgenCatalogEntry
+	browser       map[string]cgenCatalogEntry
 }
 
 type cgenRuntimeCatalog struct {
-	Formats     []cgenCatalogEntry `json:"formats"`
-	VideoCodecs []cgenCatalogEntry `json:"video_codecs"`
-	AudioCodecs []cgenCatalogEntry `json:"audio_codecs"`
+	Formats       []cgenCatalogEntry `json:"formats"`
+	VideoCodecs   []cgenCatalogEntry `json:"video_codecs"`
+	AudioCodecs   []cgenCatalogEntry `json:"audio_codecs"`
+	VideoDecoders []cgenCatalogEntry `json:"video_decoders"`
+	Browser       []cgenCatalogEntry `json:"browser_sources"`
 }
 
 func cgenCatalogPayload(configPath string) (map[string]any, error) {
 	builder := cgenCatalogBuilder{
-		formats: map[string]cgenCatalogEntry{},
-		video:   map[string]cgenCatalogEntry{},
-		audio:   map[string]cgenCatalogEntry{},
+		formats:       map[string]cgenCatalogEntry{},
+		video:         map[string]cgenCatalogEntry{},
+		audio:         map[string]cgenCatalogEntry{},
+		videoDecoders: map[string]cgenCatalogEntry{},
+		browser:       map[string]cgenCatalogEntry{},
 	}
 	runtimeCatalog, runtimeSource := loadCgenRuntimeCatalog(configPath)
 	builder.addCatalogEntries(builder.formats, runtimeCatalog.Formats)
 	builder.addCatalogEntries(builder.video, runtimeCatalog.VideoCodecs)
 	builder.addCatalogEntries(builder.audio, runtimeCatalog.AudioCodecs)
+	builder.addCatalogEntries(builder.videoDecoders, runtimeCatalog.VideoDecoders)
+	builder.addCatalogEntries(builder.browser, runtimeCatalog.Browser)
 	plugins := discoverGStreamerPlugins(configPath)
 	inspectPath := findGstInspect(configPath)
 	if inspectPath != "" {
@@ -54,10 +62,12 @@ func cgenCatalogPayload(configPath string) (map[string]any, error) {
 	builder.addPluginCatalog(plugins)
 	builder.addBaselineCatalog()
 	return map[string]any{
-		"formats":      builder.sorted(builder.formats),
-		"video_codecs": builder.sorted(builder.video),
-		"audio_codecs": builder.sorted(builder.audio),
-		"fonts":        discoverSystemFonts(),
+		"formats":         builder.sorted(builder.formats),
+		"video_codecs":    builder.sorted(builder.video),
+		"audio_codecs":    builder.sorted(builder.audio),
+		"video_decoders":  builder.sorted(builder.videoDecoders),
+		"browser_sources": builder.sorted(builder.browser),
+		"fonts":           discoverSystemFonts(),
 		"gstreamer": map[string]any{
 			"inspect":      inspectPath,
 			"plugin_count": len(plugins),
@@ -95,7 +105,7 @@ func loadCgenRuntimeCatalog(configPath string) (cgenRuntimeCatalog, string) {
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return cgenRuntimeCatalog{}, ""
 	}
-	if len(payload.Formats)+len(payload.VideoCodecs)+len(payload.AudioCodecs) == 0 {
+	if len(payload.Formats)+len(payload.VideoCodecs)+len(payload.AudioCodecs)+len(payload.VideoDecoders)+len(payload.Browser) == 0 {
 		return cgenRuntimeCatalog{}, ""
 	}
 	return payload, "haze-cgen-registry"
@@ -206,6 +216,34 @@ func (builder *cgenCatalogBuilder) addAudio(id string, label string, element str
 	})
 }
 
+func (builder *cgenCatalogBuilder) addVideoDecoder(id string, label string, element string, source string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	builder.videoDecoders[id] = mergeCgenCatalogEntry(builder.videoDecoders[id], cgenCatalogEntry{
+		ID:      id,
+		Label:   fallbackText(label, id),
+		Kind:    "video",
+		Element: element,
+		Source:  source,
+	})
+}
+
+func (builder *cgenCatalogBuilder) addBrowserSource(id string, label string, element string, source string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	builder.browser[id] = mergeCgenCatalogEntry(builder.browser[id], cgenCatalogEntry{
+		ID:      id,
+		Label:   fallbackText(label, id),
+		Kind:    "browser",
+		Element: element,
+		Source:  source,
+	})
+}
+
 func (builder *cgenCatalogBuilder) addCatalogEntries(target map[string]cgenCatalogEntry, entries []cgenCatalogEntry) {
 	for _, entry := range entries {
 		entry.ID = strings.TrimSpace(entry.ID)
@@ -290,6 +328,8 @@ func (builder *cgenCatalogBuilder) addBaselineCatalog() {
 	builder.addAudio("avenc_ac3", "AC-3 - libav (avenc_ac3)", "avenc_ac3", "baseline")
 	builder.addAudio("avenc_eac3", "E-AC-3 - libav (avenc_eac3)", "avenc_eac3", "baseline")
 	builder.addAudio("avenc_aac", "AAC - libav (avenc_aac)", "avenc_aac", "baseline")
+	builder.addVideoDecoder("avdec_h264", "H.264 / AVC - libav (avdec_h264)", "avdec_h264", "baseline")
+	builder.addVideoDecoder("avdec_mpeg2video", "MPEG-2 Video - libav (avdec_mpeg2video)", "avdec_mpeg2video", "baseline")
 }
 
 func (builder *cgenCatalogBuilder) addPluginCatalog(plugins map[string]bool) {
@@ -358,6 +398,9 @@ func (builder *cgenCatalogBuilder) addPluginCatalog(plugins map[string]bool) {
 		builder.addAudio("avenc_mp2", "MPEG Layer II Audio - libav (avenc_mp2)", "avenc_mp2", "libgstlibav")
 		builder.addAudio("avenc_mp3", "MP3 - libav (avenc_mp3)", "avenc_mp3", "libgstlibav")
 		builder.addAudio("avenc_flac", "FLAC - libav (avenc_flac)", "avenc_flac", "libgstlibav")
+		builder.addVideoDecoder("avdec_h264", "H.264 / AVC - libav (avdec_h264)", "avdec_h264", "libgstlibav")
+		builder.addVideoDecoder("avdec_hevc", "H.265 / HEVC - libav (avdec_hevc)", "avdec_hevc", "libgstlibav")
+		builder.addVideoDecoder("avdec_mpeg2video", "MPEG-2 Video - libav (avdec_mpeg2video)", "avdec_mpeg2video", "libgstlibav")
 	}
 	if plugins["x264"] {
 		builder.addVideo("x264enc", "H.264 / AVC - x264 software (x264enc)", "x264enc", "libgstx264")
@@ -394,6 +437,9 @@ func (builder *cgenCatalogBuilder) addPluginCatalog(plugins map[string]bool) {
 		builder.addVideo("nvh264enc", "H.264 / AVC - NVIDIA NVENC (nvh264enc)", "nvh264enc", "libgstnvcodec")
 		builder.addVideo("nvh265enc", "H.265 / HEVC - NVIDIA NVENC (nvh265enc)", "nvh265enc", "libgstnvcodec")
 		builder.addVideo("nvav1enc", "AV1 - NVIDIA NVENC (nvav1enc)", "nvav1enc", "libgstnvcodec")
+		builder.addVideoDecoder("nvh264dec", "H.264 / AVC - NVIDIA NVDEC (nvh264dec)", "nvh264dec", "libgstnvcodec")
+		builder.addVideoDecoder("nvh265dec", "H.265 / HEVC - NVIDIA NVDEC (nvh265dec)", "nvh265dec", "libgstnvcodec")
+		builder.addVideoDecoder("nvmpeg2videodec", "MPEG-2 Video - NVIDIA NVDEC (nvmpeg2videodec)", "nvmpeg2videodec", "libgstnvcodec")
 	}
 	if plugins["amfcodec"] {
 		builder.addVideo("amfh264enc", "H.264 / AVC - AMD AMF (amfh264enc)", "amfh264enc", "libgstamfcodec")
@@ -403,6 +449,12 @@ func (builder *cgenCatalogBuilder) addPluginCatalog(plugins map[string]bool) {
 		builder.addVideo("qsvh264enc", "H.264 / AVC - Intel Quick Sync (qsvh264enc)", "qsvh264enc", "libgstqsv")
 		builder.addVideo("qsvh265enc", "H.265 / HEVC - Intel Quick Sync (qsvh265enc)", "qsvh265enc", "libgstqsv")
 		builder.addVideo("qsvmpeg2enc", "MPEG-2 Video - Intel Quick Sync (qsvmpeg2enc)", "qsvmpeg2enc", "libgstqsv")
+		builder.addVideoDecoder("qsvh264dec", "H.264 / AVC - Intel Quick Sync (qsvh264dec)", "qsvh264dec", "libgstqsv")
+		builder.addVideoDecoder("qsvh265dec", "H.265 / HEVC - Intel Quick Sync (qsvh265dec)", "qsvh265dec", "libgstqsv")
+		builder.addVideoDecoder("qsvmpeg2dec", "MPEG-2 Video - Intel Quick Sync (qsvmpeg2dec)", "qsvmpeg2dec", "libgstqsv")
+	}
+	if plugins["cef"] {
+		builder.addBrowserSource("cefsrc", "CEF browser source (cefsrc)", "cefsrc", "libgstcef")
 	}
 
 	if plugins["faac"] || plugins["fdkaac"] {
@@ -473,6 +525,25 @@ func (builder *cgenCatalogBuilder) addGstFactory(element string, description str
 		builder.addFormat("flv", "FLV", "container", element)
 	}
 	if !isGstEncoderFactory(element, description) {
+		if element == "cefsrc" || strings.Contains(lower, "cef browser") {
+			builder.addBrowserSource(element, gstFactoryLabel("CEF browser source", element), element, "gst-inspect")
+		}
+		if isGstVideoDecoderFactory(element, description) {
+			switch {
+			case strings.Contains(lower, "h.264") || strings.Contains(lower, "h264") || strings.Contains(lower, "avc"):
+				builder.addVideoDecoder(element, gstFactoryLabel("H.264 / AVC", element), element, "gst-inspect")
+			case strings.Contains(lower, "h.265") || strings.Contains(lower, "h265") || strings.Contains(lower, "hevc"):
+				builder.addVideoDecoder(element, gstFactoryLabel("H.265 / HEVC", element), element, "gst-inspect")
+			case strings.Contains(lower, "mpeg-2") || strings.Contains(lower, "mpeg2"):
+				builder.addVideoDecoder(element, gstFactoryLabel("MPEG-2 Video", element), element, "gst-inspect")
+			case strings.Contains(lower, "av1"):
+				builder.addVideoDecoder(element, gstFactoryLabel("AV1", element), element, "gst-inspect")
+			case strings.Contains(lower, "vp9"):
+				builder.addVideoDecoder(element, gstFactoryLabel("VP9", element), element, "gst-inspect")
+			case strings.Contains(lower, "vp8"):
+				builder.addVideoDecoder(element, gstFactoryLabel("VP8", element), element, "gst-inspect")
+			}
+		}
 		return
 	}
 	switch {
@@ -535,7 +606,11 @@ func gstFactoryImplementation(element string) string {
 		return "AMD AMF"
 	case "nvh264enc", "nvh265enc", "nvav1enc":
 		return "NVIDIA NVENC"
+	case "nvh264dec", "nvh265dec", "nvav1dec", "nvmpeg2videodec":
+		return "NVIDIA NVDEC"
 	case "qsvh264enc", "qsvh265enc", "qsvmpeg2enc", "qsvav1enc":
+		return "Intel Quick Sync"
+	case "qsvh264dec", "qsvh265dec", "qsvmpeg2dec", "qsvav1dec":
 		return "Intel Quick Sync"
 	case "svtav1enc":
 		return "SVT-AV1"
@@ -555,6 +630,9 @@ func gstFactoryImplementation(element string) string {
 		return "TwoLAME"
 	default:
 		if strings.HasPrefix(strings.ToLower(element), "avenc_") {
+			return "libav"
+		}
+		if strings.HasPrefix(strings.ToLower(element), "avdec_") {
 			return "libav"
 		}
 		return ""
@@ -594,6 +672,23 @@ func isGstEncoderFactory(element string, description string) bool {
 		strings.HasPrefix(element, "amf") && strings.HasSuffix(element, "enc") ||
 		strings.HasSuffix(element, "enc") ||
 		strings.Contains(description, "encoder")
+}
+
+func isGstVideoDecoderFactory(element string, description string) bool {
+	element = strings.ToLower(strings.TrimSpace(element))
+	description = strings.ToLower(strings.TrimSpace(description))
+	if element == "" {
+		return false
+	}
+	if strings.Contains(description, "audio") {
+		return false
+	}
+	return strings.HasPrefix(element, "avdec_") ||
+		strings.HasPrefix(element, "nv") && strings.HasSuffix(element, "dec") ||
+		strings.HasPrefix(element, "qsv") && strings.HasSuffix(element, "dec") ||
+		strings.HasPrefix(element, "amf") && strings.HasSuffix(element, "dec") ||
+		strings.HasSuffix(element, "dec") && strings.Contains(description, "decoder") ||
+		strings.Contains(description, "video decoder")
 }
 
 func discoverGStreamerPlugins(configPath string) map[string]bool {

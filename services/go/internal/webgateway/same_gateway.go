@@ -314,6 +314,9 @@ func expandSameLocationsForFeeds(configPath string, feedIDs []string, locations 
 
 	clcNames := loadCLCNames(resolveConfigPath(configPath, "managed/csv/CLC_Base_Zone.csv"))
 	for _, location := range locations {
+		for _, coverageID := range alertWildcardCoverageIDs(location, clcNames) {
+			add(coverageID)
+		}
 		for _, subregion := range alertWildcardSubregions(location, clcNames) {
 			add(subregion)
 		}
@@ -341,18 +344,16 @@ func expandSameLocationsForFeeds(configPath string, feedIDs []string, locations 
 			continue
 		}
 		for _, region := range feed.Locations.Coverage.Regions {
-			parent := cleanLocationCode(region.ID)
-			if parent == "" {
-				continue
-			}
-			if _, ok := selected[parent]; !ok {
-				continue
-			}
-			for _, subregion := range alertWildcardSubregions(parent, clcNames) {
-				add(subregion)
-			}
-			for _, subregion := range region.Subregions {
-				add(subregion.ID)
+			for _, parent := range expandedCoverageRegionIDs(region.ID, clcNames) {
+				if _, ok := selected[parent]; !ok {
+					continue
+				}
+				for _, subregion := range alertWildcardSubregions(parent, clcNames) {
+					add(subregion)
+				}
+				for _, subregion := range region.Subregions {
+					add(subregion.ID)
+				}
 			}
 		}
 	}

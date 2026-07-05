@@ -57,9 +57,11 @@ func TestFontFamilyFromFilename(t *testing.T) {
 
 func TestCgenCatalogGstInspectClassification(t *testing.T) {
 	builder := cgenCatalogBuilder{
-		formats: map[string]cgenCatalogEntry{},
-		video:   map[string]cgenCatalogEntry{},
-		audio:   map[string]cgenCatalogEntry{},
+		formats:       map[string]cgenCatalogEntry{},
+		video:         map[string]cgenCatalogEntry{},
+		audio:         map[string]cgenCatalogEntry{},
+		videoDecoders: map[string]cgenCatalogEntry{},
+		browser:       map[string]cgenCatalogEntry{},
 	}
 
 	builder.addGstFactory("avdec_h265", "libav HEVC / H.265 decoder")
@@ -67,6 +69,9 @@ func TestCgenCatalogGstInspectClassification(t *testing.T) {
 
 	if _, ok := builder.video["avdec_h265"]; ok {
 		t.Fatalf("decoder factory should not be cataloged as an HEVC output encoder")
+	}
+	if _, ok := builder.videoDecoders["avdec_h265"]; !ok {
+		t.Fatalf("decoder factory should be cataloged as an HEVC input decoder: %#v", builder.videoDecoders)
 	}
 	if _, ok := builder.audio["avenc_eac3"]; !ok {
 		t.Fatalf("E-AC-3 encoder should be cataloged separately from AC-3: %#v", builder.audio)
