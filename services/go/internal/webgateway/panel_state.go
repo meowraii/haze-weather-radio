@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -1188,7 +1189,7 @@ func logsPayload(configPath string, request *http.Request) map[string]any {
 }
 
 func logLines(path string, limit int) []string {
-	raw, err := os.ReadFile(filepath.Clean(path))
+	raw, err := readLogTail(filepath.Clean(path), limit)
 	if err != nil {
 		return []string{}
 	}
@@ -1200,6 +1201,59 @@ func logLines(path string, limit int) []string {
 		lines = lines[len(lines)-limit:]
 	}
 	return lines
+}
+
+func readLogTail(path string, limit int) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() <= 0 {
+		return []byte{}, nil
+	}
+	readBytes := int64(256 * 1024)
+	if limit > 0 {
+		readBytes = int64(maxInt(32*1024, limit*2048))
+	}
+	if readBytes > info.Size() {
+		readBytes = info.Size()
+	}
+	if _, err := file.Seek(info.Size()-readBytes, io.SeekStart); err != nil {
+		return nil, err
+	}
+	raw := make([]byte, readBytes)
+	n, err := io.ReadFull(file, raw)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return nil, err
+	}
+	raw = raw[:n]
+	if info.Size() > readBytes {
+		if idx := bytesIndexByte(raw, '\n'); idx >= 0 && idx+1 < len(raw) {
+			raw = raw[idx+1:]
+		}
+	}
+	return raw, nil
+}
+
+func bytesIndexByte(raw []byte, needle byte) int {
+	for i, value := range raw {
+		if value == needle {
+			return i
+		}
+	}
+	return -1
+}
+
+func maxInt(left int, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func datapoolPayload(configPath string) map[string]any {
@@ -1282,7 +1336,7 @@ func adminURL(config Config, request *http.Request) string {
 		scheme = "https"
 	}
 	if config.Webpanel.Admin.Port > 0 {
-		return scheme + "://" + net.JoinHostPort(hostPart, strconv.Itoa(config.Webpanel.Admin.Port)) + "/admin"
+		return scheme + "://" + net.JoinHostPort(hostPart, strconv.Itoa(config.Webpanel.Admin.Port.Int())) + "/admin"
 	}
 	return "/admin"
 }

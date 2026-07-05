@@ -5,12 +5,36 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 )
 
 const mediaServiceWebRTCOfferTimeout = 1500 * time.Millisecond
+
+func clientIPForMediaRequest(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	for _, raw := range []string{
+		strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-For"), ",")[0]),
+		request.Header.Get("X-Real-IP"),
+		request.RemoteAddr,
+	} {
+		ip := strings.TrimSpace(raw)
+		if host, _, err := net.SplitHostPort(ip); err == nil {
+			ip = host
+		}
+		ip = strings.Trim(ip, "[]")
+		parsed := net.ParseIP(ip)
+		if parsed == nil || parsed.IsUnspecified() || parsed.IsLoopback() {
+			continue
+		}
+		return parsed.String()
+	}
+	return ""
+}
 
 func (s *Server) mediaServiceWebRTCAnswer(ctx context.Context, payload map[string]any) (map[string]any, bool) {
 	baseURL := mediaServiceBaseURL(s.config)

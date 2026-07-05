@@ -1,18 +1,1 @@
-<Webhooks>
-  <Webhook enabled="true" feed-id="sk-0001">
-    <EmbedAudio enabled="true" codec="libopus" />
-    <Username>Saskatoon WXR</Username>
-    <IconURL></IconURL>
-    <LogTestAlerts>true</LogTestAlerts>
-    <LogAdminAlerts>true</LogAdminAlerts>
-    <WebhookURL>${HAZE_DISCORD_WEBHOOK_SK0001}</WebhookURL>
-  </Webhook>
-  <Webhook enabled="true" feed-id="CAP-IT-ALL">
-    <EmbedAudio enabled="true" codec="libopus" />
-    <Username>CAP-IT-ALL</Username>
-    <IconURL></IconURL>
-    <LogTestAlerts>false</LogTestAlerts>
-    <LogAdminAlerts>true</LogAdminAlerts>
-    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CAP_IT_ALL}</WebhookURL>
-  </Webhook>
-</Webhooks>
+<Webhooks />

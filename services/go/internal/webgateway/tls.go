@@ -188,7 +188,7 @@ func httpChallengeAddress(config Config) string {
 	if port <= 0 {
 		port = defaultHTTPChallengePort
 	}
-	return net.JoinHostPort(host, strconv.Itoa(port))
+	return net.JoinHostPort(host, strconv.Itoa(port.Int()))
 }
 
 func redirectHTTPSHost(requestHost string, httpsAddr string) string {

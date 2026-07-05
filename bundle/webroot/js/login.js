@@ -1,6 +1,5 @@
 import { token } from './lib/api.js';
 import { initTheme } from './lib/theme.js';
-import { createControlClient } from './lib/ws-client.js';
 
 initTheme();
 
@@ -31,9 +30,13 @@ function destinationWithToken(path, sessionToken = token.get()) {
 }
 
 async function loadHealth() {
-    const client = createControlClient();
     try {
-        const health = await client.request('auth_check');
+        const response = await fetch('/api/v1/auth/check', {
+            credentials: 'same-origin',
+            cache: 'no-store',
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const health = await response.json();
         const siteName = health.site_name || 'Haze Weather Radio';
         const onAirName = health.on_air_name || siteName;
         const version = health.version || 'dev';
@@ -48,8 +51,6 @@ async function loadHealth() {
     } catch {
         loginTitle.textContent = 'Haze Weather Radio';
         loginSubtitle.textContent = 'Haze Weather Radio';
-    } finally {
-        client.close();
     }
 }
 
@@ -64,13 +65,12 @@ async function signIn(event) {
     }
     loginInFlight = true;
     button.disabled = true;
-    setStatus('Opening authentication websocket...', 'pending');
-    const client = createControlClient();
+    setStatus('Opening secure sign in...', 'pending');
     try {
         setStatus('Authenticating...', 'pending');
-        const payload = await client.request('login', { password: passwordInput.value }, 8000);
+        const payload = await loginWithHTTP(passwordInput.value);
         if (payload.type !== 'auth_ok') {
-            throw new Error(payload.detail || 'Incorrect password or unavailable websocket.');
+            throw new Error(payload.detail || 'Incorrect password or unavailable sign in service.');
         }
         passwordInput.value = '';
         setStatus('Signed in. Opening panel...', 'ok');
@@ -79,9 +79,40 @@ async function signIn(event) {
         setStatus(error.message || 'Unable to sign in.', 'err');
         passwordInput.select();
     } finally {
-        client.close();
         loginInFlight = false;
         button.disabled = false;
+    }
+}
+
+async function loginWithHTTP(password) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 8000);
+    try {
+        const response = await fetch('/api/v1/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            cache: 'no-store',
+            body: JSON.stringify({ password }),
+            signal: controller.signal,
+        });
+        let payload = {};
+        try {
+            payload = await response.json();
+        } catch {
+            payload = {};
+        }
+        if (!response.ok) {
+            throw new Error(payload.detail || `Sign in failed with HTTP ${response.status}.`);
+        }
+        return payload;
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            throw new Error('Sign in timed out.');
+        }
+        throw error;
+    } finally {
+        window.clearTimeout(timer);
     }
 }
 

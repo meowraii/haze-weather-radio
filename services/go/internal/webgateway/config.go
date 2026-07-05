@@ -3,6 +3,8 @@ package webgateway
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 	"gopkg.in/yaml.v3"
@@ -13,14 +15,13 @@ type Config struct {
 	Version  string                  `yaml:"version"`
 	Storage  datastore.StorageConfig `yaml:"storage"`
 	Webpanel struct {
-		Host         string   `yaml:"host"`
-		Port         int      `yaml:"port"`
-		AllowedHosts []string `yaml:"allowed_hosts"`
-		PublicPort   struct {
-			Enabled   bool   `yaml:"enabled"`
-			Host      string `yaml:"host"`
-			HTTPPort  int    `yaml:"http_port"`
-			HTTPSPort int    `yaml:"https_port"`
+		Host       string   `yaml:"host"`
+		Port       yamlPort `yaml:"port"`
+		PublicPort struct {
+			Enabled   bool     `yaml:"enabled"`
+			Host      string   `yaml:"host"`
+			HTTPPort  yamlPort `yaml:"http_port"`
+			HTTPSPort yamlPort `yaml:"https_port"`
 		} `yaml:"public_port"`
 		Public struct {
 			SiteName      string `yaml:"site_name"`
@@ -35,8 +36,8 @@ type Config struct {
 			} `yaml:"feeds"`
 		} `yaml:"public"`
 		Admin struct {
-			Host string `yaml:"host"`
-			Port int    `yaml:"port"`
+			Host string   `yaml:"host"`
+			Port yamlPort `yaml:"port"`
 		} `yaml:"admin"`
 		TLS struct {
 			Enabled       bool     `yaml:"enabled"`
@@ -50,10 +51,10 @@ type Config struct {
 			HSTS          bool     `yaml:"hsts"`
 			Staging       bool     `yaml:"staging"`
 			HTTPChallenge struct {
-				Enabled *bool  `yaml:"enabled"`
-				Addr    string `yaml:"addr"`
-				Host    string `yaml:"host"`
-				Port    int    `yaml:"port"`
+				Enabled *bool    `yaml:"enabled"`
+				Addr    string   `yaml:"addr"`
+				Host    string   `yaml:"host"`
+				Port    yamlPort `yaml:"port"`
 			} `yaml:"http_challenge"`
 		} `yaml:"tls"`
 		Receiver struct {
@@ -97,6 +98,29 @@ type Config struct {
 			} `yaml:"media"`
 		} `yaml:"rust"`
 	} `yaml:"services"`
+}
+
+type yamlPort int
+
+func (p *yamlPort) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.ScalarNode {
+		return nil
+	}
+	raw := strings.TrimSpace(value.Value)
+	if raw == "" {
+		*p = 0
+		return nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return err
+	}
+	*p = yamlPort(port)
+	return nil
+}
+
+func (p yamlPort) Int() int {
+	return int(p)
 }
 
 // LoadConfig reads a Haze YAML config. Missing files produce a default config.

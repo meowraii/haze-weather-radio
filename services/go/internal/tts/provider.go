@@ -3,6 +3,7 @@ package tts
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // AudioFormat describes the synthesized audio payload.
@@ -47,6 +48,11 @@ type Provider interface {
 	ID() string
 	ListVoices(ctx context.Context) ([]Voice, error)
 	Synthesize(ctx context.Context, req Request) (Audio, error)
+}
+
+// RuntimePruner is implemented by providers that can release idle native model state.
+type RuntimePruner interface {
+	PruneIdleRuntime(maxIdle time.Duration) int
 }
 
 var ErrProviderUnavailable = errors.New("tts provider unavailable")

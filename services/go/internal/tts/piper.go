@@ -38,7 +38,7 @@ type PiperProvider struct {
 	voiceIndexCached piperVoiceIndex
 	voiceIndexErr    error
 	resolvedVoices   map[string]resolvedPiperVoice
-	nativeEngines    map[string]piperNativeEngine
+	nativeEngines    map[string]piperNativeEngineEntry
 }
 
 // PiperRuntimeOptions keeps legacy daemon settings compatible. Piper synthesis is native-only.
@@ -59,6 +59,11 @@ type resolvedPiperVoice struct {
 type piperNativeEngine interface {
 	Synthesize(context.Context, Request) (Audio, error)
 	Close()
+}
+
+type piperNativeEngineEntry struct {
+	engine   piperNativeEngine
+	lastUsed time.Time
 }
 
 type piperVoiceConfig struct {
@@ -118,7 +123,7 @@ func NewPiperProvider(executable string, voicesDir string) *PiperProvider {
 		HTTPClient:     defaultPiperHTTPClient(),
 		prewarm:        true,
 		resolvedVoices: map[string]resolvedPiperVoice{},
-		nativeEngines:  map[string]piperNativeEngine{},
+		nativeEngines:  map[string]piperNativeEngineEntry{},
 	}
 }
 
@@ -195,6 +200,29 @@ func (p *PiperProvider) Synthesize(ctx context.Context, req Request) (Audio, err
 	}
 	voice := resolvedPiperVoice{ID: cleanPiperVoiceID(req.VoiceID), ModelPath: modelPath, ConfigPath: configPath}
 	return p.synthesizeWithNative(ctx, voice, req)
+}
+
+// PruneIdleRuntime closes native Piper voice engines that have not been used recently.
+func (p *PiperProvider) PruneIdleRuntime(maxIdle time.Duration) int {
+	if maxIdle <= 0 {
+		return 0
+	}
+	cutoff := time.Now().Add(-maxIdle)
+	var stale []piperNativeEngine
+	p.runtimeMu.Lock()
+	for key, entry := range p.nativeEngines {
+		if entry.engine == nil || entry.lastUsed.Before(cutoff) {
+			delete(p.nativeEngines, key)
+			if entry.engine != nil {
+				stale = append(stale, entry.engine)
+			}
+		}
+	}
+	p.runtimeMu.Unlock()
+	for _, engine := range stale {
+		engine.Close()
+	}
+	return len(stale)
 }
 
 func loadPiperVoiceConfig(configPath string) (piperVoiceConfig, error) {

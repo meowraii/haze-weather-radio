@@ -34,7 +34,7 @@ pub(crate) async fn run_supervised(
     state_rx: watch::Receiver<RuntimeState>,
     mut shutdown_rx: watch::Receiver<bool>,
     base_dir: PathBuf,
-    status_tx: Option<mpsc::UnboundedSender<Value>>,
+    status_tx: Option<mpsc::Sender<Value>>,
 ) -> Result<()> {
     configure_portable_gstreamer_paths();
     gst::init().context("failed to initialize GStreamer")?;
@@ -343,7 +343,7 @@ fn run_pipeline_once(
     mut state_rx: watch::Receiver<RuntimeState>,
     mut shutdown_rx: watch::Receiver<bool>,
     base_dir: PathBuf,
-    status_tx: Option<mpsc::UnboundedSender<Value>>,
+    status_tx: Option<mpsc::Sender<Value>>,
 ) -> Result<()> {
     let plan = GstPipelinePlan::from_feed(&feed)?;
     info!(
@@ -2084,7 +2084,7 @@ fn pcm_duration(sample_rate: u32, channels: u16, bytes: usize) -> gst::ClockTime
 }
 
 fn publish_status(
-    status_tx: &Option<mpsc::UnboundedSender<Value>>,
+    status_tx: &Option<mpsc::Sender<Value>>,
     feed: &FeedConfig,
     state_rx: &watch::Receiver<RuntimeState>,
     no_signal: bool,
@@ -2101,7 +2101,7 @@ fn publish_status(
     }
     crate::config::redact_feed_endpoint_status(feed, &mut data);
     if let Some(tx) = status_tx {
-        let _ = tx.send(data);
+        let _ = tx.try_send(data);
     }
 }
 
@@ -2561,14 +2561,19 @@ fn queue_time_ns(feed: &FeedConfig) -> u64 {
     u64::from(feed.sync.source_buffer_ms.clamp(40, 5_000)) * 1_000_000
 }
 
+const GST_QUEUE_MAX_BUFFERS: u32 = 16;
+const GST_QUEUE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 fn queue_fragment(feed: &FeedConfig, leak: QueueLeak) -> String {
     let leaky = match leak {
         QueueLeak::None => "",
         QueueLeak::Downstream => " leaky=downstream",
     };
     format!(
-        "queue max-size-time={} max-size-buffers=0 max-size-bytes=0 flush-on-eos=true{leaky}",
-        queue_time_ns(feed)
+        "queue max-size-time={} max-size-buffers={} max-size-bytes={} flush-on-eos=true{leaky}",
+        queue_time_ns(feed),
+        GST_QUEUE_MAX_BUFFERS,
+        GST_QUEUE_MAX_BYTES
     )
 }
 
@@ -3127,7 +3132,7 @@ mod tests {
         assert!(plan.description.contains("video_tee."));
         assert!(plan.description.contains("audio_tee."));
         assert!(plan.description.contains(
-            "audio_tee. ! queue max-size-time=240000000 max-size-buffers=0 max-size-bytes=0 flush-on-eos=true leaky=downstream ! audioconvert"
+            "audio_tee. ! queue max-size-time=240000000 max-size-buffers=16 max-size-bytes=67108864 flush-on-eos=true leaky=downstream ! audioconvert"
         ));
         assert!(plan.description.contains("mux.sink_256"));
         assert!(plan.description.contains("mux.sink_257"));
@@ -3180,7 +3185,7 @@ mod tests {
 
         assert!(plan.description.contains("max-size-time=640000000"));
         assert!(plan.description.contains(
-            "src. ! parsebin ! decodebin ! audio/x-raw ! queue max-size-time=640000000 max-size-buffers=0 max-size-bytes=0 flush-on-eos=true leaky=downstream ! audioconvert"
+            "src. ! parsebin ! decodebin ! audio/x-raw ! queue max-size-time=640000000 max-size-buffers=16 max-size-bytes=67108864 flush-on-eos=true leaky=downstream ! audioconvert"
         ));
         assert!(plan.description.contains("latency=320000000"));
         assert!(plan.description.contains("max-bytes=368640"));
@@ -4166,7 +4171,7 @@ mod tests {
         feed.standby.mode = "banner".to_string();
         feed.standby.text = "Standby Details Channel".to_string();
         let (_state_tx, state_rx) = watch::channel(RuntimeState::default());
-        let (status_tx, mut status_rx) = mpsc::unbounded_channel();
+        let (status_tx, mut status_rx) = mpsc::channel(1);
 
         publish_status(
             &Some(status_tx),

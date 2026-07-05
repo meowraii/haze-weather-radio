@@ -60,15 +60,17 @@ pub(crate) struct PriorityAudio {
 
 impl RuntimeState {
     pub(crate) fn apply_event(&mut self, event: &Value) -> bool {
+        let mut changed = self.prune_inactive_priority_audio(Utc::now());
         let event_type = text_at(event, &["type"]);
-        match event_type.as_str() {
+        changed |= match event_type.as_str() {
             "banner.state.updated" => self.apply_banner_state(event),
             "alert.playout.started" => self.apply_priority_audio(event),
             "cgen.control" => self.apply_cgen_control(event),
             "cap.alert.audio.ready" => false,
             "alert.playout.completed" | "playout.interrupted" => self.clear_priority_audio(event),
             _ => false,
-        }
+        };
+        changed
     }
 
     pub(crate) fn control_for(&self, feed_id: &str) -> Option<&CgenControlOverride> {
@@ -244,6 +246,12 @@ impl RuntimeState {
             changed |= self.active_audio.remove("*").is_some();
         }
         changed
+    }
+
+    fn prune_inactive_priority_audio(&mut self, now: DateTime<Utc>) -> bool {
+        let before = self.active_audio.len();
+        self.active_audio.retain(|_, audio| audio.is_active_at(now));
+        self.active_audio.len() != before
     }
 }
 
@@ -483,6 +491,31 @@ mod tests {
             "data": {"queue_id": "alert-1"}
         })));
         assert!(state.priority_audio_for("sk-0001").is_none());
+    }
+
+    #[test]
+    fn inactive_priority_audio_is_pruned_on_next_event() {
+        let mut state = RuntimeState::default();
+        assert!(state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["sk-0001"],
+            "queue_id": "alert-1",
+            "data": {
+                "queue_id": "alert-1",
+                "duration_ms": 1,
+                "alert_packet": {"large": "payload"}
+            }
+        })));
+        state
+            .active_audio
+            .get_mut("sk-0001")
+            .expect("active audio")
+            .started_at =
+            Utc::now() - chrono::Duration::milliseconds(PRIORITY_AUDIO_EXPIRE_GRACE_MS + 100);
+
+        assert!(state.apply_event(&json!({"type": "cap.alert.audio.ready"})));
+
+        assert!(state.active_audio.is_empty());
     }
 
     #[test]

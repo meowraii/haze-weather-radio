@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::env;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::IpAddr;
 #[cfg(feature = "gstreamer-backend")]
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket as StdUdpSocket};
@@ -38,29 +39,36 @@ const CHANNELS: u16 = 1;
 const FRAME_DURATION: Duration = Duration::from_millis(20);
 const FRAME_SAMPLES: usize = SAMPLE_RATE as usize / 50;
 const FRAME_BYTES: usize = FRAME_SAMPLES * CHANNELS as usize * 2;
-const INPUT_QUEUE_CAPACITY: usize = 32;
+const INPUT_QUEUE_CAPACITY: usize = 64;
 const PACED_FRAME_CAPACITY: usize = 64;
-const TARGET_SOURCE_QUEUE_MS: u64 = 600;
-const SOFT_SOURCE_QUEUE_MS: u64 = 1_500;
-const MAX_SOURCE_QUEUE_MS: u64 = 5_000;
+const TARGET_SOURCE_QUEUE_MS: u64 = 240;
+const SOFT_SOURCE_QUEUE_MS: u64 = 1_000;
+const MAX_SOURCE_QUEUE_MS: u64 = 3_000;
 const SOURCE_DRIFT_TRIM_MS: u64 = 0;
 const FEED_CLOCK_REBASE_LAG_MS: u64 = 80;
 const CONCEALMENT_FRAMES: u8 = 3;
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 const HTTP_HEADER_LIMIT: usize = 16 * 1024;
 const HTTP_BODY_LIMIT: usize = 512 * 1024;
+const MEDIA_BRIDGE_LINE_LIMIT: usize = 256 * 1024;
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
 const STR0M_WEBRTC_UDP_BUFFER: usize = 2_048;
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
-const STR0M_WEBRTC_ENCODED_QUEUE_CAPACITY: usize = 12;
+const STR0M_WEBRTC_ENCODED_QUEUE_CAPACITY: usize = 16;
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
 const STR0M_WEBRTC_PEER_PREROLL_FRAMES: usize = 3;
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
-const STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES: usize = 12;
+const STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES: usize = 16;
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
-const STR0M_WEBRTC_PEER_DRAIN_LIMIT: usize = 32;
+const STR0M_WEBRTC_PEER_DRAIN_LIMIT: usize = 16;
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
 const ENCODED_HTTP_QUEUE_CAPACITY: usize = 64;
+#[cfg(feature = "gstreamer-backend")]
+const ICECAST_RETRY_BASE: Duration = Duration::from_secs(5);
+#[cfg(feature = "gstreamer-backend")]
+const ICECAST_RESPONSE_LIMIT: usize = 16 * 1024;
+#[cfg(feature = "gstreamer-backend")]
+const ICECAST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RAW_HTTP_LAG_RESYNC_SILENCE_FRAMES: u64 = 1;
 const WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 const WEBRTC_CONNECTED_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -210,11 +218,40 @@ struct OutputFeedXml {
 struct OutputNodeXml {
     #[serde(rename = "@enabled", default)]
     enabled: Option<String>,
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    mount: String,
+    #[serde(default)]
+    ssl: String,
+    #[serde(default)]
+    format: String,
+    #[serde(default)]
+    acodec: String,
+    #[serde(default)]
+    bitrate_kbps: String,
 }
 
 impl OutputNodeXml {
     fn is_enabled(&self) -> bool {
         xml_bool(self.enabled.as_deref(), false)
+    }
+
+    fn portable_bitrate_kbps(&self) -> u32 {
+        self.bitrate_kbps
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|value| *value > 0)
+            .unwrap_or(64)
     }
 }
 
@@ -224,7 +261,24 @@ struct OutputFeed {
     webrtc: bool,
     http: bool,
     external: bool,
+    icecast: bool,
+    icecast_mount: Option<String>,
+    #[serde(skip)]
+    icecast_config: Option<IcecastOutput>,
     webrtc_ready: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct IcecastOutput {
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    mount: String,
+    ssl: bool,
+    format: String,
+    acodec: String,
+    bitrate_kbps: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -400,7 +454,7 @@ struct FeedRuntime {
 }
 
 impl FeedRuntime {
-    fn new(feed_id: String) -> Arc<Self> {
+    fn new(feed_id: String, output: Option<OutputFeed>, gstreamer_available: bool) -> Arc<Self> {
         let (input_tx, input_rx) = mpsc::channel(INPUT_QUEUE_CAPACITY);
         let (frame_tx, _) = broadcast::channel(PACED_FRAME_CAPACITY);
         let stats = Arc::new(Mutex::new(FeedStats {
@@ -414,6 +468,9 @@ impl FeedRuntime {
             stats,
         });
         start_feed_clock_thread(Arc::clone(&runtime), input_rx);
+        if let Some(icecast) = output.and_then(|output| output.icecast_config) {
+            start_icecast_output(Arc::clone(&runtime), icecast, gstreamer_available);
+        }
         runtime
     }
 
@@ -610,22 +667,28 @@ impl MediaState {
         }
     }
 
-    fn feed(&self, feed_id: &str) -> Arc<FeedRuntime> {
+    fn feed(&self, feed_id: &str) -> Option<Arc<FeedRuntime>> {
         let feed_id = feed_id.trim().to_string();
+        if !self.configured_outputs.contains_key(&feed_id) {
+            return None;
+        }
         let mut feeds = self.feeds.lock().expect("feed registry poisoned");
         if let Some(feed) = feeds.get(&feed_id) {
-            return Arc::clone(feed);
+            return Some(Arc::clone(feed));
         }
-        let runtime = FeedRuntime::new(feed_id.clone());
+        let output = self.configured_outputs.get(&feed_id).cloned();
+        let runtime = FeedRuntime::new(feed_id.clone(), output, self.gstreamer_available);
         feeds.insert(feed_id, Arc::clone(&runtime));
-        runtime
+        Some(runtime)
     }
 
     fn publish_pcm(&self, chunk: PcmChunk) {
         if chunk.feed_id.trim().is_empty() || chunk.data.is_empty() {
             return;
         }
-        self.feed(&chunk.feed_id).push(chunk);
+        if let Some(feed) = self.feed(&chunk.feed_id) {
+            feed.push(chunk);
+        }
     }
 
     fn snapshots(&self) -> Vec<FeedStats> {
@@ -1498,16 +1561,22 @@ async fn run_pcm_bridge_connection(stream: TcpStream, state: &MediaState) -> Res
     )
     .await?;
 
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
+    let mut line = Vec::with_capacity(16 * 1024);
     loop {
-        let Some(line) = lines
-            .next_line()
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
             .await
-            .context("failed to read host media bridge line")?
-        else {
+            .context("failed to read host media bridge line")?;
+        if read == 0 {
             bail!("host media bridge closed");
-        };
-        if let Some(chunk) = decode_pcm_event(line.as_bytes()) {
+        }
+        if line.len() > MEDIA_BRIDGE_LINE_LIMIT {
+            warn!(bytes = line.len(), "dropping oversized media bridge event");
+            continue;
+        }
+        if let Some(chunk) = decode_pcm_event(&line) {
             state.publish_pcm(chunk);
         }
     }
@@ -1597,7 +1666,7 @@ fn decode_pcm_event(raw: &[u8]) -> Option<PcmChunk> {
     if feed_id.is_empty() || event.data.pcm.trim().is_empty() {
         return None;
     }
-    let data = base64::engine::general_purpose::STANDARD
+    let mut data = base64::engine::general_purpose::STANDARD
         .decode(event.data.pcm.trim())
         .ok()?;
     let sample_rate = event.data.sample_rate.max(8_000);
@@ -1607,11 +1676,12 @@ fn decode_pcm_event(raw: &[u8]) -> Option<PcmChunk> {
         return None;
     }
     let aligned = data.len() - data.len() % frame_bytes;
+    data.truncate(aligned);
     Some(PcmChunk {
         feed_id,
         sample_rate,
         channels,
-        data: data[..aligned].to_vec(),
+        data,
         bypass_loudness: event.data.bypass_loudness || event.data.audio_processing.bypass_loudness,
     })
 }
@@ -1738,7 +1808,10 @@ async fn stream_feed_audio(
     codec: &str,
 ) -> Result<()> {
     let format = HttpAudioFormat::parse(codec);
-    let feed = state.feed(feed_id);
+    let Some(feed) = state.feed(feed_id) else {
+        write_text_response(stream, 404, "feed is not configured\n").await?;
+        return Ok(());
+    };
     let client = state.register_http_client(feed_id, format.id);
     let client_id = client.id();
     match format.kind {
@@ -1774,6 +1847,10 @@ struct WebRTCOfferRequest {
     require_opus: bool,
     #[serde(default)]
     disable_g722: bool,
+    #[serde(default)]
+    client_ip: String,
+    #[serde(default)]
+    remote_addr: String,
 }
 
 async fn handle_webrtc_offer(
@@ -1841,13 +1918,17 @@ async fn handle_webrtc_offer(
         return Ok(());
     };
 
-    let feed = state.feed(&feed_id);
+    let Some(feed) = state.feed(&feed_id) else {
+        write_json_response(stream, 404, json!({"error": "feed is not configured"})).await?;
+        return Ok(());
+    };
     let media_recent = feed
         .snapshot()
         .last_input_age_ms
         .map(|age| age <= 5_000)
         .unwrap_or(false);
-    let request_peer_ip = stream.peer_addr().ok().map(|addr| addr.ip());
+    let request_peer_ip = parse_webrtc_request_peer_ip(&payload)
+        .or_else(|| stream.peer_addr().ok().map(|addr| addr.ip()));
     let setup = build_str0m_webrtc_peer(&offer_sdp, selection, request_peer_ip).await;
     let peer = match setup {
         Ok(peer) => peer,
@@ -2023,8 +2104,40 @@ fn detect_webrtc_candidate_ip_inner(
 }
 
 #[cfg(feature = "gstreamer-backend")]
+fn parse_webrtc_request_peer_ip(payload: &WebRTCOfferRequest) -> Option<IpAddr> {
+    parse_ip_hint(&payload.client_ip).or_else(|| parse_ip_hint(&payload.remote_addr))
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn parse_ip_hint(raw: &str) -> Option<IpAddr> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(addr) = value.parse::<SocketAddr>() {
+        let ip = addr.ip();
+        if !ip.is_unspecified() && !ip.is_loopback() {
+            return Some(ip);
+        }
+        return None;
+    }
+    let value = value.trim_matches(['[', ']']);
+    let Ok(ip) = value.parse::<IpAddr>() else {
+        return None;
+    };
+    if ip.is_unspecified() || ip.is_loopback() {
+        return None;
+    }
+    Some(ip)
+}
+
+#[cfg(feature = "gstreamer-backend")]
 fn parse_webrtc_host_override(name: &'static str, raw: &str) -> Option<IpAddr> {
-    match raw.trim().parse::<IpAddr>() {
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    match value.parse::<IpAddr>() {
         Ok(IpAddr::V4(ip)) if ip.is_unspecified() => {
             warn!("{name} is unspecified; ignoring WebRTC host override");
             None
@@ -2144,9 +2257,9 @@ fn build_gstreamer_webrtc_encoder(
 
 #[cfg(feature = "gstreamer-backend")]
 fn gstreamer_webrtc_encoder_pipeline(selection: WebRTCCodecSelection) -> Result<String> {
-    let source = "appsrc name=src is-live=true block=true do-timestamp=false max-bytes=96000 format=time stream-type=stream \
+    let source = "appsrc name=src is-live=true block=true do-timestamp=false max-bytes=19200 format=time stream-type=stream \
          caps=audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=1 \
-         ! queue max-size-time=800000000 max-size-buffers=50 max-size-bytes=0 \
+         ! queue max-size-time=200000000 max-size-buffers=10 max-size-bytes=0 leaky=downstream \
          ! audioconvert ! audioresample quality=4";
     let pipeline = match selection.codec {
         WebRTCAudioCodec::Opus => format!(
@@ -2172,16 +2285,8 @@ fn gstreamer_webrtc_encoder_pipeline(selection: WebRTCCodecSelection) -> Result<
 }
 
 #[cfg(feature = "gstreamer-backend")]
-fn next_gst_audio_pts(
-    next_pts_ns: &mut Option<u64>,
-    running_time_ns: Option<u64>,
-    frame_duration_ns: u64,
-) -> u64 {
-    let pts_ns = next_pts_ns.unwrap_or_else(|| {
-        running_time_ns
-            .map(|time| time.saturating_add(frame_duration_ns))
-            .unwrap_or(frame_duration_ns)
-    });
+fn next_gst_audio_pts(next_pts_ns: &mut Option<u64>, frame_duration_ns: u64) -> u64 {
+    let pts_ns = next_pts_ns.unwrap_or(0);
     *next_pts_ns = Some(pts_ns.saturating_add(frame_duration_ns));
     pts_ns
 }
@@ -2241,12 +2346,11 @@ fn start_webrtc_peer_feeder(
             }
         };
         let encoder_appsrc = encoder.appsrc.clone();
-        let encoder_pipeline = encoder.pipeline.clone();
         let feed_state = state.clone();
         let mut rx = feed.subscribe();
         let feed_task = tokio::spawn(async move {
             let mut ticker = interval(FRAME_DURATION);
-            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
             let mut pacer = WebRTCPeerAudioPacer::new();
             'feed: loop {
                 ticker.tick().await;
@@ -2273,13 +2377,7 @@ fn start_webrtc_peer_feeder(
                 if !real_frame {
                     feed_state.record_webrtc_peer_drop(peer_id);
                 }
-                let pts_ns = next_gst_audio_pts(
-                    &mut next_pts_ns,
-                    encoder_pipeline
-                        .current_running_time()
-                        .map(|time| time.nseconds()),
-                    frame_duration_ns,
-                );
+                let pts_ns = next_gst_audio_pts(&mut next_pts_ns, frame_duration_ns);
                 let buffer = match build_gst_audio_buffer(&data, pts_ns, frame_duration_ns) {
                     Ok(buffer) => buffer,
                     Err(err) => {
@@ -3037,11 +3135,7 @@ async fn stream_gstreamer_encoded(
             frame = rx.recv() => {
                 match frame {
                     Ok(frame) => {
-                        let pts_ns = next_gst_audio_pts(
-                            &mut next_pts_ns,
-                            pipeline.current_running_time().map(|time| time.nseconds()),
-                            frame_duration_ns,
-                        );
+                        let pts_ns = next_gst_audio_pts(&mut next_pts_ns, frame_duration_ns);
                         let buffer = build_gst_audio_buffer(&frame.data, pts_ns, frame_duration_ns)?;
                         if appsrc.push_buffer(buffer).is_err() {
                             break;
@@ -3051,11 +3145,7 @@ async fn stream_gstreamer_encoded(
                         state.record_http_client_lag(client_id, skipped);
                         let fill_frames = skipped.min(RAW_HTTP_LAG_RESYNC_SILENCE_FRAMES);
                         for _ in 0..fill_frames {
-                            let pts_ns = next_gst_audio_pts(
-                                &mut next_pts_ns,
-                                pipeline.current_running_time().map(|time| time.nseconds()),
-                                frame_duration_ns,
-                            );
+                            let pts_ns = next_gst_audio_pts(&mut next_pts_ns, frame_duration_ns);
                             let buffer = build_gst_audio_buffer(&silence, pts_ns, frame_duration_ns)?;
                             if appsrc.push_buffer(buffer).is_err() {
                                 break 'stream;
@@ -3115,6 +3205,338 @@ fn gstreamer_audio_pipeline(codec: &str) -> Result<String> {
         )),
         _ => bail!("unsupported GStreamer audio codec {codec}"),
     }
+}
+
+fn start_icecast_output(
+    runtime: Arc<FeedRuntime>,
+    config: IcecastOutput,
+    gstreamer_available: bool,
+) {
+    #[cfg(feature = "gstreamer-backend")]
+    {
+        if !gstreamer_available {
+            warn!(
+                feed_id = %runtime.feed_id,
+                mount = %config.mount,
+                "Icecast output requires GStreamer and will not start"
+            );
+            return;
+        }
+        tokio::spawn(run_icecast_output(runtime, config));
+    }
+    #[cfg(not(feature = "gstreamer-backend"))]
+    {
+        let _ = runtime;
+        let _ = config;
+        let _ = gstreamer_available;
+        warn!("Icecast output requires a haze-media build with GStreamer support");
+    }
+}
+
+#[cfg(feature = "gstreamer-backend")]
+async fn run_icecast_output(runtime: Arc<FeedRuntime>, config: IcecastOutput) {
+    use gst::prelude::*;
+    use gstreamer as gst;
+    use gstreamer_app as gst_app;
+
+    let feed_id = runtime.feed_id.clone();
+    sleep(icecast_initial_delay(&feed_id, &config.mount)).await;
+    loop {
+        match build_icecast_encoder_pipeline(&config, &feed_id) {
+            Ok((pipeline, appsrc, appsink)) => {
+                let (encoded_tx, mut encoded_rx) =
+                    mpsc::channel::<Vec<u8>>(ENCODED_HTTP_QUEUE_CAPACITY);
+                appsink.set_callbacks(
+                    gst_app::AppSinkCallbacks::builder()
+                        .new_sample(move |sink| {
+                            let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                            let Some(buffer) = sample.buffer() else {
+                                return Err(gst::FlowError::Error);
+                            };
+                            let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                            match encoded_tx.try_send(map.as_slice().to_vec()) {
+                                Ok(()) => Ok(gst::FlowSuccess::Ok),
+                                Err(mpsc::error::TrySendError::Full(_)) => {
+                                    Err(gst::FlowError::Error)
+                                }
+                                Err(mpsc::error::TrySendError::Closed(_)) => {
+                                    Err(gst::FlowError::Eos)
+                                }
+                            }
+                        })
+                        .build(),
+                );
+                if let Err(err) = pipeline.set_state(gst::State::Playing) {
+                    warn!(
+                        feed_id = %feed_id,
+                        mount = %config.mount,
+                        "failed to start Icecast output: {err:?}"
+                    );
+                    let _ = pipeline.set_state(gst::State::Null);
+                    sleep(icecast_retry_delay(&feed_id, &config.mount)).await;
+                    continue;
+                }
+                let mut source = match open_icecast_source_stream(&config, &feed_id).await {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        warn!(
+                            feed_id = %feed_id,
+                            mount = %config.mount,
+                            "failed to connect Icecast output: {err:#}"
+                        );
+                        let _ = appsrc.end_of_stream();
+                        let _ = pipeline.set_state(gst::State::Null);
+                        sleep(icecast_retry_delay(&feed_id, &config.mount)).await;
+                        continue;
+                    }
+                };
+                info!(
+                    feed_id = %feed_id,
+                    host = %config.host,
+                    port = config.port,
+                    mount = %config.mount,
+                    "Icecast output connected"
+                );
+                let mut rx = runtime.subscribe();
+                let mut next_pts_ns: Option<u64> = None;
+                let frame_duration_ns = FRAME_DURATION.as_nanos() as u64;
+                let silence = vec![0u8; FRAME_BYTES];
+                loop {
+                    tokio::select! {
+                        frame = rx.recv() => {
+                            match frame {
+                                Ok(frame) => {
+                                    let pts_ns =
+                                        next_gst_audio_pts(&mut next_pts_ns, frame_duration_ns);
+                                    match build_gst_audio_buffer(&frame.data, pts_ns, frame_duration_ns)
+                                        .and_then(|buffer| {
+                                            appsrc.push_buffer(buffer).map(|_| ()).map_err(|_| {
+                                                anyhow::anyhow!("Icecast appsrc rejected audio buffer")
+                                            })
+                                        }) {
+                                        Ok(()) => {}
+                                        Err(err) => {
+                                            warn!(
+                                                feed_id = %feed_id,
+                                                mount = %config.mount,
+                                                "Icecast output stopped: {err:#}"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    warn!(
+                                        feed_id = %feed_id,
+                                        skipped,
+                                        mount = %config.mount,
+                                        "Icecast output lagged; inserting one silence frame"
+                                    );
+                                    let pts_ns =
+                                        next_gst_audio_pts(&mut next_pts_ns, frame_duration_ns);
+                                    if let Ok(buffer) =
+                                        build_gst_audio_buffer(&silence, pts_ns, frame_duration_ns)
+                                    {
+                                        if appsrc.push_buffer(buffer).is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                        encoded = encoded_rx.recv() => {
+                            let Some(encoded) = encoded else {
+                                warn!(
+                                    feed_id = %feed_id,
+                                    mount = %config.mount,
+                                    "Icecast encoder stopped producing data"
+                                );
+                                break;
+                            };
+                            if let Err(err) = source.write_all(&encoded).await {
+                                if err.kind() != ErrorKind::BrokenPipe
+                                    && err.kind() != ErrorKind::ConnectionReset
+                                {
+                                    warn!(
+                                        feed_id = %feed_id,
+                                        mount = %config.mount,
+                                        "Icecast source write failed: {err}"
+                                    );
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                let _ = appsrc.end_of_stream();
+                let _ = pipeline.set_state(gst::State::Null);
+            }
+            Err(err) => {
+                warn!(
+                    feed_id = %feed_id,
+                    mount = %config.mount,
+                    "failed to build Icecast output: {err:#}"
+                );
+            }
+        }
+        sleep(icecast_retry_delay(&feed_id, &config.mount)).await;
+    }
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn build_icecast_encoder_pipeline(
+    config: &IcecastOutput,
+    feed_id: &str,
+) -> Result<(
+    gstreamer::Pipeline,
+    gstreamer_app::AppSrc,
+    gstreamer_app::AppSink,
+)> {
+    use gst::prelude::*;
+    use gstreamer as gst;
+    use gstreamer_app as gst_app;
+
+    let bitrate = config.bitrate_kbps.saturating_mul(1_000).max(16_000);
+    let format_hint = config.format.trim().to_ascii_lowercase();
+    let codec_hint = config.acodec.trim().to_ascii_lowercase();
+    let encoder = match (format_hint.as_str(), codec_hint.as_str()) {
+        ("opus" | "ogg" | "oga", "" | "opus" | "libopus" | "opusenc") => {
+            format!("opusenc bitrate={bitrate} frame-size=20 inband-fec=true ! oggmux")
+        }
+        (other, codec) => bail!("unsupported Icecast stream format {other} with codec {codec}"),
+    };
+    let pipeline_description = format!(
+        "appsrc name=src is-live=true block=false do-timestamp=false max-bytes=38400 format=time stream-type=stream \
+         caps=audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=1 \
+         ! queue max-size-time=1000000000 max-size-buffers=100 max-size-bytes=0 leaky=downstream \
+         ! audioconvert ! audioresample quality=4 \
+         ! {encoder} \
+         ! appsink name=sink emit-signals=true sync=false"
+    );
+    let element = gst::parse::launch(&pipeline_description)
+        .context("failed to build Icecast encoder GStreamer pipeline")?;
+    let pipeline = element
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| anyhow::anyhow!("Icecast encoder description did not produce a pipeline"))?;
+    let appsrc = pipeline
+        .by_name("src")
+        .context("Icecast encoder pipeline is missing appsrc")?
+        .downcast::<gst_app::AppSrc>()
+        .map_err(|_| anyhow::anyhow!("Icecast encoder src is not appsrc"))?;
+    let appsink = pipeline
+        .by_name("sink")
+        .context("Icecast encoder pipeline is missing appsink")?
+        .downcast::<gst_app::AppSink>()
+        .map_err(|_| anyhow::anyhow!("Icecast encoder sink is not appsink"))?;
+    let _ = feed_id;
+    Ok((pipeline, appsrc, appsink))
+}
+
+#[cfg(feature = "gstreamer-backend")]
+async fn open_icecast_source_stream(config: &IcecastOutput, feed_id: &str) -> Result<TcpStream> {
+    if config.ssl {
+        bail!("native Icecast source output only supports plain HTTP for now");
+    }
+    let host_port = format!("{}:{}", config.host, config.port);
+    let mut stream = tokio::time::timeout(ICECAST_CONNECT_TIMEOUT, TcpStream::connect(&host_port))
+        .await
+        .context("Icecast connect timed out")?
+        .with_context(|| format!("failed to connect to Icecast at {host_port}"))?;
+    let mount = if config.mount.starts_with('/') {
+        config.mount.clone()
+    } else {
+        format!("/{}", config.mount)
+    };
+    let auth = base64::engine::general_purpose::STANDARD
+        .encode(format!("{}:{}", config.username, config.password));
+    let request = format!(
+        "PUT {mount} HTTP/1.1\r\n\
+         Host: {host_port}\r\n\
+         Authorization: Basic {auth}\r\n\
+         User-Agent: Haze Media\r\n\
+         Content-Type: {}\r\n\
+         Ice-Name: Haze {feed_id}\r\n\
+         Ice-Description: Haze Weather Radio {feed_id}\r\n\
+         Ice-Genre: weather\r\n\
+         Ice-Public: 1\r\n\
+         Connection: close\r\n\
+         \r\n",
+        icecast_content_type(config)?,
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .context("failed to send Icecast source request")?;
+    let response = tokio::time::timeout(
+        ICECAST_CONNECT_TIMEOUT,
+        read_icecast_source_response(&mut stream),
+    )
+    .await
+    .context("Icecast source response timed out")??;
+    let mut accepted = false;
+    for line in response.lines() {
+        if let Some(status) = line.strip_prefix("HTTP/") {
+            accepted = status.contains(" 200 ") || status.contains(" 100 ");
+            break;
+        }
+    }
+    if !accepted {
+        let first_line = response.lines().next().unwrap_or("empty response");
+        bail!("Icecast rejected source connection: {first_line}");
+    }
+    Ok(stream)
+}
+
+#[cfg(feature = "gstreamer-backend")]
+async fn read_icecast_source_response(stream: &mut TcpStream) -> Result<String> {
+    let mut response = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        let n = stream
+            .read(&mut byte)
+            .await
+            .context("failed to read Icecast source response")?;
+        if n == 0 {
+            break;
+        }
+        response.push(byte[0]);
+        if response.ends_with(b"\r\n\r\n") {
+            break;
+        }
+        if response.len() > ICECAST_RESPONSE_LIMIT {
+            bail!("Icecast source response exceeded limit");
+        }
+    }
+    String::from_utf8(response).context("Icecast source response was not UTF-8")
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn icecast_content_type(config: &IcecastOutput) -> Result<&'static str> {
+    let format_hint = config.format.trim().to_ascii_lowercase();
+    let codec_hint = config.acodec.trim().to_ascii_lowercase();
+    match (format_hint.as_str(), codec_hint.as_str()) {
+        ("opus" | "ogg" | "oga", "" | "opus" | "libopus" | "opusenc") => Ok("application/ogg"),
+        (other, codec) => bail!("unsupported Icecast stream format {other} with codec {codec}"),
+    }
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn icecast_initial_delay(feed_id: &str, mount: &str) -> Duration {
+    Duration::from_millis(250 + stable_jitter_ms(feed_id, mount, 2_000))
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn icecast_retry_delay(feed_id: &str, mount: &str) -> Duration {
+    ICECAST_RETRY_BASE + Duration::from_millis(stable_jitter_ms(feed_id, mount, 4_000))
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn stable_jitter_ms(feed_id: &str, mount: &str, span_ms: u64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    feed_id.hash(&mut hasher);
+    mount.hash(&mut hasher);
+    hasher.finish() % span_ms.max(1)
 }
 
 async fn write_stream_headers(stream: &mut TcpStream, content_type: &str) -> Result<()> {
@@ -3227,6 +3649,9 @@ fn load_outputs(path: &Path) -> Result<BTreeMap<String, OutputFeed>> {
         if id.is_empty() {
             continue;
         }
+        let icecast_config = icecast_output_from_node(&feed.stream);
+        let icecast = icecast_config.is_some();
+        let icecast_mount = icecast_config.as_ref().map(|stream| stream.mount.clone());
         outputs.insert(
             id.to_string(),
             OutputFeed {
@@ -3234,6 +3659,9 @@ fn load_outputs(path: &Path) -> Result<BTreeMap<String, OutputFeed>> {
                 webrtc: feed.webrtc.is_enabled(),
                 http: true,
                 webrtc_ready: false,
+                icecast,
+                icecast_mount,
+                icecast_config,
                 external: feed.stream.is_enabled()
                     || feed.udp.is_enabled()
                     || feed.rtp.is_enabled()
@@ -3245,6 +3673,38 @@ fn load_outputs(path: &Path) -> Result<BTreeMap<String, OutputFeed>> {
         );
     }
     Ok(outputs)
+}
+
+fn icecast_output_from_node(node: &OutputNodeXml) -> Option<IcecastOutput> {
+    if !node.is_enabled() {
+        return None;
+    }
+    let kind = node.r#type.trim().to_ascii_lowercase();
+    if kind != "icecast" {
+        return None;
+    }
+    let host = node.host.trim();
+    let mount = node.mount.trim();
+    let password = node.password.trim();
+    if host.is_empty() || mount.is_empty() || password.is_empty() {
+        warn!("Icecast stream is enabled but host, mount, or password is missing");
+        return None;
+    }
+    Some(IcecastOutput {
+        host: host.to_string(),
+        port: node.port.trim().parse::<u16>().unwrap_or(8000),
+        username: first_non_blank(&[Some(node.username.as_str()), Some("source")]),
+        password: password.to_string(),
+        mount: if mount.starts_with('/') {
+            mount.to_string()
+        } else {
+            format!("/{mount}")
+        },
+        ssl: xml_bool(Some(node.ssl.as_str()), false),
+        format: first_non_blank(&[Some(node.format.as_str()), Some("opus")]),
+        acodec: first_non_blank(&[Some(node.acodec.as_str()), Some("libopus")]),
+        bitrate_kbps: node.portable_bitrate_kbps(),
+    })
 }
 
 fn default_outputs_file() -> String {
@@ -3713,7 +4173,7 @@ mod tests {
 
         assert!(!real);
         assert_eq!(first.len(), FRAME_BYTES);
-        for value in 1..=STR0M_WEBRTC_PEER_PREROLL_FRAMES {
+        for value in 1..=(STR0M_WEBRTC_PEER_PREROLL_FRAMES + 1) {
             pacer.push(Arc::from(vec![value as u8; FRAME_BYTES]));
         }
 
@@ -4049,6 +4509,42 @@ mod tests {
 
         assert_eq!(selected.ip, IpAddr::V4(Ipv4Addr::new(172, 16, 1, 30)));
         assert_eq!(selected.source, "HAZE_WEBRTC_HOST");
+    }
+
+    #[cfg(feature = "gstreamer-backend")]
+    #[test]
+    fn webrtc_candidate_ip_treats_auto_override_as_autodetect() {
+        let overrides = [
+            ("HAZE_MEDIA_WEBRTC_HOST", Some("auto".to_string())),
+            ("HAZE_WEBRTC_HOST", Some("172.16.1.38".to_string())),
+            ("HAZE_PUBLIC_HOST", None),
+        ];
+
+        let selected = detect_webrtc_candidate_ip_inner("", None, &overrides);
+
+        assert_eq!(selected.ip, IpAddr::V4(Ipv4Addr::new(172, 16, 1, 38)));
+        assert_eq!(selected.source, "HAZE_WEBRTC_HOST");
+    }
+
+    #[cfg(feature = "gstreamer-backend")]
+    #[test]
+    fn webrtc_request_peer_ip_prefers_proxy_client_ip() {
+        let payload = WebRTCOfferRequest {
+            feed_id: String::new(),
+            sdp: String::new(),
+            _sdp_type: String::new(),
+            preferred_codec: String::new(),
+            codec: String::new(),
+            require_opus: false,
+            disable_g722: false,
+            client_ip: "172.16.1.55".to_string(),
+            remote_addr: "127.0.0.1:6444".to_string(),
+        };
+
+        assert_eq!(
+            parse_webrtc_request_peer_ip(&payload),
+            Some(IpAddr::V4(Ipv4Addr::new(172, 16, 1, 55)))
+        );
     }
 
     #[test]

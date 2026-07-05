@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -111,6 +109,8 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/wx-on-demand/readers", s.wxOnDemandReaders)
 		mux.HandleFunc("/api/v1/health", s.adminHealth)
 		mux.HandleFunc("/login", s.login)
+		mux.HandleFunc("/api/v1/auth/check", s.authCheckAPI)
+		mux.HandleFunc("/api/v1/auth/login", s.loginAPI)
 		mux.HandleFunc("/api/v1/panel/ws", s.websocket)
 	}
 	if s.surface.allowsAdmin() && s.receiver != nil && s.receiver.Enabled() {
@@ -121,7 +121,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(base+"/ws", s.receiver.HandleWebSocket)
 	}
 	mux.HandleFunc("/assets/", s.staticAsset)
-	return s.withSecurityHeaders(s.withAllowedHosts(mux))
+	return s.withSecurityHeaders(mux)
 }
 
 func (s *Server) publicIndex(writer http.ResponseWriter, request *http.Request) {
@@ -191,6 +191,56 @@ func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	s.serveHTML(writer, request, "login.html")
+}
+
+func (s *Server) loginAPI(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", "POST")
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Content-Type", "application/json")
+	request.Body = http.MaxBytesReader(writer, request.Body, 8*1024)
+	var payload struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		http.Error(writer, `{"type":"auth_error","detail":"invalid login request"}`, http.StatusBadRequest)
+		return
+	}
+	token, err := s.auth.Login(payload.Password)
+	if err != nil {
+		writer.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"type":   "auth_error",
+			"detail": err.Error(),
+		})
+		return
+	}
+	s.auth.SetCookie(writer, token)
+	_ = json.NewEncoder(writer).Encode(map[string]any{
+		"type":  "auth_ok",
+		"token": token,
+	})
+}
+
+func (s *Server) authCheckAPI(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(writer).Encode(map[string]any{
+		"type":          "auth_state",
+		"authenticated": s.auth.Authenticated(request),
+		"auth_enabled":  s.auth.Enabled(),
+		"auth_ready":    s.auth.Configured(),
+		"site_name":     siteName(s.config),
+		"on_air_name":   displayText(s.config.Operator.OnAirName),
+		"version":       s.config.Version,
+		"git_commit":    "unknown",
+	})
 }
 
 func (s *Server) serveHTML(writer http.ResponseWriter, request *http.Request, name string) {
@@ -353,7 +403,7 @@ func publicMediaServiceHealth(health map[string]any) map[string]any {
 
 func (s *Server) websocket(writer http.ResponseWriter, request *http.Request) {
 	connection, err := websocket.Accept(writer, request, &websocket.AcceptOptions{
-		OriginPatterns: sameOriginPatterns(request),
+		OriginPatterns: allOriginPatterns(),
 	})
 	if err != nil {
 		return
@@ -594,6 +644,8 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 		"disable_g722":    boolValue(message, "disable_g722"),
 		"require_opus":    boolValue(message, "require_opus"),
 		"preferred_codec": preferredCodec,
+		"client_ip":       clientIPForMediaRequest(s.request),
+		"remote_addr":     s.request.RemoteAddr,
 	}); ok {
 		answer["feed_id"] = feedID
 		if _, ok := answer["sdp_type"]; !ok {
@@ -1037,95 +1089,6 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) withAllowedHosts(next http.Handler) http.Handler {
-	allowed := normalizedAllowedHosts(s.config.Webpanel.AllowedHosts)
-	if len(allowed) == 0 {
-		return next
-	}
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if !requestHostAllowed(request, allowed) && !s.receiverPrivateIPHostAllowed(request) {
-			http.Error(writer, "misdirected request", http.StatusMisdirectedRequest)
-			return
-		}
-		next.ServeHTTP(writer, request)
-	})
-}
-
-func requestHostAllowed(request *http.Request, allowed map[string]struct{}) bool {
-	return hostAllowed(requestHostName(request), allowed)
-}
-
-func (s *Server) receiverPrivateIPHostAllowed(request *http.Request) bool {
-	if s.receiver == nil || !s.receiver.Enabled() || !requestPathUnder(request.URL.Path, s.receiver.BasePath()) {
-		return false
-	}
-	hostIP := net.ParseIP(requestHostName(request))
-	if !privateOrLoopbackIP(hostIP) {
-		return false
-	}
-	return privateOrLoopbackIP(requestRemoteIP(request))
-}
-
-func requestPathUnder(rawPath string, basePath string) bool {
-	cleanPath := path.Clean("/" + strings.Trim(rawPath, "/"))
-	cleanBase := path.Clean("/" + strings.Trim(basePath, "/"))
-	return cleanPath == cleanBase || strings.HasPrefix(cleanPath, cleanBase+"/")
-}
-
-func requestRemoteIP(request *http.Request) net.IP {
-	remote := strings.TrimSpace(request.RemoteAddr)
-	if remote == "" {
-		return nil
-	}
-	if host, _, err := net.SplitHostPort(remote); err == nil {
-		remote = host
-	}
-	return net.ParseIP(strings.Trim(remote, "[]"))
-}
-
-func privateOrLoopbackIP(ip net.IP) bool {
-	return ip != nil && (ip.IsPrivate() || ip.IsLoopback())
-}
-
-func hostAllowed(host string, allowed map[string]struct{}) bool {
-	if len(allowed) == 0 {
-		return true
-	}
-	_, ok := allowed[normalizeAllowedHost(host)]
-	return ok
-}
-
-func normalizedAllowedHosts(values []string) map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, value := range values {
-		host := normalizeAllowedHost(value)
-		if host != "" {
-			out[host] = struct{}{}
-		}
-	}
-	return out
-}
-
-func normalizeAllowedHost(value string) string {
-	host := strings.TrimSpace(value)
-	if host == "" {
-		return ""
-	}
-	if strings.Contains(host, "://") {
-		parsed, err := url.Parse(host)
-		if err != nil || parsed.Host == "" {
-			return ""
-		}
-		host = parsed.Host
-	}
-	if parsed, _, err := net.SplitHostPort(host); err == nil {
-		host = parsed
-	}
-	host = strings.Trim(strings.TrimSpace(host), "[]")
-	host = strings.TrimSuffix(host, ".")
-	return strings.ToLower(host)
-}
-
 func requestMethodGETOrHEAD(writer http.ResponseWriter, request *http.Request) bool {
 	if request.Method == http.MethodGet || request.Method == http.MethodHead {
 		return true
@@ -1171,16 +1134,8 @@ func publicNoStorePath(path string) bool {
 	return publicHTMLPath(path) || strings.HasPrefix(path, "/api/public/")
 }
 
-func sameOriginPatterns(request *http.Request) []string {
-	host := request.Host
-	if host == "" {
-		return nil
-	}
-	scheme := "http"
-	if requestIsHTTPS(request) {
-		scheme = "https"
-	}
-	return []string{scheme + "://" + host}
+func allOriginPatterns() []string {
+	return []string{"*"}
 }
 
 func siteName(config Config) string {

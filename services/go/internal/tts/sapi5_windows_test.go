@@ -45,3 +45,31 @@ func TestSAPILanguagesNormalizesWindowsLCIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeSAPIVoicesDeduplicatesNativeAndShim(t *testing.T) {
+	native := []Voice{
+		{ID: "native-id", Name: "Microsoft Linda", Provider: "sapi5"},
+	}
+	shim := []Voice{
+		{ID: "shim-duplicate", Name: "Microsoft Linda", Provider: "sapi5"},
+		{ID: "shim-only", Name: "Old 32 Bit Voice", Provider: "sapi5"},
+	}
+
+	got := mergeSAPIVoices(native, shim)
+
+	if len(got) != 2 {
+		t.Fatalf("voices = %#v", got)
+	}
+	if got[1].ID != "shim-only" {
+		t.Fatalf("shim voice was not preserved: %#v", got)
+	}
+}
+
+func TestSAPIVoiceNotFoundMatcher(t *testing.T) {
+	if !sapiVoiceNotFound(errors.New(`SAPI5 voice "Bob" not found`)) {
+		t.Fatal("expected SAPI voice not found error to match")
+	}
+	if sapiVoiceNotFound(errors.New("COM exploded")) {
+		t.Fatal("generic COM error should not match voice fallback")
+	}
+}

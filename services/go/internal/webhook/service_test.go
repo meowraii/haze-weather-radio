@@ -2,6 +2,8 @@ package webhook
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -76,6 +78,29 @@ func TestWebhookHTTPClientUsesReusableTransport(t *testing.T) {
 	}
 	if transport.MaxIdleConnsPerHost < 8 || !transport.ForceAttemptHTTP2 {
 		t.Fatalf("transport not tuned: %#v", transport)
+	}
+}
+
+func TestLoadConfigAcceptsQuotedExpandedPort(t *testing.T) {
+	t.Setenv("PORT", "6444")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(`webpanel:
+  host: "0.0.0.0"
+  port: "${PORT}"
+  public:
+    host: "0.0.0.0"
+    port: "${PORT}"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadConfig(Options{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ListenBaseURL != "http://127.0.0.1:6444" {
+		t.Fatalf("listen base URL = %q", loaded.ListenBaseURL)
 	}
 }
 

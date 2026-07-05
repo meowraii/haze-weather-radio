@@ -189,7 +189,7 @@ async function logout() {
 }
 
 logoutButton.addEventListener('click', async () => {
-    let publicUrl = healthState.public_url || 'http://127.0.0.1:8086/';
+    let publicUrl = healthState.public_url || 'http://127.0.0.1:6444/';
     try {
         const payload = await logout();
         publicUrl = payload.public_url || publicUrl;

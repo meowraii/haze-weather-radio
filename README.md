@@ -59,7 +59,7 @@ First-pass managed services live under `services/go`, with native Rust services 
 
 ```powershell
 scripts/build-go-services.ps1
-dist/Haze_UAP-Windows-x86_64-Portable/bin/haze-web.exe --addr 127.0.0.1:8081 --webroot webroot --config config.yaml
+dist/Haze_UAP-Windows-x86_64-Portable/bin/haze-web.exe --addr 127.0.0.1:6444 --webroot webroot --config config.yaml
 dist/Haze_UAP-Windows-x86_64-Portable/bin/haze-cap-ingest.exe --source naads --mode tcp
 ```
 

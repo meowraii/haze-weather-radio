@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -7,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use serde::de::{self, Unexpected, Visitor};
 use serde::Deserialize;
 use serde_json::json;
 use serde_json::Value;
@@ -130,6 +132,7 @@ struct WebGatewayConfig {
 #[derive(Debug, Default, Deserialize)]
 struct WebPanelConfig {
     host: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_port")]
     port: Option<u16>,
     public: Option<WebPanelSurfaceConfig>,
     admin: Option<WebPanelSurfaceConfig>,
@@ -139,7 +142,85 @@ struct WebPanelConfig {
 struct WebPanelSurfaceConfig {
     enabled: Option<bool>,
     host: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_port")]
     port: Option<u16>,
+}
+
+fn deserialize_optional_port<'de, D>(deserializer: D) -> std::result::Result<Option<u16>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct PortVisitor;
+
+    impl<'de> Visitor<'de> for PortVisitor {
+        type Value = Option<u16>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a TCP/UDP port number or numeric string")
+        }
+
+        fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D2>(self, deserializer: D2) -> std::result::Result<Self::Value, D2::Error>
+        where
+            D2: serde::Deserializer<'de>,
+        {
+            deserialize_optional_port(deserializer)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            u16::try_from(value)
+                .map(Some)
+                .map_err(|_| E::invalid_value(Unexpected::Unsigned(value), &self))
+        }
+
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            u16::try_from(value)
+                .map(Some)
+                .map_err(|_| E::invalid_value(Unexpected::Signed(value), &self))
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            let value = value.trim();
+            if value.is_empty() {
+                return Ok(None);
+            }
+            value
+                .parse::<u16>()
+                .map(Some)
+                .map_err(|_| E::invalid_value(Unexpected::Str(value), &self))
+        }
+
+        fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(&value)
+        }
+    }
+
+    deserializer.deserialize_any(PortVisitor)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -187,6 +268,7 @@ struct TtsConfig {
     kokoro_speed: Option<f32>,
     kokoro_length_scale: Option<f32>,
     speakyapi_url: Option<String>,
+    runtime_idle_timeout: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -987,6 +1069,13 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                 {
                     args.extend(["--speakyapi-url".to_string(), url.to_string()]);
                 }
+                if let Some(timeout) = tts
+                    .runtime_idle_timeout
+                    .as_ref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    args.extend(["--runtime-idle-timeout".to_string(), timeout.to_string()]);
+                }
                 specs.push(ServiceSpec {
                     id: "aux:tts",
                     kind: "managed",
@@ -1409,7 +1498,7 @@ fn web_gateway_specs(
             "combined",
             web.addr
                 .clone()
-                .unwrap_or_else(|| "0.0.0.0:8086".to_string()),
+                .unwrap_or_else(|| "0.0.0.0:6444".to_string()),
             web.executable.clone(),
             host,
         ));
@@ -1429,12 +1518,12 @@ fn web_gateway_specs(
     let public_addr = webpanel_addr(
         panel.public.as_ref(),
         panel.host.as_deref().unwrap_or("0.0.0.0"),
-        Some(8086),
+        Some(6444),
     );
     let admin_addr = webpanel_addr(
         panel.admin.as_ref(),
         panel.host.as_deref().unwrap_or("0.0.0.0"),
-        panel.port.or(Some(8086)),
+        panel.port.or(Some(6444)),
     );
     if public_enabled && admin_enabled && public_addr == admin_addr {
         specs.push(web_gateway_spec(
@@ -1471,7 +1560,7 @@ fn web_gateway_specs(
             "combined",
             web.addr
                 .clone()
-                .unwrap_or_else(|| "0.0.0.0:8086".to_string()),
+                .unwrap_or_else(|| "0.0.0.0:6444".to_string()),
             web.executable.clone(),
             host,
         ));
@@ -1535,7 +1624,7 @@ fn webpanel_addr(
     let port = surface
         .and_then(|surface| surface.port)
         .or(fallback_port)
-        .unwrap_or(8086);
+        .unwrap_or(6444);
     format!("{host}:{port}")
 }
 
@@ -2210,18 +2299,18 @@ services:
     enabled: true
     web_gateway:
       enabled: true
-      addr: 0.0.0.0:8086
+      addr: 0.0.0.0:6444
 webpanel:
   host: 0.0.0.0
-  port: 8086
+  port: 6444
   public:
     enabled: true
     host: 0.0.0.0
-    port: 8086
+    port: 6444
   admin:
     enabled: true
     host: 0.0.0.0
-    port: 8086
+    port: 6444
 "#,
         )
         .expect("config");
@@ -2234,7 +2323,41 @@ webpanel:
             .collect();
         assert_eq!(web_specs.len(), 1);
         assert_eq!(web_specs[0].id, "go:web_gateway");
-        assert!(web_specs[0].args.contains(&"0.0.0.0:8086".to_string()));
+        assert!(web_specs[0].args.contains(&"0.0.0.0:6444".to_string()));
+        assert!(web_specs[0].args.contains(&"combined".to_string()));
+    }
+
+    #[test]
+    fn web_gateway_specs_accepts_env_expanded_string_ports() {
+        let root: RootConfig = serde_yaml::from_str(
+            r#"
+services:
+  go:
+    enabled: true
+    web_gateway:
+      enabled: true
+webpanel:
+  host: 0.0.0.0
+  port: "6444"
+  public:
+    enabled: true
+    port: "6444"
+  admin:
+    enabled: true
+    port: "6444"
+"#,
+        )
+        .expect("config");
+
+        let specs = service_specs(&root, &test_host());
+        let web_specs: Vec<&ServiceSpec> = specs
+            .iter()
+            .filter(|spec| spec.binary == executable_name("haze-web"))
+            .collect();
+
+        assert_eq!(web_specs.len(), 1);
+        assert_eq!(web_specs[0].id, "go:web_gateway");
+        assert!(web_specs[0].args.contains(&"0.0.0.0:6444".to_string()));
         assert!(web_specs[0].args.contains(&"combined".to_string()));
     }
 
@@ -2470,13 +2593,13 @@ cap:
     #[test]
     fn service_log_normalizer_strips_go_timestamp_and_binary_name() {
         let (level, line) = normalize_service_log_line(
-            "2026/06/16 21:13:04 haze-web combined listening on 0.0.0.0:8086",
+            "2026/06/16 21:13:04 haze-web combined listening on 0.0.0.0:6444",
             false,
         )
         .expect("normalized line");
 
         assert_eq!(level, ServiceLogLevel::Info);
-        assert_eq!(line, "combined listening on 0.0.0.0:8086");
+        assert_eq!(line, "combined listening on 0.0.0.0:6444");
     }
 
     #[test]

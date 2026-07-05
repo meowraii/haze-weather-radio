@@ -26,11 +26,11 @@ func TestTLSStatusPromptsForActualDomain(t *testing.T) {
 }
 
 func TestTLSStatusDoesNotPromptForLocalhost(t *testing.T) {
-	request, err := http.NewRequest(http.MethodGet, "http://localhost:8086/admin", nil)
+	request, err := http.NewRequest(http.MethodGet, "http://localhost:6444/admin", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Host = "localhost:8086"
+	request.Host = "localhost:6444"
 
 	status := tlsStatus(Config{}, request)
 
@@ -92,8 +92,8 @@ func TestACMERuntimeNormalizesDomains(t *testing.T) {
 }
 
 func TestRedirectHTTPSHostUsesConfiguredTLSPort(t *testing.T) {
-	got := redirectHTTPSHost("panel.example.com", "0.0.0.0:8086")
-	if got != "panel.example.com:8086" {
+	got := redirectHTTPSHost("panel.example.com", "0.0.0.0:6444")
+	if got != "panel.example.com:6444" {
 		t.Fatalf("redirect host = %s", got)
 	}
 	got = redirectHTTPSHost("panel.example.com", "0.0.0.0:443")

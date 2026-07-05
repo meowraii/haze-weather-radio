@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +54,7 @@ func run() error {
 	kokoroSpeed := flag.Float64("kokoro-speed", envFloatOrDefault("HAZE_KOKORO_SPEED", 1.0), "Kokoro default generation speed")
 	kokoroLengthScale := flag.Float64("kokoro-length-scale", envFloatOrDefault("HAZE_KOKORO_LENGTH_SCALE", 1.0), "Kokoro model length scale")
 	speakyAPIURL := flag.String("speakyapi-url", envOrDefault("HAZE_SPEAKYAPI_URL", ""), "SpeakyAPI server base URL, for example http://127.0.0.1:5000")
+	runtimeIdleTimeout := flag.Duration("runtime-idle-timeout", envDurationOrDefault("HAZE_TTS_RUNTIME_IDLE", 15*time.Minute), "idle time before native TTS model runtimes are unloaded; 0 disables unloading")
 	text := flag.String("text", "", "text to synthesize")
 	out := flag.String("out", "", "output WAV path")
 	listVoices := flag.Bool("list-voices", false, "list provider voices as JSON")
@@ -86,6 +89,7 @@ func run() error {
 			PiperPrewarm: *piperPrewarm,
 			Workers:      1,
 			SpeakyAPIURL: *speakyAPIURL,
+			RuntimeIdle:  *runtimeIdleTimeout,
 		})
 	}
 
@@ -158,6 +162,7 @@ type serviceConfig struct {
 	PiperPrewarm bool
 	Workers      int
 	SpeakyAPIURL string
+	RuntimeIdle  time.Duration
 }
 
 type serviceState struct {
@@ -192,6 +197,8 @@ func runService(ctx context.Context, cfg serviceConfig) error {
 	if err != nil {
 		return err
 	}
+	stopPruner := startRuntimePruner(ctx, state.providers, cfg.RuntimeIdle)
+	defer stopPruner()
 
 	for ctx.Err() == nil {
 		conn, err := net.DialTimeout("tcp", cfg.BridgeAddr, 3*time.Second)
@@ -229,6 +236,59 @@ func runService(ctx context.Context, cfg serviceConfig) error {
 		sleepOrDone(ctx, time.Second)
 	}
 	return nil
+}
+
+func startRuntimePruner(ctx context.Context, providers map[string]tts.Provider, maxIdle time.Duration) func() {
+	if maxIdle <= 0 {
+		return func() {}
+	}
+	pruners := make(map[string]tts.RuntimePruner)
+	for id, provider := range providers {
+		if pruner, ok := provider.(tts.RuntimePruner); ok {
+			pruners[id] = pruner
+		}
+	}
+	if len(pruners) == 0 {
+		return func() {}
+	}
+	pruneCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		interval := maxIdle / 4
+		if interval < 30*time.Second {
+			interval = 30 * time.Second
+		}
+		if interval > 5*time.Minute {
+			interval = 5 * time.Minute
+		}
+		timer := time.NewTimer(interval)
+		defer timer.Stop()
+		for {
+			select {
+			case <-pruneCtx.Done():
+				return
+			case <-timer.C:
+				total := 0
+				for id, pruner := range pruners {
+					removed := pruner.PruneIdleRuntime(maxIdle)
+					if removed > 0 {
+						log.Printf("pruned %d idle %s TTS runtime(s)", removed, id)
+						total += removed
+					}
+				}
+				if total > 0 {
+					runtime.GC()
+					debug.FreeOSMemory()
+				}
+				timer.Reset(interval)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func runServiceConnection(ctx context.Context, conn net.Conn, state *serviceState) error {
@@ -734,6 +794,18 @@ func envFloatOrDefault(key string, fallback float64) float64 {
 	}
 	var parsed float64
 	if _, err := fmt.Sscanf(value, "%f", &parsed); err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func envDurationOrDefault(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < 0 {
 		return fallback
 	}
 	return parsed

@@ -2578,7 +2578,7 @@ def _parse_args() -> ReceiverConfig:
         prog='hazeReceiver.py',
         description='Haze feed receiver using WebSocket signaling, WebRTC audio, and piFmAdv output.',
     )
-    parser.add_argument('--server', required=True, help='Haze server URL, for example http://haze-host:8086')
+    parser.add_argument('--server', required=True, help='Haze server URL, for example http://haze-host:6444')
     parser.add_argument('--feed-id', required=True, help='Feed ID to receive, for example sk-0001')
     parser.add_argument('--receiver-api-base', default='/api/receiver/v1')
     parser.add_argument('--pair-token', default='', help=argparse.SUPPRESS)

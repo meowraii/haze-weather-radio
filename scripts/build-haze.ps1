@@ -267,6 +267,7 @@ function Assert-Clang64GStreamerBuildEnvironment {
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstsrtp.dll"),
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstnice.dll"),
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstwebrtc.dll"),
+        (Join-Path $Clang64Lib "gstreamer-1.0\libgstshout2.dll"),
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstaudiotestsrc.dll"),
         (Join-Path $Clang64Lib "gstreamer-1.0\libgstvideotestsrc.dll"),
         (Join-Path $Clang64Root "libexec\gstreamer-1.0\gst-plugin-scanner.exe")
@@ -351,6 +352,32 @@ function Copy-Clang64RuntimeDependencies {
     }
 }
 
+function Copy-MsvcRuntimeDependencies {
+    param(
+        [Parameter(Mandatory = $true)][string] $DestinationDir
+    )
+
+    if (-not (Test-RunningOnWindows)) {
+        return
+    }
+
+    $System32 = Join-Path $env:SystemRoot "System32"
+    foreach ($DllName in @(
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+        "msvcp140.dll",
+        "msvcp140_1.dll",
+        "msvcp140_2.dll",
+        "msvcp140_atomic_wait.dll",
+        "concrt140.dll"
+    )) {
+        $Source = Join-Path $System32 $DllName
+        if (Test-Path -LiteralPath $Source -PathType Leaf) {
+            Copy-Item -LiteralPath $Source -Destination $DestinationDir -Force
+        }
+    }
+}
+
 function Copy-Clang64GStreamerPlugins {
     param(
         [Parameter(Mandatory = $true)][string] $DestinationDir
@@ -394,6 +421,9 @@ function Test-WindowsSystemDll {
 
     if ($Name -match "^(api-ms-win-|ext-ms-win-)") {
         return $true
+    }
+    if ($Name -match "^(vcruntime|msvcp|concrt)140") {
+        return $false
     }
     foreach ($Directory in @(
         (Join-Path $env:SystemRoot "System32"),
@@ -521,6 +551,7 @@ try {
         "haze-cap-ingest.exe",
         "haze-easnet.exe",
         "haze-tts.exe",
+        "haze-sapi5-shim.exe",
         "haze-product-render.exe",
         "haze-playlist.exe",
         "haze-webhook.exe",
@@ -602,6 +633,7 @@ try {
         if ($ServiceEntryPoints.Count -gt 0) {
             Copy-Clang64RuntimeDependencies -EntryPoints $ServiceEntryPoints -DestinationDir $BinFull
             Copy-Clang64GStreamerPlugins -DestinationDir $BinFull
+            Copy-MsvcRuntimeDependencies -DestinationDir $BinFull
         }
         Assert-PortableRuntimeDependencies -Directories @($BinFull)
     }

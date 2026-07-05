@@ -4,6 +4,19 @@
   <feed id="cwxr-sk01">
     <webrtc enabled="true"/>
 
+    <stream enabled="true">
+      <type>icecast</type>
+      <host>${HAZE_ICECAST_HOST}</host>
+      <port>${HAZE_ICECAST_PORT}</port>
+      <username>${HAZE_ICECAST_USERNAME}</username>
+      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
+      <mount>/cwxr-sk01</mount>
+      <ssl>false</ssl>
+      <format>opus</format>
+      <bitrate_kbps>64</bitrate_kbps>
+      <acodec>libopus</acodec>
+    </stream>
+
     <udp enabled="false">
       <ip>172.16.1.37</ip>
       <port>8898</port>
@@ -46,6 +59,19 @@
 
   <feed id="cwxr-sk02">
     <webrtc enabled="true"/>
+
+    <stream enabled="true">
+      <type>icecast</type>
+      <host>${HAZE_ICECAST_HOST}</host>
+      <port>${HAZE_ICECAST_PORT}</port>
+      <username>${HAZE_ICECAST_USERNAME}</username>
+      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
+      <mount>/cwxr-sk02</mount>
+      <ssl>false</ssl>
+      <format>opus</format>
+      <bitrate_kbps>64</bitrate_kbps>
+      <acodec>libopus</acodec>
+    </stream>
 
     <udp enabled="false">
       <ip>172.16.1.37</ip>
@@ -90,6 +116,19 @@
   <feed id="cwxr-ab01">
     <webrtc enabled="true"/>
 
+    <stream enabled="true">
+      <type>icecast</type>
+      <host>${HAZE_ICECAST_HOST}</host>
+      <port>${HAZE_ICECAST_PORT}</port>
+      <username>${HAZE_ICECAST_USERNAME}</username>
+      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
+      <mount>/cwxr-ab01</mount>
+      <ssl>false</ssl>
+      <format>opus</format>
+      <bitrate_kbps>64</bitrate_kbps>
+      <acodec>libopus</acodec>
+    </stream>
+
     <udp enabled="false">
       <ip>172.16.1.37</ip>
       <port>8898</port>
@@ -132,6 +171,19 @@
 
   <feed id="cwxr-mb01">
     <webrtc enabled="true"/>
+
+    <stream enabled="true">
+      <type>icecast</type>
+      <host>${HAZE_ICECAST_HOST}</host>
+      <port>${HAZE_ICECAST_PORT}</port>
+      <username>${HAZE_ICECAST_USERNAME}</username>
+      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
+      <mount>/cwxr-mb01</mount>
+      <ssl>false</ssl>
+      <format>opus</format>
+      <bitrate_kbps>64</bitrate_kbps>
+      <acodec>libopus</acodec>
+    </stream>
 
     <udp enabled="false">
       <ip>172.16.1.37</ip>

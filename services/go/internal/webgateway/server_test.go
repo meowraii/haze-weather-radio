@@ -1,6 +1,7 @@
 package webgateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,10 +20,10 @@ import (
 )
 
 func TestServerIPUsesNonLoopbackLocalAddress(t *testing.T) {
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8086/", nil)
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:6444/", nil)
 	request = request.WithContext(context.WithValue(request.Context(), http.LocalAddrContextKey, &net.TCPAddr{
 		IP:   net.ParseIP("192.168.50.10"),
-		Port: 8086,
+		Port: 6444,
 	}))
 
 	if got := serverIP(request); got != "192.168.50.10" {
@@ -31,10 +32,10 @@ func TestServerIPUsesNonLoopbackLocalAddress(t *testing.T) {
 }
 
 func TestServerIPIgnoresLoopbackLocalAddress(t *testing.T) {
-	request := httptest.NewRequest(http.MethodGet, "http://203.0.113.10:8086/", nil)
+	request := httptest.NewRequest(http.MethodGet, "http://203.0.113.10:6444/", nil)
 	request = request.WithContext(context.WithValue(request.Context(), http.LocalAddrContextKey, &net.TCPAddr{
 		IP:   net.ParseIP("127.0.0.1"),
-		Port: 8086,
+		Port: 6444,
 	}))
 
 	if got := serverIP(request); got != "203.0.113.10" {
@@ -60,60 +61,23 @@ webpanel:
 	}
 }
 
-func TestAllowedHostsGateRequests(t *testing.T) {
+func TestWebpanelAllowsAnyHost(t *testing.T) {
 	var config Config
-	config.Webpanel.AllowedHosts = []string{"haze.rai.blue"}
 	server := NewServer(config, ".")
 
-	allowed := httptest.NewRequest(http.MethodGet, "http://haze.rai.blue:8086/api/public/v1/health", nil)
-	allowed.Host = "haze.rai.blue:8086"
-	allowedResponse := httptest.NewRecorder()
-	server.Handler().ServeHTTP(allowedResponse, allowed)
-	if allowedResponse.Code == http.StatusMisdirectedRequest {
-		t.Fatalf("expected configured host to pass")
-	}
-
-	rejected := httptest.NewRequest(http.MethodGet, "http://wrong.example/api/public/v1/health", nil)
-	rejected.Host = "wrong.example"
-	rejectedResponse := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rejectedResponse, rejected)
-	if rejectedResponse.Code != http.StatusMisdirectedRequest {
-		t.Fatalf("expected wrong host to be rejected, got %d", rejectedResponse.Code)
+	request := httptest.NewRequest(http.MethodGet, "http://wrong.example/api/public/v1/health", nil)
+	request.Host = "wrong.example"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code == http.StatusMisdirectedRequest {
+		t.Fatalf("expected host to pass without allowlist configuration")
 	}
 }
 
-func TestAllowedHostsAllowsReceiverPrivateIPDirectPath(t *testing.T) {
-	var config Config
-	config.Webpanel.AllowedHosts = []string{"haze.rai.blue"}
-	config.Webpanel.Receiver.Enabled = true
-	config.Webpanel.Receiver.BasePath = "/api/receiver/v1"
-	server := NewServer(config, ".")
-
-	receiverRequest := httptest.NewRequest(http.MethodPost, "http://172.16.1.30:8086/api/receiver/v1/session", strings.NewReader(`{}`))
-	receiverRequest.Host = "172.16.1.30:8086"
-	receiverRequest.RemoteAddr = "172.16.1.42:42123"
-	receiverResponse := httptest.NewRecorder()
-	server.Handler().ServeHTTP(receiverResponse, receiverRequest)
-	if receiverResponse.Code == http.StatusMisdirectedRequest {
-		t.Fatalf("expected receiver API from private IP to pass host gate")
-	}
-
-	adminRequest := httptest.NewRequest(http.MethodGet, "http://172.16.1.30:8086/admin", nil)
-	adminRequest.Host = "172.16.1.30:8086"
-	adminRequest.RemoteAddr = "172.16.1.42:42123"
-	adminResponse := httptest.NewRecorder()
-	server.Handler().ServeHTTP(adminResponse, adminRequest)
-	if adminResponse.Code != http.StatusMisdirectedRequest {
-		t.Fatalf("expected non-receiver private IP request to keep host gate, got %d", adminResponse.Code)
-	}
-}
-
-func TestLoadConfigReadsPublicPortAndAllowedHosts(t *testing.T) {
+func TestLoadConfigReadsPublicPort(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	mustWrite(t, configPath, `webpanel:
-  allowed_hosts:
-    - haze.rai.blue
   public_port:
     enabled: true
     host: "0.0.0.0"
@@ -128,9 +92,6 @@ func TestLoadConfigReadsPublicPortAndAllowedHosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Webpanel.AllowedHosts) != 1 || config.Webpanel.AllowedHosts[0] != "haze.rai.blue" {
-		t.Fatalf("allowed hosts = %#v", config.Webpanel.AllowedHosts)
-	}
 	if !config.Webpanel.PublicPort.Enabled || config.Webpanel.PublicPort.HTTPPort != 80 || config.Webpanel.PublicPort.HTTPSPort != 443 {
 		t.Fatalf("public port = %#v", config.Webpanel.PublicPort)
 	}
@@ -139,13 +100,24 @@ func TestLoadConfigReadsPublicPortAndAllowedHosts(t *testing.T) {
 	}
 }
 
-func TestAllowedHostsNormalizeCaseAndTrailingDot(t *testing.T) {
-	allowed := normalizedAllowedHosts([]string{"Haze.Rai.Blue."})
-	if !hostAllowed("haze.rai.blue", allowed) {
-		t.Fatal("expected lowercase host to match normalized allowed host")
+func TestLoadConfigAcceptsQuotedExpandedPort(t *testing.T) {
+	t.Setenv("PORT", "6444")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	mustWrite(t, configPath, `webpanel:
+  port: "${PORT}"
+  public:
+    port: "${PORT}"
+  admin:
+    port: "${PORT}"
+`)
+
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !hostAllowed("HAZE.RAI.BLUE:443", allowed) {
-		t.Fatal("expected host with port to match normalized allowed host")
+	if config.Webpanel.Port.Int() != 6444 || config.Webpanel.Admin.Port.Int() != 6444 {
+		t.Fatalf("ports = %#v", config.Webpanel)
 	}
 }
 
@@ -328,10 +300,10 @@ func TestAdminURLDoesNotEchoPublicHostByDefault(t *testing.T) {
 
 func TestAdminURLIsRelativeWhenAdminSharesPublicPort(t *testing.T) {
 	config := Config{}
-	config.Webpanel.Port = 8086
+	config.Webpanel.Port = 6444
 	config.Webpanel.Admin.Host = "0.0.0.0"
-	config.Webpanel.Admin.Port = 8086
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8086/", nil)
+	config.Webpanel.Admin.Port = 6444
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:6444/", nil)
 	request.Host = "attacker.example"
 
 	if got := adminURL(config, request); got != "/admin" {
@@ -341,7 +313,7 @@ func TestAdminURLIsRelativeWhenAdminSharesPublicPort(t *testing.T) {
 
 func TestAdminURLUsesConfiguredSeparateAdminPort(t *testing.T) {
 	config := Config{}
-	config.Webpanel.Port = 8086
+	config.Webpanel.Port = 6444
 	config.Webpanel.Admin.Host = "0.0.0.0"
 	config.Webpanel.Admin.Port = 9000
 	request := httptest.NewRequest(http.MethodGet, "https://panel.example/", nil)
@@ -714,6 +686,39 @@ func TestWebSocketLoginReturnsToken(t *testing.T) {
 	}
 }
 
+func TestHTTPLoginSetsCookieAndReturnsToken(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	server := NewServer(authEnabledConfig(), ".")
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.test/api/v1/auth/login",
+		bytes.NewBufferString(`{"password":"secret"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "http://example.test")
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["type"] != "auth_ok" {
+		t.Fatalf("type = %v", payload["type"])
+	}
+	if payload["token"] == "" {
+		t.Fatal("token was empty")
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) == 0 || cookies[0].Name != sessionCookieName {
+		t.Fatalf("login did not set session cookie: %#v", cookies)
+	}
+}
+
 func TestAssetsServeStaticFilesButNotHTMLEntrypoints(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "admin.html"), "<!doctype html><title>admin</title>")
@@ -871,7 +876,7 @@ services:
     enabled: true
     web_gateway:
       enabled: true
-      addr: "127.0.0.1:8081"
+      addr: "127.0.0.1:6444"
     tts:
       enabled: true
       readers: managed/configs/readers.xml
@@ -2592,7 +2597,7 @@ webpanel:
         enabled: true
   admin:
     host: 127.0.0.1
-    port: 8086
+    port: 6444
   authentication:
     enabled: true
     session_ttl_seconds: 60

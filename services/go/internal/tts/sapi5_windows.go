@@ -4,8 +4,12 @@ package tts
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -14,6 +18,8 @@ import (
 )
 
 const sapiCreateForWrite = 3
+const sapi5ShimDisabledEnv = "HAZE_SAPI5_SHIM_DISABLED"
+const sapi5ShimPathEnv = "HAZE_SAPI5_SHIM_PATH"
 
 // SAPI5Provider uses installed Windows SAPI5 voices.
 type SAPI5Provider struct{}
@@ -26,6 +32,33 @@ func NewSAPI5Provider() *SAPI5Provider {
 func (p *SAPI5Provider) ID() string { return "sapi5" }
 
 func (p *SAPI5Provider) ListVoices(ctx context.Context) ([]Voice, error) {
+	voices, nativeErr := p.listVoicesNative(ctx)
+	if !sapi5ShimDisabled() {
+		if shimVoices, err := listSAPI5ShimVoices(ctx); err == nil {
+			voices = mergeSAPIVoices(voices, shimVoices)
+		}
+	}
+	if len(voices) > 0 {
+		return voices, nil
+	}
+	return nil, nativeErr
+}
+
+func (p *SAPI5Provider) Synthesize(ctx context.Context, req Request) (Audio, error) {
+	audio, nativeErr := p.synthesizeNative(ctx, req)
+	if nativeErr == nil || sapi5ShimDisabled() {
+		return audio, nativeErr
+	}
+	if strings.TrimSpace(req.VoiceID) == "" || !sapiVoiceNotFound(nativeErr) {
+		return audio, nativeErr
+	}
+	if shimAudio, err := synthesizeWithSAPI5Shim(ctx, req); err == nil {
+		return shimAudio, nil
+	}
+	return audio, nativeErr
+}
+
+func (p *SAPI5Provider) listVoicesNative(ctx context.Context) ([]Voice, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -70,7 +103,7 @@ func (p *SAPI5Provider) ListVoices(ctx context.Context) ([]Voice, error) {
 	return voices, nil
 }
 
-func (p *SAPI5Provider) Synthesize(ctx context.Context, req Request) (Audio, error) {
+func (p *SAPI5Provider) synthesizeNative(ctx context.Context, req Request) (Audio, error) {
 	if err := ctx.Err(); err != nil {
 		return Audio{}, err
 	}
@@ -153,6 +186,147 @@ func (p *SAPI5Provider) Synthesize(ctx context.Context, req Request) (Audio, err
 		return Audio{}, err
 	}
 	return Audio{Format: FormatWAV, Data: data}, nil
+}
+
+type sapi5ShimSynthRequest struct {
+	Text            string      `json:"text"`
+	VoiceID         string      `json:"voice_id,omitempty"`
+	Language        string      `json:"language,omitempty"`
+	OutputFormat    AudioFormat `json:"output_format,omitempty"`
+	Rate            int         `json:"rate,omitempty"`
+	Volume          int         `json:"volume,omitempty"`
+	SentenceSilence float64     `json:"sentence_silence,omitempty"`
+}
+
+type sapi5ShimSynthResponse struct {
+	Format     AudioFormat `json:"format"`
+	SampleRate int         `json:"sample_rate,omitempty"`
+	Channels   int         `json:"channels,omitempty"`
+	DataBase64 string      `json:"data_base64"`
+}
+
+func listSAPI5ShimVoices(ctx context.Context) ([]Voice, error) {
+	shim, err := sapi5ShimPath()
+	if err != nil {
+		return nil, err
+	}
+	var voices []Voice
+	if err := runSAPI5ShimJSON(ctx, shim, "list", nil, &voices); err != nil {
+		return nil, err
+	}
+	return voices, nil
+}
+
+func synthesizeWithSAPI5Shim(ctx context.Context, req Request) (Audio, error) {
+	shim, err := sapi5ShimPath()
+	if err != nil {
+		return Audio{}, err
+	}
+	payload := sapi5ShimSynthRequest{
+		Text:            req.Text,
+		VoiceID:         req.VoiceID,
+		Language:        req.Language,
+		OutputFormat:    req.OutputFormat,
+		Rate:            req.Rate,
+		Volume:          req.Volume,
+		SentenceSilence: req.SentenceSilence,
+	}
+	var response sapi5ShimSynthResponse
+	if err := runSAPI5ShimJSON(ctx, shim, "synthesize", payload, &response); err != nil {
+		return Audio{}, err
+	}
+	data, err := base64.StdEncoding.DecodeString(response.DataBase64)
+	if err != nil {
+		return Audio{}, fmt.Errorf("SAPI5 compatibility shim returned invalid audio: %w", err)
+	}
+	return Audio{
+		Format:     response.Format,
+		SampleRate: response.SampleRate,
+		Channels:   response.Channels,
+		Data:       data,
+	}, nil
+}
+
+func runSAPI5ShimJSON(ctx context.Context, shim string, command string, input any, output any) error {
+	cmd := exec.CommandContext(ctx, shim, command)
+	cmd.Env = append(os.Environ(), sapi5ShimDisabledEnv+"=1")
+	if input != nil {
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return err
+		}
+		go func() {
+			defer stdin.Close()
+			_ = json.NewEncoder(stdin).Encode(input)
+		}()
+	}
+	raw, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			detail := strings.TrimSpace(string(exitErr.Stderr))
+			if detail != "" {
+				return fmt.Errorf("SAPI5 compatibility shim failed: %s", detail)
+			}
+		}
+		return fmt.Errorf("SAPI5 compatibility shim failed: %w", err)
+	}
+	if output == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, output); err != nil {
+		return fmt.Errorf("SAPI5 compatibility shim returned invalid JSON: %w", err)
+	}
+	return nil
+}
+
+func sapi5ShimPath() (string, error) {
+	if raw := strings.TrimSpace(os.Getenv(sapi5ShimPathEnv)); raw != "" {
+		if info, err := os.Stat(raw); err == nil && !info.IsDir() {
+			return raw, nil
+		}
+		return "", fmt.Errorf("%w: SAPI5 compatibility shim not found at %s", ErrProviderUnavailable, raw)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(filepath.Dir(exe), "haze-sapi5-shim.exe")
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return path, nil
+	}
+	return "", fmt.Errorf("%w: SAPI5 compatibility shim not bundled", ErrProviderUnavailable)
+}
+
+func sapi5ShimDisabled() bool {
+	value := strings.TrimSpace(os.Getenv(sapi5ShimDisabledEnv))
+	return value == "1" || strings.EqualFold(value, "true")
+}
+
+func mergeSAPIVoices(native []Voice, shim []Voice) []Voice {
+	out := append([]Voice{}, native...)
+	seen := make(map[string]struct{}, len(out))
+	for _, voice := range out {
+		seen[strings.ToLower(strings.TrimSpace(voice.ID))] = struct{}{}
+		seen[strings.ToLower(strings.TrimSpace(voice.Name))] = struct{}{}
+	}
+	for _, voice := range shim {
+		id := strings.ToLower(strings.TrimSpace(voice.ID))
+		name := strings.ToLower(strings.TrimSpace(voice.Name))
+		if _, ok := seen[id]; ok && id != "" {
+			continue
+		}
+		if _, ok := seen[name]; ok && name != "" {
+			continue
+		}
+		out = append(out, voice)
+		seen[id] = struct{}{}
+		seen[name] = struct{}{}
+	}
+	return out
+}
+
+func sapiVoiceNotFound(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "voice") && strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
 func createDispatch(progID string) (*ole.IDispatch, func(), error) {

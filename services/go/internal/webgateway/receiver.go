@@ -337,7 +337,7 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 		return
 	}
 	connection, err := websocket.Accept(writer, request, &websocket.AcceptOptions{
-		OriginPatterns: sameOriginPatterns(request),
+		OriginPatterns: allOriginPatterns(),
 	})
 	if err != nil {
 		return
@@ -414,6 +414,8 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 				"disable_g722":    boolValue(message, "disable_g722"),
 				"require_opus":    boolValue(message, "require_opus"),
 				"preferred_codec": preferredCodec,
+				"client_ip":       clientIPForMediaRequest(request),
+				"remote_addr":     request.RemoteAddr,
 			}); ok {
 				answer["type"] = "webrtc_answer"
 				answer["timestamp"] = time.Now().UTC()

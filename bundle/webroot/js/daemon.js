@@ -128,9 +128,9 @@ const SECTIONS = [
         ],
         fields: [
             ['webpanel.public.host', 'Public host', '0.0.0.0'],
-            ['webpanel.public.port', 'Public port', '8086'],
+            ['webpanel.public.port', 'Public port', '6444'],
             ['webpanel.admin.host', 'Admin host', '0.0.0.0'],
-            ['webpanel.admin.port', 'Admin port', '8086'],
+            ['webpanel.admin.port', 'Admin port', '6444'],
             ['webpanel.tls.domains', 'ACME domains', 'radio.example.com'],
             ['webpanel.tls.email', 'ACME email', 'operator@example.com'],
             ['webpanel.tls.cache_dir', 'ACME cache', 'runtime/tls/acme'],

@@ -1,5 +1,6 @@
 use std::fs;
-use std::net::UdpSocket;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -35,6 +36,8 @@ struct DaemonServicesConfig {
     scheduler: Option<DaemonSchedulerConfig>,
     playlist: Option<DaemonPlaylistConfig>,
     alert_queue: Option<DaemonAlertQueueConfig>,
+    runtime_cleanup: Option<DaemonRuntimeCleanupConfig>,
+    split_dns: Option<DaemonSplitDnsConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -52,6 +55,35 @@ struct DaemonPlaylistConfig {
 struct DaemonAlertQueueConfig {
     enabled: Option<bool>,
     interval_ms: Option<FlexibleU64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DaemonRuntimeCleanupConfig {
+    enabled: Option<bool>,
+    interval_minutes: Option<FlexibleU64>,
+    rules: Option<Vec<RuntimeCleanupRuleConfig>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DaemonSplitDnsConfig {
+    enabled: Option<bool>,
+    listen: Option<String>,
+    ttl_seconds: Option<FlexibleU64>,
+    records: Option<Vec<SplitDnsRecordConfig>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SplitDnsRecordConfig {
+    name: String,
+    address: String,
+    enabled: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RuntimeCleanupRuleConfig {
+    path: String,
+    max_age_minutes: Option<FlexibleU64>,
+    enabled: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -178,6 +210,66 @@ impl DaemonServices {
                 playlist_loop(interval_ms, tx, stop_flag);
             }));
             info!(interval_ms, "daemon playlist service enabled");
+        }
+
+        if daemon_cfg
+            .runtime_cleanup
+            .as_ref()
+            .and_then(|cfg| cfg.enabled)
+            .unwrap_or(false)
+        {
+            let cleanup_cfg = daemon_cfg.runtime_cleanup.as_ref();
+            let interval_minutes = cleanup_cfg
+                .and_then(|cfg| cfg.interval_minutes.as_ref())
+                .and_then(|value| value.value())
+                .unwrap_or(30)
+                .clamp(1, 24 * 60);
+            let rules = runtime_cleanup_rules(cleanup_cfg);
+            let rule_count = rules.len();
+            let runtime_dir = host.runtime_dir.clone();
+            let stop_flag = Arc::clone(&stop);
+            threads.push(thread::spawn(move || {
+                runtime_cleanup_loop(runtime_dir, interval_minutes, rules, stop_flag);
+            }));
+            info!(
+                interval_minutes,
+                rule_count, "daemon runtime cleanup service enabled"
+            );
+        }
+
+        if daemon_cfg
+            .split_dns
+            .as_ref()
+            .and_then(|cfg| cfg.enabled)
+            .unwrap_or(false)
+        {
+            let dns_cfg = daemon_cfg.split_dns.as_ref();
+            let listen = dns_cfg
+                .and_then(|cfg| cfg.listen.as_deref())
+                .filter(|raw| !raw.trim().is_empty())
+                .unwrap_or("0.0.0.0:53")
+                .trim()
+                .to_string();
+            let ttl_seconds = dns_cfg
+                .and_then(|cfg| cfg.ttl_seconds.as_ref())
+                .and_then(FlexibleU64::value)
+                .unwrap_or(60)
+                .clamp(1, 86_400) as u32;
+            let records = split_dns_records(dns_cfg);
+            let record_count = records.len();
+            if record_count == 0 {
+                warn!("daemon split dns enabled without usable A records");
+            } else {
+                let stop_flag = Arc::clone(&stop);
+                let listen_for_thread = listen.clone();
+                threads.push(thread::spawn(move || {
+                    split_dns_loop(listen_for_thread, records, ttl_seconds, stop_flag);
+                }));
+                info!(
+                    listen,
+                    record_count, ttl_seconds, "daemon split dns service enabled"
+                );
+            }
         }
 
         Ok(Self { stop, threads })
@@ -744,6 +836,411 @@ fn playlist_loop(interval_ms: u64, publisher: Sender<Value>, stop: Arc<AtomicBoo
         first = false;
         sleep_or_stopped(&stop, Duration::from_millis(interval_ms));
     }
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeCleanupRule {
+    relative_path: PathBuf,
+    max_age: Duration,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct RuntimeCleanupStats {
+    scanned_files: u64,
+    removed_files: u64,
+    removed_bytes: u64,
+    error_count: u64,
+}
+
+fn runtime_cleanup_loop(
+    runtime_dir: PathBuf,
+    interval_minutes: u64,
+    rules: Vec<RuntimeCleanupRule>,
+    stop: Arc<AtomicBool>,
+) {
+    while !stop.load(Ordering::SeqCst) {
+        let started_at = SystemTime::now();
+        let stats = run_runtime_cleanup_once(&runtime_dir, &rules, started_at);
+        if stats.removed_files > 0 || stats.error_count > 0 {
+            info!(
+                scanned_files = stats.scanned_files,
+                removed_files = stats.removed_files,
+                removed_mb = stats.removed_bytes / (1024 * 1024),
+                error_count = stats.error_count,
+                "runtime cleanup completed"
+            );
+        }
+        sleep_or_stopped(
+            &stop,
+            Duration::from_secs(interval_minutes.saturating_mul(60)),
+        );
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SplitDnsRecord {
+    name: String,
+    address: Ipv4Addr,
+}
+
+fn split_dns_records(config: Option<&DaemonSplitDnsConfig>) -> Vec<SplitDnsRecord> {
+    config
+        .and_then(|cfg| cfg.records.as_ref())
+        .map(|records| {
+            records
+                .iter()
+                .filter(|record| record.enabled.unwrap_or(true))
+                .filter_map(|record| {
+                    let name = normalize_dns_name(&record.name)?;
+                    let address = record.address.trim().parse::<Ipv4Addr>().ok()?;
+                    Some(SplitDnsRecord { name, address })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn split_dns_loop(
+    listen: String,
+    records: Vec<SplitDnsRecord>,
+    ttl_seconds: u32,
+    stop: Arc<AtomicBool>,
+) {
+    let socket = match UdpSocket::bind(&listen) {
+        Ok(socket) => socket,
+        Err(err) => {
+            warn!(%listen, error = %err, "daemon split dns failed to bind");
+            return;
+        }
+    };
+    if let Err(err) = socket.set_read_timeout(Some(Duration::from_millis(500))) {
+        warn!(%listen, error = %err, "daemon split dns failed to set read timeout");
+        return;
+    }
+    let tcp_listener = match TcpListener::bind(&listen) {
+        Ok(listener) => match listener.set_nonblocking(true) {
+            Ok(()) => Some(listener),
+            Err(err) => {
+                warn!(%listen, error = %err, "daemon split dns tcp failed to set nonblocking mode");
+                None
+            }
+        },
+        Err(err) => {
+            warn!(%listen, error = %err, "daemon split dns tcp failed to bind");
+            None
+        }
+    };
+
+    let mut packet = [0_u8; 512];
+    while !stop.load(Ordering::SeqCst) {
+        match socket.recv_from(&mut packet) {
+            Ok((len, peer)) => {
+                let Some(response) =
+                    build_split_dns_response(&packet[..len], &records, ttl_seconds)
+                else {
+                    if let Some(listener) = tcp_listener.as_ref() {
+                        drain_split_dns_tcp(listener, &records, ttl_seconds);
+                    }
+                    continue;
+                };
+                if let Err(err) = socket.send_to(&response, peer) {
+                    warn!(%peer, error = %err, "daemon split dns send failed");
+                }
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if let Some(listener) = tcp_listener.as_ref() {
+                    drain_split_dns_tcp(listener, &records, ttl_seconds);
+                }
+                continue;
+            }
+            Err(err) => {
+                warn!(%listen, error = %err, "daemon split dns receive failed");
+            }
+        }
+        if let Some(listener) = tcp_listener.as_ref() {
+            drain_split_dns_tcp(listener, &records, ttl_seconds);
+        }
+    }
+}
+
+fn drain_split_dns_tcp(listener: &TcpListener, records: &[SplitDnsRecord], ttl_seconds: u32) {
+    loop {
+        let (mut stream, peer) = match listener.accept() {
+            Ok(connection) => connection,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return,
+            Err(err) => {
+                warn!(error = %err, "daemon split dns tcp accept failed");
+                return;
+            }
+        };
+        if let Err(err) = stream.set_read_timeout(Some(Duration::from_millis(500))) {
+            warn!(%peer, error = %err, "daemon split dns tcp failed to set read timeout");
+            continue;
+        }
+        if let Err(err) = stream.set_write_timeout(Some(Duration::from_millis(500))) {
+            warn!(%peer, error = %err, "daemon split dns tcp failed to set write timeout");
+            continue;
+        }
+        let mut len_buf = [0_u8; 2];
+        if stream.read_exact(&mut len_buf).is_err() {
+            continue;
+        }
+        let len = u16::from_be_bytes(len_buf) as usize;
+        if len == 0 || len > 4096 {
+            continue;
+        }
+        let mut request = vec![0_u8; len];
+        if stream.read_exact(&mut request).is_err() {
+            continue;
+        }
+        let Some(response) = build_split_dns_response(&request, records, ttl_seconds) else {
+            continue;
+        };
+        let Ok(response_len) = u16::try_from(response.len()) else {
+            continue;
+        };
+        if stream.write_all(&response_len.to_be_bytes()).is_err() {
+            continue;
+        }
+        if let Err(err) = stream.write_all(&response) {
+            warn!(%peer, error = %err, "daemon split dns tcp send failed");
+        }
+    }
+}
+
+fn normalize_dns_name(raw: &str) -> Option<String> {
+    let name = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+    if name.is_empty()
+        || name.len() > 253
+        || name.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || !label
+                    .bytes()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-')
+        })
+    {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+fn build_split_dns_response(
+    request: &[u8],
+    records: &[SplitDnsRecord],
+    ttl_seconds: u32,
+) -> Option<Vec<u8>> {
+    if request.len() < 12 {
+        return None;
+    }
+    let qdcount = u16::from_be_bytes([request[4], request[5]]);
+    if qdcount == 0 {
+        return None;
+    }
+    let (name, question_end) = parse_dns_question_name(request, 12)?;
+    if question_end + 4 > request.len() {
+        return None;
+    }
+    let qtype = u16::from_be_bytes([request[question_end], request[question_end + 1]]);
+    let qclass = u16::from_be_bytes([request[question_end + 2], request[question_end + 3]]);
+    let question_end = question_end + 4;
+    let address = if qtype == 1 && qclass == 1 {
+        records
+            .iter()
+            .find(|record| record.name == name)
+            .map(|record| record.address)
+    } else {
+        None
+    };
+
+    let mut response = Vec::with_capacity(question_end + 32);
+    response.extend_from_slice(&request[0..2]);
+    response.extend_from_slice(&0x8180_u16.to_be_bytes());
+    response.extend_from_slice(&1_u16.to_be_bytes());
+    response.extend_from_slice(&(if address.is_some() { 1_u16 } else { 0_u16 }).to_be_bytes());
+    response.extend_from_slice(&0_u16.to_be_bytes());
+    response.extend_from_slice(&0_u16.to_be_bytes());
+    response.extend_from_slice(&request[12..question_end]);
+    if let Some(address) = address {
+        response.extend_from_slice(&[0xC0, 0x0C]);
+        response.extend_from_slice(&1_u16.to_be_bytes());
+        response.extend_from_slice(&1_u16.to_be_bytes());
+        response.extend_from_slice(&ttl_seconds.to_be_bytes());
+        response.extend_from_slice(&4_u16.to_be_bytes());
+        response.extend_from_slice(&address.octets());
+    }
+    Some(response)
+}
+
+fn parse_dns_question_name(packet: &[u8], mut offset: usize) -> Option<(String, usize)> {
+    let mut labels = Vec::new();
+    loop {
+        let len = *packet.get(offset)? as usize;
+        offset += 1;
+        if len == 0 {
+            break;
+        }
+        if len & 0xC0 != 0 || len > 63 {
+            return None;
+        }
+        let end = offset.checked_add(len)?;
+        let label = std::str::from_utf8(packet.get(offset..end)?).ok()?;
+        labels.push(label.to_ascii_lowercase());
+        offset = end;
+    }
+    normalize_dns_name(&labels.join(".")).map(|name| (name, offset))
+}
+
+fn runtime_cleanup_rules(config: Option<&DaemonRuntimeCleanupConfig>) -> Vec<RuntimeCleanupRule> {
+    let configured = config
+        .and_then(|cfg| cfg.rules.as_ref())
+        .map(|rules| {
+            rules
+                .iter()
+                .filter(|rule| rule.enabled.unwrap_or(true))
+                .filter_map(|rule| {
+                    let relative_path = safe_relative_runtime_path(&rule.path)?;
+                    let max_age_minutes = rule
+                        .max_age_minutes
+                        .as_ref()
+                        .and_then(FlexibleU64::value)
+                        .unwrap_or(30)
+                        .max(1);
+                    Some(RuntimeCleanupRule {
+                        relative_path,
+                        max_age: Duration::from_secs(max_age_minutes.saturating_mul(60)),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !configured.is_empty() {
+        return configured;
+    }
+    default_runtime_cleanup_rules()
+}
+
+fn default_runtime_cleanup_rules() -> Vec<RuntimeCleanupRule> {
+    const MINUTE: u64 = 60;
+    [
+        ("runtime/tmp", 30 * MINUTE),
+        ("runtime/audio/previews", 30 * MINUTE),
+        ("runtime/audio/operator-breakin", 30 * MINUTE),
+        ("runtime/cgen-probe", 30 * MINUTE),
+        ("runtime/audio/playlist", 6 * 60 * MINUTE),
+        ("runtime/audio/tts", 24 * 60 * MINUTE),
+        ("runtime/ivr/cache", 24 * 60 * MINUTE),
+        ("runtime/audio/alerts", 7 * 24 * 60 * MINUTE),
+        ("runtime/audio/easnet", 7 * 24 * 60 * MINUTE),
+    ]
+    .into_iter()
+    .filter_map(|(path, seconds)| {
+        Some(RuntimeCleanupRule {
+            relative_path: safe_relative_runtime_path(path)?,
+            max_age: Duration::from_secs(seconds),
+        })
+    })
+    .collect()
+}
+
+fn safe_relative_runtime_path(raw: &str) -> Option<PathBuf> {
+    let path = Path::new(raw.trim());
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return None;
+    }
+    let mut safe = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => safe.push(part),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if safe.as_os_str().is_empty() {
+        None
+    } else {
+        Some(safe)
+    }
+}
+
+fn run_runtime_cleanup_once(
+    runtime_dir: &Path,
+    rules: &[RuntimeCleanupRule],
+    now: SystemTime,
+) -> RuntimeCleanupStats {
+    let mut total = RuntimeCleanupStats::default();
+    for rule in rules {
+        let Some(cutoff) = now.checked_sub(rule.max_age) else {
+            continue;
+        };
+        let root = runtime_dir.join(&rule.relative_path);
+        let stats = cleanup_runtime_tree(&root, cutoff);
+        total.scanned_files = total.scanned_files.saturating_add(stats.scanned_files);
+        total.removed_files = total.removed_files.saturating_add(stats.removed_files);
+        total.removed_bytes = total.removed_bytes.saturating_add(stats.removed_bytes);
+        total.error_count = total.error_count.saturating_add(stats.error_count);
+    }
+    total
+}
+
+fn cleanup_runtime_tree(root: &Path, cutoff: SystemTime) -> RuntimeCleanupStats {
+    let Ok(entries) = fs::read_dir(root) else {
+        return RuntimeCleanupStats::default();
+    };
+    let mut stats = RuntimeCleanupStats::default();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            stats.error_count = stats.error_count.saturating_add(1);
+            continue;
+        };
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            stats.error_count = stats.error_count.saturating_add(1);
+            continue;
+        };
+        if metadata.is_dir() {
+            let child_stats = cleanup_runtime_tree(&path, cutoff);
+            stats.scanned_files = stats
+                .scanned_files
+                .saturating_add(child_stats.scanned_files);
+            stats.removed_files = stats
+                .removed_files
+                .saturating_add(child_stats.removed_files);
+            stats.removed_bytes = stats
+                .removed_bytes
+                .saturating_add(child_stats.removed_bytes);
+            stats.error_count = stats.error_count.saturating_add(child_stats.error_count);
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        stats.scanned_files = stats.scanned_files.saturating_add(1);
+        let Ok(modified) = metadata.modified() else {
+            stats.error_count = stats.error_count.saturating_add(1);
+            continue;
+        };
+        if modified > cutoff {
+            continue;
+        }
+        let len = metadata.len();
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                stats.removed_files = stats.removed_files.saturating_add(1);
+                stats.removed_bytes = stats.removed_bytes.saturating_add(len);
+            }
+            Err(_) => {
+                stats.error_count = stats.error_count.saturating_add(1);
+            }
+        }
+    }
+    stats
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1357,6 +1854,109 @@ fn unix_now_ms() -> u128 {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    fn dns_query(name: &str, qtype: u16) -> Vec<u8> {
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&0x1234_u16.to_be_bytes());
+        packet.extend_from_slice(&0x0100_u16.to_be_bytes());
+        packet.extend_from_slice(&1_u16.to_be_bytes());
+        packet.extend_from_slice(&0_u16.to_be_bytes());
+        packet.extend_from_slice(&0_u16.to_be_bytes());
+        packet.extend_from_slice(&0_u16.to_be_bytes());
+        for label in name.split('.') {
+            packet.push(label.len() as u8);
+            packet.extend_from_slice(label.as_bytes());
+        }
+        packet.push(0);
+        packet.extend_from_slice(&qtype.to_be_bytes());
+        packet.extend_from_slice(&1_u16.to_be_bytes());
+        packet
+    }
+
+    #[test]
+    fn split_dns_answers_configured_a_record() {
+        let records = vec![SplitDnsRecord {
+            name: "internal.rai.blue".to_string(),
+            address: Ipv4Addr::new(172, 16, 1, 30),
+        }];
+        let response = build_split_dns_response(&dns_query("internal.rai.blue", 1), &records, 60)
+            .expect("response");
+
+        assert_eq!(&response[0..2], &0x1234_u16.to_be_bytes());
+        assert_eq!(&response[6..8], &1_u16.to_be_bytes());
+        assert_eq!(&response[response.len() - 4..], &[172, 16, 1, 30]);
+    }
+
+    #[test]
+    fn split_dns_returns_empty_answer_for_unknown_or_non_a_query() {
+        let records = vec![SplitDnsRecord {
+            name: "internal.rai.blue".to_string(),
+            address: Ipv4Addr::new(172, 16, 1, 30),
+        }];
+        let unknown =
+            build_split_dns_response(&dns_query("example.test", 1), &records, 60).expect("unknown");
+        let aaaa = build_split_dns_response(&dns_query("internal.rai.blue", 28), &records, 60)
+            .expect("aaaa");
+
+        assert_eq!(&unknown[6..8], &0_u16.to_be_bytes());
+        assert_eq!(&aaaa[6..8], &0_u16.to_be_bytes());
+    }
+
+    #[test]
+    fn runtime_cleanup_removes_stale_files_under_configured_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target_dir = dir.path().join("runtime/audio/playlist/sk-0001");
+        fs::create_dir_all(&target_dir).expect("target dir");
+        let stale = target_dir.join("forecast.wav");
+        fs::write(&stale, [1_u8, 2, 3, 4]).expect("stale file");
+        fs::create_dir_all(dir.path().join("runtime/state")).expect("state dir");
+        let state = dir.path().join("runtime/state/haze.db");
+        fs::write(&state, [9_u8]).expect("state file");
+        let rules = vec![RuntimeCleanupRule {
+            relative_path: PathBuf::from("runtime/audio/playlist"),
+            max_age: Duration::from_secs(60),
+        }];
+
+        let stats = run_runtime_cleanup_once(
+            dir.path(),
+            &rules,
+            SystemTime::now() + Duration::from_secs(120),
+        );
+
+        assert_eq!(stats.removed_files, 1);
+        assert_eq!(stats.removed_bytes, 4);
+        assert!(!stale.exists());
+        assert!(state.exists());
+    }
+
+    #[test]
+    fn runtime_cleanup_keeps_fresh_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target_dir = dir.path().join("runtime/audio/playlist/sk-0001");
+        fs::create_dir_all(&target_dir).expect("target dir");
+        let fresh = target_dir.join("current.wav");
+        fs::write(&fresh, [1_u8, 2, 3, 4]).expect("fresh file");
+        let rules = vec![RuntimeCleanupRule {
+            relative_path: PathBuf::from("runtime/audio/playlist"),
+            max_age: Duration::from_secs(60 * 60),
+        }];
+
+        let stats = run_runtime_cleanup_once(dir.path(), &rules, SystemTime::now());
+
+        assert_eq!(stats.removed_files, 0);
+        assert!(fresh.exists());
+    }
+
+    #[test]
+    fn runtime_cleanup_rejects_unsafe_relative_paths() {
+        assert!(safe_relative_runtime_path("../config.yaml").is_none());
+        assert!(safe_relative_runtime_path("runtime/../config.yaml").is_none());
+        assert!(safe_relative_runtime_path("").is_none());
+        assert_eq!(
+            safe_relative_runtime_path("runtime/audio/playlist"),
+            Some(PathBuf::from("runtime/audio/playlist"))
+        );
+    }
 
     #[test]
     fn alert_queue_worker_marks_pending_item_played() {

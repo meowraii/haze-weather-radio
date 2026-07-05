@@ -91,7 +91,7 @@ impl PipelineWorker {
         .await
     }
 
-    fn spawn_status_publisher(&self) -> Option<mpsc::UnboundedSender<Value>> {
+    fn spawn_status_publisher(&self) -> Option<mpsc::Sender<Value>> {
         let bridge = self.bridge.clone()?;
         let feed_id = self.feed.id.clone();
         let status_path = self
@@ -99,7 +99,7 @@ impl PipelineWorker {
             .join("runtime")
             .join("cgen")
             .join(format!("{}.status.json", safe_file_id(&feed_id)));
-        let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+        let (tx, mut rx) = mpsc::channel::<Value>(8);
         tokio::spawn(async move {
             let mut pending: Option<Value> = None;
             let mut last_sent: Option<Value> = None;

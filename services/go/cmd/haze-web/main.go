@@ -31,7 +31,7 @@ func main() {
 }
 
 func run() error {
-	addr := flag.String("addr", "127.0.0.1:8081", "HTTP listen address")
+	addr := flag.String("addr", "127.0.0.1:6444", "HTTP listen address")
 	webroot := flag.String("webroot", "webroot", "webroot directory")
 	configPath := flag.String("config", "config.yaml", "Haze config path")
 	surface := flag.String("surface", "combined", "HTTP surface: public, admin, or combined")
@@ -80,7 +80,6 @@ func run() error {
 		Addr:              *addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		TLSConfig:         tlsRuntime.TLSConfig(),
 	}
 	normalizedSurface := webgateway.NormalizeSurface(*surface)
 	var publicServers []*http.Server
@@ -131,13 +130,6 @@ func run() error {
 		}
 	}()
 
-	if tlsRuntime.Enabled {
-		log.Printf("haze-web %s listening with HTTPS on %s", *surface, *addr)
-		if tlsRuntime.Mode == "acme" {
-			return server.ListenAndServeTLS("", "")
-		}
-		return server.ListenAndServeTLS(tlsRuntime.CertFile, tlsRuntime.KeyFile)
-	}
 	log.Printf("haze-web %s listening on %s", *surface, *addr)
 	return server.ListenAndServe()
 }
@@ -170,7 +162,7 @@ func startPublicPortServers(config webgateway.Config, handler http.Handler, tlsR
 
 	servers := []*http.Server{}
 	if tlsRuntime != nil && tlsRuntime.Enabled {
-		httpsAddr := net.JoinHostPort(host, strconv.Itoa(httpsPort))
+		httpsAddr := net.JoinHostPort(host, strconv.Itoa(httpsPort.Int()))
 		httpsServer := &http.Server{
 			Addr:              httpsAddr,
 			Handler:           handler,
@@ -182,7 +174,7 @@ func startPublicPortServers(config webgateway.Config, handler http.Handler, tlsR
 
 		if tlsRuntime.RedirectHTTP || publicPortHTTPHandlesACME(config, tlsRuntime) {
 			httpServer := &http.Server{
-				Addr:              net.JoinHostPort(host, strconv.Itoa(httpPort)),
+				Addr:              net.JoinHostPort(host, strconv.Itoa(httpPort.Int())),
 				Handler:           tlsRuntime.HTTPChallengeHandler(httpsAddr),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
@@ -193,7 +185,7 @@ func startPublicPortServers(config webgateway.Config, handler http.Handler, tlsR
 	}
 
 	httpServer := &http.Server{
-		Addr:              net.JoinHostPort(host, strconv.Itoa(httpPort)),
+		Addr:              net.JoinHostPort(host, strconv.Itoa(httpPort.Int())),
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}

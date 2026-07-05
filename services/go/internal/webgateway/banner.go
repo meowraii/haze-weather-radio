@@ -121,7 +121,7 @@ func (s *Server) bannerCurrent(writer http.ResponseWriter, request *http.Request
 
 func (s *Server) bannerAudio(writer http.ResponseWriter, request *http.Request) {
 	connection, err := websocket.Accept(writer, request, &websocket.AcceptOptions{
-		OriginPatterns: sameOriginPatterns(request),
+		OriginPatterns: allOriginPatterns(),
 	})
 	if err != nil {
 		return
@@ -175,6 +175,8 @@ func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Req
 		"disable_g722":    payload.DisableG722,
 		"require_opus":    payload.RequireOpus,
 		"preferred_codec": firstNonBlank(payload.Codec, payload.PreferredCodec),
+		"client_ip":       clientIPForMediaRequest(request),
+		"remote_addr":     request.RemoteAddr,
 	}); ok {
 		answer["feed_id"] = feedID
 		if _, ok := answer["sdp_type"]; !ok {

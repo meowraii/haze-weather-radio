@@ -97,7 +97,7 @@ function Copy-BundleDirectory {
 
 New-Item -ItemType Directory -Force -Path $OutFull | Out-Null
 New-Item -ItemType Directory -Force -Path $BinFull | Out-Null
-foreach ($File in @("haze-web.exe", "haze-data-ingest.exe", "haze-tts.exe", "haze-product-render.exe", "haze-playlist.exe", "haze-webhook.exe", "haze-ivr.exe", "libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll", "libwinpthread-1.dll")) {
+foreach ($File in @("haze-web.exe", "haze-data-ingest.exe", "haze-tts.exe", "haze-sapi5-shim.exe", "haze-product-render.exe", "haze-playlist.exe", "haze-webhook.exe", "haze-ivr.exe", "libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll", "libwinpthread-1.dll")) {
     $LegacyTarget = Join-Path $OutFull $File
     if (Test-Path -LiteralPath $LegacyTarget) {
         Remove-Item -LiteralPath $LegacyTarget -Force
@@ -209,6 +209,21 @@ try {
     go build @BuildWebArgs -ldflags $WebLdflags -o (Join-Path $BinFull "haze-web.exe") ./cmd/haze-web
     go build -o (Join-Path $BinFull "haze-data-ingest.exe") ./cmd/haze-data-ingest
     go build -o (Join-Path $BinFull "haze-tts.exe") ./cmd/haze-tts
+    if ($RunningOnWindows) {
+        $SavedGoOS = $env:GOOS
+        $SavedGoArch = $env:GOARCH
+        $SavedCGOEnabled = $env:CGO_ENABLED
+        try {
+            $env:GOOS = "windows"
+            $env:GOARCH = "386"
+            $env:CGO_ENABLED = "0"
+            go build -o (Join-Path $BinFull "haze-sapi5-shim.exe") ./cmd/haze-sapi5-shim
+        } finally {
+            $env:GOOS = $SavedGoOS
+            $env:GOARCH = $SavedGoArch
+            $env:CGO_ENABLED = $SavedCGOEnabled
+        }
+    }
     go build -o (Join-Path $BinFull "haze-product-render.exe") ./cmd/haze-product-render
     go build -o (Join-Path $BinFull "haze-playlist.exe") ./cmd/haze-playlist
     go build -o (Join-Path $BinFull "haze-webhook.exe") ./cmd/haze-webhook

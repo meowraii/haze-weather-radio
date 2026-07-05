@@ -101,7 +101,7 @@ func daemonSettingsView(source map[string]any) map[string]any {
 				"enabled": boolAt(source, []string{"services", "go", "enabled"}, false),
 				"web_gateway": map[string]any{
 					"enabled": boolAt(source, []string{"services", "go", "web_gateway", "enabled"}, false),
-					"addr":    textAt(source, []string{"services", "go", "web_gateway", "addr"}, "127.0.0.1:8081", 180),
+					"addr":    textAt(source, []string{"services", "go", "web_gateway", "addr"}, "127.0.0.1:6444", 180),
 				},
 				"data_ingest": map[string]any{
 					"enabled":  boolAt(source, []string{"services", "go", "data_ingest", "enabled"}, false),
@@ -201,7 +201,7 @@ func daemonSettingsView(source map[string]any) map[string]any {
 			"public": map[string]any{
 				"enabled": boolAt(source, []string{"webpanel", "public", "enabled"}, true),
 				"host":    textAt(source, []string{"webpanel", "public", "host"}, "0.0.0.0", 120),
-				"port":    textAt(source, []string{"webpanel", "public", "port"}, "8080", 12),
+				"port":    textAt(source, []string{"webpanel", "public", "port"}, "6444", 12),
 				"feeds": map[string]any{
 					"access": publicAccess,
 					"webrtc": map[string]any{
@@ -212,7 +212,7 @@ func daemonSettingsView(source map[string]any) map[string]any {
 			"admin": map[string]any{
 				"enabled": boolAt(source, []string{"webpanel", "admin", "enabled"}, true),
 				"host":    textAt(source, []string{"webpanel", "admin", "host"}, "0.0.0.0", 120),
-				"port":    textAt(source, []string{"webpanel", "admin", "port"}, "8086", 12),
+				"port":    textAt(source, []string{"webpanel", "admin", "port"}, "6444", 12),
 			},
 			"receiver": map[string]any{
 				"enabled": boolAt(source, []string{"webpanel", "receiver", "enabled"}, false),

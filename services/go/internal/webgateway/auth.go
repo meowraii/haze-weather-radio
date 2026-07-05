@@ -48,7 +48,7 @@ func NewAuthManager(config Config) *AuthManager {
 	}
 	return &AuthManager{
 		enabled:      enabled,
-		secureCookie: config.Webpanel.Authentication.SecureCookies || config.Webpanel.TLS.Enabled,
+		secureCookie: config.Webpanel.Authentication.SecureCookies,
 		password:     []byte(os.Getenv("ADMIN_PASSWD")),
 		passwordHash: strings.TrimSpace(os.Getenv("ADMIN_PASSWD_HASH")),
 		ttl:          time.Duration(ttlSeconds) * time.Second,

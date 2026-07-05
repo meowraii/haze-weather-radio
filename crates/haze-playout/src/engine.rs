@@ -27,8 +27,10 @@ const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 750;
 const PCM_PUBLISH_QUEUE_CAPACITY: usize = 16;
 const REALTIME_MAX_CATCHUP_CHUNKS: usize = 2;
 const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
-const AUDIO_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
-const AUDIO_CACHE_MAX_READY_ENTRIES: usize = 512;
+const AUDIO_CACHE_MAX_BYTES: usize = 96 * 1024 * 1024;
+const AUDIO_CACHE_MAX_READY_ENTRIES: usize = 192;
+const AUDIO_CACHE_MAX_IDLE: Duration = Duration::from_secs(120);
+const AUDIO_CACHE_PRUNE_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub(crate) struct Options {
@@ -292,6 +294,7 @@ async fn run_connected(
 ) -> ConnectedOutcome {
     let mut handles = HashMap::<String, FeedHandle>::new();
     let audio_cache = Arc::new(AudioCache::default());
+    let audio_cache_maintenance = spawn_audio_cache_maintenance(&audio_cache);
     for feed in cfg.enabled_feeds().cloned() {
         let media_client = match bridge::connect_publish_only_retry(media_bridge_addr).await {
             Ok(client) => client,
@@ -300,6 +303,7 @@ async fn run_connected(
                     feed_id = feed.id,
                     "failed to connect feed media bridge publisher: {err}"
                 );
+                audio_cache_maintenance.abort();
                 return ConnectedOutcome::Reconnect;
             }
         };
@@ -317,11 +321,28 @@ async fn run_connected(
 
     while let Some(event) = events.recv().await {
         if bridge::string_at(&event, "type") == "system.shutdown" {
+            audio_cache_maintenance.abort();
             return ConnectedOutcome::Shutdown;
         }
         dispatch_event(&cfg, &audio_cache, &handles, event).await;
     }
+    audio_cache_maintenance.abort();
     ConnectedOutcome::Reconnect
+}
+
+fn spawn_audio_cache_maintenance(audio_cache: &Arc<AudioCache>) -> tokio::task::JoinHandle<()> {
+    let cache = Arc::downgrade(audio_cache);
+    tokio::spawn(async move {
+        let mut ticker = interval(AUDIO_CACHE_PRUNE_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let Some(cache) = cache.upgrade() else {
+                break;
+            };
+            cache.prune_idle().await;
+        }
+    })
 }
 
 async fn dispatch_event(
@@ -1578,11 +1599,13 @@ impl AudioCache {
         Load: FnOnce() -> Fut,
         Fut: Future<Output = Result<Arc<[u8]>>>,
     {
+        let now = Instant::now();
         let waiter = {
             let mut entries = self.entries.lock().await;
+            prune_idle_audio_cache(&mut entries, now, Some(&key));
             match entries.get_mut(&key) {
                 Some(SharedAudioEntry::Ready { pcm, last_used, .. }) => {
-                    *last_used = Instant::now();
+                    *last_used = now;
                     return Ok(Arc::clone(pcm));
                 }
                 Some(SharedAudioEntry::Loading(waiters)) => {
@@ -1650,12 +1673,18 @@ impl AudioCache {
         }
         loaded
     }
+
+    async fn prune_idle(&self) {
+        let mut entries = self.entries.lock().await;
+        prune_idle_audio_cache(&mut entries, Instant::now(), None);
+    }
 }
 
 fn trim_audio_cache(
     entries: &mut HashMap<SharedAudioKey, SharedAudioEntry>,
     preserve: &SharedAudioKey,
 ) {
+    prune_idle_audio_cache(entries, Instant::now(), Some(preserve));
     let mut ready = Vec::new();
     let mut total_bytes = 0usize;
     let mut ready_entries = 0usize;
@@ -1685,6 +1714,32 @@ fn trim_audio_cache(
         if total_bytes <= AUDIO_CACHE_MAX_BYTES && ready_entries <= AUDIO_CACHE_MAX_READY_ENTRIES {
             break;
         }
+    }
+}
+
+fn prune_idle_audio_cache(
+    entries: &mut HashMap<SharedAudioKey, SharedAudioEntry>,
+    now: Instant,
+    preserve: Option<&SharedAudioKey>,
+) {
+    let stale: Vec<SharedAudioKey> = entries
+        .iter()
+        .filter_map(|(key, entry)| {
+            if preserve.is_some_and(|preserve| preserve == key) {
+                return None;
+            }
+            match entry {
+                SharedAudioEntry::Ready { last_used, .. }
+                    if now.saturating_duration_since(*last_used) >= AUDIO_CACHE_MAX_IDLE =>
+                {
+                    Some(key.clone())
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    for key in stale {
+        entries.remove(&key);
     }
 }
 
@@ -2951,6 +3006,68 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         for result in &results[1..] {
             assert!(Arc::ptr_eq(&results[0], result));
+        }
+    }
+
+    #[test]
+    fn audio_cache_prunes_idle_ready_entries() {
+        let mut entries = HashMap::new();
+        let stale_key = test_shared_audio_key("stale");
+        let fresh_key = test_shared_audio_key("fresh");
+        let now = Instant::now();
+        entries.insert(
+            stale_key.clone(),
+            SharedAudioEntry::Ready {
+                pcm: Arc::from(vec![1u8; 4].into_boxed_slice()),
+                bytes: 4,
+                last_used: now
+                    .checked_sub(AUDIO_CACHE_MAX_IDLE + Duration::from_secs(1))
+                    .expect("past instant"),
+            },
+        );
+        entries.insert(
+            fresh_key.clone(),
+            SharedAudioEntry::Ready {
+                pcm: Arc::from(vec![2u8; 4].into_boxed_slice()),
+                bytes: 4,
+                last_used: now,
+            },
+        );
+
+        prune_idle_audio_cache(&mut entries, now, None);
+
+        assert!(!entries.contains_key(&stale_key));
+        assert!(entries.contains_key(&fresh_key));
+    }
+
+    #[test]
+    fn audio_cache_idle_prune_preserves_requested_key() {
+        let mut entries = HashMap::new();
+        let key = test_shared_audio_key("preserve");
+        let now = Instant::now();
+        entries.insert(
+            key.clone(),
+            SharedAudioEntry::Ready {
+                pcm: Arc::from(vec![1u8; 4].into_boxed_slice()),
+                bytes: 4,
+                last_used: now
+                    .checked_sub(AUDIO_CACHE_MAX_IDLE + Duration::from_secs(1))
+                    .expect("past instant"),
+            },
+        );
+
+        prune_idle_audio_cache(&mut entries, now, Some(&key));
+
+        assert!(entries.contains_key(&key));
+    }
+
+    fn test_shared_audio_key(text: &str) -> SharedAudioKey {
+        SharedAudioKey::Synth {
+            text: text.to_string(),
+            reader_id: "00".to_string(),
+            language: "en-CA".to_string(),
+            sample_rate: 48_000,
+            channels: 1,
         }
     }
 

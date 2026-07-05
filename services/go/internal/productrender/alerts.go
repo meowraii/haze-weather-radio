@@ -25,6 +25,7 @@ import (
 )
 
 const alertRegistryGrace = 10 * time.Minute
+const alertRegistryNoExpiryMaxAge = 24 * time.Hour
 
 type capRegistryEntry struct {
 	ID        string
@@ -1638,7 +1639,14 @@ func isRenderableCAPEntry(entry capRegistryEntry, now time.Time) bool {
 	if expires := alertExpiresAt(alert); !expires.IsZero() {
 		return now.Before(expires.Add(alertRegistryGrace))
 	}
-	return true
+	anchor := capRegistryAnchor(alert, entry.UpdatedAt)
+	if anchor.IsZero() {
+		anchor = entry.UpdatedAt
+	}
+	if anchor.IsZero() {
+		return true
+	}
+	return now.Before(anchor.Add(alertRegistryNoExpiryMaxAge))
 }
 
 func capRegistryAnchor(alert capmodel.Alert, fallback time.Time) time.Time {

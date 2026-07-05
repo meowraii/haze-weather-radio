@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,17 +39,36 @@ type webhookServiceConfig struct {
 }
 
 type webpanelConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Host    string `yaml:"host"`
-	Port    int    `yaml:"port"`
+	Enabled bool     `yaml:"enabled"`
+	Host    string   `yaml:"host"`
+	Port    yamlPort `yaml:"port"`
 	Public  struct {
-		Enabled bool   `yaml:"enabled"`
-		Host    string `yaml:"host"`
-		Port    int    `yaml:"port"`
+		Enabled bool     `yaml:"enabled"`
+		Host    string   `yaml:"host"`
+		Port    yamlPort `yaml:"port"`
 	} `yaml:"public"`
 	TLS struct {
 		Enabled bool `yaml:"enabled"`
 	} `yaml:"tls"`
+}
+
+type yamlPort int
+
+func (p *yamlPort) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.ScalarNode {
+		return nil
+	}
+	raw := strings.TrimSpace(value.Value)
+	if raw == "" {
+		*p = 0
+		return nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return err
+	}
+	*p = yamlPort(port)
+	return nil
 }
 
 type loadedConfig struct {
@@ -264,7 +284,7 @@ func publicListenBaseURL(root rootConfig) string {
 		port = root.Webpanel.Port
 	}
 	if port <= 0 {
-		port = 8086
+		port = 6444
 	}
 	scheme := "http"
 	if root.Webpanel.TLS.Enabled {
@@ -277,8 +297,8 @@ func publicListenBaseURL(root rootConfig) string {
 	if scheme == "https" {
 		defaultPort = 443
 	}
-	if port == defaultPort {
+	if int(port) == defaultPort {
 		return scheme + "://" + host
 	}
-	return fmt.Sprintf("%s://%s:%d", scheme, host, port)
+	return fmt.Sprintf("%s://%s:%d", scheme, host, int(port))
 }

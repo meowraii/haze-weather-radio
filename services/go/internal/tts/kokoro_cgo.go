@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 )
@@ -17,8 +18,9 @@ import (
 type KokoroProvider struct {
 	options kokoroOptions
 
-	mu     sync.Mutex
-	engine *sherpa.OfflineTts
+	mu       sync.Mutex
+	engine   *sherpa.OfflineTts
+	lastUsed time.Time
 }
 
 // NewKokoroProvider creates a native Kokoro provider using HAZE_KOKORO_* configuration.
@@ -123,6 +125,7 @@ func (p *KokoroProvider) ensureEngine(ctx context.Context) (*sherpa.OfflineTts, 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.engine != nil {
+		p.lastUsed = time.Now()
 		return p.engine, nil
 	}
 	if err := p.options.ensureModelFiles(ctx); err != nil {
@@ -134,16 +137,37 @@ func (p *KokoroProvider) ensureEngine(ctx context.Context) (*sherpa.OfflineTts, 
 		return nil, fmt.Errorf("%w: failed to initialize kokoro native runtime", ErrProviderUnavailable)
 	}
 	p.engine = engine
+	p.lastUsed = time.Now()
 	runtime.SetFinalizer(p, func(provider *KokoroProvider) {
 		provider.mu.Lock()
 		engine := provider.engine
 		provider.engine = nil
+		provider.lastUsed = time.Time{}
 		provider.mu.Unlock()
 		if engine != nil {
 			sherpa.DeleteOfflineTts(engine)
 		}
 	})
 	return p.engine, nil
+}
+
+// PruneIdleRuntime closes the Kokoro model after it has been idle long enough.
+func (p *KokoroProvider) PruneIdleRuntime(maxIdle time.Duration) int {
+	if maxIdle <= 0 {
+		return 0
+	}
+	cutoff := time.Now().Add(-maxIdle)
+	p.mu.Lock()
+	if p.engine == nil || (!p.lastUsed.IsZero() && p.lastUsed.After(cutoff)) {
+		p.mu.Unlock()
+		return 0
+	}
+	engine := p.engine
+	p.engine = nil
+	p.lastUsed = time.Time{}
+	p.mu.Unlock()
+	sherpa.DeleteOfflineTts(engine)
+	return 1
 }
 
 func (o kokoroOptions) sherpaConfig() sherpa.OfflineTtsConfig {

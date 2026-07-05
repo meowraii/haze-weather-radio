@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 )
@@ -34,10 +35,13 @@ func (p *PiperProvider) nativeEngine(ctx context.Context, voice resolvedPiperVoi
 		return nil, err
 	}
 	key := strings.Join([]string{voice.ModelPath, voice.ConfigPath, piperRuntimeProvider(), fmt.Sprint(piperThreads())}, "\x00")
+	now := time.Now()
 	p.runtimeMu.Lock()
-	if engine := p.nativeEngines[key]; engine != nil {
+	if entry := p.nativeEngines[key]; entry.engine != nil {
+		entry.lastUsed = now
+		p.nativeEngines[key] = entry
 		p.runtimeMu.Unlock()
-		return engine, nil
+		return entry.engine, nil
 	}
 	p.runtimeMu.Unlock()
 
@@ -55,12 +59,14 @@ func (p *PiperProvider) nativeEngine(ctx context.Context, voice resolvedPiperVoi
 	})
 
 	p.runtimeMu.Lock()
-	if existing := p.nativeEngines[key]; existing != nil {
+	if existing := p.nativeEngines[key]; existing.engine != nil {
+		existing.lastUsed = now
+		p.nativeEngines[key] = existing
 		p.runtimeMu.Unlock()
 		handle.Close()
-		return existing, nil
+		return existing.engine, nil
 	}
-	p.nativeEngines[key] = handle
+	p.nativeEngines[key] = piperNativeEngineEntry{engine: handle, lastUsed: now}
 	p.runtimeMu.Unlock()
 	return handle, nil
 }
