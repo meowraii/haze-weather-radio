@@ -156,7 +156,7 @@ function setSource(source) {
     const mic = source === 'mic';
     micPanel.classList.toggle('active', mic);
     urlPanel.classList.toggle('active', !mic);
-    sourceMetric.textContent = mic ? 'Mic' : 'URL';
+    sourceMetric.textContent = mic ? 'Mic' : 'Media';
 }
 
 function requireFeeds() {
@@ -366,7 +366,7 @@ async function startURL() {
     };
     setUrlUI(true);
     await loadFeeds();
-    setStatus(`Live stream break-in on air for ${result.feed_ids?.length || feedIDs.length} feed(s).`, 'pending');
+    setStatus(`Live media break-in on air for ${result.feed_ids?.length || feedIDs.length} feed(s).`, 'pending');
 }
 
 async function stopURL() {
@@ -379,7 +379,7 @@ async function stopURL() {
     }
     setUrlUI(false);
     await loadFeeds();
-    setStatus(`Live stream break-in stopped for ${result?.feed_ids?.length || selectedFeedIDs().length} feed(s).`, 'ok');
+    setStatus(`Live media break-in stopped for ${result?.feed_ids?.length || selectedFeedIDs().length} feed(s).`, 'ok');
 }
 
 function bind() {
@@ -427,14 +427,14 @@ function bind() {
         startURL().catch((error) => {
             urlSession = null;
             setUrlUI(false);
-            setStatus(error.message || 'Unable to start stream URL.', 'err');
+            setStatus(error.message || 'Unable to start media stream.', 'err');
         });
     });
     stopUrlButton.addEventListener('click', () => {
         stopURL().catch((error) => {
             urlSession = null;
             setUrlUI(false);
-            setStatus(error.message || 'Unable to stop stream URL.', 'err');
+            setStatus(error.message || 'Unable to stop media stream.', 'err');
         });
     });
     window.addEventListener('haze:admin-state', (event) => {

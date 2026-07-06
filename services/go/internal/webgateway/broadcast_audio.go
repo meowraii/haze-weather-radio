@@ -17,20 +17,9 @@ import (
 
 const (
 	broadcastAlertAudioUploadDir = "runtime/audio/alerts/uploads"
-	broadcastAlertAudioMaxBytes  = 20 << 20
+	broadcastAlertMediaMaxBytes  = int64(20 << 20)
 	broadcastAlertAudioTimeout   = 90 * time.Second
 )
-
-var broadcastAlertAudioExtensions = map[string]bool{
-	".wav":  true,
-	".mp3":  true,
-	".ogg":  true,
-	".opus": true,
-	".m4a":  true,
-	".aac":  true,
-	".flac": true,
-	".webm": true,
-}
 
 func (s *Server) alertAudioUpload(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
@@ -42,18 +31,19 @@ func (s *Server) alertAudioUpload(writer http.ResponseWriter, request *http.Requ
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	request.Body = http.MaxBytesReader(writer, request.Body, broadcastAlertAudioMaxBytes+1<<20)
+	maxBytes := broadcastAlertMediaUploadBytes(s.config)
+	request.Body = http.MaxBytesReader(writer, request.Body, maxBytes+(1<<20))
 	if err := request.ParseMultipartForm(1 << 20); err != nil {
-		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"detail": "audio upload is invalid or too large"})
+		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"detail": "media upload is invalid or too large"})
 		return
 	}
 	file, header, err := request.FormFile("file")
 	if err != nil {
-		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"detail": "audio file is required"})
+		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"detail": "media file is required"})
 		return
 	}
 	defer file.Close()
-	result, err := prepareBroadcastAlertAudioReader(request.Context(), s.configPath, header.Filename, file)
+	result, err := prepareBroadcastAlertAudioReader(request.Context(), s.configPath, header.Filename, file, maxBytes)
 	if err != nil {
 		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"detail": err.Error()})
 		return
@@ -81,7 +71,7 @@ func (s *wsSession) prepareBroadcastAlertAudioPayload(payload map[string]any, al
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), broadcastAlertAudioTimeout)
 	defer cancel()
-	result, err := prepareBroadcastAlertAudioURL(ctx, s.configPath, audioURL, alertID)
+	result, err := prepareBroadcastAlertAudioURL(ctx, s.configPath, audioURL, alertID, broadcastAlertMediaUploadBytes(s.config))
 	if err != nil {
 		return nil, err
 	}
@@ -93,11 +83,8 @@ func (s *wsSession) prepareBroadcastAlertAudioPayload(payload map[string]any, al
 	return out, nil
 }
 
-func prepareBroadcastAlertAudioReader(ctx context.Context, configPath string, filename string, reader io.Reader) (map[string]any, error) {
-	ext := strings.ToLower(filepath.Ext(filepath.Base(filename)))
-	if !broadcastAlertAudioExtensions[ext] {
-		return nil, fmt.Errorf("unsupported audio file type")
-	}
+func prepareBroadcastAlertAudioReader(ctx context.Context, configPath string, filename string, reader io.Reader, maxBytes int64) (map[string]any, error) {
+	ext := broadcastAlertMediaExtension(filename)
 	id := safeID(firstNonBlank(strings.TrimSuffix(filepath.Base(filename), ext), fmt.Sprintf("upload-%d", time.Now().UnixNano())))
 	if id == "" {
 		id = safeID(fmt.Sprintf("upload-%d", time.Now().UnixNano()))
@@ -108,17 +95,18 @@ func prepareBroadcastAlertAudioReader(ctx context.Context, configPath string, fi
 	if err := os.MkdirAll(filepath.Dir(inputPath), 0o755); err != nil {
 		return nil, err
 	}
-	limited := io.LimitReader(reader, broadcastAlertAudioMaxBytes+1)
+	maxBytes = normalizeBroadcastAlertMediaLimit(maxBytes)
+	limited := io.LimitReader(reader, maxBytes+1)
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, limited)
 	if err != nil {
-		return nil, fmt.Errorf("read audio upload failed")
+		return nil, fmt.Errorf("read media upload failed")
 	}
-	if n > broadcastAlertAudioMaxBytes {
-		return nil, fmt.Errorf("audio file is too large; maximum is 20 MB")
+	if n > maxBytes {
+		return nil, fmt.Errorf("media file is too large; maximum is %s", byteLimitLabel(maxBytes))
 	}
 	if n == 0 {
-		return nil, fmt.Errorf("audio file is empty")
+		return nil, fmt.Errorf("media file is empty")
 	}
 	if err := writeFileAtomic(inputPath, buf.Bytes(), 0o600); err != nil {
 		return nil, err
@@ -127,16 +115,13 @@ func prepareBroadcastAlertAudioReader(ctx context.Context, configPath string, fi
 	return prepareBroadcastAlertAudioInput(ctx, configPath, inputPath, id, "")
 }
 
-func prepareBroadcastAlertAudioURL(ctx context.Context, configPath string, rawURL string, alertID string) (map[string]any, error) {
+func prepareBroadcastAlertAudioURL(ctx context.Context, configPath string, rawURL string, alertID string, maxBytes int64) (map[string]any, error) {
 	parsed, err := validateBroadcastAlertAudioURL(rawURL)
 	if err != nil {
 		return nil, err
 	}
 	name := filepath.Base(parsed.Path)
-	ext := strings.ToLower(filepath.Ext(name))
-	if !broadcastAlertAudioExtensions[ext] {
-		ext = ".bin"
-	}
+	ext := broadcastAlertMediaExtension(name)
 	id := safeID(firstNonBlank(alertID, strings.TrimSuffix(name, ext), fmt.Sprintf("url-%d", time.Now().UnixNano())))
 	if id == "" {
 		id = safeID(fmt.Sprintf("url-%d", time.Now().UnixNano()))
@@ -144,7 +129,7 @@ func prepareBroadcastAlertAudioURL(ctx context.Context, configPath string, rawUR
 	id = safeID(fmt.Sprintf("%s-%d", id, time.Now().UnixNano()))
 	inputRel := filepath.ToSlash(filepath.Join(broadcastAlertAudioUploadDir, id+ext))
 	inputPath := resolveConfigPath(configPath, inputRel)
-	if err := downloadBroadcastAlertAudio(ctx, parsed.String(), inputPath); err != nil {
+	if err := downloadBroadcastAlertAudio(ctx, parsed.String(), inputPath, maxBytes); err != nil {
 		return nil, err
 	}
 	defer os.Remove(inputPath)
@@ -170,7 +155,7 @@ func prepareBroadcastAlertAudioInput(ctx context.Context, configPath string, inp
 		"sample_rate": 48000,
 		"channels":    1,
 		"bytes":       info.Size(),
-		"source":      "webpanel-normalized-audio",
+		"source":      "webpanel-normalized-media",
 	}
 	if sourceURL != "" {
 		result["authoritative_url"] = sourceURL
@@ -213,24 +198,24 @@ func convertBroadcastAlertAudioToPCM(ctx context.Context, inputPath string, outp
 		if detail == "" {
 			detail = "conversion failed"
 		}
-		return fmt.Errorf("audio conversion failed: %s", detail)
+		return fmt.Errorf("media conversion failed: %s", detail)
 	}
 	return os.Rename(tmp, outputPath)
 }
 
-func downloadBroadcastAlertAudio(ctx context.Context, sourceURL string, outputPath string) error {
+func downloadBroadcastAlertAudio(ctx context.Context, sourceURL string, outputPath string, maxBytes int64) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
-		return fmt.Errorf("audio URL is invalid")
+		return fmt.Errorf("media URL is invalid")
 	}
-	request.Header.Set("User-Agent", "HazeWeatherRadio/26.06 alert-audio")
+	request.Header.Set("User-Agent", "HazeWeatherRadio/26.06 alert-media")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("audio URL could not be fetched")
+		return fmt.Errorf("media URL could not be fetched")
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("audio URL returned %s", response.Status)
+		return fmt.Errorf("media URL returned %s", response.Status)
 	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
@@ -240,19 +225,20 @@ func downloadBroadcastAlertAudio(ctx context.Context, sourceURL string, outputPa
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(file, io.LimitReader(response.Body, broadcastAlertAudioMaxBytes+1))
+	maxBytes = normalizeBroadcastAlertMediaLimit(maxBytes)
+	_, copyErr := io.Copy(file, io.LimitReader(response.Body, maxBytes+1))
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("audio URL download failed")
+		return fmt.Errorf("media URL download failed")
 	}
 	if closeErr != nil {
 		_ = os.Remove(tmp)
 		return closeErr
 	}
-	if info, err := os.Stat(tmp); err == nil && info.Size() > broadcastAlertAudioMaxBytes {
+	if info, err := os.Stat(tmp); err == nil && info.Size() > maxBytes {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("audio file is too large; maximum is 20 MB")
+		return fmt.Errorf("media resource is too large; maximum is %s", byteLimitLabel(maxBytes))
 	}
 	return os.Rename(tmp, outputPath)
 }
@@ -260,14 +246,55 @@ func downloadBroadcastAlertAudio(ctx context.Context, sourceURL string, outputPa
 func validateBroadcastAlertAudioURL(raw string) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed == nil || parsed.Host == "" {
-		return nil, fmt.Errorf("audio URL is invalid")
+		return nil, fmt.Errorf("media URL is invalid")
 	}
 	switch strings.ToLower(parsed.Scheme) {
 	case "http", "https":
 		return parsed, nil
 	default:
-		return nil, fmt.Errorf("audio URL must use http or https")
+		return nil, fmt.Errorf("media URL must use http or https")
 	}
+}
+
+func broadcastAlertMediaUploadBytes(config Config) int64 {
+	return normalizeBroadcastAlertMediaLimit(config.Webpanel.Authentication.MaxAudioUploadBytes)
+}
+
+func normalizeBroadcastAlertMediaLimit(maxBytes int64) int64 {
+	if maxBytes <= 0 {
+		return broadcastAlertMediaMaxBytes
+	}
+	if maxBytes < 1<<20 {
+		return 1 << 20
+	}
+	return maxBytes
+}
+
+func byteLimitLabel(bytes int64) string {
+	if bytes >= 1<<20 && bytes%(1<<20) == 0 {
+		return fmt.Sprintf("%d MB", bytes/(1<<20))
+	}
+	if bytes >= 1<<20 {
+		return fmt.Sprintf("%.1f MB", float64(bytes)/(1<<20))
+	}
+	if bytes >= 1<<10 {
+		return fmt.Sprintf("%d KB", bytes/(1<<10))
+	}
+	return fmt.Sprintf("%d bytes", bytes)
+}
+
+func broadcastAlertMediaExtension(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filepath.Base(filename)))
+	if len(ext) < 2 || len(ext) > 16 {
+		return ".bin"
+	}
+	for _, ch := range ext[1:] {
+		if ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' {
+			continue
+		}
+		return ".bin"
+	}
+	return ext
 }
 
 func normalizeBroadcastAudioMode(value string) string {

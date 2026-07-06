@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,7 +69,7 @@ func cgenCatalogPayload(configPath string) (map[string]any, error) {
 		"audio_codecs":    builder.sorted(builder.audio),
 		"video_decoders":  builder.sorted(builder.videoDecoders),
 		"browser_sources": builder.sorted(builder.browser),
-		"fonts":           discoverSystemFonts(),
+		"fonts":           discoverFonts(configPath),
 		"gstreamer": map[string]any{
 			"inspect":      inspectPath,
 			"plugin_count": len(plugins),
@@ -774,16 +776,23 @@ func uniqueCleanPaths(values []string) []string {
 	return result
 }
 
-func discoverSystemFonts() []map[string]any {
-	families := map[string]bool{}
+func discoverFonts(configPath string) []map[string]any {
+	managed := discoverManagedFonts(configPath)
+	managedIDs := map[string]bool{}
+	for _, font := range managed {
+		if id := strings.TrimSpace(stringValue(font, "id")); id != "" {
+			managedIDs[strings.ToLower(id)] = true
+		}
+	}
+	families := map[string]string{}
 	for _, family := range []string{"Arial", "Segoe UI", "Tahoma", "Verdana", "Consolas"} {
-		families[family] = true
+		families[strings.ToLower(family)] = family
 	}
 	for _, family := range fontFamiliesFromFcList() {
-		families[family] = true
+		families[strings.ToLower(family)] = family
 	}
 	for _, family := range fontFamiliesFromWindowsRegistry() {
-		families[family] = true
+		families[strings.ToLower(family)] = family
 	}
 	for _, dir := range systemFontDirs() {
 		_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
@@ -791,19 +800,23 @@ func discoverSystemFonts() []map[string]any {
 				return nil
 			}
 			if family := fontFamilyFromFilename(entry.Name()); family != "" {
-				families[family] = true
+				families[strings.ToLower(family)] = family
 			}
 			return nil
 		})
 	}
 	names := make([]string, 0, len(families))
-	for family := range families {
+	for key, family := range families {
+		if managedIDs[key] {
+			continue
+		}
 		names = append(names, family)
 	}
 	sort.Slice(names, func(i int, j int) bool {
 		return strings.ToLower(names[i]) < strings.ToLower(names[j])
 	})
-	result := make([]map[string]any, 0, len(names))
+	result := make([]map[string]any, 0, len(managed)+len(names))
+	result = append(result, managed...)
 	for _, family := range names {
 		result = append(result, map[string]any{
 			"id":      family,
@@ -813,6 +826,68 @@ func discoverSystemFonts() []map[string]any {
 		})
 	}
 	return result
+}
+
+func discoverManagedFonts(configPath string) []map[string]any {
+	dir := resolveConfigPath(configPath, filepath.Join("managed", "fonts"))
+	entries := []map[string]any{}
+	_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil {
+			return nil
+		}
+		if strings.HasPrefix(entry.Name(), ".") {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		ext := managedFontExtension(entry.Name())
+		if ext == "" {
+			return nil
+		}
+		family := fontFamilyFromManagedFilename(entry.Name())
+		if family == "" {
+			return nil
+		}
+		rel := ""
+		if relPath, err := filepath.Rel(filepath.Dir(filepath.Clean(configPath)), path); err == nil {
+			rel = filepath.ToSlash(relPath)
+		}
+		fontRel := ""
+		if relPath, err := filepath.Rel(dir, path); err == nil {
+			fontRel = filepath.ToSlash(relPath)
+		}
+		item := map[string]any{
+			"id":        family,
+			"label":     fmt.Sprintf("(*) %s (%s)", family, ext),
+			"source":    "managed",
+			"extension": ext,
+			"path":      rel,
+			"preview":   "The quick brown fox 0123456789",
+		}
+		if assetURL := managedFontAssetURL(fontRel); assetURL != "" {
+			item["url"] = assetURL
+		}
+		entries = append(entries, item)
+		return nil
+	})
+	sort.Slice(entries, func(i int, j int) bool {
+		return strings.ToLower(stringValue(entries[i], "label")) < strings.ToLower(stringValue(entries[j], "label"))
+	})
+	seen := map[string]bool{}
+	out := entries[:0]
+	for _, entry := range entries {
+		id := strings.ToLower(strings.TrimSpace(stringValue(entry, "id")))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, entry)
+	}
+	return out
 }
 
 func fontFamiliesFromWindowsRegistry() []string {
@@ -932,11 +1007,21 @@ var fontStyleSuffixRE = regexp.MustCompile(`(?i)(?:\s|-|_)+(semibold(?:\s|-|_)?c
 func fontFamilyFromFilename(name string) string {
 	ext := strings.ToLower(filepath.Ext(name))
 	switch ext {
-	case ".ttf", ".otf", ".ttc":
+	case ".ttf", ".otf", ".ttc", ".otc":
 	default:
 		return ""
 	}
-	base := strings.TrimSuffix(name, filepath.Ext(name))
+	return fontFamilyFromFontBasename(strings.TrimSuffix(name, filepath.Ext(name)))
+}
+
+func fontFamilyFromManagedFilename(name string) string {
+	if managedFontExtension(name) == "" {
+		return ""
+	}
+	return fontFamilyFromFontBasename(strings.TrimSuffix(name, filepath.Ext(name)))
+}
+
+func fontFamilyFromFontBasename(base string) string {
 	base = strings.ReplaceAll(base, "_", " ")
 	base = strings.ReplaceAll(base, "-", " ")
 	base = fontStyleSuffixRE.ReplaceAllString(base, "")
@@ -945,4 +1030,31 @@ func fontFamilyFromFilename(name string) string {
 		return ""
 	}
 	return base
+}
+
+func managedFontExtension(name string) string {
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")
+	switch ext {
+	case "ttf", "ttc", "otf", "otc", "woff", "woff2":
+		return ext
+	default:
+		return ""
+	}
+}
+
+func managedFontAssetURL(rel string) string {
+	rel = strings.Trim(filepath.ToSlash(rel), "/")
+	if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return ""
+	}
+	parts := strings.Split(rel, "/")
+	escaped := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, ".") {
+			return ""
+		}
+		escaped = append(escaped, url.PathEscape(part))
+	}
+	return "/api/v1/cgen/fonts/" + strings.Join(escaped, "/")
 }

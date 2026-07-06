@@ -142,6 +142,7 @@ let cgenCatalog = {
     browser_sources: [],
     fonts: [],
 };
+const managedFontFaces = new Map();
 
 function setStatus(text, state = 'ok') {
     if (statusBanner.textContent !== text) {
@@ -644,6 +645,25 @@ function fontCssStack(family) {
     return `"${cleaned}"${fallback}, Arial, sans-serif`;
 }
 
+function registerManagedFontFaces() {
+    if (!('FontFace' in window) || !document.fonts) return;
+    const fonts = Array.isArray(cgenCatalog.fonts) ? cgenCatalog.fonts : [];
+    for (const entry of fonts) {
+        const family = catalogID(entry);
+        const source = String(entry?.url || '').trim();
+        if (!family || !source) continue;
+        const key = `${family}\n${source}`;
+        if (managedFontFaces.has(key)) continue;
+        const face = new FontFace(family, `url(${JSON.stringify(source)})`);
+        managedFontFaces.set(key, face);
+        face.load().then((loaded) => {
+            document.fonts.add(loaded);
+            updateFontPreview();
+            updateFontPickerSelection();
+        }).catch(() => {});
+    }
+}
+
 function fontPickerEntries() {
     const source = Array.isArray(cgenCatalog.fonts) && cgenCatalog.fonts.length
         ? cgenCatalog.fonts
@@ -1065,6 +1085,7 @@ async function loadCgenCatalog({ announce = false } = {}) {
         browser_sources: Array.isArray(payload.browser_sources) ? payload.browser_sources : [],
         fonts: Array.isArray(payload.fonts) ? payload.fonts : [],
     };
+    registerManagedFontFaces();
     populateCgenCatalogSelectors();
     if (announce) {
         const fontCount = cgenCatalog.fonts.length;

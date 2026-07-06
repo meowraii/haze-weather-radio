@@ -79,9 +79,10 @@ type Config struct {
 			} `yaml:"pairing_tokens"`
 		} `yaml:"receiver"`
 		Authentication struct {
-			Enabled           *bool `yaml:"enabled"`
-			SessionTTLSeconds int   `yaml:"session_ttl_seconds"`
-			SecureCookies     bool  `yaml:"secure_cookies"`
+			Enabled             *bool `yaml:"enabled"`
+			SessionTTLSeconds   int   `yaml:"session_ttl_seconds"`
+			SecureCookies       bool  `yaml:"secure_cookies"`
+			MaxAudioUploadBytes int64 `yaml:"max_audio_upload_bytes"`
 		} `yaml:"authentication"`
 	} `yaml:"webpanel"`
 	Operator struct {

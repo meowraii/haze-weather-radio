@@ -626,6 +626,18 @@ webpanel:
 	}
 }
 
+func TestOutputLabelsUseStreamType(t *testing.T) {
+	labels := outputLabels(outputXML{
+		Stream: outputNodeXML{
+			EnabledRaw: "true",
+			Type:       "icecast",
+		},
+	})
+	if len(labels) != 1 || labels[0] != "icecast" {
+		t.Fatalf("labels = %#v", labels)
+	}
+}
+
 func TestPublicAboutPageIsRemoved(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "index.html"), "<!doctype html><title>about</title>")
@@ -752,6 +764,60 @@ func TestAssetsServeStaticFilesButNotHTMLEntrypoints(t *testing.T) {
 	} {
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, item.path, nil))
+		if response.Code != item.wantStatus {
+			t.Fatalf("%s status = %d, want %d", item.path, response.Code, item.wantStatus)
+		}
+		if item.wantType != "" && !strings.Contains(response.Header().Get("Content-Type"), item.wantType) {
+			t.Fatalf("%s Content-Type = %q, want %q", item.path, response.Header().Get("Content-Type"), item.wantType)
+		}
+		if item.wantCache != "" && response.Header().Get("Cache-Control") != item.wantCache {
+			t.Fatalf("%s Cache-Control = %q, want %q", item.path, response.Header().Get("Cache-Control"), item.wantCache)
+		}
+	}
+}
+
+func TestCgenManagedFontAssetsAreAdminOnly(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	webroot := filepath.Join(dir, "webroot")
+	configPath := filepath.Join(dir, "config.yaml")
+	mustWrite(t, filepath.Join(webroot, "admin.html"), "<!doctype html><title>admin</title>")
+	mustWrite(t, configPath, "")
+	mustWrite(t, filepath.Join(dir, "managed", "fonts", "AlertSans-Bold.woff2"), "font")
+	mustWrite(t, filepath.Join(dir, "managed", "fonts", "not-a-font.txt"), "secret")
+	mustWrite(t, filepath.Join(dir, "managed", "fonts", ".hidden.woff2"), "hidden")
+	server := NewServerWithConfigPath(authEnabledConfig(), configPath, webroot)
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/cgen/fonts/AlertSans-Bold.woff2", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d", response.Code)
+	}
+
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		path       string
+		wantStatus int
+		wantType   string
+		wantCache  string
+	}{
+		{
+			path:       "/api/v1/cgen/fonts/AlertSans-Bold.woff2",
+			wantStatus: http.StatusOK,
+			wantType:   "font/woff2",
+			wantCache:  "private, max-age=3600",
+		},
+		{path: "/api/v1/cgen/fonts/not-a-font.txt", wantStatus: http.StatusNotFound},
+		{path: "/api/v1/cgen/fonts/.hidden.woff2", wantStatus: http.StatusNotFound},
+		{path: "/api/v1/cgen/fonts/", wantStatus: http.StatusNotFound},
+	} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, item.path, nil)
+		request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+		server.Handler().ServeHTTP(response, request)
 		if response.Code != item.wantStatus {
 			t.Fatalf("%s status = %d, want %d", item.path, response.Code, item.wantStatus)
 		}

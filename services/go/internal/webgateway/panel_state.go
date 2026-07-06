@@ -811,7 +811,11 @@ func outputLabels(output outputXML) []string {
 	addOutput("webrtc", output.WebRTC)
 	addOutput("udp", output.UDP)
 	addOutput("rtp", output.RTP)
-	addOutput("stream", output.Stream)
+	streamLabel := strings.TrimSpace(output.Stream.Type)
+	if streamLabel == "" {
+		streamLabel = "stream"
+	}
+	addOutput(streamLabel, output.Stream)
 	addOutput("rtmp", output.RTMP)
 	addOutput("srt", output.SRT)
 	addOutput("rtsp", output.RTSP)

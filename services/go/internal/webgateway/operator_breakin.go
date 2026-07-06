@@ -190,7 +190,7 @@ func (s *wsSession) queueOperatorBreakInURL(payload map[string]any) (map[string]
 	}
 	streamURL := strings.TrimSpace(firstNonBlank(stringValue(payload, "audio_url"), stringValue(payload, "stream_url"), stringValue(payload, "url")))
 	if streamURL == "" {
-		return nil, fmt.Errorf("audio_url is required")
+		return nil, fmt.Errorf("media stream URL is required")
 	}
 	if err := validateOperatorBreakInStreamURL(streamURL); err != nil {
 		return nil, err
@@ -557,6 +557,8 @@ func (m *OperatorBreakInManager) pipeStreamURL(ctx context.Context, id string, s
 		"-re",
 		"-i", streamURL,
 		"-vn",
+		"-sn",
+		"-dn",
 		"-ac", "1",
 		"-ar", "48000",
 		"-f", "s16le",
@@ -639,13 +641,13 @@ func (m *OperatorBreakInManager) cancelWithReason(id string, reason string) erro
 func validateOperatorBreakInStreamURL(raw string) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed == nil || parsed.Host == "" {
-		return fmt.Errorf("audio stream URL is invalid")
+		return fmt.Errorf("media stream URL is invalid")
 	}
 	switch strings.ToLower(parsed.Scheme) {
-	case "http", "https":
+	case "http", "https", "rtmp", "rtmps", "rtsp", "rtp", "srt", "udp":
 		return nil
 	default:
-		return fmt.Errorf("audio stream URL must use http or https")
+		return fmt.Errorf("media stream URL must use http, https, rtmp, rtsp, rtp, srt, or udp")
 	}
 }
 

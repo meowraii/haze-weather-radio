@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/banner/audio", s.bannerAudio)
 		mux.HandleFunc("/api/v1/banner/webrtc/offer", s.bannerWebRTCOffer)
 		mux.HandleFunc("/api/v1/cgen/preview", s.cgenPreview)
+		mux.HandleFunc("/api/v1/cgen/fonts/", s.cgenFontAsset)
 		mux.HandleFunc("/api/v1/alerts/archive/cap.xml", s.alertsArchiveCAPXML)
 		mux.HandleFunc("/api/v1/alert/audio", s.alertAudioUpload)
 		mux.HandleFunc("/api/v1/wx-on-demand/generate", s.wxOnDemandGenerate)
@@ -276,6 +277,32 @@ func (s *Server) staticAsset(writer http.ResponseWriter, request *http.Request) 
 	http.ServeFile(writer, request, assetFile)
 }
 
+func (s *Server) cgenFontAsset(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
+	if !s.auth.Authenticated(request) {
+		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	fontPath := strings.TrimPrefix(request.URL.Path, "/api/v1/cgen/fonts/")
+	clean := path.Clean("/" + fontPath)
+	if clean == "/" || strings.HasSuffix(clean, "/") || assetPathHasHiddenSegment(clean) || managedFontExtension(clean) == "" {
+		http.NotFound(writer, request)
+		return
+	}
+	fontFile, ok := s.managedFontAssetPath(clean)
+	if !ok {
+		http.NotFound(writer, request)
+		return
+	}
+	if contentType := fontContentType(path.Ext(clean)); contentType != "" {
+		writer.Header().Set("Content-Type", contentType)
+	}
+	writer.Header().Set("Cache-Control", "private, max-age=3600")
+	http.ServeFile(writer, request, fontFile)
+}
+
 func assetPathHasHiddenSegment(cleanURLPath string) bool {
 	for _, segment := range strings.Split(strings.Trim(cleanURLPath, "/"), "/") {
 		if strings.HasPrefix(segment, ".") {
@@ -314,6 +341,43 @@ func (s *Server) staticAssetPath(cleanURLPath string) (string, bool) {
 		return "", false
 	}
 	return target, true
+}
+
+func (s *Server) managedFontAssetPath(cleanURLPath string) (string, bool) {
+	localPath := filepath.FromSlash(strings.TrimPrefix(cleanURLPath, "/"))
+	if localPath == "" || filepath.IsAbs(localPath) || filepath.VolumeName(localPath) != "" {
+		return "", false
+	}
+	root, err := filepath.Abs(resolveConfigPath(s.configPath, filepath.Join("managed", "fonts")))
+	if err != nil {
+		return "", false
+	}
+	target, err := filepath.Abs(filepath.Join(root, localPath))
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return target, true
+}
+
+func fontContentType(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".woff":
+		return "font/woff"
+	case ".woff2":
+		return "font/woff2"
+	case ".ttf":
+		return "font/ttf"
+	case ".otf":
+		return "font/otf"
+	case ".ttc", ".otc":
+		return "font/collection"
+	default:
+		return ""
+	}
 }
 
 func (s *Server) publicHealth(writer http.ResponseWriter, request *http.Request) {

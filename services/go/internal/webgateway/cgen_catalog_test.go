@@ -2,6 +2,7 @@ package webgateway
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -55,6 +56,55 @@ func TestFontFamilyFromFilename(t *testing.T) {
 	}
 }
 
+func TestManagedFontFamilyFromFilename(t *testing.T) {
+	tests := map[string]string{
+		"AlertSans-Bold.woff2":         "AlertSans",
+		"Station_Display-Regular.woff": "Station Display",
+		"HelveticaNeueLTPro-Md.otf":    "HelveticaNeueLTPro Md",
+		"not-a-font.txt":               "",
+	}
+	for name, want := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := fontFamilyFromManagedFilename(name); got != want {
+				t.Fatalf("fontFamilyFromManagedFilename(%q) = %q, want %q", name, got, want)
+			}
+		})
+	}
+}
+
+func TestCgenCatalogIncludesManagedFonts(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	mustWrite(t, configPath, "")
+	mustWrite(t, filepath.Join(dir, "managed", "fonts", "AlertSans-Bold.woff2"), "")
+	mustWrite(t, filepath.Join(dir, "managed", "fonts", "StationDisplay-Regular.ttf"), "")
+	mustWrite(t, filepath.Join(dir, "managed", "fonts", "not-a-font.txt"), "")
+
+	payload, err := cgenCatalogPayload(configPath)
+	if err != nil {
+		t.Fatalf("cgenCatalogPayload failed: %v", err)
+	}
+	font := catalogPayloadEntry(payload, "fonts", "AlertSans")
+	if font == nil {
+		t.Fatalf("expected managed font entry in catalog: %#v", payload["fonts"])
+	}
+	if got := stringValue(font, "label"); got != "(*) AlertSans (woff2)" {
+		t.Fatalf("managed font label = %q", got)
+	}
+	if got := stringValue(font, "source"); got != "managed" {
+		t.Fatalf("managed font source = %q", got)
+	}
+	if got := stringValue(font, "extension"); got != "woff2" {
+		t.Fatalf("managed font extension = %q", got)
+	}
+	if path := stringValue(font, "path"); !strings.HasPrefix(path, "managed/fonts/") {
+		t.Fatalf("managed font path = %q", path)
+	}
+	if got := stringValue(font, "url"); got != "/api/v1/cgen/fonts/AlertSans-Bold.woff2" {
+		t.Fatalf("managed font url = %q", got)
+	}
+}
+
 func TestCgenCatalogGstInspectClassification(t *testing.T) {
 	builder := cgenCatalogBuilder{
 		formats:       map[string]cgenCatalogEntry{},
@@ -99,14 +149,18 @@ func TestFontFamilyFromRegistryLine(t *testing.T) {
 }
 
 func catalogPayloadContains(payload map[string]any, key string, id string) bool {
+	return catalogPayloadEntry(payload, key, id) != nil
+}
+
+func catalogPayloadEntry(payload map[string]any, key string, id string) map[string]any {
 	values, ok := payload[key].([]map[string]any)
 	if !ok {
-		return false
+		return nil
 	}
 	for _, value := range values {
 		if stringValue(value, "id") == id {
-			return true
+			return value
 		}
 	}
-	return false
+	return nil
 }

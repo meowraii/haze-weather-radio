@@ -78,7 +78,14 @@ func TestOperatorBreakInStreamURLValidation(t *testing.T) {
 			t.Fatalf("expected %q to be rejected", raw)
 		}
 	}
-	for _, raw := range []string{"http://example.com/live.mp3", "https://example.com/live.ogg"} {
+	for _, raw := range []string{
+		"http://example.com/live.mp3",
+		"https://example.com/live.m3u8",
+		"rtmp://example.com/live/stream",
+		"rtsp://example.com/live.sdp",
+		"srt://example.com:9000?mode=caller",
+		"udp://239.0.0.1:5000",
+	} {
 		if err := validateOperatorBreakInStreamURL(raw); err != nil {
 			t.Fatalf("expected %q to be accepted: %v", raw, err)
 		}

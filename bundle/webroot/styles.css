@@ -5314,6 +5314,11 @@ select option:checked {
 	grid-column: 1/-1
 }
 
+.ba-audio-source-panel .breakin-meter,
+.ba-audio-source-panel .breakin-recording {
+	grid-column: 1/-1
+}
+
 .ba-timing-row {
 	display: grid;
 	grid-template-columns: minmax(220px, max-content) minmax(240px, 320px);
