@@ -222,6 +222,9 @@ func (p *PiperProvider) PruneIdleRuntime(maxIdle time.Duration) int {
 	for _, engine := range stale {
 		engine.Close()
 	}
+	if len(stale) > 0 {
+		ReleaseNativeMemory()
+	}
 	return len(stale)
 }
 

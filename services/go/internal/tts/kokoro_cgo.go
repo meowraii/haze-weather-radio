@@ -167,6 +167,7 @@ func (p *KokoroProvider) PruneIdleRuntime(maxIdle time.Duration) int {
 	p.lastUsed = time.Time{}
 	p.mu.Unlock()
 	sherpa.DeleteOfflineTts(engine)
+	ReleaseNativeMemory()
 	return 1
 }
 

@@ -103,7 +103,7 @@ pub(crate) struct WgpuFrameRenderer {
 #[cfg(feature = "gpu-wgpu")]
 const MAX_TEXT_STRIP_CACHE_ENTRIES: usize = 4;
 #[cfg(feature = "gpu-wgpu")]
-const MAX_TEXT_STRIP_CACHE_BYTES: usize = 24 * 1024 * 1024;
+const MAX_TEXT_STRIP_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
 #[cfg(feature = "gpu-wgpu")]
 #[derive(Debug, Clone)]

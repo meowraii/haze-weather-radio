@@ -84,14 +84,14 @@ services:
       out_dir: "runtime/audio/tts"
       timeout: "60s"
       piper_voices_dir: "managed/voices/piper"
-      piper_prewarm: true
+      piper_prewarm: false
       kokoro_model_dir: "managed/voices/kokoro-multi-lang-v1_0"
       kokoro_runtime_provider: "cpu" # cpu, cuda, or coreml
       kokoro_threads: 1
       kokoro_speed: 1.0
       kokoro_length_scale: 1.0
       speakyapi_url: "" # optional, e.g. http://127.0.0.1:5000
-      runtime_idle_timeout: "15m"
+      runtime_idle_timeout: "30s"
     product_render:
       enabled: true
       refresh: "5m"
@@ -158,7 +158,7 @@ services:
         phone_codec: "g722"
         max_entries: 5000
         stampede_waiters: 64
-        refresh_on_startup: true
+        refresh_on_startup: false
         prewarm_codes:
           - "08074" # Vancouver
           - "08085" # Victoria

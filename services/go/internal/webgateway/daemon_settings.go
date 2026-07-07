@@ -121,7 +121,7 @@ func daemonSettingsView(source map[string]any) map[string]any {
 						"managed/voices/piper",
 						200,
 					),
-					"piper_prewarm": boolAt(source, []string{"services", "go", "tts", "piper_prewarm"}, true),
+					"piper_prewarm": boolAt(source, []string{"services", "go", "tts", "piper_prewarm"}, false),
 					"speakyapi_url": textAt(source, []string{"services", "go", "tts", "speakyapi_url"}, "", 400),
 				},
 				"product_render": map[string]any{

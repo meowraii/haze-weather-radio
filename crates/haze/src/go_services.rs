@@ -458,6 +458,7 @@ impl GoServiceSupervisor {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        configure_managed_service_env(&mut command, &spec);
 
         match command.spawn() {
             Ok(mut child) => {
@@ -1877,6 +1878,54 @@ fn configure_managed_process(command: &mut Command, scheduler: ProcessScheduler)
 
 #[cfg(not(windows))]
 fn configure_managed_process(_command: &mut Command, _scheduler: ProcessScheduler) {}
+
+fn configure_managed_service_env(command: &mut Command, spec: &ServiceSpec) {
+    if !is_go_service_binary(spec.binary) {
+        return;
+    }
+    env_if_unset(command, "MALLOC_ARENA_MAX", "2");
+    env_if_unset(command, "GOGC", go_gc_percent(spec.id));
+    if let Some(limit) = go_memory_limit(spec.id) {
+        env_if_unset(command, "GOMEMLIMIT", limit);
+    }
+}
+
+fn env_if_unset(command: &mut Command, key: &str, value: &str) {
+    if std::env::var_os(key).is_none() {
+        command.env(key, value);
+    }
+}
+
+fn is_go_service_binary(binary: &str) -> bool {
+    let binary = binary.strip_suffix(".exe").unwrap_or(binary);
+    matches!(
+        binary,
+        "haze-web"
+            | "haze-data-ingest"
+            | "haze-tts"
+            | "haze-product-render"
+            | "haze-playlist"
+            | "haze-webhook"
+            | "haze-ivr"
+    )
+}
+
+fn go_memory_limit(id: &str) -> Option<&'static str> {
+    match id {
+        "aux:tts" => Some("384MiB"),
+        "svc:ivr" => Some("192MiB"),
+        "go:web_gateway" | "go:web_public" | "go:web_admin" => Some("192MiB"),
+        "svc:data_ingest" | "svc:product_render" | "svc:playlist" | "svc:webhook" => Some("128MiB"),
+        _ => Some("128MiB"),
+    }
+}
+
+fn go_gc_percent(id: &str) -> &'static str {
+    match id {
+        "aux:tts" => "50",
+        _ => "75",
+    }
+}
 
 #[cfg(windows)]
 fn apply_managed_process_priority(pid: u32, scheduler: ProcessScheduler, label: &str) {

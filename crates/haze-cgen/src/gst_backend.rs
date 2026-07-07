@@ -2653,8 +2653,8 @@ fn queue_time_ns(feed: &FeedConfig) -> u64 {
     u64::from(feed.sync.source_buffer_ms.clamp(40, 5_000)) * 1_000_000
 }
 
-const GST_QUEUE_MAX_BUFFERS: u32 = 16;
-const GST_QUEUE_MIN_BYTES: u64 = 4 * 1024 * 1024;
+const GST_QUEUE_MAX_BUFFERS: u32 = 4;
+const GST_QUEUE_MIN_BYTES: u64 = 1 * 1024 * 1024;
 
 fn queue_fragment(feed: &FeedConfig, leak: QueueLeak) -> String {
     queue_fragment_with_name(feed, leak, None)
@@ -2681,9 +2681,7 @@ fn queue_fragment_with_name(feed: &FeedConfig, leak: QueueLeak, name: Option<&st
 }
 
 fn queue_max_bytes(feed: &FeedConfig) -> u64 {
-    raw_bgrx_frame_bytes(feed.video.width, feed.video.height)
-        .saturating_mul(2)
-        .max(GST_QUEUE_MIN_BYTES)
+    raw_bgrx_frame_bytes(feed.video.width, feed.video.height).max(GST_QUEUE_MIN_BYTES)
 }
 
 fn raw_bgrx_frame_bytes(width: u32, height: u32) -> u64 {
@@ -3295,7 +3293,7 @@ mod tests {
         assert!(plan.description.contains("video_tee."));
         assert!(plan.description.contains("audio_tee."));
         assert!(plan.description.contains(
-            "audio_tee. ! queue max-size-time=240000000 max-size-buffers=16 max-size-bytes=16588800 flush-on-eos=true leaky=downstream ! audioconvert"
+            "audio_tee. ! queue max-size-time=240000000 max-size-buffers=4 max-size-bytes=8294400 flush-on-eos=true leaky=downstream ! audioconvert"
         ));
         assert!(plan.description.contains("mux.sink_256"));
         assert!(plan.description.contains("mux.sink_257"));
@@ -3376,11 +3374,11 @@ mod tests {
     }
 
     #[test]
-    fn generic_queue_max_bytes_tracks_two_output_frames() {
+    fn generic_queue_max_bytes_tracks_one_output_frame() {
         let feed = test_feed();
 
         assert_eq!(raw_bgrx_frame_bytes(1920, 1080), 8_294_400);
-        assert_eq!(queue_max_bytes(&feed), 16_588_800);
+        assert_eq!(queue_max_bytes(&feed), 8_294_400);
     }
 
     #[test]
@@ -3392,7 +3390,7 @@ mod tests {
 
         assert!(plan.description.contains("max-size-time=640000000"));
         assert!(plan.description.contains(
-            "src. ! parsebin ! decodebin ! audio/x-raw ! queue max-size-time=640000000 max-size-buffers=16 max-size-bytes=16588800 flush-on-eos=true leaky=downstream ! audioconvert"
+            "src. ! parsebin ! decodebin ! audio/x-raw ! queue max-size-time=640000000 max-size-buffers=4 max-size-bytes=8294400 flush-on-eos=true leaky=downstream ! audioconvert"
         ));
         assert!(plan.description.contains("latency=320000000"));
         assert!(plan.description.contains("max-bytes=368640"));

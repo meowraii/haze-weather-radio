@@ -25,6 +25,12 @@ import (
 
 const serviceID = "haze-tts"
 
+const (
+	synthesisHighQueueSize   = 64
+	synthesisNormalQueueSize = 64
+	synthesisLowQueueSize    = 16
+)
+
 var errSystemShutdown = errors.New("system shutdown requested")
 
 func main() {
@@ -46,7 +52,7 @@ func run() error {
 	piperVoicesDir := flag.String("piper-voices-dir", envOrDefault("HAZE_PIPER_VOICES_DIR", filepath.Join("managed", "voices", "piper")), "Piper voice model directory")
 	_ = flag.String("piper-mode", "", "deprecated; Piper is native-only")
 	_ = flag.Int("piper-workers", 0, "deprecated; Piper is native-only")
-	piperPrewarm := flag.Bool("piper-prewarm", envBoolOrDefault("HAZE_PIPER_PREWARM", true), "prewarm native Piper voices on service startup")
+	piperPrewarm := flag.Bool("piper-prewarm", envBoolOrDefault("HAZE_PIPER_PREWARM", false), "prewarm native Piper voices on service startup")
 	_ = flag.Bool("piper-cuda", false, "deprecated; use HAZE_PIPER_PROVIDER or HAZE_KOKORO_PROVIDER")
 	kokoroModelDir := flag.String("kokoro-model-dir", envOrDefault("HAZE_KOKORO_MODEL_DIR", filepath.Join("managed", "voices", "kokoro-multi-lang-v1_0")), "Kokoro model directory")
 	kokoroRuntimeProvider := flag.String("kokoro-runtime-provider", envOrDefault("HAZE_KOKORO_PROVIDER", "cpu"), "Kokoro sherpa-onnx provider: cpu, cuda, or coreml")
@@ -54,7 +60,7 @@ func run() error {
 	kokoroSpeed := flag.Float64("kokoro-speed", envFloatOrDefault("HAZE_KOKORO_SPEED", 1.0), "Kokoro default generation speed")
 	kokoroLengthScale := flag.Float64("kokoro-length-scale", envFloatOrDefault("HAZE_KOKORO_LENGTH_SCALE", 1.0), "Kokoro model length scale")
 	speakyAPIURL := flag.String("speakyapi-url", envOrDefault("HAZE_SPEAKYAPI_URL", ""), "SpeakyAPI server base URL, for example http://127.0.0.1:5000")
-	runtimeIdleTimeout := flag.Duration("runtime-idle-timeout", envDurationOrDefault("HAZE_TTS_RUNTIME_IDLE", 15*time.Minute), "idle time before native TTS model runtimes are unloaded; 0 disables unloading")
+	runtimeIdleTimeout := flag.Duration("runtime-idle-timeout", envDurationOrDefault("HAZE_TTS_RUNTIME_IDLE", 30*time.Second), "idle time before native TTS model runtimes are unloaded; 0 disables unloading")
 	text := flag.String("text", "", "text to synthesize")
 	out := flag.String("out", "", "output WAV path")
 	listVoices := flag.Bool("list-voices", false, "list provider voices as JSON")
@@ -256,11 +262,11 @@ func startRuntimePruner(ctx context.Context, providers map[string]tts.Provider, 
 	go func() {
 		defer close(done)
 		interval := maxIdle / 4
-		if interval < 30*time.Second {
-			interval = 30 * time.Second
+		if interval < 5*time.Second {
+			interval = 5 * time.Second
 		}
-		if interval > 5*time.Minute {
-			interval = 5 * time.Minute
+		if interval > time.Minute {
+			interval = time.Minute
 		}
 		timer := time.NewTimer(interval)
 		defer timer.Stop()
@@ -340,9 +346,9 @@ func newSynthesisQueue(ctx context.Context, conn net.Conn, state *serviceState, 
 	q := &synthesisQueue{
 		conn:   conn,
 		state:  state,
-		high:   make(chan map[string]any, 256),
-		normal: make(chan map[string]any, 256),
-		low:    make(chan map[string]any, 256),
+		high:   make(chan map[string]any, synthesisHighQueueSize),
+		normal: make(chan map[string]any, synthesisNormalQueueSize),
+		low:    make(chan map[string]any, synthesisLowQueueSize),
 		cancel: cancel,
 	}
 	for range maxInt(1, workers) {

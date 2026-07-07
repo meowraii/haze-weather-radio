@@ -451,7 +451,7 @@ fn process_owns_runtime(pid: u32, runtime_dir: &Path) -> bool {
 
     let runtime = dunce::simplified(runtime_dir).to_string_lossy();
     args.iter().any(|arg| {
-        arg == runtime.as_ref()
+        *arg == runtime.as_ref()
             || arg.strip_prefix("--workdir=").is_some_and(|value| {
                 dunce::simplified(Path::new(value)) == dunce::simplified(runtime_dir)
             })
