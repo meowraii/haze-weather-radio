@@ -2,7 +2,7 @@
 <!-- custom output config for Canada Weather Radio Service -->
 <outputs>
   <feed id="cwxr-sk01">
-    <webrtc enabled="true"/>
+    <webrtc enabled="false"/>
 
     <stream enabled="true">
       <type>icecast</type>
@@ -17,48 +17,16 @@
       <acodec>libopus</acodec>
     </stream>
 
-    <udp enabled="false">
-      <ip>172.16.1.37</ip>
-      <port>8898</port>
-      <format>mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </udp>
-
-    <rtp enabled="false">
-      <ip>172.16.1.37</ip>
-      <port>8899</port>
-      <format>rtp_mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </rtp>
-
-    <rtmp enabled="false">
-      <url>rtmp://localhost/live/cwxr-sk01</url>
-      <format>flv</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </rtmp>
-
-    <srt enabled="false">
-      <url>srt://localhost:12345</url>
-      <format>mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </srt>
-
-    <rtsp enabled="false">
-      <url>rtsp://localhost:8554/cwxr-sk01</url>
-      <format>rtsp</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </rtsp>
-
-    <audio_device enabled="true"/>
+    <udp enabled="false"/>
+    <rtp enabled="false"/>
+    <rtmp enabled="false"/>
+    <srt enabled="false"/>
+    <rtsp enabled="false"/>
+    <audio_device enabled="false"/>
   </feed>
 
   <feed id="cwxr-sk02">
-    <webrtc enabled="true"/>
+    <webrtc enabled="false"/>
 
     <stream enabled="true">
       <type>icecast</type>
@@ -73,48 +41,17 @@
       <acodec>libopus</acodec>
     </stream>
 
-    <udp enabled="false">
-      <ip>172.16.1.37</ip>
-      <port>8898</port>
-      <format>mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </udp>
-
-    <rtp enabled="false">
-      <ip>172.16.1.37</ip>
-      <port>8899</port>
-      <format>rtp_mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </rtp>
-
-    <rtmp enabled="false">
-      <url>rtmp://localhost/live/cwxr-sk02</url>
-      <format>flv</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </rtmp>
-
-    <srt enabled="false">
-      <url>srt://localhost:12345</url>
-      <format>mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </srt>
-
-    <rtsp enabled="false">
-      <url>rtsp://localhost:8554/cwxr-sk02</url>
-      <format>rtsp</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </rtsp>
+    <udp enabled="false"/>
+    <rtp enabled="false"/>
+    <rtmp enabled="false"/>
+    <srt enabled="false"/>
+    <rtsp enabled="false"/>
 
     <audio_device enabled="false"/>
   </feed>
 
   <feed id="cwxr-ab01">
-    <webrtc enabled="true"/>
+    <webrtc enabled="false"/>
 
     <stream enabled="true">
       <type>icecast</type>
@@ -129,48 +66,17 @@
       <acodec>libopus</acodec>
     </stream>
 
-    <udp enabled="false">
-      <ip>172.16.1.37</ip>
-      <port>8898</port>
-      <format>mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </udp>
-
-    <rtp enabled="false">
-      <ip>172.16.1.37</ip>
-      <port>8899</port>
-      <format>rtp_mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </rtp>
-
-    <rtmp enabled="false">
-      <url>rtmp://localhost/live/cwxr-ab01</url>
-      <format>flv</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </rtmp>
-
-    <srt enabled="false">
-      <url>srt://localhost:12345</url>
-      <format>mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </srt>
-
-    <rtsp enabled="false">
-      <url>rtsp://localhost:8554/cwxr-ab01</url>
-      <format>rtsp</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </rtsp>
+    <udp enabled="false"/>
+    <rtp enabled="false"/>
+    <rtmp enabled="false"/>
+    <srt enabled="false"/>
+    <rtsp enabled="false"/>
 
     <audio_device enabled="false"/>
   </feed>
 
   <feed id="cwxr-mb01">
-    <webrtc enabled="true"/>
+    <webrtc enabled="false"/>
 
     <stream enabled="true">
       <type>icecast</type>
@@ -185,43 +91,60 @@
       <acodec>libopus</acodec>
     </stream>
 
-    <udp enabled="false">
-      <ip>172.16.1.37</ip>
-      <port>8898</port>
-      <format>mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
+    <udp enabled="false"/>
+    <rtp enabled="false"/>
+    <rtmp enabled="false"/>
+    <srt enabled="false"/>
+    <rtsp enabled="false"/>
+
+    <audio_device enabled="false"/>
+  </feed>
+
+  <feed id="cwxr-ab02">
+    <webrtc enabled="false"/>
+
+    <stream enabled="true">
+      <type>icecast</type>
+      <host>${HAZE_ICECAST_HOST}</host>
+      <port>${HAZE_ICECAST_PORT}</port>
+      <username>${HAZE_ICECAST_USERNAME}</username>
+      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
+      <mount>/cwxr-ab02</mount>
+      <ssl>false</ssl>
+      <format>opus</format>
+      <bitrate_kbps>64</bitrate_kbps>
       <acodec>libopus</acodec>
-    </udp>
+    </stream>
 
-    <rtp enabled="false">
-      <ip>172.16.1.37</ip>
-      <port>8899</port>
-      <format>rtp_mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
+    <udp enabled="false"/>
+    <rtp enabled="false"/>
+    <rtmp enabled="false"/>
+    <srt enabled="false"/>
+    <rtsp enabled="false"/>
+    <audio_device enabled="false"/>
+  </feed>
+
+  <feed id="cwxr-qc01">
+    <webrtc enabled="false"/>
+
+    <stream enabled="true">
+      <type>icecast</type>
+      <host>${HAZE_ICECAST_HOST}</host>
+      <port>${HAZE_ICECAST_PORT}</port>
+      <username>${HAZE_ICECAST_USERNAME}</username>
+      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
+      <mount>/cwxr-qc01</mount>
+      <ssl>false</ssl>
+      <format>opus</format>
+      <bitrate_kbps>64</bitrate_kbps>
       <acodec>libopus</acodec>
-    </rtp>
+    </stream>
 
-    <rtmp enabled="false">
-      <url>rtmp://localhost/live/cwxr-mb01</url>
-      <format>flv</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </rtmp>
-
-    <srt enabled="false">
-      <url>srt://localhost:12345</url>
-      <format>mpegts</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </srt>
-
-    <rtsp enabled="false">
-      <url>rtsp://localhost:8554/cwxr-mb01</url>
-      <format>rtsp</format>
-      <bitrate_kbps>32</bitrate_kbps>
-      <acodec>aac</acodec>
-    </rtsp>
-
+    <udp enabled="false"/>
+    <rtp enabled="false"/>
+    <rtmp enabled="false"/>
+    <srt enabled="false"/>
+    <rtsp enabled="false"/>
     <audio_device enabled="false"/>
   </feed>
 </outputs>

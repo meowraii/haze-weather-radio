@@ -415,7 +415,7 @@ bundle_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 export GST_PLUGIN_PATH="$bundle_dir/bin/gstreamer-1.0${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"
 export GST_PLUGIN_SYSTEM_PATH_1_0="$bundle_dir/bin/gstreamer-1.0${GST_PLUGIN_SYSTEM_PATH_1_0:+:$GST_PLUGIN_SYSTEM_PATH_1_0}"
 export GST_PLUGIN_SCANNER="$bundle_dir/bin/gstreamer-1.0/gst-plugin-scanner"
-export LD_LIBRARY_PATH="$bundle_dir/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$bundle_dir/bin:$bundle_dir/bin/gstreamer-1.0${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$bundle_dir/haze" "$@"
 SH
 chmod +x "$out_full/haze.sh"

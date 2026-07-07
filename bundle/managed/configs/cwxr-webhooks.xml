@@ -5,7 +5,7 @@
     <IconURL></IconURL>
     <LogTestAlerts>true</LogTestAlerts>
     <LogAdminAlerts>true</LogAdminAlerts>
-    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_SK01}</WebhookURL>
+    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_SK}</WebhookURL>
   </Webhook>
   <Webhook enabled="true" feed-id="cwxr-sk02">
     <EmbedAudio enabled="true" codec="libopus" />
@@ -13,7 +13,7 @@
     <IconURL></IconURL>
     <LogTestAlerts>true</LogTestAlerts>
     <LogAdminAlerts>true</LogAdminAlerts>
-    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_SK02}</WebhookURL>
+    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_SK}</WebhookURL>
   </Webhook>
   <Webhook enabled="true" feed-id="cwxr-ab01">
     <EmbedAudio enabled="true" codec="libopus" />
@@ -21,7 +21,15 @@
     <IconURL></IconURL>
     <LogTestAlerts>true</LogTestAlerts>
     <LogAdminAlerts>true</LogAdminAlerts>
-    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_AB01}</WebhookURL>
+    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_AB}</WebhookURL>
+  </Webhook>
+  <Webhook enabled="true" feed-id="cwxr-ab02">
+    <EmbedAudio enabled="true" codec="libopus" />
+    <Username>Red Deer WXR</Username>
+    <IconURL></IconURL>
+    <LogTestAlerts>true</LogTestAlerts>
+    <LogAdminAlerts>true</LogAdminAlerts>
+    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_AB}</WebhookURL>
   </Webhook>
   <Webhook enabled="true" feed-id="cwxr-mb01">
     <EmbedAudio enabled="true" codec="libopus" />
@@ -29,6 +37,14 @@
     <IconURL></IconURL>
     <LogTestAlerts>true</LogTestAlerts>
     <LogAdminAlerts>true</LogAdminAlerts>
-    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_MB01}</WebhookURL>
+    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_MB}</WebhookURL>
+  </Webhook>
+  <Webhook enabled="true" feed-id="cwxr-qc01">
+    <EmbedAudio enabled="true" codec="libopus" />
+    <Username>Québec City WXR</Username>
+    <IconURL></IconURL>
+    <LogTestAlerts>true</LogTestAlerts>
+    <LogAdminAlerts>true</LogAdminAlerts>
+    <WebhookURL>${HAZE_DISCORD_WEBHOOK_CWXR_QC}</WebhookURL>
   </Webhook>
 </Webhooks>

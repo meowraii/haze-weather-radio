@@ -51,10 +51,6 @@ type cgenEndpointXML struct {
 	ACodec            string `xml:"acodec,attr,omitempty"`
 	VideoBitrateKbps  string `xml:"video_bitrate_kbps,attr,omitempty"`
 	AudioBitrateKbps  string `xml:"audio_bitrate_kbps,attr,omitempty"`
-	BrowserAutoSize   string `xml:"browser_auto_size,attr,omitempty"`
-	BrowserWidth      string `xml:"browser_width,attr,omitempty"`
-	BrowserHeight     string `xml:"browser_height,attr,omitempty"`
-	BrowserFPS        string `xml:"browser_fps,attr,omitempty"`
 	HardwareDecoder   string `xml:"hardware_decoder,attr,omitempty"`
 	HardwareDecoderOn string `xml:"hardware_decoder_enabled,attr,omitempty"`
 	ServiceName       string `xml:"service_name,attr,omitempty"`
@@ -996,10 +992,6 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			URL:             stringFromAny(source["program_input_url"]),
 			Type:            stringFromAny(source["program_input_type"]),
 			Format:          stringFromAny(source["program_input_format"]),
-			BrowserAutoSize: boolText(boolFromAny(source["browser_auto_size"], true)),
-			BrowserWidth:    stringFromAny(source["browser_width"]),
-			BrowserHeight:   stringFromAny(source["browser_height"]),
-			BrowserFPS:      stringFromAny(source["browser_fps"]),
 			HardwareDecoder: stringFromAny(source["hardware_decoder"]),
 			HardwareDecoderOn: boolText(
 				boolFromAny(source["hardware_decoder_enabled"], false),
@@ -1235,10 +1227,6 @@ func cgenPayload(configPath string, path string, config cgenXML, encoderPath str
 			"program_input_url":               feed.ProgramInput.URL,
 			"program_input_type":              normalizeCgenInputType(feed.ProgramInput.Type),
 			"program_input_format":            feed.ProgramInput.Format,
-			"browser_auto_size":               xmlBool(feed.ProgramInput.BrowserAutoSize, true),
-			"browser_width":                   fallbackText(feed.ProgramInput.BrowserWidth, feed.Video.Width),
-			"browser_height":                  fallbackText(feed.ProgramInput.BrowserHeight, feed.Video.Height),
-			"browser_fps":                     fallbackText(feed.ProgramInput.BrowserFPS, "60"),
 			"hardware_decoder_enabled":        xmlBool(feed.ProgramInput.HardwareDecoderOn, false),
 			"hardware_decoder":                feed.ProgramInput.HardwareDecoder,
 			"priority_feed_id":                feed.PriorityInput.FeedID,
@@ -1402,17 +1390,10 @@ func cleanCgenEndpoint(value cgenEndpointXML) cgenEndpointXML {
 	value.URL = strings.TrimSpace(value.URL)
 	value.Type = normalizeCgenInputType(value.Type)
 	value.Format = strings.TrimSpace(value.Format)
-	if value.Type == "browser" && value.Format == "" {
-		value.Format = "cef"
-	}
 	value.VCodec = strings.TrimSpace(value.VCodec)
 	value.ACodec = strings.TrimSpace(value.ACodec)
 	value.VideoBitrateKbps = cleanOptionalPositive(value.VideoBitrateKbps)
 	value.AudioBitrateKbps = cleanOptionalPositive(value.AudioBitrateKbps)
-	value.BrowserAutoSize = boolText(xmlBool(value.BrowserAutoSize, true))
-	value.BrowserWidth = cleanPositive(value.BrowserWidth, "1920")
-	value.BrowserHeight = cleanPositive(value.BrowserHeight, "1080")
-	value.BrowserFPS = cleanCgenBrowserFPS(value.BrowserFPS, "60")
 	value.HardwareDecoder = cleanGstElementName(value.HardwareDecoder)
 	value.HardwareDecoderOn = boolText(xmlBool(value.HardwareDecoderOn, false))
 	value.ServiceName = strings.TrimSpace(value.ServiceName)
@@ -1421,17 +1402,10 @@ func cleanCgenEndpoint(value cgenEndpointXML) cgenEndpointXML {
 	value.TransportStreamID = cleanOptionalPositive(value.TransportStreamID)
 	if value.Type == "stream" {
 		value.Type = ""
-		value.BrowserAutoSize = ""
-		value.BrowserWidth = ""
-		value.BrowserHeight = ""
-		value.BrowserFPS = ""
 		if value.HardwareDecoderOn == "false" {
 			value.HardwareDecoderOn = ""
 			value.HardwareDecoder = ""
 		}
-	} else {
-		value.HardwareDecoder = ""
-		value.HardwareDecoderOn = ""
 	}
 	return value
 }
@@ -1451,33 +1425,8 @@ func cleanGstElementName(value string) string {
 }
 
 func normalizeCgenInputType(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "browser", "cef", "browser_source":
-		return "browser"
-	default:
-		return "stream"
-	}
-}
-
-func cleanCgenBrowserFPS(value string, fallback string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		value = strings.TrimSpace(fallback)
-	}
-	n, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-	if n <= 0 {
-		return "0"
-	}
-	if n < 5 {
-		return "5"
-	}
-	if n > 120 {
-		return "120"
-	}
-	return strconv.Itoa(n)
+	_ = value
+	return "stream"
 }
 
 func normalizeCgenFieldOrder(value string) string {

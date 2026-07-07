@@ -2,6 +2,11 @@
 use anyhow::Context;
 use anyhow::Result;
 use serde_json::{json, Value};
+#[cfg(feature = "gpu-wgpu")]
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub(crate) fn fatal_error_message() -> &'static str {
     "HAZE CGEN FATAL GRAPHICS ERROR: WGPU renderer initialization failed. Cairo fallback is disabled; install a working Vulkan/DX12/OpenGL-capable GPU driver or change the CGEN graphics backend."
@@ -40,7 +45,13 @@ pub(crate) struct WgpuFrameRenderer;
 
 #[cfg(not(feature = "gpu-wgpu"))]
 impl WgpuFrameRenderer {
-    pub(crate) fn new(_id: String, _width: u32, _height: u32, _interlaced: bool) -> Result<Self> {
+    pub(crate) fn new(
+        _id: String,
+        _width: u32,
+        _height: u32,
+        _interlaced: bool,
+        _managed_font_dir: &std::path::Path,
+    ) -> Result<Self> {
         anyhow::bail!("{}", fatal_error_message())
     }
 
@@ -104,8 +115,55 @@ struct RenderedTextStrip {
 }
 
 #[cfg(feature = "gpu-wgpu")]
+fn load_managed_fonts(font_system: &mut glyphon::FontSystem, font_dir: &Path) {
+    for path in managed_font_paths(font_dir) {
+        let _ = font_system.db_mut().load_font_file(path);
+    }
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn managed_font_paths(font_dir: &Path) -> Vec<PathBuf> {
+    let mut pending = vec![font_dir.to_path_buf()];
+    let mut paths = Vec::new();
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if file_type.is_file() && is_managed_font_path(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn is_managed_font_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "ttf" | "ttc" | "otf" | "otc" | "woff" | "woff2"
+    )
+}
+
+#[cfg(feature = "gpu-wgpu")]
 impl WgpuFrameRenderer {
-    pub(crate) fn new(id: String, width: u32, height: u32, interlaced: bool) -> Result<Self> {
+    pub(crate) fn new(
+        id: String,
+        width: u32,
+        height: u32,
+        interlaced: bool,
+        managed_font_dir: &Path,
+    ) -> Result<Self> {
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
         instance_desc.backends = preferred_backends();
         let instance = wgpu::Instance::new(instance_desc);
@@ -125,7 +183,8 @@ impl WgpuFrameRenderer {
             trace: wgpu::Trace::Off,
         }))
         .context(fatal_error_message())?;
-        let font_system = glyphon::FontSystem::new();
+        let mut font_system = glyphon::FontSystem::new();
+        load_managed_fonts(&mut font_system, managed_font_dir);
         let swash_cache = glyphon::SwashCache::new();
         let cache = glyphon::Cache::new(&device);
         let viewport = glyphon::Viewport::new(&device, &cache);

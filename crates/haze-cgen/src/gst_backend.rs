@@ -28,7 +28,6 @@ use gstreamer_app as gst_app;
 const DEFAULT_UDP_BUFFER_BYTES: u32 = 4 * 1024 * 1024;
 const GST_BUS_POLL_INTERVAL_MS: u64 = 10;
 const PRIORITY_AUDIO_RESTART_SUPPRESS: Duration = Duration::from_secs(300);
-
 pub(crate) async fn run_supervised(
     feed: FeedConfig,
     state_rx: watch::Receiver<RuntimeState>,
@@ -60,9 +59,7 @@ pub(crate) async fn run_supervised(
                 info!(feed_id = %feed.id, "gstreamer cgen pipeline exited cleanly");
                 restart_delay = restart.initial;
             }
-            Err(err) => {
-                warn!(feed_id = %feed.id, "gstreamer cgen pipeline failed: {err:#}");
-            }
+            Err(err) => warn!(feed_id = %feed.id, "gstreamer cgen pipeline failed: {err:#}"),
         }
         tokio::select! {
             _ = sleep(restart_delay) => {}
@@ -115,7 +112,6 @@ pub(crate) fn gstreamer_catalog_json() -> Result<Value> {
         "video_codecs": gstreamer_encoder_catalog(gst::ElementFactoryType::VIDEO_ENCODER, "video"),
         "audio_codecs": gstreamer_encoder_catalog(gst::ElementFactoryType::AUDIO_ENCODER, "audio"),
         "video_decoders": gstreamer_decoder_catalog(),
-        "browser_sources": gstreamer_browser_source_catalog(),
         "gstreamer": {
             "source": "haze-cgen-registry",
             "runtime": "gstreamer-rs",
@@ -252,19 +248,6 @@ fn gstreamer_decoder_catalog() -> Vec<Value> {
         }));
     }
     sort_catalog_values(entries)
-}
-
-fn gstreamer_browser_source_catalog() -> Vec<Value> {
-    if gst::ElementFactory::find("cefsrc").is_none() {
-        return Vec::new();
-    }
-    vec![json!({
-        "id": "cefsrc",
-        "label": "CEF browser source (cefsrc)",
-        "kind": "browser",
-        "element": "cefsrc",
-        "source": "gstreamer",
-    })]
 }
 
 fn looks_like_video_decoder(element: &str, lower: &str) -> bool {
@@ -593,7 +576,26 @@ fn run_pipeline_once(
                         .map(|debug| debug.to_string())
                         .unwrap_or_default();
                     let _ = pipeline.set_state(gst::State::Null);
-                    bail!("GStreamer CGEN error from {src}: {} {debug}", err.error());
+                    let error_text =
+                        format!("GStreamer CGEN error from {src}: {} {debug}", err.error());
+                    publish_status(
+                        &status_tx,
+                        &feed,
+                        &state_rx,
+                        current_video_mode.no_signal(),
+                        json!({
+                            "media_backend": "gstreamer-rs",
+                            "graphics_backend": plan.graphics_backend,
+                            "fatal": false,
+                            "input_connected": false,
+                            "output_active": false,
+                            "last_error": error_text,
+                            "pipeline_diagnostics": diagnostics.status_value(),
+                            "output_ladder": plan.status_value(),
+                            "sync": sync_status_value(&feed),
+                        }),
+                    );
+                    bail!("{}", error_text);
                 }
                 MessageView::Warning(warning) => {
                     diagnostics.record_warning(message_src_path(&message), warning);
@@ -1031,14 +1033,23 @@ impl TextOverlayController {
 }
 
 struct WgpuCompositorSet {
+    backend: &'static str,
     renderers: Vec<Arc<Mutex<WgpuFrameRenderer>>>,
     _probe_ids: Vec<gst::PadProbeId>,
 }
 
 impl WgpuCompositorSet {
+    fn passthrough(backend: &'static str) -> Self {
+        Self {
+            backend,
+            renderers: Vec::new(),
+            _probe_ids: Vec::new(),
+        }
+    }
+
     fn status_value(&self) -> Value {
         json!({
-            "graphics_backend": "wgpu",
+            "graphics_backend": self.backend,
             "renditions": self.renderers.iter().filter_map(|renderer| {
                 renderer.lock().ok().map(|renderer| renderer.status_value())
             }).collect::<Vec<_>>(),
@@ -1063,11 +1074,13 @@ fn install_wgpu_overlay_probes(
         let src_pad = overlay
             .static_pad("src")
             .with_context(|| format!("GStreamer CGEN overlay {overlay_name} has no src pad"))?;
+        let managed_font_dir = base_dir.join("managed").join("fonts");
         let renderer = Arc::new(Mutex::new(WgpuFrameRenderer::new(
             video.id.clone(),
             video.width,
             video.height,
             video.interlaced,
+            &managed_font_dir,
         )?));
         let renderer_for_probe = Arc::clone(&renderer);
         let state_for_probe = Arc::clone(&state);
@@ -1129,6 +1142,7 @@ fn install_wgpu_overlay_probes(
         probe_ids.push(probe_id);
     }
     Ok(WgpuCompositorSet {
+        backend: "wgpu",
         renderers,
         _probe_ids: probe_ids,
     })
@@ -2272,6 +2286,7 @@ struct GstPipelinePlan {
     program_map: String,
     mux_kind: MuxKind,
     required_elements: Vec<String>,
+    graphics_backend: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2348,6 +2363,9 @@ impl GstPipelinePlan {
             })
             .collect::<Vec<_>>()
             .join(" ");
+        let program_video_input = format!(
+            "{video_input} ! {video_live_queue} ! videoconvert ! videoscale ! videorate ! {standby_caps} ! video_selector.sink_0"
+        );
         let audio_branches = planned_audios
             .iter()
             .enumerate()
@@ -2356,7 +2374,7 @@ impl GstPipelinePlan {
             .join(" ");
         let description = format!(
             "{} \
-             {video_input} ! {video_live_queue} ! videoconvert ! videoscale ! videorate ! {standby_caps} ! video_selector.sink_0 \
+             {program_video_input} \
              videotestsrc name=standby_video_src pattern=black is-live=true do-timestamp=true ! {standby_caps} ! {queue} ! video_selector.sink_1 \
              videotestsrc name=smpte_video_src pattern=smpte is-live=true do-timestamp=true ! {standby_caps} ! {queue} ! video_selector.sink_2 \
              input-selector name=video_selector sync-streams=true sync-mode=clock cache-buffers=false drop-backwards=true ! {queue} ! tee name=video_tee \
@@ -2379,6 +2397,7 @@ impl GstPipelinePlan {
             program_map,
             mux_kind: sink.mux_kind,
             required_elements,
+            graphics_backend: "wgpu",
         })
     }
 
@@ -2390,6 +2409,8 @@ impl GstPipelinePlan {
             "audio_count": self.audios.len(),
             "program_map": self.program_map,
             "required_elements": self.required_elements,
+            "video_memory": "SystemMemory",
+            "graphics_backend": self.graphics_backend,
         })
     }
 }
@@ -2422,9 +2443,11 @@ fn required_elements(
         "audioresample".to_string(),
         "audiotestsrc".to_string(),
         "input-selector".to_string(),
-        "identity".to_string(),
         "queue".to_string(),
         "tee".to_string(),
+    ]);
+    elements.extend([
+        "identity".to_string(),
         "videoconvert".to_string(),
         "videorate".to_string(),
         "videoscale".to_string(),
@@ -2569,8 +2592,9 @@ fn video_rendition_branch(
     let queue = queue_fragment(feed, QueueLeak::None);
     let leaky_queue = queue_fragment(feed, QueueLeak::Downstream);
     let mux_pad = mux_kind.video_sink_pad(planned);
+    let encoder_format = video_encoder_raw_format(planned.codec.as_str());
     format!(
-        "video_tee. ! {leaky_queue} ! videoconvert ! videoscale ! videorate ! {caps},format=BGRx ! identity name={overlay_name} silent=true ! videoconvert ! video/x-raw,format=I420{interlace} ! {queue} ! {encoder} ! {queue} ! {mux_pad}"
+        "video_tee. ! {leaky_queue} ! videoconvert ! videoscale ! videorate ! {caps},format=BGRx ! identity name={overlay_name} silent=true ! videoconvert ! video/x-raw,format={encoder_format}{interlace} ! {queue} ! {encoder} ! {queue} ! {mux_pad}"
     )
 }
 
@@ -2630,19 +2654,42 @@ fn queue_time_ns(feed: &FeedConfig) -> u64 {
 }
 
 const GST_QUEUE_MAX_BUFFERS: u32 = 16;
-const GST_QUEUE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const GST_QUEUE_MIN_BYTES: u64 = 4 * 1024 * 1024;
 
 fn queue_fragment(feed: &FeedConfig, leak: QueueLeak) -> String {
+    queue_fragment_with_name(feed, leak, None)
+}
+
+fn queue_fragment_named(feed: &FeedConfig, leak: QueueLeak, name: &str) -> String {
+    queue_fragment_with_name(feed, leak, Some(name))
+}
+
+fn queue_fragment_with_name(feed: &FeedConfig, leak: QueueLeak, name: Option<&str>) -> String {
     let leaky = match leak {
         QueueLeak::None => "",
         QueueLeak::Downstream => " leaky=downstream",
     };
+    let name = name
+        .map(|value| format!(" name={value}"))
+        .unwrap_or_default();
     format!(
-        "queue max-size-time={} max-size-buffers={} max-size-bytes={} flush-on-eos=true{leaky}",
+        "queue{name} max-size-time={} max-size-buffers={} max-size-bytes={} flush-on-eos=true{leaky}",
         queue_time_ns(feed),
         GST_QUEUE_MAX_BUFFERS,
-        GST_QUEUE_MAX_BYTES
+        queue_max_bytes(feed)
     )
+}
+
+fn queue_max_bytes(feed: &FeedConfig) -> u64 {
+    raw_bgrx_frame_bytes(feed.video.width, feed.video.height)
+        .saturating_mul(2)
+        .max(GST_QUEUE_MIN_BYTES)
+}
+
+fn raw_bgrx_frame_bytes(width: u32, height: u32) -> u64 {
+    u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(4)
 }
 
 fn priority_appsrc_max_bytes(feed: &FeedConfig) -> u64 {
@@ -2728,40 +2775,7 @@ struct InputSourceFragment {
 
 impl InputSourceFragment {
     fn from_feed(feed: &FeedConfig) -> Result<Self> {
-        if feed.program_input.is_browser_source() {
-            return Self::from_browser(feed);
-        }
         Self::from_stream(feed)
-    }
-
-    fn from_browser(feed: &FeedConfig) -> Result<Self> {
-        let url = feed.program_input_url().trim();
-        if url.is_empty() {
-            bail!("gstreamer cgen browser input url is empty");
-        }
-        let (width, height) = feed
-            .program_input
-            .browser_size(feed.video.width, feed.video.height);
-        let fps = feed.program_input.browser_fps();
-        let fps_property = if fps == 0 {
-            String::new()
-        } else {
-            format!(",framerate={fps}/1")
-        };
-        Ok(Self {
-            description: format!(
-                "cefsrc url={} do-timestamp=true ! video/x-raw,width={},height={}{} ! cefdemux name=src",
-                gst_quote(url),
-                width,
-                height,
-                fps_property
-            ),
-            video_pad: "src.video",
-            audio_pad: "src.audio",
-            video_decode_chain: String::new(),
-            audio_decode_chain: String::new(),
-            required_elements: vec!["cefdemux".to_string(), "cefsrc".to_string()],
-        })
     }
 
     fn from_stream(feed: &FeedConfig) -> Result<Self> {
@@ -3086,6 +3100,14 @@ fn video_encoder_element(codec: &str) -> String {
     }
 }
 
+fn video_encoder_raw_format(codec: &str) -> &'static str {
+    if video_encoder_element(codec) == "nvh264enc" {
+        "NV12"
+    } else {
+        "I420"
+    }
+}
+
 fn audio_encoder_fragment_bps(
     codec: &str,
     bitrate_bps: i64,
@@ -3273,7 +3295,7 @@ mod tests {
         assert!(plan.description.contains("video_tee."));
         assert!(plan.description.contains("audio_tee."));
         assert!(plan.description.contains(
-            "audio_tee. ! queue max-size-time=240000000 max-size-buffers=16 max-size-bytes=67108864 flush-on-eos=true leaky=downstream ! audioconvert"
+            "audio_tee. ! queue max-size-time=240000000 max-size-buffers=16 max-size-bytes=16588800 flush-on-eos=true leaky=downstream ! audioconvert"
         ));
         assert!(plan.description.contains("mux.sink_256"));
         assert!(plan.description.contains("mux.sink_257"));
@@ -3335,22 +3357,30 @@ mod tests {
     }
 
     #[test]
-    fn gstreamer_plan_uses_cef_browser_source() {
+    fn gstreamer_plan_uses_nv12_before_nvh264enc_on_system_memory_path() {
         let mut feed = test_feed();
-        feed.program_input.input_type = "browser".to_string();
-        feed.program_input.url = "http://127.0.0.1:6444/cgen/program".to_string();
-        feed.program_input.browser_auto_size = "false".to_string();
-        feed.program_input.browser_width = Some(1280);
-        feed.program_input.browser_height = Some(720);
-        feed.program_input.browser_fps = Some(60);
+        feed.program_output.vcodec = "nvh264enc".to_string();
+        feed.video.fps = "60000/1001".to_string();
+        feed.video.interlaced = false;
+        feed.ladder.videos[0].vcodec = "nvh264enc".to_string();
+        feed.ladder.videos[0].fps = "60000/1001".to_string();
+        feed.ladder.videos[0].interlaced = false;
 
         let plan = GstPipelinePlan::from_feed(&feed).expect("plan");
 
-        assert!(plan.description.contains(
-            "cefsrc url=\"http://127.0.0.1:6444/cgen/program\" do-timestamp=true ! video/x-raw,width=1280,height=720,framerate=60/1 ! cefdemux name=src"
-        ));
-        assert!(plan.required_elements.contains(&"cefsrc".to_string()));
-        assert!(plan.required_elements.contains(&"cefdemux".to_string()));
+        assert!(plan
+            .description
+            .contains("videoconvert ! video/x-raw,format=NV12"));
+        assert!(plan.description.contains("! nvh264enc bitrate="));
+        assert!(!plan.description.contains("video/x-raw,format=I420 ! queue"));
+    }
+
+    #[test]
+    fn generic_queue_max_bytes_tracks_two_output_frames() {
+        let feed = test_feed();
+
+        assert_eq!(raw_bgrx_frame_bytes(1920, 1080), 8_294_400);
+        assert_eq!(queue_max_bytes(&feed), 16_588_800);
     }
 
     #[test]
@@ -3362,7 +3392,7 @@ mod tests {
 
         assert!(plan.description.contains("max-size-time=640000000"));
         assert!(plan.description.contains(
-            "src. ! parsebin ! decodebin ! audio/x-raw ! queue max-size-time=640000000 max-size-buffers=16 max-size-bytes=67108864 flush-on-eos=true leaky=downstream ! audioconvert"
+            "src. ! parsebin ! decodebin ! audio/x-raw ! queue max-size-time=640000000 max-size-buffers=16 max-size-bytes=16588800 flush-on-eos=true leaky=downstream ! audioconvert"
         ));
         assert!(plan.description.contains("latency=320000000"));
         assert!(plan.description.contains("max-bytes=368640"));

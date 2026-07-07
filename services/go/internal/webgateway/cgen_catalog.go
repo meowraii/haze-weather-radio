@@ -31,7 +31,6 @@ type cgenCatalogBuilder struct {
 	video         map[string]cgenCatalogEntry
 	audio         map[string]cgenCatalogEntry
 	videoDecoders map[string]cgenCatalogEntry
-	browser       map[string]cgenCatalogEntry
 }
 
 type cgenRuntimeCatalog struct {
@@ -39,7 +38,6 @@ type cgenRuntimeCatalog struct {
 	VideoCodecs   []cgenCatalogEntry `json:"video_codecs"`
 	AudioCodecs   []cgenCatalogEntry `json:"audio_codecs"`
 	VideoDecoders []cgenCatalogEntry `json:"video_decoders"`
-	Browser       []cgenCatalogEntry `json:"browser_sources"`
 }
 
 func cgenCatalogPayload(configPath string) (map[string]any, error) {
@@ -48,14 +46,12 @@ func cgenCatalogPayload(configPath string) (map[string]any, error) {
 		video:         map[string]cgenCatalogEntry{},
 		audio:         map[string]cgenCatalogEntry{},
 		videoDecoders: map[string]cgenCatalogEntry{},
-		browser:       map[string]cgenCatalogEntry{},
 	}
 	runtimeCatalog, runtimeSource := loadCgenRuntimeCatalog(configPath)
 	builder.addCatalogEntries(builder.formats, runtimeCatalog.Formats)
 	builder.addCatalogEntries(builder.video, runtimeCatalog.VideoCodecs)
 	builder.addCatalogEntries(builder.audio, runtimeCatalog.AudioCodecs)
 	builder.addCatalogEntries(builder.videoDecoders, runtimeCatalog.VideoDecoders)
-	builder.addCatalogEntries(builder.browser, runtimeCatalog.Browser)
 	plugins := discoverGStreamerPlugins(configPath)
 	inspectPath := findGstInspect(configPath)
 	if inspectPath != "" {
@@ -64,12 +60,11 @@ func cgenCatalogPayload(configPath string) (map[string]any, error) {
 	builder.addPluginCatalog(plugins)
 	builder.addBaselineCatalog()
 	return map[string]any{
-		"formats":         builder.sorted(builder.formats),
-		"video_codecs":    builder.sorted(builder.video),
-		"audio_codecs":    builder.sorted(builder.audio),
-		"video_decoders":  builder.sorted(builder.videoDecoders),
-		"browser_sources": builder.sorted(builder.browser),
-		"fonts":           discoverFonts(configPath),
+		"formats":        builder.sorted(builder.formats),
+		"video_codecs":   builder.sorted(builder.video),
+		"audio_codecs":   builder.sorted(builder.audio),
+		"video_decoders": builder.sorted(builder.videoDecoders),
+		"fonts":          discoverFonts(configPath),
 		"gstreamer": map[string]any{
 			"inspect":      inspectPath,
 			"plugin_count": len(plugins),
@@ -107,7 +102,7 @@ func loadCgenRuntimeCatalog(configPath string) (cgenRuntimeCatalog, string) {
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return cgenRuntimeCatalog{}, ""
 	}
-	if len(payload.Formats)+len(payload.VideoCodecs)+len(payload.AudioCodecs)+len(payload.VideoDecoders)+len(payload.Browser) == 0 {
+	if len(payload.Formats)+len(payload.VideoCodecs)+len(payload.AudioCodecs)+len(payload.VideoDecoders) == 0 {
 		return cgenRuntimeCatalog{}, ""
 	}
 	return payload, "haze-cgen-registry"
@@ -227,20 +222,6 @@ func (builder *cgenCatalogBuilder) addVideoDecoder(id string, label string, elem
 		ID:      id,
 		Label:   fallbackText(label, id),
 		Kind:    "video",
-		Element: element,
-		Source:  source,
-	})
-}
-
-func (builder *cgenCatalogBuilder) addBrowserSource(id string, label string, element string, source string) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return
-	}
-	builder.browser[id] = mergeCgenCatalogEntry(builder.browser[id], cgenCatalogEntry{
-		ID:      id,
-		Label:   fallbackText(label, id),
-		Kind:    "browser",
 		Element: element,
 		Source:  source,
 	})
@@ -455,10 +436,6 @@ func (builder *cgenCatalogBuilder) addPluginCatalog(plugins map[string]bool) {
 		builder.addVideoDecoder("qsvh265dec", "H.265 / HEVC - Intel Quick Sync (qsvh265dec)", "qsvh265dec", "libgstqsv")
 		builder.addVideoDecoder("qsvmpeg2dec", "MPEG-2 Video - Intel Quick Sync (qsvmpeg2dec)", "qsvmpeg2dec", "libgstqsv")
 	}
-	if plugins["cef"] {
-		builder.addBrowserSource("cefsrc", "CEF browser source (cefsrc)", "cefsrc", "libgstcef")
-	}
-
 	if plugins["faac"] || plugins["fdkaac"] {
 		builder.addAudio("faac", "AAC - FAAC/fdk-aac", "faac/fdkaac", "libgstfaac")
 	}
@@ -527,9 +504,6 @@ func (builder *cgenCatalogBuilder) addGstFactory(element string, description str
 		builder.addFormat("flv", "FLV", "container", element)
 	}
 	if !isGstEncoderFactory(element, description) {
-		if element == "cefsrc" || strings.Contains(lower, "cef browser") {
-			builder.addBrowserSource(element, gstFactoryLabel("CEF browser source", element), element, "gst-inspect")
-		}
 		if isGstVideoDecoderFactory(element, description) {
 			switch {
 			case strings.Contains(lower, "h.264") || strings.Contains(lower, "h264") || strings.Contains(lower, "avc"):

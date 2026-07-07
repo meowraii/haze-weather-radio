@@ -1091,7 +1091,6 @@
                                         <span>Input type</span>
                                         <select id="cgenProgramInputType">
                                             <option value="stream">Stream</option>
-                                            <option value="browser">Browser source</option>
                                         </select>
                                     </label>
                                     <label class="daemon-field cgen-wide" data-cgen-input-option="stream">
@@ -1111,26 +1110,6 @@
                                     <label class="daemon-field" data-cgen-input-option="stream">
                                         <span>Hardware decoder</span>
                                         <select id="cgenHardwareDecoder"></select>
-                                    </label>
-                                    <label class="daemon-field cgen-wide" data-cgen-input-option="browser" hidden>
-                                        <span>Browser URL</span>
-                                        <input id="cgenBrowserUrl" type="text" placeholder="http://127.0.0.1:6444/cgen/program">
-                                    </label>
-                                    <label class="daemon-field check-row" data-cgen-input-option="browser" hidden>
-                                        <input id="cgenBrowserAutoSize" type="checkbox" checked>
-                                        <span>Set browser window size automatically</span>
-                                    </label>
-                                    <label class="daemon-field" data-cgen-input-option="browser" hidden>
-                                        <span>Render width</span>
-                                        <input id="cgenBrowserWidth" type="number" min="1" max="7680" step="1" value="1920">
-                                    </label>
-                                    <label class="daemon-field" data-cgen-input-option="browser" hidden>
-                                        <span>Render height</span>
-                                        <input id="cgenBrowserHeight" type="number" min="1" max="4320" step="1" value="1080">
-                                    </label>
-                                    <label class="daemon-field" data-cgen-input-option="browser" hidden>
-                                        <span>Browser framerate</span>
-                                        <input id="cgenBrowserFPS" type="number" min="0" max="120" step="1" value="60">
                                     </label>
                                     <label class="daemon-field">
                                         <span>Priority feed input</span>

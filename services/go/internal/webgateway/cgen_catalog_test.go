@@ -111,7 +111,6 @@ func TestCgenCatalogGstInspectClassification(t *testing.T) {
 		video:         map[string]cgenCatalogEntry{},
 		audio:         map[string]cgenCatalogEntry{},
 		videoDecoders: map[string]cgenCatalogEntry{},
-		browser:       map[string]cgenCatalogEntry{},
 	}
 
 	builder.addGstFactory("avdec_h265", "libav HEVC / H.265 decoder")

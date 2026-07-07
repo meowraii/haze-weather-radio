@@ -313,7 +313,7 @@ fn acquire_runtime_instance_lock(runtime_dir: &Path) -> Result<RuntimeInstanceGu
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 if let Some(existing_pid) = read_lock_pid(&path) {
-                    if process_alive(existing_pid) {
+                    if process_owns_runtime(existing_pid, runtime_dir) {
                         anyhow::bail!(
                             "another Haze host is already running for runtime {} (pid {}). Stop it before starting another instance.",
                             runtime_dir.display(),
@@ -431,6 +431,62 @@ fn process_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
+#[cfg(unix)]
+fn process_owns_runtime(pid: u32, runtime_dir: &Path) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    if !process_alive(pid) {
+        return false;
+    }
+
+    let cmdline = match fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(cmdline) => cmdline,
+        Err(_) => return true,
+    };
+    let args = parse_proc_cmdline(&cmdline);
+    if !args.first().is_some_and(|arg| command_is_haze(arg)) {
+        return false;
+    }
+
+    let runtime = dunce::simplified(runtime_dir).to_string_lossy();
+    args.iter().any(|arg| {
+        arg == runtime.as_ref()
+            || arg.strip_prefix("--workdir=").is_some_and(|value| {
+                dunce::simplified(Path::new(value)) == dunce::simplified(runtime_dir)
+            })
+    }) || args.windows(2).any(|pair| {
+        pair[0] == "--workdir"
+            && dunce::simplified(Path::new(pair[1])) == dunce::simplified(runtime_dir)
+    })
+}
+
+#[cfg(unix)]
+fn command_is_haze(command: &str) -> bool {
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "haze")
+}
+
+#[cfg(unix)]
+fn parse_proc_cmdline(raw: &[u8]) -> Vec<&str> {
+    raw.split(|byte| *byte == 0)
+        .filter_map(|arg| std::str::from_utf8(arg).ok())
+        .filter(|arg| !arg.is_empty())
+        .collect()
+}
+
+#[cfg(windows)]
+fn process_owns_runtime(pid: u32, _runtime_dir: &Path) -> bool {
+    process_alive(pid)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn process_owns_runtime(pid: u32, _runtime_dir: &Path) -> bool {
+    process_alive(pid)
+}
+
 #[cfg(not(any(unix, windows)))]
 fn process_alive(_pid: u32) -> bool {
     true
@@ -474,5 +530,26 @@ mod tests {
 
         drop(first);
         assert!(acquire_runtime_instance_lock(temp.path()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_instance_lock_ignores_reused_non_haze_pid() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .spawn()
+            .expect("spawn non-haze child");
+        let lock_path = temp.path().join(DAEMON_LOCK_FILE);
+        fs::create_dir_all(lock_path.parent().expect("lock parent")).expect("lock dir");
+        fs::write(&lock_path, child.id().to_string()).expect("write stale lock");
+
+        let guard = acquire_runtime_instance_lock(temp.path()).expect("lock replaces reused pid");
+
+        assert_eq!(read_lock_pid(&lock_path), Some(std::process::id()));
+        drop(guard);
+        child.kill().ok();
+        child.wait().ok();
     }
 }

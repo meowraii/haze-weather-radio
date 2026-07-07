@@ -25,7 +25,6 @@ const fontPickerLabel = document.getElementById('cgenFontPickerLabel');
 const fontMenu = document.getElementById('cgenFontMenu');
 const cgenTabs = Array.from(document.querySelectorAll('[data-cgen-tab]'));
 const cgenTabPanels = Array.from(document.querySelectorAll('[data-cgen-panel]'));
-const cgenInputOptionRows = Array.from(document.querySelectorAll('[data-cgen-input-option]'));
 
 const fields = {
     id: document.getElementById('cgenID'),
@@ -37,11 +36,6 @@ const fields = {
     programInputFormat: document.getElementById('cgenProgramInputFormat'),
     hardwareDecoderEnabled: document.getElementById('cgenHardwareDecoderEnabled'),
     hardwareDecoder: document.getElementById('cgenHardwareDecoder'),
-    browserUrl: document.getElementById('cgenBrowserUrl'),
-    browserAutoSize: document.getElementById('cgenBrowserAutoSize'),
-    browserWidth: document.getElementById('cgenBrowserWidth'),
-    browserHeight: document.getElementById('cgenBrowserHeight'),
-    browserFPS: document.getElementById('cgenBrowserFPS'),
     priorityFeed: document.getElementById('cgenPriorityFeed'),
     audioSource: document.getElementById('cgenAudioSource'),
     audioIdle: document.getElementById('cgenAudioIdle'),
@@ -139,7 +133,6 @@ let cgenCatalog = {
     video_codecs: [],
     audio_codecs: [],
     video_decoders: [],
-    browser_sources: [],
     fonts: [],
 };
 const managedFontFaces = new Map();
@@ -227,41 +220,14 @@ function value(key, fallback = '') {
 }
 
 function inputTypeValue() {
-    return String(fields.programInputType?.value || 'stream').trim() === 'browser' ? 'browser' : 'stream';
-}
-
-function browserSourceAvailable() {
-    return Array.isArray(cgenCatalog.browser_sources)
-        && cgenCatalog.browser_sources.some((entry) => String(entry?.id || entry?.element || '').trim() === 'cefsrc');
-}
-
-function cleanBrowserFPS(value) {
-    const n = Math.trunc(Number(value));
-    if (!Number.isFinite(n) || n <= 0) return '0';
-    return String(Math.min(120, Math.max(5, n)));
-}
-
-function cleanDimension(value, fallback, max) {
-    const n = Math.trunc(Number(value));
-    if (!Number.isFinite(n) || n < 1) return fallback;
-    return String(Math.min(max, n));
+    if (fields.programInputType) fields.programInputType.value = 'stream';
+    return 'stream';
 }
 
 function updateProgramInputVisibility() {
-    const browserOption = fields.programInputType?.querySelector('option[value="browser"]');
-    if (browserOption) browserOption.disabled = !browserSourceAvailable();
-    if (!browserSourceAvailable() && fields.programInputType?.value === 'browser') {
-        fields.programInputType.value = 'stream';
-    }
     const type = inputTypeValue();
-    for (const row of cgenInputOptionRows) {
-        row.hidden = row.dataset.cgenInputOption !== type;
-    }
     const hardwareDecoderEnabled = type === 'stream' && fields.hardwareDecoderEnabled?.checked === true;
     if (fields.hardwareDecoder) fields.hardwareDecoder.disabled = !hardwareDecoderEnabled;
-    const manualSize = type === 'browser' && fields.browserAutoSize?.checked === false;
-    if (fields.browserWidth) fields.browserWidth.disabled = !manualSize;
-    if (fields.browserHeight) fields.browserHeight.disabled = !manualSize;
 }
 
 function optionLabelForValue(value) {
@@ -306,10 +272,6 @@ function sanitizeID(value) {
 
 function readEditor() {
     const id = sanitizeID(value('id'));
-    const programInputType = inputTypeValue();
-    const browserWidth = cleanDimension(value('browserWidth', value('width', '1920')), '1920', 7680);
-    const browserHeight = cleanDimension(value('browserHeight', value('height', '1080')), '1080', 4320);
-    const browserFPS = cleanBrowserFPS(value('browserFPS', '60'));
     return {
         id,
         name: value('name', id),
@@ -317,15 +279,11 @@ function readEditor() {
         mode: value('mode', 'release'),
         smpte_bars: value('smpteBars'),
         sunny_cat: value('sunnyCat'),
-        program_input_type: programInputType,
-        program_input_url: programInputType === 'browser' ? value('browserUrl') : value('programInput'),
-        program_input_format: programInputType === 'browser' ? 'cef' : value('programInputFormat', 'mpegts'),
+        program_input_type: inputTypeValue(),
+        program_input_url: value('programInput'),
+        program_input_format: value('programInputFormat', 'mpegts'),
         hardware_decoder_enabled: value('hardwareDecoderEnabled'),
         hardware_decoder: value('hardwareDecoder'),
-        browser_auto_size: value('browserAutoSize', true),
-        browser_width: browserWidth,
-        browser_height: browserHeight,
-        browser_fps: browserFPS,
         priority_feed_id: value('priorityFeed', id),
         audio_source: value('audioSource', 'priority'),
         priority_input_format: 'priority-audio',
@@ -427,17 +385,11 @@ function writeEditor(feed) {
     setValue('mode', feed.mode || 'release');
     setValue('smpteBars', Boolean(feed.smpte_bars));
     setValue('sunnyCat', Boolean(feed.sunny_cat));
-    const programInputType = feed.program_input_type === 'browser' ? 'browser' : 'stream';
-    setValue('programInputType', programInputType);
-    setValue('programInput', programInputType === 'stream' ? feed.program_input_url || '' : '');
-    setValue('browserUrl', programInputType === 'browser' ? feed.program_input_url || '' : feed.browser_url || '');
+    setValue('programInputType', 'stream');
+    setValue('programInput', feed.program_input_url || '');
     setValue('programInputFormat', feed.program_input_format || 'mpegts');
     setValue('hardwareDecoderEnabled', Boolean(feed.hardware_decoder_enabled));
     setValue('hardwareDecoder', feed.hardware_decoder || '');
-    setValue('browserAutoSize', feed.browser_auto_size !== false);
-    setValue('browserWidth', feed.browser_width || feed.width || '1920');
-    setValue('browserHeight', feed.browser_height || feed.height || '1080');
-    setValue('browserFPS', feed.browser_fps || '60');
     setValue('priorityFeed', feed.priority_feed_id || feed.id);
     setValue('audioSource', feed.audio_source || 'priority');
     setValue('audioIdle', feed.audio_idle || 'source');
@@ -1082,7 +1034,6 @@ async function loadCgenCatalog({ announce = false } = {}) {
         video_codecs: Array.isArray(payload.video_codecs) ? payload.video_codecs : [],
         audio_codecs: Array.isArray(payload.audio_codecs) ? payload.audio_codecs : [],
         video_decoders: Array.isArray(payload.video_decoders) ? payload.video_decoders : [],
-        browser_sources: Array.isArray(payload.browser_sources) ? payload.browser_sources : [],
         fonts: Array.isArray(payload.fonts) ? payload.fonts : [],
     };
     registerManagedFontFaces();
@@ -1136,10 +1087,6 @@ function defaultFeed() {
         program_input_format: 'mpegts',
         hardware_decoder_enabled: false,
         hardware_decoder: '',
-        browser_auto_size: true,
-        browser_width: '1920',
-        browser_height: '1080',
-        browser_fps: '60',
         priority_feed_id: '*',
         audio_source: 'priority',
         audio_idle: 'source',
@@ -1297,7 +1244,7 @@ export function initCgenView() {
             scheduleRender();
             if (field === fields.font) updateFontPreview();
             if (field === fields.vcodec || field === fields.acodec) updateEncoderControlVisibility();
-            if (field === fields.programInputType || field === fields.browserAutoSize || field === fields.hardwareDecoderEnabled) updateProgramInputVisibility();
+            if (field === fields.programInputType || field === fields.hardwareDecoderEnabled) updateProgramInputVisibility();
             if (field === fields.programInputFormat) {
                 populateCatalogSelect(fields.hardwareDecoder, streamVideoDecoderEntries(), [
                     { id: 'nvh264dec', label: 'H.264 / AVC - NVIDIA NVDEC (nvh264dec)', element: 'nvh264dec' },
@@ -1312,7 +1259,7 @@ export function initCgenView() {
             scheduleRender();
             if (field === fields.font) updateFontPreview();
             if (field === fields.vcodec || field === fields.acodec) updateEncoderControlVisibility();
-            if (field === fields.programInputType || field === fields.browserAutoSize || field === fields.hardwareDecoderEnabled) updateProgramInputVisibility();
+            if (field === fields.programInputType || field === fields.hardwareDecoderEnabled) updateProgramInputVisibility();
             if (field === fields.programInputFormat) {
                 populateCatalogSelect(fields.hardwareDecoder, streamVideoDecoderEntries(), [
                     { id: 'nvh264dec', label: 'H.264 / AVC - NVIDIA NVDEC (nvh264dec)', element: 'nvh264dec' },
