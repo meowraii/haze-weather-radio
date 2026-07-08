@@ -432,6 +432,19 @@ func (p *feedPlanner) nextRoutinePackage() string {
 	return ""
 }
 
+func (p *feedPlanner) advanceRoutineCursorPast(pkgID string) {
+	order := p.cfg.Root.Playout.PlaylistOrder
+	if len(order) == 0 {
+		return
+	}
+	for index, candidate := range order {
+		if strings.EqualFold(strings.TrimSpace(candidate), strings.TrimSpace(pkgID)) {
+			p.cursor = index + 1
+			return
+		}
+	}
+}
+
 func (p *feedPlanner) productLanguageForBuild(source string) string {
 	if !strings.EqualFold(source, "routine") {
 		return feedLanguage(p.feed)
@@ -561,6 +574,9 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 		return playlistItem{}, err
 	}
 	if item, ok, err := p.buildProductAudioItem(ctx, product, pkgID, source, targetRaw, timelineEnd, now, queueID); ok || err != nil {
+		return item, err
+	}
+	if item, ok, err := p.buildSegmentedProductItem(ctx, product, pkgID, source, targetRaw, timelineEnd, now, queueID); ok || err != nil {
 		return item, err
 	}
 	if strings.TrimSpace(product.Text) == "" {
@@ -767,6 +783,9 @@ func (p *feedPlanner) queueStartupPrimer(ctx context.Context, now time.Time) {
 			continue
 		}
 		p.queue = append(p.queue, item)
+		if pkgID == "current_conditions" {
+			p.advanceRoutineCursorPast(pkgID)
+		}
 		if err := p.publishReady(item); err != nil {
 			p.lastError = err.Error()
 			return
@@ -824,6 +843,132 @@ func (p *feedPlanner) buildProductAudioItem(ctx context.Context, product rendere
 		Status:            "queued",
 		Source:            source,
 	}, true, nil
+}
+
+func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product renderedProduct, pkgID string, source string, targetRaw string, timelineEnd time.Time, now time.Time, queueID string) (playlistItem, bool, error) {
+	if !productHasAudioSegments(product) {
+		return playlistItem{}, false, nil
+	}
+	outputPath := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID), queueID+".wav")
+	outputDir := filepath.Dir(outputPath)
+	sampleRate := p.cfg.Root.Playout.SampleRate
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	channels := p.cfg.Root.Playout.Channels
+	if channels <= 0 {
+		channels = 1
+	}
+	combined := []byte{}
+	for index, segment := range product.Segments {
+		if audioPath := strings.TrimSpace(segment.AudioPath); audioPath != "" {
+			scratch := filepath.Join(outputDir, fmt.Sprintf("%s-audio-%02d.wav", queueID, index))
+			pcm, err := p.routineAudioSegmentPCM(ctx, audioPath, scratch, sampleRate, channels)
+			if err != nil {
+				return playlistItem{}, true, err
+			}
+			combined = append(combined, pcm...)
+		}
+		if text := strings.TrimSpace(segment.Text); text != "" {
+			scratch := filepath.Join(outputDir, fmt.Sprintf("%s-text-%02d.wav", queueID, index))
+			pcm, err := p.synthesizeSegmentPCM(ctx, queueID, index, text, product, source, scratch, sampleRate, channels)
+			if err != nil {
+				return playlistItem{}, true, err
+			}
+			combined = append(combined, pcm...)
+		}
+	}
+	if len(combined) == 0 {
+		return playlistItem{}, true, fmt.Errorf("product %s rendered no playable segments", pkgID)
+	}
+	if err := writePCM16WAV(outputPath, combined, sampleRate, channels); err != nil {
+		return playlistItem{}, true, err
+	}
+	info, err := wavInfo(outputPath)
+	if err != nil {
+		return playlistItem{}, true, err
+	}
+	target := parseTime(targetRaw)
+	start := predictedStart(now, timelineEnd, target)
+	finish := start.Add(p.itemScheduleDuration(info.DurationMS))
+	return playlistItem{
+		QueueID:           queueID,
+		FeedID:            p.feed.ID,
+		Kind:              "product",
+		PackageID:         pkgID,
+		Title:             fallbackText(product.Title, pkgID),
+		AudioPath:         outputPath,
+		DurationMS:        info.DurationMS,
+		QueuedAt:          now.UTC().Format(time.RFC3339Nano),
+		TargetStartAt:     formatOptionalTime(target),
+		PredictedStartAt:  start.UTC().Format(time.RFC3339Nano),
+		PredictedFinishAt: finish.UTC().Format(time.RFC3339Nano),
+		Status:            "queued",
+		Source:            source,
+	}, true, nil
+}
+
+func productHasAudioSegments(product renderedProduct) bool {
+	for _, segment := range product.Segments {
+		if strings.TrimSpace(segment.AudioPath) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *feedPlanner) synthesizeSegmentPCM(ctx context.Context, queueID string, index int, text string, product renderedProduct, source string, outputPath string, sampleRate int, channels int) ([]byte, error) {
+	synthCtx, cancel := context.WithTimeout(ctx, p.synthesisTimeoutForBuild(product.PackageID, source, product.Language))
+	defer cancel()
+	wavPath, err := p.bridge.Synthesize(synthCtx, synthJob{
+		ID:         fmt.Sprintf("%s-seg-%02d", queueID, index),
+		Text:       text,
+		ReaderID:   product.ReaderID,
+		Language:   fallbackText(product.Language, feedLanguage(p.feed)),
+		Timezone:   feedTimezone(p.feed),
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return playbackWAVPCM(ctx, wavPath, outputPath+".normalized.wav", sampleRate, channels)
+}
+
+func (p *feedPlanner) routineAudioSegmentPCM(ctx context.Context, rawPath string, scratchPath string, sampleRate int, channels int) ([]byte, error) {
+	sourcePath, err := p.resolveRoutineAudioPath(rawPath)
+	if err != nil {
+		return nil, err
+	}
+	return playbackWAVPCM(ctx, sourcePath, scratchPath, sampleRate, channels)
+}
+
+func playbackWAVPCM(ctx context.Context, sourcePath string, normalizedPath string, sampleRate int, channels int) ([]byte, error) {
+	raw, readErr := os.ReadFile(sourcePath)
+	if readErr == nil {
+		if pcm, info, wavErr := wavPCM16(raw); wavErr == nil && info.SampleRate == sampleRate && info.Channels == channels {
+			return pcm, nil
+		}
+	}
+	convertCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	if err := convertAudioToWAV(convertCtx, sourcePath, normalizedPath, sampleRate, channels); err != nil {
+		if readErr != nil {
+			return nil, readErr
+		}
+		return nil, err
+	}
+	raw, err := os.ReadFile(normalizedPath)
+	if err != nil {
+		return nil, err
+	}
+	pcm, info, err := wavPCM16(raw)
+	if err != nil {
+		return nil, err
+	}
+	if info.SampleRate != sampleRate || info.Channels != channels {
+		return nil, fmt.Errorf("normalized WAV format mismatch")
+	}
+	return pcm, nil
 }
 
 func (p *feedPlanner) downloadRoutineAudio(ctx context.Context, sourceURL string, queueID string, outputPath string) (string, error) {

@@ -573,6 +573,7 @@ struct HttpClientSnapshot {
 struct WebRTCPeerRuntime {
     id: u64,
     feed_id: String,
+    client_id: String,
     codec: &'static str,
     connected_at: Instant,
     last_push_at: Option<Instant>,
@@ -585,6 +586,7 @@ struct WebRTCPeerRuntime {
 struct WebRTCPeerSnapshot {
     id: u64,
     feed_id: String,
+    client_id: String,
     codec: &'static str,
     connected_ms: u128,
     last_push_age_ms: Option<u128>,
@@ -817,11 +819,28 @@ impl MediaState {
         out
     }
 
-    fn register_webrtc_peer(&self, feed_id: &str, codec: &'static str) -> u64 {
+    fn register_webrtc_peer(
+        &self,
+        feed_id: &str,
+        codec: &'static str,
+        client_id: &str,
+    ) -> Option<u64> {
+        let feed_id = feed_id.to_string();
+        let client_id = normalize_webrtc_listener_client_id(client_id);
+        let Ok(mut peers) = self.webrtc_peers.lock() else {
+            return None;
+        };
+        if peers
+            .values()
+            .any(|peer| peer.feed_id == feed_id && peer.client_id == client_id)
+        {
+            return None;
+        }
         let id = self.next_webrtc_peer_id.fetch_add(1, Ordering::Relaxed);
         let peer = WebRTCPeerRuntime {
             id,
-            feed_id: feed_id.to_string(),
+            feed_id,
+            client_id,
             codec,
             connected_at: Instant::now(),
             last_push_at: None,
@@ -829,10 +848,8 @@ impl MediaState {
             frames_pushed: 0,
             dropped_frames: 0,
         };
-        if let Ok(mut peers) = self.webrtc_peers.lock() {
-            peers.insert(id, peer);
-        }
-        id
+        peers.insert(id, peer);
+        Some(id)
     }
 
     #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
@@ -873,6 +890,7 @@ impl MediaState {
             .map(|peer| WebRTCPeerSnapshot {
                 id: peer.id,
                 feed_id: peer.feed_id.clone(),
+                client_id: peer.client_id.clone(),
                 codec: peer.codec,
                 connected_ms: now.duration_since(peer.connected_at).as_millis(),
                 last_push_age_ms: peer
@@ -1970,8 +1988,10 @@ async fn handle_webrtc_offer(
         .last_input_age_ms
         .map(|age| age <= 5_000)
         .unwrap_or(false);
-    let request_peer_ip = parse_webrtc_request_peer_ip(&payload)
-        .or_else(|| stream.peer_addr().ok().map(|addr| addr.ip()));
+    let stream_peer_addr = stream.peer_addr().ok();
+    let request_peer_ip =
+        parse_webrtc_request_peer_ip(&payload).or_else(|| stream_peer_addr.map(|addr| addr.ip()));
+    let listener_client_id = webrtc_listener_client_id(&payload, stream_peer_addr);
     let setup = build_str0m_webrtc_peer(&offer_sdp, selection, request_peer_ip).await;
     let peer = match setup {
         Ok(peer) => peer,
@@ -1987,7 +2007,20 @@ async fn handle_webrtc_offer(
         }
     };
     let answer_sdp = peer.answer_sdp.clone();
-    write_json_response(
+    let Some(peer_id) =
+        state.register_webrtc_peer(&feed_id, selection.codec.id(), &listener_client_id)
+    else {
+        write_json_response(
+            stream,
+            429,
+            json!({
+                "error": "listener already active for this IP and feed",
+            }),
+        )
+        .await?;
+        return Ok(());
+    };
+    if let Err(err) = write_json_response(
         stream,
         200,
         json!({
@@ -1999,8 +2032,11 @@ async fn handle_webrtc_offer(
             "media_recent": media_recent,
         }),
     )
-    .await?;
-    let peer_id = state.register_webrtc_peer(&feed_id, selection.codec.id());
+    .await
+    {
+        state.unregister_webrtc_peer(peer_id);
+        return Err(err);
+    }
     start_webrtc_peer_feeder(state.clone(), peer_id, feed, peer);
     Ok(())
 }
@@ -2148,6 +2184,48 @@ fn detect_webrtc_candidate_ip_inner(
 
 fn parse_webrtc_request_peer_ip(payload: &WebRTCOfferRequest) -> Option<IpAddr> {
     parse_ip_hint(&payload.client_ip).or_else(|| parse_ip_hint(&payload.remote_addr))
+}
+
+fn webrtc_listener_client_id(
+    payload: &WebRTCOfferRequest,
+    stream_peer_addr: Option<SocketAddr>,
+) -> String {
+    parse_listener_ip_hint(&payload.client_ip)
+        .or_else(|| parse_listener_ip_hint(&payload.remote_addr))
+        .or_else(|| stream_peer_addr.map(|addr| addr.ip()))
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn parse_listener_ip_hint(raw: &str) -> Option<IpAddr> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(addr) = value.parse::<SocketAddr>() {
+        let ip = addr.ip();
+        if !ip.is_unspecified() {
+            return Some(ip);
+        }
+        return None;
+    }
+    let value = value.trim_matches(['[', ']']);
+    let Ok(ip) = value.parse::<IpAddr>() else {
+        return None;
+    };
+    if ip.is_unspecified() {
+        return None;
+    }
+    Some(ip)
+}
+
+fn normalize_webrtc_listener_client_id(client_id: &str) -> String {
+    let client_id = client_id.trim();
+    if client_id.is_empty() {
+        "unknown".to_string()
+    } else {
+        client_id.to_string()
+    }
 }
 
 fn parse_ip_hint(raw: &str) -> Option<IpAddr> {
@@ -4762,6 +4840,43 @@ mod tests {
             parse_webrtc_request_peer_ip(&payload),
             Some(IpAddr::V4(Ipv4Addr::new(172, 16, 1, 55)))
         );
+    }
+
+    #[test]
+    fn webrtc_listener_client_id_prefers_proxy_client_ip() {
+        let payload = WebRTCOfferRequest {
+            feed_id: String::new(),
+            sdp: String::new(),
+            _sdp_type: String::new(),
+            preferred_codec: String::new(),
+            codec: String::new(),
+            require_opus: false,
+            disable_g722: false,
+            client_ip: "172.16.1.56".to_string(),
+            remote_addr: "127.0.0.1:6444".to_string(),
+        };
+
+        assert_eq!(
+            webrtc_listener_client_id(
+                &payload,
+                Some("127.0.0.1:8097".parse().expect("valid socket address"))
+            ),
+            "172.16.1.56"
+        );
+    }
+
+    #[test]
+    fn webrtc_listener_registry_rejects_duplicate_feed_client() {
+        let state = MediaState::new(BTreeMap::new(), BackendMode::Legacy, false, Vec::new());
+        let first = state.register_webrtc_peer("feed-a", "opus", "172.16.1.56");
+        let duplicate = state.register_webrtc_peer("feed-a", "opus", "172.16.1.56");
+        let other_feed = state.register_webrtc_peer("feed-b", "opus", "172.16.1.56");
+        let other_client = state.register_webrtc_peer("feed-a", "opus", "172.16.1.57");
+
+        assert!(first.is_some());
+        assert!(duplicate.is_none());
+        assert!(other_feed.is_some());
+        assert!(other_client.is_some());
     }
 
     #[test]

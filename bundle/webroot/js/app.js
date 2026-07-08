@@ -211,9 +211,9 @@ window.addEventListener('haze:admin-state', (event) => {
     const payload = event.detail || {};
     const summary = payload.summary || {};
     if (typeof summary.uptime_seconds === 'number') {
-        setHealthState(true, `Live socket · ${Math.round(summary.uptime_seconds)}s uptime`);
+        setHealthState(true, `Live stream · ${Math.round(summary.uptime_seconds)}s uptime`);
     } else {
-        setHealthState(true, 'Live socket connected');
+        setHealthState(true, 'Live stream connected');
     }
     setLastConnected(payload.last_connected);
 });

@@ -414,9 +414,9 @@ func (r renderer) currentConditionsProduct(base Product, feed feedXML) (Product,
 		segments = append(segments, r.currentObservationSegments(base, snapshot.Primary, "primary", true)...)
 	}
 
-	area := snapshot.AreaObservations
+	area := uniqueAreaObservations(snapshot.AreaObservations, snapshot.Primary)
 	if len(area) == 0 {
-		area = snapshot.Observations
+		area = uniqueAreaObservations(snapshot.Observations, snapshot.Primary)
 	}
 	addedAreaOpener := false
 	for _, obs := range area {
@@ -2000,9 +2000,10 @@ func windText(obs observation, sentenceCase bool) string {
 }
 
 func observationTemplateValues(obs observation) map[string]string {
+	weather := fallbackText(obs.Condition, obs.SkyCondition)
 	values := map[string]string{
 		"location":      fallbackText(obs.LocationName, obs.ID),
-		"weather":       obs.Condition,
+		"weather":       weather,
 		"dir_text":      readableDirection(obs.WindDirection),
 		"sky_condition": obs.SkyCondition,
 	}
@@ -2068,6 +2069,46 @@ func sameObservation(left observation, right observation) bool {
 		return true
 	}
 	return left.LocationName != "" && strings.EqualFold(left.LocationName, right.LocationName)
+}
+
+func uniqueAreaObservations(observations []observation, primary observation) []observation {
+	seen := map[string]struct{}{}
+	remember := func(obs observation) {
+		for _, key := range observationDedupeKeys(obs) {
+			seen[key] = struct{}{}
+		}
+	}
+	remember(primary)
+	out := make([]observation, 0, len(observations))
+	for _, obs := range observations {
+		keys := observationDedupeKeys(obs)
+		duplicate := false
+		for _, key := range keys {
+			if _, ok := seen[key]; ok {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		out = append(out, obs)
+		for _, key := range keys {
+			seen[key] = struct{}{}
+		}
+	}
+	return out
+}
+
+func observationDedupeKeys(obs observation) []string {
+	keys := []string{}
+	if id := strings.ToLower(strings.TrimSpace(obs.ID)); id != "" {
+		keys = append(keys, "id:"+id)
+	}
+	if name := strings.ToLower(strings.TrimSpace(obs.LocationName)); name != "" {
+		keys = append(keys, "name:"+name)
+	}
+	return keys
 }
 
 func sourceFromObservations(observations []observation) string {

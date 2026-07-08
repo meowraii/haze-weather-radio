@@ -408,7 +408,7 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 				})
 				continue
 			}
-			if answer, ok := mediaServiceWebRTCAnswerFromBase(ctx, mediaServiceURL, map[string]any{
+			mediaResult := mediaServiceWebRTCAnswerResultFromBase(ctx, mediaServiceURL, map[string]any{
 				"feed_id":         feedID,
 				"sdp":             offerSDP,
 				"disable_g722":    boolValue(message, "disable_g722"),
@@ -416,7 +416,9 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 				"preferred_codec": preferredCodec,
 				"client_ip":       clientIPForMediaRequest(request),
 				"remote_addr":     request.RemoteAddr,
-			}); ok {
+			})
+			if mediaResult.OK() {
+				answer := mediaResult.Answer
 				answer["type"] = "webrtc_answer"
 				answer["timestamp"] = time.Now().UTC()
 				answer["feed_id"] = feedID
@@ -424,6 +426,13 @@ func (m *ReceiverManager) HandleWebSocket(writer http.ResponseWriter, request *h
 					answer["sdp_type"] = "answer"
 				}
 				_ = writeReceiverWS(ctx, connection, answer)
+				continue
+			}
+			if mediaResult.Terminal {
+				_ = writeReceiverWS(ctx, connection, map[string]any{
+					"type":   "webrtc_error",
+					"detail": firstNonBlank(mediaResult.Detail, "haze-media WebRTC offer was rejected"),
+				})
 				continue
 			}
 			if !legacyMediaAvailable {

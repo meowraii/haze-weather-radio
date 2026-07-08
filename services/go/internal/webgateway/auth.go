@@ -153,6 +153,10 @@ func (a *AuthManager) ValidToken(token string) bool {
 }
 
 func (a *AuthManager) SetCookie(writer http.ResponseWriter, token string) {
+	a.SetCookieForRequest(writer, nil, token)
+}
+
+func (a *AuthManager) SetCookieForRequest(writer http.ResponseWriter, request *http.Request, token string) {
 	if a == nil || !a.enabled || token == "" {
 		return
 	}
@@ -163,8 +167,15 @@ func (a *AuthManager) SetCookie(writer http.ResponseWriter, token string) {
 		MaxAge:   int(a.ttl.Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   a.secureCookie,
+		Secure:   a.cookieSecureForRequest(request),
 	})
+}
+
+func (a *AuthManager) cookieSecureForRequest(request *http.Request) bool {
+	if a == nil || !a.secureCookie {
+		return false
+	}
+	return !requestUsesLocalHost(request)
 }
 
 type adminSessionClaims struct {

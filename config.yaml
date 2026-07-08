@@ -247,6 +247,8 @@ playout:
     - alerts
     - current_conditions
     - aviation_reports
+    - marine_reports
+    - marine_forecast
     - air_quality
     - forecast
     - climate_summary
@@ -343,7 +345,7 @@ webpanel:
     session_ttl_seconds: 43200
     login_rate_limit: 8
     login_rate_window_seconds: 300
-    secure_cookies: false # set true when the admin panel is served only over HTTPS.
+    secure_cookies: true # set true when the admin panel is served only over HTTPS.
     max_audio_upload_bytes: 52428800
     # !! PASSWORD IS NOW CONFIGURED IN THE .env FILE !!
     # Prefer ADMIN_PASSWD_HASH with an Argon2id PHC string.

@@ -162,6 +162,7 @@ func normalizeDomain(host string) string {
 	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
 		host = parsedHost
 	}
+	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 	if strings.Contains(host, "/") {
 		return ""
 	}
@@ -279,6 +280,28 @@ func isActualDomain(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip == nil
+}
+
+func requestUsesLocalHost(request *http.Request) bool {
+	return hostIsLocalAccess(requestHostName(request))
+}
+
+func hostIsLocalAccess(host string) bool {
+	host = normalizeDomain(host)
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".lan") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
 func containsDomain(values []string, wanted string) bool {

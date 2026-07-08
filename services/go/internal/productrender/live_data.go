@@ -1150,6 +1150,9 @@ func canonicalSource(raw string) string {
 	if value == "" {
 		return "eccc"
 	}
+	if value == "swob" || value == "eccc-swob" || value == "eccc_swob" || value == "msc-swob" || value == "msc_swob" {
+		return "eccc"
+	}
 	if value == "weather.com" || value == "weatherdotcom" {
 		return "twc"
 	}

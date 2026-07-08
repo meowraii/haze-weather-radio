@@ -95,6 +95,11 @@ func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Reque
 		writer.WriteHeader(http.StatusOK)
 		return
 	}
+	release, ok := s.acquireFeedListener(writer, request, feedID)
+	if !ok {
+		return
+	}
+	defer release()
 	if s.proxyMediaServiceAudio(writer, request, feedID, format.ID) {
 		return
 	}

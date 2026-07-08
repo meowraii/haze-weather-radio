@@ -3914,15 +3914,22 @@ a {
 	white-space: nowrap
 }
 
-.public-feed-controls audio {
-	display: none
+.public-feed-audio {
+	display: block;
+	grid-column: 1 / -1;
+	width: 100%;
+	min-height: 34px
+}
+
+.public-feed-audio[hidden] {
+	display: none !important
 }
 
 .public-listen-card {
 	align-items: stretch;
 	flex-direction: column;
-	padding: 16px;
-	gap: 14px
+	padding: 11px 12px;
+	gap: 9px
 }
 
 .public-listen-title {
@@ -3931,21 +3938,21 @@ a {
 
 .public-listen-title h3 {
 	color: var(--text);
-	font-size: 18px;
+	font-size: 16px;
 	font-weight: 650
 }
 
 .public-listen-toolbar {
 	display: flex;
 	align-items: end;
-	gap: 8px;
+	gap: 6px;
 	flex-wrap: wrap
 }
 
 .public-listen-audio {
 	display: block;
 	width: 100%;
-	min-height: 42px
+	min-height: 34px
 }
 
 @media (max-width:1200px) {

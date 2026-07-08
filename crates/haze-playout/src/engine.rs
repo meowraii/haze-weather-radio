@@ -1210,7 +1210,7 @@ async fn accept_item(client: &BridgeClient, feed_id: &str, item: &AudioItem) {
 
 async fn start_item(client: &BridgeClient, cfg: &LoadedConfig, feed_id: &str, item: &AudioItem) {
     tracing::info!("[{}] Now playing: {}", feed_id, item.title);
-    update_runtime(cfg, feed_id, &item.title).await;
+    update_runtime_for_item(cfg, feed_id, item).await;
     match &item.source {
         ItemSource::Alert {
             manifest_path,
@@ -1517,7 +1517,45 @@ fn clears_deferred_routine(action: &str) -> bool {
 
 async fn update_runtime(cfg: &LoadedConfig, feed_id: &str, now_playing: &str) {
     let now = Utc::now().to_rfc3339();
-    let payload = json!({
+    write_runtime_payload(cfg, feed_id, now_playing, now, None).await;
+}
+
+async fn update_runtime_for_item(cfg: &LoadedConfig, feed_id: &str, item: &AudioItem) {
+    let started_at = Utc::now();
+    let duration_ms = remaining_item_duration_ms(cfg, item);
+    write_runtime_payload(
+        cfg,
+        feed_id,
+        &item.title,
+        started_at.to_rfc3339(),
+        Some((started_at, duration_ms)),
+    )
+    .await;
+}
+
+fn remaining_item_duration_ms(cfg: &LoadedConfig, item: &AudioItem) -> u64 {
+    let resume_offset = item.resume_offset.min(item.pcm.len());
+    let remaining_bytes = item.pcm.len().saturating_sub(resume_offset);
+    let remaining_ms = pcm_duration_ms(
+        remaining_bytes,
+        cfg.root.playout.sample_rate,
+        cfg.root.playout.channels,
+    );
+    if remaining_ms > 0 {
+        remaining_ms
+    } else {
+        item.metadata.duration_ms
+    }
+}
+
+async fn write_runtime_payload(
+    cfg: &LoadedConfig,
+    feed_id: &str,
+    now_playing: &str,
+    now: String,
+    timing: Option<(DateTime<Utc>, u64)>,
+) {
+    let mut payload = json!({
         "feed_id": feed_id,
         "now_playing": now_playing,
         "on_air_now_playing": now_playing,
@@ -1526,6 +1564,20 @@ async fn update_runtime(cfg: &LoadedConfig, feed_id: &str, now_playing: &str) {
         "public_stream_started_at": now,
         "updated_at": now,
     });
+    if let Some((started_at, duration_ms)) = timing {
+        let duration = ChronoDuration::milliseconds(duration_ms.min(i64::MAX as u64) as i64);
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "current_started_at".to_string(),
+                json!(started_at.to_rfc3339()),
+            );
+            object.insert(
+                "current_ends_at".to_string(),
+                json!((started_at + duration).to_rfc3339()),
+            );
+            object.insert("current_duration_ms".to_string(), json!(duration_ms));
+        }
+    }
     let path = cfg
         .base_dir
         .join("runtime/feeds")

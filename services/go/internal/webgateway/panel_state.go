@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -128,6 +129,7 @@ var BuildGitCommit = "unknown"
 type outputFeedXML struct {
 	ID          string        `xml:"id,attr"`
 	Stream      outputNodeXML `xml:"stream"`
+	Icecast     outputNodeXML `xml:"icecast"`
 	UDP         outputNodeXML `xml:"udp"`
 	RTP         outputNodeXML `xml:"rtp"`
 	RTMP        outputNodeXML `xml:"rtmp"`
@@ -179,13 +181,13 @@ func panelStatePayload(config Config, configPath string, startedAt time.Time, re
 	}, nil
 }
 
-func publicStatePayload(config Config, configPath string, startedAt time.Time, request *http.Request, auth *AuthManager, mediaAvailable bool) (map[string]any, error) {
+func publicStatePayload(config Config, configPath string, startedAt time.Time, request *http.Request, auth *AuthManager, mediaAvailable bool, listenerStats ...map[string]FeedListenerStats) (map[string]any, error) {
 	feedAccess := publicFeedAccess(config)
 	includeFeeds := publicRequestWantsFeeds(request) && (feedAccess == "public" || (feedAccess == "auth_required" && auth != nil && auth.Authenticated(request)))
 	var summary map[string]any
 	var err error
 	if includeFeeds {
-		summary, err = publicFeedsSummaryPayload(config, configPath, startedAt, request, mediaAvailable)
+		summary, err = publicFeedsSummaryPayload(config, configPath, startedAt, request, mediaAvailable, listenerStats...)
 	} else {
 		summary, err = publicSummaryPayload(config, configPath, startedAt, request, mediaAvailable)
 	}
@@ -220,8 +222,8 @@ func publicSummaryPayload(config Config, configPath string, startedAt time.Time,
 	return summary, nil
 }
 
-func publicFeedsSummaryPayload(config Config, configPath string, startedAt time.Time, request *http.Request, mediaAvailable bool) (map[string]any, error) {
-	feeds, err := loadPublicFeedSummaries(configPath)
+func publicFeedsSummaryPayload(config Config, configPath string, startedAt time.Time, request *http.Request, mediaAvailable bool, listenerStats ...map[string]FeedListenerStats) (map[string]any, error) {
+	feeds, err := loadPublicFeedSummaries(configPath, listenerStats...)
 	if err != nil {
 		return nil, err
 	}
@@ -299,6 +301,7 @@ func baseSummaryPayload(config Config, startedAt time.Time, request *http.Reques
 		"media_available":    mediaAvailable,
 		"alerts_archive":     publicAlertsArchiveAccess(config),
 		"admin_url":          adminURL(config, request),
+		"public_base_url":    publicBaseURL(config, request),
 		"tls":                tlsStatePayload(config, request),
 		"capabilities": map[string]any{
 			"public_alerts": publicAlertsArchiveAccess(config) == "public",
@@ -330,7 +333,7 @@ func loadFeedSummaries(configPath string) ([]map[string]any, error) {
 		if strings.TrimSpace(feed.ID) == "" {
 			continue
 		}
-		out = append(out, feedSummary(feed, outputs[feed.ID], forecastNames, clcNames, nwsFIPSNames, queueItems))
+		out = append(out, feedSummary(configPath, feed, outputForFeed(outputs, feed.ID), forecastNames, clcNames, nwsFIPSNames, queueItems))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return fmt.Sprint(out[i]["id"]) < fmt.Sprint(out[j]["id"])
@@ -353,7 +356,7 @@ func loadBasicFeedSummaries(configPath string) ([]map[string]any, error) {
 		if strings.TrimSpace(feed.ID) == "" {
 			continue
 		}
-		output := outputs[feed.ID]
+		output := outputForFeed(outputs, feed.ID)
 		httpStreamEnabled := outputHTTPStreamEnabled(output)
 		out = append(out, map[string]any{
 			"id":                  strings.TrimSpace(feed.ID),
@@ -365,7 +368,7 @@ func loadBasicFeedSummaries(configPath string) ([]map[string]any, error) {
 	return out, nil
 }
 
-func loadPublicFeedSummaries(configPath string) ([]map[string]any, error) {
+func loadPublicFeedSummaries(configPath string, listenerStats ...map[string]FeedListenerStats) ([]map[string]any, error) {
 	root, err := loadYAMLMap(configPath)
 	if err != nil {
 		return nil, err
@@ -375,6 +378,10 @@ func loadPublicFeedSummaries(configPath string) ([]map[string]any, error) {
 		return nil, err
 	}
 	outputs, _ := loadOutputsXML(configPath, root)
+	stats := map[string]FeedListenerStats{}
+	if len(listenerStats) > 0 && listenerStats[0] != nil {
+		stats = listenerStats[0]
+	}
 	out := make([]map[string]any, 0, len(parsed.Feeds))
 	for _, feed := range parsed.Feeds {
 		id := strings.TrimSpace(feed.ID)
@@ -382,14 +389,15 @@ func loadPublicFeedSummaries(configPath string) ([]map[string]any, error) {
 			continue
 		}
 		station := stationTransmitter(feed)
-		output := outputs[id]
+		output := outputForFeed(outputs, id)
 		webrtcEnabled := xmlBool(output.WebRTC.EnabledRaw, false)
 		httpStreamEnabled := outputHTTPStreamEnabled(output)
 		out = append(out, map[string]any{
 			"id":                  id,
 			"name":                fallbackText(station.SiteName, id),
 			"enabled":             xmlBool(feed.EnabledRaw, true),
-			"runtime":             map[string]any{"now_playing": "Idle"},
+			"runtime":             feedRuntimePayload(configPath, id),
+			"listeners":           listenerStatsPayload(listenerStatsForFeed(stats, id)),
 			"transmitter":         publicTransmitterPayloadFromXML(station, feed),
 			"transmitters":        publicTransmitterPayloadsFromXML(feed),
 			"webrtc_enabled":      webrtcEnabled,
@@ -402,7 +410,60 @@ func loadPublicFeedSummaries(configPath string) ([]map[string]any, error) {
 	return out, nil
 }
 
-func feedSummary(feed feedXML, outputs outputXML, forecastNames map[string]string, clcNames map[string]string, nwsFIPSNames map[string]string, queueItems []sameQueueItem) map[string]any {
+func feedRuntimePayload(configPath string, feedID string) map[string]any {
+	runtime := map[string]any{
+		"now_playing": "Idle",
+	}
+	id := safeID(feedID)
+	if id == "" {
+		return runtime
+	}
+	path := filepath.Join(filepath.Dir(filepath.Clean(configPath)), "runtime", "feeds", id+".json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return runtime
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return runtime
+	}
+	for _, key := range []string{
+		"feed_id",
+		"now_playing",
+		"on_air_now_playing",
+		"station_now_playing",
+		"public_stream_now_playing",
+		"on_air_last_played_at",
+		"public_stream_started_at",
+		"current_started_at",
+		"current_ends_at",
+		"current_duration_ms",
+		"updated_at",
+	} {
+		value, ok := payload[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch value.(type) {
+		case string, float64, bool:
+			runtime[key] = value
+		}
+	}
+	runtimeText := func(key string) string {
+		text, _ := runtime[key].(string)
+		return text
+	}
+	if nowPlaying := fallbackString(
+		runtimeText("public_stream_now_playing"),
+		runtimeText("on_air_now_playing"),
+		runtimeText("now_playing"),
+	); nowPlaying != "" {
+		runtime["now_playing"] = nowPlaying
+	}
+	return runtime
+}
+
+func feedSummary(configPath string, feed feedXML, outputs outputXML, forecastNames map[string]string, clcNames map[string]string, nwsFIPSNames map[string]string, queueItems []sameQueueItem) map[string]any {
 	station := stationTransmitter(feed)
 	regions := coverageRegionPayloads(feed, forecastNames, clcNames)
 	clcCodes := feedCoverageCodes(feed, clcNames)
@@ -412,9 +473,7 @@ func feedSummary(feed feedXML, outputs outputXML, forecastNames map[string]strin
 	webrtcEnabled := xmlBool(outputs.WebRTC.EnabledRaw, false)
 	httpStreamEnabled := outputHTTPStreamEnabled(outputs)
 	queueDepth, recentQueue, latestQueue := alertQueueState(queueItems, feed.ID)
-	runtime := map[string]any{
-		"now_playing": "Idle",
-	}
+	runtime := feedRuntimePayload(configPath, feed.ID)
 	if latestQueue != nil {
 		runtime["last_alert_event"] = latestQueue.Event
 		runtime["last_alert_severity"] = queueSeverity(latestQueue.Status)
@@ -453,6 +512,7 @@ func publicFeedSummaries(feeds []map[string]any) []map[string]any {
 			"name":                feed["name"],
 			"enabled":             feed["enabled"],
 			"runtime":             feed["runtime"],
+			"listeners":           feed["listeners"],
 			"transmitter":         publicTransmitterPayload(transmitter),
 			"transmitters":        publicTransmitters(feed["transmitters"]),
 			"webrtc_enabled":      feed["webrtc_enabled"],
@@ -549,6 +609,30 @@ func loadOutputsXML(configPath string, root map[string]any) (map[string]outputXM
 		}
 	}
 	return out, nil
+}
+
+func outputForFeed(outputs map[string]outputXML, feedID string) outputXML {
+	feedID = strings.TrimSpace(feedID)
+	if feedID == "" {
+		return outputXML{}
+	}
+	if output, ok := outputs[feedID]; ok {
+		return output
+	}
+	patterns := make([]string, 0)
+	for pattern := range outputs {
+		if !strings.Contains(pattern, "*") {
+			continue
+		}
+		if ok, err := path.Match(pattern, feedID); err == nil && ok {
+			patterns = append(patterns, pattern)
+		}
+	}
+	sort.Strings(patterns)
+	for _, pattern := range patterns {
+		return outputs[pattern]
+	}
+	return outputXML{}
 }
 
 func stationTransmitter(feed feedXML) transmitterXML {
@@ -815,6 +899,7 @@ func outputLabels(output outputXML) []string {
 	addOutput("webrtc", output.WebRTC)
 	addOutput("udp", output.UDP)
 	addOutput("rtp", output.RTP)
+	addOutput("icecast", output.Icecast)
 	streamLabel := strings.TrimSpace(output.Stream.Type)
 	if streamLabel == "" {
 		streamLabel = "stream"
@@ -829,7 +914,7 @@ func outputLabels(output outputXML) []string {
 }
 
 func outputHTTPStreamEnabled(output outputXML) bool {
-	return xmlBool(output.Stream.EnabledRaw, false)
+	return xmlBool(output.Stream.EnabledRaw, false) || xmlBool(output.Icecast.EnabledRaw, false)
 }
 
 func coverageRegionPayloads(feed feedXML, forecastNames map[string]string, clcNames map[string]string) []map[string]any {
@@ -1383,6 +1468,26 @@ func tlsStatePayload(config Config, request *http.Request) map[string]any {
 }
 
 func adminURL(config Config, request *http.Request) string {
+	if requestUsesLocalHost(request) {
+		adminPort := config.Webpanel.Admin.Port.Int()
+		if adminPort <= 0 ||
+			(config.Webpanel.Port > 0 && config.Webpanel.Admin.Port == config.Webpanel.Port) ||
+			requestHostPort(request) == adminPort {
+			return "/admin"
+		}
+		hostPart := requestHostName(request)
+		if hostPart == "" {
+			hostPart = "localhost"
+		}
+		scheme := "http"
+		if requestIsHTTPS(request) {
+			scheme = "https"
+		}
+		return scheme + "://" + net.JoinHostPort(hostPart, strconv.Itoa(config.Webpanel.Admin.Port.Int())) + "/admin"
+	}
+	if base := configuredPublicBaseURL(config, request); base != "" {
+		return base + "/admin"
+	}
 	if config.Webpanel.Admin.Port <= 0 || (config.Webpanel.Port > 0 && config.Webpanel.Admin.Port == config.Webpanel.Port) {
 		return "/admin"
 	}
@@ -1401,6 +1506,87 @@ func adminURL(config Config, request *http.Request) string {
 		return scheme + "://" + net.JoinHostPort(hostPart, strconv.Itoa(config.Webpanel.Admin.Port.Int())) + "/admin"
 	}
 	return "/admin"
+}
+
+func publicBaseURL(config Config, request *http.Request) string {
+	if requestUsesLocalHost(request) {
+		return requestBaseURL(request)
+	}
+	if base := configuredPublicBaseURL(config, request); base != "" {
+		return base
+	}
+	return requestBaseURL(request)
+}
+
+func requestBaseURL(request *http.Request) string {
+	if request == nil || strings.TrimSpace(request.Host) == "" {
+		return ""
+	}
+	scheme := "http"
+	if requestIsHTTPS(request) {
+		scheme = "https"
+	}
+	return scheme + "://" + strings.TrimRight(request.Host, "/")
+}
+
+func requestHostPort(request *http.Request) int {
+	if request == nil {
+		return 0
+	}
+	host := strings.TrimSpace(request.Host)
+	if host == "" && request.URL != nil {
+		host = strings.TrimSpace(request.URL.Host)
+	}
+	if host == "" {
+		return 0
+	}
+	_, rawPort, err := net.SplitHostPort(host)
+	if err != nil || rawPort == "" {
+		return 0
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		return 0
+	}
+	return port
+}
+
+func configuredPublicBaseURL(config Config, request *http.Request) string {
+	for _, raw := range []string{
+		os.Getenv("HAZE_PUBLIC_BASE_URL"),
+		os.Getenv("WEB_BASE_URL"),
+		os.Getenv("WEB_HOSTNAME"),
+		firstNonBlank(config.Webpanel.TLS.Domains...),
+	} {
+		if base := normalizePublicBaseURL(raw, request); base != "" {
+			return base
+		}
+	}
+	return ""
+}
+
+func normalizePublicBaseURL(raw string, request *http.Request) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if !strings.Contains(value, "://") {
+		value = "https://" + value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	if parsed.Scheme == "http" && requestIsHTTPS(request) {
+		parsed.Scheme = "https"
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
 }
 
 func publicAlertsArchivePayload(configPath string) (map[string]any, error) {

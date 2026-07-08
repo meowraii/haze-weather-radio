@@ -13,6 +13,7 @@ const tlsNoticeText = document.getElementById('tlsNoticeText');
 let handlersBound = false;
 let socketEventsBound = false;
 let lastDashboardState = null;
+let dashboardSummary = {};
 let authCloseCheckPending = false;
 let initialStateTimer = null;
 const stateWaiters = new Set();
@@ -91,6 +92,27 @@ function renderTLSNotice(tls) {
     tlsNoticeText.textContent = `${tls.message || 'TLS status unavailable.'}${suffix}`;
 }
 
+function dashboardPublicBaseURL() {
+    const raw = String(dashboardSummary.public_base_url || '').trim();
+    if (raw) {
+        try {
+            const parsed = new URL(raw, window.location.origin);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+                return parsed.toString().replace(/\/+$/, '');
+            }
+        } catch {
+            // Fall back to the browser origin below.
+        }
+    }
+    return window.location.origin;
+}
+
+function publicListenHref(feedId) {
+    const url = new URL('/listen', dashboardPublicBaseURL());
+    url.searchParams.set('feed', feedId);
+    return url.toString();
+}
+
 function populateWxFeedSelect(feeds) {
     const sel = document.getElementById('wxFeedSelect');
     if (!sel) return;
@@ -149,7 +171,10 @@ function renderFeeds(feeds) {
         const latestAlert = runtime.last_alert_event
             ? `${runtime.last_alert_event} · ${runtime.last_alert_severity || 'n/a'}`
             : 'No queued alert activity yet';
-        const listenHref = `/listen?feed=${encodeURIComponent(feedId)}`;
+        const listenHref = feed.http_stream_enabled ? publicListenHref(feedId) : '';
+        const listenAction = listenHref
+            ? `<a class="btn-action btn-link" href="${escapeHtml(listenHref)}">Listen</a>`
+            : '';
 
         return `
             <article class="admin-feed-card" data-enabled="${enabled}">
@@ -194,7 +219,7 @@ function renderFeeds(feeds) {
                     <div class="admin-feed-actions">
                         <a class="btn-action btn-link" href="#/same">Alert</a>
                         <a class="btn-action btn-link" href="#/wx">WX</a>
-                        <a class="btn-action btn-link" href="${escapeHtml(listenHref)}">Listen</a>
+                        ${listenAction}
                     </div>
                 </div>
             </article>
@@ -233,7 +258,7 @@ async function confirmAuthBeforeRedirect() {
             return true;
         }
     } catch {
-        // Fall through to the sign-in page only when the control socket cannot
+        // Fall through to the sign-in page only when the control request cannot
         // confirm that this browser still has a valid session.
     } finally {
         client.close();
@@ -251,6 +276,7 @@ function renderDashboardState(payload) {
     }
     lastDashboardState = payload;
     const summary = payload.summary || {};
+    dashboardSummary = summary;
     renderSummary(summary);
     renderFeeds(summary.feeds || []);
     updateLastConnected(payload.last_connected);
@@ -262,7 +288,7 @@ function renderDashboardState(payload) {
 function connectDashboardSocket(force = false) {
     if (!lastDashboardState) {
         if (heroTitle) heroTitle.textContent = 'Waiting for panel data';
-        if (heroSubtitle) heroSubtitle.textContent = 'Opening live websocket...';
+        if (heroSubtitle) heroSubtitle.textContent = 'Opening live panel stream...';
         summaryCards.innerHTML = '';
         if (adminBuildInfo) adminBuildInfo.innerHTML = '';
         feedsGrid.innerHTML = '<article class="admin-feed-empty">Waiting for feed data.</article>';
@@ -280,7 +306,7 @@ function connectDashboardSocket(force = false) {
         initialStateTimer = window.setTimeout(() => {
             initialStateTimer = null;
             if (lastDashboardState) return;
-            panelClient.command('state', {}, 5000)
+            panelClient.fetchState(5000)
                 .then((payload) => renderDashboardState(payload))
                 .catch(() => setHomeStatus('Connected, waiting for the first panel snapshot...', 'pending'));
         }, 1200);
@@ -288,7 +314,7 @@ function connectDashboardSocket(force = false) {
 }
 
 function requestFreshStateAfterRecovery() {
-    panelClient.command('state', {}, 8000)
+    panelClient.fetchState(8000)
         .then((payload) => renderDashboardState(payload))
         .catch(() => {
             if (!lastDashboardState) {
@@ -362,7 +388,7 @@ export function initDashboard() {
             setHomeStatus(`Live panel connection interrupted. Reconnecting in ${seconds}s...`, 'warn');
         });
         panelClient.addEventListener('recovered', () => {
-            setHomeStatus('Live panel websocket recovered.', 'ok');
+            setHomeStatus('Live panel stream recovered.', 'ok');
         });
         panelClient.addEventListener('admin_state', (event) => renderDashboardState(event.detail || {}));
         panelClient.addEventListener('auth_state', (event) => {

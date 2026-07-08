@@ -32,7 +32,7 @@ async function onUnauth() {
         const state = await authCheck();
         if (state.authenticated) return true;
     } catch {
-        // If the control socket cannot confirm the session, fall back to login.
+        // If the control request cannot confirm the session, fall back to login.
     }
     return false;
 }
@@ -70,7 +70,7 @@ async function requestJson(method, path, body = undefined) {
         const [name, payload] = mapped;
         return command(name, payload);
     }
-    throw new Error(`No websocket command is mapped for ${method} ${path}.`);
+    throw new Error(`No panel command is mapped for ${method} ${path}.`);
 }
 
 export function apiGet(path) {
@@ -88,12 +88,12 @@ export function apiPut(path, body) {
 export async function apiPostForm(path, formData) {
     const mapped = commandFor('POST', path, formData);
     if (!mapped) {
-        throw new Error(`No websocket command is mapped for POST ${path}.`);
+        throw new Error(`No panel command is mapped for POST ${path}.`);
     }
     const [name, payload] = mapped;
     return command(name, payload);
 }
 
 export async function apiRaw(path, options = {}) {
-    throw new Error(`Raw REST requests are disabled for ${path}. Use a websocket command instead.`);
+    throw new Error(`Raw REST requests are disabled for ${path}. Use a panel command instead.`);
 }

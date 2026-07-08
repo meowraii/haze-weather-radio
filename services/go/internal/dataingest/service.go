@@ -78,6 +78,9 @@ type feedXML struct {
 			Locations  []locationXML `xml:"location"`
 			Subregions []locationXML `xml:"subregion"`
 		} `xml:"marineForecastLocations"`
+		MarineConditions struct {
+			Locations []locationXML `xml:"location"`
+		} `xml:"marineConditions"`
 		HydrometricLocations struct {
 			Locations  []locationXML               `xml:"location"`
 			Upstream   hydrometricLocationGroupXML `xml:"upstream"`
@@ -239,7 +242,7 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 				log.Printf("observation fetch failed for %s/%s: %v", sourceKind(loc.Source), loc.ID, err)
 				continue
 			}
-			payload["station_id"] = loc.ID
+			setDefaultStationID(payload, loc.ID)
 			if sourceKind(loc.Source) == "eccc" {
 				if raw, ok := payload["_raw_citypage"].(map[string]any); ok {
 					ecccCache[loc.ID] = raw
@@ -264,7 +267,7 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 				log.Printf("aviation observation fetch failed for %s/%s: %v", sourceKind(loc.Source), loc.ID, err)
 				continue
 			}
-			payload["station_id"] = loc.ID
+			setDefaultStationID(payload, loc.ID)
 			if raw, ok := payload["_raw_citypage"].(map[string]any); ok {
 				ecccCache[loc.ID] = raw
 			}
@@ -274,6 +277,26 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 				continue
 			}
 			publishDataReady(publisher, feed.ID, "aviation_reports", loc.ID)
+		}
+		for _, loc := range feed.Locations.MarineConditions.Locations {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if strings.TrimSpace(loc.ID) == "" {
+				continue
+			}
+			payload, err := fetchAviationObservation(ctx, client, loc)
+			if err != nil {
+				log.Printf("marine observation fetch failed for %s/%s: %v", sourceKind(loc.Source), loc.ID, err)
+				continue
+			}
+			setDefaultStationID(payload, loc.ID)
+			delete(payload, "_raw_citypage")
+			if err := persistObservation(ctx, store, loc, payload); err != nil {
+				log.Printf("marine observation store failed for %s: %v", loc.ID, err)
+				continue
+			}
+			publishDataReady(publisher, feed.ID, "marine_reports", loc.ID)
 		}
 		for _, region := range feed.Locations.Coverage.Regions {
 			if err := ctx.Err(); err != nil {
@@ -446,13 +469,22 @@ func fetchECCCCitypage(ctx context.Context, client *http.Client, locationID stri
 func fetchObservation(ctx context.Context, client *http.Client, loc locationXML) (map[string]any, error) {
 	switch sourceKind(loc.Source) {
 	case "eccc":
-		raw, err := fetchECCCCitypage(ctx, client, loc.ID)
-		if err != nil {
-			return nil, err
+		switch ecccObservationIDKind(loc.ID) {
+		case "swob", "point":
+			raw, err := fetchECCCSWOBObservation(ctx, client, loc.ID)
+			if err != nil {
+				return nil, err
+			}
+			return buildECCCSWOBConditions(raw, loc), nil
+		default:
+			raw, err := fetchECCCCitypage(ctx, client, loc.ID)
+			if err != nil {
+				return nil, err
+			}
+			payload := buildECCCConditions(raw)
+			payload["_raw_citypage"] = raw
+			return payload, nil
 		}
-		payload := buildECCCConditions(raw)
-		payload["_raw_citypage"] = raw
-		return payload, nil
 	case "nws":
 		if raw, err := fetchTWCObservationWithMetadata(ctx, client, loc.ID); err == nil {
 			payload := buildTWCConditions(raw, loc)
@@ -480,11 +512,100 @@ func fetchAviationObservation(ctx context.Context, client *http.Client, loc loca
 	if sourceKind(loc.Source) != "eccc" {
 		return fetchObservation(ctx, client, loc)
 	}
-	raw, err := fetchECCCSWOBLatest(ctx, client, loc.ID)
+	raw, err := fetchECCCSWOBObservation(ctx, client, loc.ID)
 	if err != nil {
 		return nil, err
 	}
 	return buildECCCSWOBConditions(raw, loc), nil
+}
+
+func swobStationIDFromCode(code string) string {
+	cleaned := strings.ToUpper(strings.TrimSpace(code))
+	cleaned = strings.NewReplacer(" ", "", "-", "", "_", "").Replace(cleaned)
+	if cleaned == "" {
+		return ""
+	}
+	if len(cleaned) == 4 {
+		return cleaned
+	}
+	if len(cleaned) == 3 {
+		return "C" + cleaned
+	}
+	return cleaned
+}
+
+func ecccObservationIDKind(id string) string {
+	cleaned := strings.TrimSpace(id)
+	if cleaned == "" {
+		return "citypage"
+	}
+	if _, _, ok := parseECCCCoordinateID(cleaned); ok {
+		return "point"
+	}
+	if isECCCCitypageID(cleaned) || isECCCCLCID(cleaned) {
+		return "citypage"
+	}
+	return "swob"
+}
+
+func isECCCCitypageID(id string) bool {
+	parts := strings.Split(strings.TrimSpace(id), "-")
+	if len(parts) != 2 || len(parts[0]) != 2 || parts[1] == "" {
+		return false
+	}
+	for _, char := range parts[0] {
+		if char < 'A' || char > 'Z' {
+			if char < 'a' || char > 'z' {
+				return false
+			}
+		}
+	}
+	for _, char := range parts[1] {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isECCCCLCID(id string) bool {
+	cleaned := strings.TrimSpace(id)
+	if len(cleaned) != 6 {
+		return false
+	}
+	for _, char := range cleaned {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func parseECCCCoordinateID(id string) (float64, float64, bool) {
+	cleaned := strings.TrimSpace(id)
+	cleaned = strings.NewReplacer(";", ",", " ", ",").Replace(cleaned)
+	parts := strings.Split(cleaned, ",")
+	values := []string{}
+	for _, part := range parts {
+		if text := strings.TrimSpace(part); text != "" {
+			values = append(values, text)
+		}
+	}
+	if len(values) != 2 {
+		return 0, 0, false
+	}
+	first, err1 := strconv.ParseFloat(values[0], 64)
+	second, err2 := strconv.ParseFloat(values[1], 64)
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	if math.Abs(first) <= 90 && math.Abs(second) <= 180 {
+		return first, second, true
+	}
+	if math.Abs(first) <= 180 && math.Abs(second) <= 90 {
+		return second, first, true
+	}
+	return 0, 0, false
 }
 
 func buildECCCConditions(raw map[string]any) map[string]any {
@@ -539,6 +660,15 @@ type swobObservation struct {
 }
 
 type swobElement struct {
+	Name       string          `xml:"name,attr"`
+	UOM        string          `xml:"uom,attr"`
+	Value      string          `xml:"value,attr"`
+	CodeSource string          `xml:"code-src,attr"`
+	CodeType   string          `xml:"code-type,attr"`
+	Qualifiers []swobQualifier `xml:"qualifier"`
+}
+
+type swobQualifier struct {
 	Name  string `xml:"name,attr"`
 	UOM   string `xml:"uom,attr"`
 	Value string `xml:"value,attr"`
@@ -563,6 +693,258 @@ func fetchECCCSWOBLatest(ctx context.Context, client *http.Client, stationID str
 		return nil, err
 	}
 	return map[string]any{"_swob": parsed}, nil
+}
+
+func fetchECCCSWOBObservation(ctx context.Context, client *http.Client, id string) (map[string]any, error) {
+	stationID, err := resolveECCCSWOBStationID(ctx, client, id)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := fetchECCCSWOBLatest(ctx, client, stationID)
+	if err == nil {
+		return raw, nil
+	}
+	realtimeRaw, realtimeErr := fetchECCCSWOBRealtime(ctx, client, id, stationID)
+	if realtimeErr == nil {
+		return realtimeRaw, nil
+	}
+	return nil, err
+}
+
+func resolveECCCSWOBStationID(ctx context.Context, client *http.Client, id string) (string, error) {
+	cleaned := strings.TrimSpace(id)
+	if cleaned == "" {
+		return "", fmt.Errorf("missing SWOB station id")
+	}
+	if lat, lon, ok := parseECCCCoordinateID(cleaned); ok {
+		return resolveECCCSWOBStationByPoint(ctx, client, lat, lon)
+	}
+	if isDigits(cleaned) {
+		if len(cleaned) == 7 {
+			if stationID, err := resolveECCCSWOBStationItem(ctx, client, cleaned); err == nil && stationID != "" {
+				return stationID, nil
+			}
+			if stationID, err := resolveECCCSWOBMarineStationItem(ctx, client, cleaned); err == nil && stationID != "" {
+				return stationID, nil
+			}
+		}
+		if len(cleaned) == 5 {
+			if stationID, err := resolveECCCSWOBStationByWMO(ctx, client, cleaned); err == nil && stationID != "" {
+				return stationID, nil
+			}
+		}
+	}
+	return swobStationIDFromCode(cleaned), nil
+}
+
+func resolveECCCSWOBStationItem(ctx context.Context, client *http.Client, id string) (string, error) {
+	return resolveECCCSWOBStationItemFromCollection(ctx, client, "swob-stations", id)
+}
+
+func resolveECCCSWOBMarineStationItem(ctx context.Context, client *http.Client, id string) (string, error) {
+	return resolveECCCSWOBStationItemFromCollection(ctx, client, "swob-marine-stations", id)
+}
+
+func resolveECCCSWOBStationItemFromCollection(ctx context.Context, client *http.Client, collection string, id string) (string, error) {
+	requestURL := fmt.Sprintf("https://api.weather.gc.ca/collections/%s/items/%s?f=json", url.PathEscape(strings.TrimSpace(collection)), url.PathEscape(strings.TrimSpace(id)))
+	var raw map[string]any
+	if err := fetchJSON(ctx, client, requestURL, &raw); err != nil {
+		return "", err
+	}
+	return swobStationIDFromStationFeature(raw), nil
+}
+
+func resolveECCCSWOBStationByWMO(ctx context.Context, client *http.Client, wmoID string) (string, error) {
+	query := url.Values{}
+	query.Set("f", "json")
+	query.Set("lang", "en")
+	query.Set("limit", "5")
+	query.Set("wmo_id", strings.TrimSpace(wmoID))
+	requestURL := "https://api.weather.gc.ca/collections/swob-stations/items?" + query.Encode()
+	var raw map[string]any
+	if err := fetchJSON(ctx, client, requestURL, &raw); err != nil {
+		return "", err
+	}
+	for _, item := range anySlice(raw["features"]) {
+		if stationID := swobStationIDFromStationFeature(mapValue(item)); stationID != "" {
+			return stationID, nil
+		}
+	}
+	return "", fmt.Errorf("no SWOB station found for WMO %s", strings.TrimSpace(wmoID))
+}
+
+func resolveECCCSWOBStationByPoint(ctx context.Context, client *http.Client, lat float64, lon float64) (string, error) {
+	const searchRadius = 0.35
+	query := url.Values{}
+	query.Set("f", "json")
+	query.Set("lang", "en")
+	query.Set("limit", "100")
+	query.Set("bbox", fmt.Sprintf("%.5f,%.5f,%.5f,%.5f", lon-searchRadius, lat-searchRadius, lon+searchRadius, lat+searchRadius))
+	requestURL := "https://api.weather.gc.ca/collections/swob-stations/items?" + query.Encode()
+	var raw map[string]any
+	if err := fetchJSON(ctx, client, requestURL, &raw); err != nil {
+		return "", err
+	}
+	bestID := ""
+	bestDistance := math.MaxFloat64
+	for _, item := range anySlice(raw["features"]) {
+		feature := mapValue(item)
+		stationID := swobStationIDFromStationFeature(feature)
+		if stationID == "" {
+			continue
+		}
+		geometry := mapAt(feature, "geometry")
+		coords := anySlice(geometry["coordinates"])
+		if len(coords) < 2 {
+			continue
+		}
+		stationLon, lonOK := numberValue(coords[0])
+		stationLat, latOK := numberValue(coords[1])
+		if !lonOK || !latOK {
+			continue
+		}
+		distance := haversineKM(lon, lat, stationLon, stationLat)
+		if distance < bestDistance {
+			bestDistance = distance
+			bestID = stationID
+		}
+	}
+	if bestID == "" {
+		return "", fmt.Errorf("no SWOB station found near %.4f,%.4f", lat, lon)
+	}
+	return bestID, nil
+}
+
+func fetchECCCSWOBRealtime(ctx context.Context, client *http.Client, id string, stationID string) (map[string]any, error) {
+	for _, query := range swobRealtimeQueries(id, stationID) {
+		requestURL := "https://api.weather.gc.ca/collections/swob-realtime/items?" + query.Encode()
+		var raw map[string]any
+		if err := fetchJSON(ctx, client, requestURL, &raw); err != nil {
+			continue
+		}
+		features := anySlice(raw["features"])
+		if len(features) == 0 {
+			continue
+		}
+		return map[string]any{"_swob": swobCollectionFromRealtimeFeature(mapValue(features[0]))}, nil
+	}
+	return nil, fmt.Errorf("no SWOB realtime row found for %s", strings.TrimSpace(id))
+}
+
+func swobRealtimeQueries(id string, stationID string) []url.Values {
+	candidates := []struct {
+		field string
+		value string
+	}{}
+	add := func(field string, value string) {
+		value = strings.TrimSpace(value)
+		if field != "" && value != "" {
+			candidates = append(candidates, struct {
+				field string
+				value string
+			}{field: field, value: value})
+		}
+	}
+	cleanedID := strings.TrimSpace(id)
+	cleanedStationID := strings.ToUpper(strings.TrimSpace(stationID))
+	if isDigits(cleanedID) {
+		switch len(cleanedID) {
+		case 7:
+			add("msc_id-value", cleanedID)
+		case 5:
+			add("wmo_synop_id-value", cleanedID)
+			add("wmo_id-value", cleanedID)
+		}
+	}
+	if cleanedStationID != "" {
+		add("icao_stn_id-value", cleanedStationID)
+		add("icao_id-value", cleanedStationID)
+		add("msc_id-value", cleanedStationID)
+		if len(cleanedStationID) == 4 && strings.HasPrefix(cleanedStationID, "C") {
+			add("tc_id-value", strings.TrimPrefix(cleanedStationID, "C"))
+		}
+	}
+	queries := []url.Values{}
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		key := candidate.field + "=" + candidate.value
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		query := url.Values{}
+		query.Set("f", "json")
+		query.Set("lang", "en")
+		query.Set("limit", "1")
+		query.Set("sortby", "-date_tm-value")
+		query.Set(candidate.field, candidate.value)
+		queries = append(queries, query)
+	}
+	return queries
+}
+
+func swobCollectionFromRealtimeFeature(feature map[string]any) swobCollection {
+	props := mapAt(feature, "properties")
+	elements := []swobElement{}
+	seen := map[string]struct{}{}
+	for key, value := range props {
+		name := strings.TrimSuffix(key, "-value")
+		if strings.Contains(name, "-") || strings.TrimSpace(name) == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		elementValue := textValue(value)
+		if withSuffix := textValue(props[name+"-value"]); withSuffix != "" {
+			elementValue = withSuffix
+		}
+		if elementValue == "" {
+			continue
+		}
+		seen[name] = struct{}{}
+		elements = append(elements, swobElement{
+			Name:  name,
+			UOM:   textValue(props[name+"-uom"]),
+			Value: elementValue,
+		})
+	}
+	return swobCollection{Members: []swobMember{{
+		Observation: swobObservation{
+			Metadata: struct {
+				Set struct {
+					Identification struct {
+						Elements []swobElement `xml:"element"`
+					} `xml:"identification-elements"`
+				} `xml:"set"`
+			}{Set: struct {
+				Identification struct {
+					Elements []swobElement `xml:"element"`
+				} `xml:"identification-elements"`
+			}{Identification: struct {
+				Elements []swobElement `xml:"element"`
+			}{Elements: elements}}},
+			Result: struct {
+				Elements struct {
+					Elements []swobElement `xml:"element"`
+				} `xml:"elements"`
+			}{Elements: struct {
+				Elements []swobElement `xml:"element"`
+			}{Elements: elements}},
+		},
+	}}}
+}
+
+func swobStationIDFromStationFeature(feature map[string]any) string {
+	props := mapAt(feature, "properties")
+	return swobStationIDFromCode(firstNonBlank(
+		textValue(props["icao_id"]),
+		textValue(props["iata_id"]),
+		textValue(props["tc_id"]),
+		textValue(props["msc_id"]),
+		textValue(props["wmo_id"]),
+		textValue(feature["id"]),
+	))
 }
 
 func latestSWOBFilename(ctx context.Context, client *http.Client, baseURL string, stationID string) (string, error) {
@@ -605,7 +987,13 @@ func buildECCCSWOBConditions(raw map[string]any, loc locationXML) map[string]any
 	stationName := firstNonBlank(loc.NameOverride, swobString(ident, "stn_nam"), loc.ID)
 	observedAt := firstNonBlank(swobString(ident, "date_tm"), obs.SamplingTime.TimeInstant.TimePosition)
 	windDirection := ""
-	if degrees, ok := swobFloat(values, "avg_wnd_dir_10m_pst2mts"); ok {
+	if degrees, ok := swobFirstFloat(values,
+		"avg_wnd_dir_10m_pst2mts",
+		"avg_wnd_dir_10m_pst10mts",
+		"avg_wnd_dir_10m_pst1mt",
+		"avg_wnd_dir_10m_pst1hr",
+		"avg_wnd_dir_10m_mt50-60",
+	); ok {
 		windDirection, _ = degreesToCardinal(degrees, true).(string)
 	}
 	pressureKPA := any(nil)
@@ -614,25 +1002,36 @@ func buildECCCSWOBConditions(raw map[string]any, loc locationXML) map[string]any
 	} else if hpa, ok := swobFloat(values, "stn_pres"); ok {
 		pressureKPA = math.Round((hpa/10)*100) / 100
 	}
+	condition := swobECCCCondition(values)
 	return map[string]any{
 		"source":      "eccc",
-		"station_id":  firstNonBlank(swobString(ident, "icao_stn_id"), loc.ID),
+		"station_id":  swobStationIdentifier(ident, loc.ID),
 		"observed_at": observedAt,
 		"station":     map[string]any{"en": stationName},
 		"properties": map[string]any{
 			"temp":          swobNullable(values, "air_temp"),
-			"condition":     map[string]any{"en": swobPresentWeather(values)},
+			"condition":     map[string]any{"en": condition},
 			"sky_condition": map[string]any{"en": swobSkyCondition(values)},
 			"altimeter":     swobAltimeter(values),
 			"wind": map[string]any{
-				"speed":     swobNullable(values, "avg_wnd_spd_10m_pst2mts"),
+				"speed": swobFirstNullable(values,
+					"avg_wnd_spd_10m_pst2mts",
+					"avg_wnd_spd_10m_pst10mts",
+					"avg_wnd_spd_10m_pst1mt",
+					"avg_wnd_spd_10m_pst1hr",
+					"avg_wnd_spd_10m_mt58-60",
+					"avg_wnd_spd_10m_mt50-60",
+				),
 				"direction": windDirection,
-				"gust":      swobNullable(values, "max_wnd_gst_spd_10m_pst10mts"),
+				"gust": swobFirstNullable(values,
+					"max_wnd_gst_spd_10m_pst10mts",
+					"max_wnd_gst_spd_10m_mt50-60",
+				),
 			},
 			"humidity":   swobNullable(values, "rel_hum"),
 			"dewpoint":   swobNullable(values, "dwpt_temp"),
-			"visibility": swobNullable(values, "vis"),
-			"pressure":   map[string]any{"value": pressureKPA, "tendency": nil},
+			"visibility": swobFirstNullable(values, "vis", "avg_vis_pst10mts", "min_vis", "max_vis"),
+			"pressure":   map[string]any{"value": pressureKPA, "tendency": map[string]any{"en": swobPressureTendency(values)}},
 			"windChill":  nil,
 			"humidex":    nil,
 			"heatIndex":  nil,
@@ -643,8 +1042,10 @@ func buildECCCSWOBConditions(raw map[string]any, loc locationXML) map[string]any
 func swobElementMap(elements []swobElement) map[string]swobElement {
 	out := make(map[string]swobElement, len(elements))
 	for _, element := range elements {
-		if strings.TrimSpace(element.Name) != "" {
-			out[strings.TrimSpace(element.Name)] = element
+		name := strings.TrimSpace(element.Name)
+		if name != "" {
+			out[name] = element
+			out[strings.ToLower(name)] = element
 		}
 	}
 	return out
@@ -670,12 +1071,39 @@ func swobFloat(elements map[string]swobElement, name string) (float64, bool) {
 	return parsed, true
 }
 
+func swobFirstFloat(elements map[string]swobElement, names ...string) (float64, bool) {
+	for _, name := range names {
+		if value, ok := swobFloat(elements, name); ok {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
 func swobNullable(elements map[string]swobElement, name string) any {
 	value, ok := swobFloat(elements, name)
 	if !ok {
 		return nil
 	}
 	return value
+}
+
+func swobFirstNullable(elements map[string]swobElement, names ...string) any {
+	if value, ok := swobFirstFloat(elements, names...); ok {
+		return value
+	}
+	return nil
+}
+
+func swobStationIdentifier(elements map[string]swobElement, fallback string) string {
+	return firstNonBlank(
+		swobString(elements, "icao_stn_id"),
+		swobString(elements, "tc_id"),
+		swobString(elements, "msc_id"),
+		swobString(elements, "clim_id"),
+		swobString(elements, "wmo_synop_id"),
+		fallback,
+	)
 }
 
 func swobAltimeter(elements map[string]swobElement) string {
@@ -686,31 +1114,95 @@ func swobAltimeter(elements map[string]swobElement) string {
 	return fmt.Sprintf("%.2f inches", value)
 }
 
+func swobECCCCondition(elements map[string]swobElement) string {
+	if condition := swobPresentWeather(elements); condition != "" {
+		return condition
+	}
+	return swobCloudCondition(elements)
+}
+
 func swobPresentWeather(elements map[string]swobElement) string {
-	switch swobString(elements, "prsnt_wx_1") {
-	case "", "125":
+	for _, name := range swobPresentWeatherFields() {
+		raw := swobString(elements, name)
+		if raw == "" {
+			continue
+		}
+		text, ok := swobPresentWeatherText(raw)
+		if ok && text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func swobCloudCondition(elements map[string]swobElement) string {
+	for index := 1; index <= 8; index++ {
+		if text := swobCloudConditionText(swobString(elements, fmt.Sprintf("cld_amt_code_%d", index))); text != "" {
+			return text
+		}
+	}
+	return swobCloudConditionText(firstNonBlank(
+		swobString(elements, "tot_cld_amt"),
+		swobString(elements, "total_cloud_amount"),
+		swobString(elements, "cld_amt_code"),
+	))
+}
+
+func swobCloudConditionText(raw string) string {
+	code, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
 		return ""
+	}
+	switch code {
+	case 0, 42, 45, 50:
+		return "Clear"
+	case 1, 10, 32, 33, 43, 48, 51, 52, 54:
+		return "Mainly Sunny"
+	case 2, 34, 35, 55:
+		return "Partly Cloudy"
+	case 3, 36, 37, 38, 56:
+		return "Mostly Cloudy"
+	case 4, 6, 7, 8, 9, 11, 12, 13, 14, 15, 39, 40, 44, 46, 47, 49, 57:
+		return "Cloudy"
 	default:
-		return "reported weather code " + swobString(elements, "prsnt_wx_1")
+		return ""
 	}
 }
 
 func swobSkyCondition(elements map[string]swobElement) string {
 	parts := []string{}
-	for index := 1; index <= 4; index++ {
+	for index := 1; index <= 8; index++ {
+		amount := swobString(elements, fmt.Sprintf("cld_amt_code_%d", index))
 		height, ok := swobFloat(elements, fmt.Sprintf("cld_bas_hgt_%d", index))
+		amountText, amountOK := swobCloudAmountText(amount)
+		if amountOK {
+			if amountText == "" {
+				continue
+			}
+			if ok {
+				feet := swobMetersToRoundedFeet(height)
+				if feet > 0 && swobCloudAmountUsesHeight(amount) {
+					amountText = fmt.Sprintf("%s at %d feet", amountText, feet)
+				}
+			}
+			parts = appendUniqueString(parts, amountText)
+			continue
+		}
 		if !ok {
 			continue
 		}
-		feet := int(math.Round(height*3.28084/100.0) * 100)
+		feet := swobMetersToRoundedFeet(height)
 		if feet <= 0 {
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("cloud layer at %d feet", feet))
 	}
 	if len(parts) == 0 {
+		if amountText, ok := swobCloudAmountText(firstNonBlank(swobString(elements, "tot_cld_amt"), swobString(elements, "total_cloud_amount"), swobString(elements, "cld_amt_code"))); ok && amountText != "" {
+			return amountText
+		}
 		if vertical, ok := swobFloat(elements, "vert_vis"); ok {
-			feet := int(math.Round(vertical*3.28084/100.0) * 100)
+			feet := swobMetersToRoundedFeet(vertical)
 			if feet > 0 {
 				return fmt.Sprintf("vertical visibility %d feet", feet)
 			}
@@ -718,6 +1210,671 @@ func swobSkyCondition(elements map[string]swobElement) string {
 		return ""
 	}
 	return strings.Join(parts, ", ")
+}
+
+func swobPresentWeatherFields() []string {
+	fields := []string{"prsnt_wx"}
+	for index := 1; index <= 8; index++ {
+		fields = append(fields, fmt.Sprintf("prsnt_wx_%d", index))
+	}
+	return fields
+}
+
+func swobPresentWeatherText(raw string) (string, bool) {
+	code, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return strings.TrimSpace(raw), strings.TrimSpace(raw) != ""
+	}
+	if text, ok := swobECCCConditionCodeText[code]; ok {
+		return text, true
+	}
+	switch code {
+	case 0, 125, 300, 409, 808, 839:
+		return "", true
+	case 809, 810, 811, 414:
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+var swobECCCConditionCodeText = map[int]string{
+	4:   "Smoke",
+	5:   "Haze",
+	10:  "Mist",
+	13:  "Thunderstorm",
+	17:  "Thunderstorm",
+	18:  "Squalls",
+	19:  "Funnel Cloud",
+	20:  "Drizzle",
+	21:  "Rain",
+	22:  "Snow",
+	23:  "Rain and Snow",
+	24:  "Freezing Rain",
+	25:  "Rain Shower",
+	26:  "Flurries",
+	27:  "Hail",
+	28:  "Fog",
+	29:  "Thunderstorm",
+	36:  "Drifting Snow",
+	37:  "Drifting Snow",
+	38:  "Blowing Snow",
+	39:  "Blowing Snow",
+	40:  "Fog",
+	41:  "Fog Patches",
+	42:  "Fog",
+	43:  "Fog",
+	44:  "Fog",
+	45:  "Fog",
+	46:  "Fog",
+	47:  "Fog",
+	48:  "Fog",
+	49:  "Fog",
+	50:  "Light Drizzle",
+	51:  "Light Drizzle",
+	52:  "Drizzle",
+	53:  "Heavy Drizzle",
+	54:  "Light Drizzle",
+	55:  "Drizzle",
+	56:  "Heavy Drizzle",
+	57:  "Light Freezing Drizzle",
+	58:  "Light Freezing Drizzle",
+	59:  "Freezing Drizzle",
+	60:  "Heavy Freezing Drizzle",
+	61:  "Freezing Drizzle",
+	62:  "Light Rain and Drizzle",
+	63:  "Heavy Rain and Drizzle",
+	64:  "Light Rain",
+	65:  "Light Rain",
+	66:  "Rain",
+	67:  "Heavy Rain",
+	68:  "Light Rain",
+	69:  "Rain",
+	70:  "Heavy Rain",
+	71:  "Light Freezing Rain",
+	72:  "Light Freezing Rain",
+	73:  "Freezing Rain",
+	74:  "Heavy Freezing Rain",
+	75:  "Freezing Rain",
+	76:  "Light Rain and Snow",
+	77:  "Heavy Rain and Snow",
+	78:  "Light Snow",
+	79:  "Light Snow",
+	80:  "Snow",
+	81:  "Heavy Snow",
+	82:  "Light Snow",
+	83:  "Snow",
+	84:  "Heavy Snow",
+	85:  "Ice Crystals",
+	86:  "Snow Grains",
+	87:  "Snow Grains",
+	88:  "Snow Grains",
+	89:  "Snow Grains",
+	90:  "Snow Grains",
+	91:  "Ice Crystals",
+	92:  "Ice Pellets",
+	93:  "Ice Pellets",
+	94:  "Ice Pellets",
+	95:  "Ice Pellets",
+	96:  "Ice Pellets",
+	97:  "Light Rain Shower",
+	98:  "Light Rain Shower",
+	99:  "Rain Shower",
+	100: "Heavy Rain Shower",
+	101: "Rain Shower",
+	102: "Light Rain Shower and Flurries",
+	103: "Heavy Rain Shower and Flurries",
+	104: "Light Flurries",
+	105: "Light Flurries",
+	106: "Flurries",
+	107: "Heavy Flurries",
+	108: "Flurries",
+	109: "Snow Pellets",
+	110: "Snow Pellets",
+	111: "Hail",
+	112: "Hail",
+	113: "Hail",
+	114: "Hail",
+	115: "Hail",
+	116: "Thunderstorm with Light Rain",
+	117: "Thunderstorm with Heavy Rain",
+	118: "Thunderstorm with Rain",
+	119: "Thunderstorm with Rain",
+	120: "Thunderstorm with Hail",
+	121: "Heavy Thunderstorm with Hail",
+	122: "Thunderstorm with Dust Storm",
+	123: "Thunderstorm with Light Rain",
+	124: "Thunderstorm with Heavy Rain",
+	126: "Blowing Dust",
+	127: "Sandstorm",
+	128: "Blowing Snow",
+	129: "Dust Storm",
+	130: "Sandstorm",
+	131: "Funnel Cloud",
+	132: "Tornado",
+	133: "Waterspout",
+	134: "Drifting Dust",
+	135: "Sandstorm",
+	136: "Drifting Snow",
+	137: "Precipitation",
+	138: "Fog",
+	139: "Ice Fog",
+	140: "Shallow Fog",
+	141: "Ice Fog",
+	142: "Fog Patches",
+	143: "Fog",
+	144: "Smoke",
+	145: "Thunderstorm",
+	146: "Heavy Thunderstorm",
+	147: "Dust Devils",
+	148: "Snow Pellets",
+	149: "Snow Pellets",
+	150: "Snow Pellets",
+	151: "Snow Pellets",
+	152: "Ice Pellets",
+	153: "Ice Pellets",
+	154: "Ice Pellets",
+	155: "Ice Pellets",
+	156: "Dust Storm",
+	157: "Dust Storm",
+	158: "Dust Storm",
+	159: "Volcanic Ash",
+	160: "Haze",
+	161: "Rain",
+	162: "Rain Shower",
+	163: "Fog",
+	164: "Ice Fog",
+	165: "Thunderstorm",
+	166: "Dust Storm",
+	167: "Sandstorm",
+	168: "Funnel Cloud",
+	169: "Tornado",
+	170: "Waterspout",
+	171: "Rain",
+	172: "Drizzle",
+	173: "Snow",
+	174: "Snow Grains",
+	175: "Ice Crystals",
+	176: "Ice Pellets",
+	177: "Hail",
+	178: "Snow Pellets",
+	179: "Freezing Rain",
+	180: "Freezing Drizzle",
+	181: "Thunderstorm",
+	182: "Blowing Snow",
+	183: "Volcanic Ash",
+	184: "Dust Storm",
+	304: "Haze",
+	305: "Haze",
+	310: "Mist",
+	311: "Ice Crystals",
+	312: "Thunderstorm",
+	318: "Squalls",
+	320: "Fog",
+	321: "Precipitation",
+	322: "Drizzle",
+	323: "Rain",
+	324: "Snow",
+	325: "Freezing Rain",
+	326: "Thunderstorm",
+	327: "Blowing Snow",
+	328: "Blowing Snow",
+	329: "Blowing Snow",
+	330: "Fog",
+	331: "Fog Patches",
+	332: "Fog",
+	333: "Fog",
+	334: "Fog",
+	335: "Ice Fog",
+	340: "Precipitation",
+	341: "Light Precipitation",
+	342: "Heavy Precipitation",
+	343: "Light Precipitation",
+	344: "Heavy Precipitation",
+	345: "Light Snow",
+	346: "Heavy Snow",
+	347: "Light Freezing Rain",
+	348: "Heavy Freezing Rain",
+	350: "Drizzle",
+	351: "Light Drizzle",
+	352: "Light Drizzle",
+	353: "Drizzle",
+	354: "Heavy Drizzle",
+	355: "Light Freezing Drizzle",
+	356: "Light Freezing Drizzle",
+	357: "Freezing Drizzle",
+	358: "Heavy Freezing Drizzle",
+	359: "Light Rain and Drizzle",
+	360: "Heavy Rain and Drizzle",
+	362: "Rain",
+	363: "Light Rain",
+	364: "Light Rain",
+	365: "Rain",
+	366: "Heavy Rain",
+	367: "Light Freezing Rain",
+	368: "Light Freezing Rain",
+	369: "Freezing Rain",
+	370: "Heavy Freezing Rain",
+	371: "Light Rain and Snow",
+	372: "Heavy Rain and Snow",
+	374: "Snow",
+	375: "Light Snow",
+	376: "Light Snow",
+	377: "Snow",
+	378: "Heavy Snow",
+	379: "Ice Pellets",
+	380: "Ice Pellets",
+	381: "Ice Pellets",
+	382: "Snow Grains",
+	383: "Ice Crystals",
+	385: "Precipitation",
+	386: "Light Rain Shower",
+	387: "Light Rain Shower",
+	388: "Rain Shower",
+	389: "Heavy Rain Shower",
+	390: "Light Flurries",
+	391: "Flurries",
+	392: "Heavy Flurries",
+	394: "Hail",
+	395: "Hail",
+	396: "Hail",
+	397: "Hail",
+	398: "Hail",
+	399: "Thunderstorm",
+	400: "Thunderstorm with Rain",
+	401: "Thunderstorm with Heavy Rain",
+	402: "Thunderstorm",
+	403: "Thunderstorm with Light Rain",
+	404: "Thunderstorm with Heavy Rain",
+	405: "Heavy Thunderstorm",
+	408: "Tornado",
+	410: "Precipitation",
+	411: "Light Precipitation",
+	412: "Precipitation",
+	413: "Heavy Precipitation",
+	415: "Snow",
+	416: "Light Snow",
+	417: "Snow",
+	418: "Heavy Snow",
+}
+
+var swobPresentWeatherCodeText = map[int]string{
+	4:   "smoke",
+	5:   "haze",
+	10:  "mist",
+	13:  "lightning visible, no thunder heard",
+	17:  "thunderstorm without precipitation",
+	18:  "squalls",
+	19:  "funnel cloud",
+	20:  "drizzle or snow grains",
+	21:  "rain",
+	22:  "snow",
+	23:  "rain and snow or ice pellets",
+	24:  "freezing drizzle or freezing rain",
+	25:  "showers of rain",
+	26:  "showers of snow or rain and snow",
+	27:  "showers of hail or rain and hail",
+	28:  "fog or ice fog",
+	29:  "thunderstorm",
+	36:  "slight drifting snow",
+	37:  "moderate or heavy drifting snow",
+	38:  "slight blowing snow",
+	39:  "moderate or heavy blowing snow",
+	40:  "fog at a distance",
+	41:  "fog patches",
+	42:  "fog has become thinner",
+	43:  "fog, no appreciable change",
+	44:  "fog has begun or become thicker",
+	45:  "fog depositing rime",
+	46:  "fog or ice fog, sky visible",
+	47:  "fog or ice fog, sky not visible",
+	48:  "fog depositing rime, sky visible",
+	49:  "fog depositing rime, sky not visible",
+	50:  "very light drizzle",
+	51:  "light drizzle",
+	52:  "moderate drizzle",
+	53:  "heavy drizzle",
+	54:  "light intermittent drizzle",
+	55:  "moderate intermittent drizzle",
+	56:  "heavy intermittent drizzle",
+	57:  "very light freezing drizzle",
+	58:  "light freezing drizzle",
+	59:  "moderate freezing drizzle",
+	60:  "heavy freezing drizzle",
+	61:  "moderate or heavy freezing drizzle",
+	62:  "light drizzle and rain",
+	63:  "moderate or heavy drizzle and rain",
+	64:  "very light rain",
+	65:  "light rain",
+	66:  "moderate rain",
+	67:  "heavy rain",
+	68:  "light intermittent rain",
+	69:  "moderate intermittent rain",
+	70:  "heavy intermittent rain",
+	71:  "very light freezing rain",
+	72:  "light freezing rain",
+	73:  "moderate freezing rain",
+	74:  "heavy freezing rain",
+	75:  "moderate or heavy freezing rain",
+	76:  "light rain or drizzle and snow",
+	77:  "moderate or heavy rain or drizzle and snow",
+	78:  "very light snow",
+	79:  "light snow",
+	80:  "moderate snow",
+	81:  "heavy snow",
+	82:  "light intermittent snow",
+	83:  "moderate intermittent snow",
+	84:  "heavy intermittent snow",
+	85:  "ice crystals",
+	86:  "snow grains",
+	87:  "very light snow grains",
+	88:  "light snow grains",
+	89:  "moderate snow grains",
+	90:  "heavy snow grains",
+	91:  "snow crystals",
+	92:  "ice pellets",
+	93:  "very light ice pellets",
+	94:  "light ice pellets",
+	95:  "moderate ice pellets",
+	96:  "heavy ice pellets",
+	97:  "very light rain showers",
+	98:  "light rain showers",
+	99:  "moderate rain showers",
+	100: "heavy rain showers",
+	101: "moderate or heavy rain showers",
+	102: "light mixed rain and snow showers",
+	103: "moderate or heavy mixed rain and snow showers",
+	104: "very light snow showers",
+	105: "light snow showers",
+	106: "moderate snow showers",
+	107: "heavy snow showers",
+	108: "moderate or heavy snow showers",
+	109: "light showers of snow pellets or small hail",
+	110: "moderate or heavy showers of snow pellets or small hail",
+	111: "very light hail",
+	112: "light showers of hail",
+	113: "moderate hail",
+	114: "heavy hail",
+	115: "moderate or heavy showers of hail",
+	116: "thunderstorm with slight rain",
+	117: "thunderstorm with moderate or heavy rain",
+	118: "thunderstorm with slight snow or rain and snow",
+	119: "thunderstorm with moderate or heavy snow or rain and snow",
+	120: "thunderstorm with slight hail",
+	121: "thunderstorm with moderate or heavy hail",
+	122: "thunderstorm with duststorm or sandstorm",
+	123: "thunderstorm with slight freezing rain",
+	124: "thunderstorm with moderate or heavy freezing rain",
+	126: "blowing dust",
+	127: "blowing sand",
+	128: "blowing snow",
+	129: "dust storm",
+	130: "sand storm",
+	131: "funnel cloud",
+	132: "tornado",
+	133: "waterspout",
+	134: "low drifting dust",
+	135: "low drifting sand",
+	136: "low drifting snow",
+	137: "blowing spray",
+	138: "fog",
+	139: "freezing fog",
+	140: "shallow fog",
+	141: "ice fog",
+	142: "patchy fog",
+	143: "fog covering part of the aerodrome",
+	144: "smoke",
+	145: "thunderstorm",
+	146: "heavy thunderstorm",
+	147: "dust whirl or sand whirl",
+	148: "very light showers of snow pellets",
+	149: "light showers of snow pellets",
+	150: "moderate showers of snow pellets",
+	151: "heavy showers of snow pellets",
+	152: "very light showers of ice pellets",
+	153: "light showers of ice pellets",
+	154: "moderate showers of ice pellets",
+	155: "heavy showers of ice pellets",
+	156: "light sandstorm or duststorm",
+	157: "moderate sandstorm or duststorm",
+	158: "heavy sandstorm or duststorm",
+	159: "volcanic ash",
+	160: "dust in suspension",
+	161: "rain in the vicinity",
+	162: "showers in the vicinity",
+	163: "fog in the vicinity",
+	164: "freezing fog in the vicinity",
+	165: "thunderstorm in the vicinity",
+	166: "duststorm in the vicinity",
+	167: "sandstorm in the vicinity",
+	168: "funnel cloud in the vicinity",
+	169: "tornado in the vicinity",
+	170: "waterspout in the vicinity",
+	171: "recent rain",
+	172: "recent drizzle",
+	173: "recent snow",
+	174: "recent snow grains",
+	175: "recent ice crystals",
+	176: "recent ice pellets",
+	177: "recent hail",
+	178: "recent snow pellets",
+	179: "recent freezing rain",
+	180: "recent freezing drizzle",
+	181: "recent thunderstorm",
+	182: "recent blowing snow",
+	183: "recent volcanic ash",
+	184: "recent sandstorm or duststorm",
+	301: "clouds decreasing",
+	302: "clouds unchanged",
+	303: "clouds increasing",
+	304: "haze, smoke, or dust",
+	305: "haze, smoke, or dust with visibility less than one kilometre",
+	310: "mist",
+	311: "ice crystals",
+	312: "distant lightning",
+	318: "squalls",
+	320: "fog",
+	321: "precipitation during the preceding hour but not at the time of observation",
+	322: "drizzle or snow grains",
+	323: "rain",
+	324: "snow",
+	325: "freezing drizzle or freezing rain",
+	326: "thunderstorm",
+	327: "blowing or drifting snow or sand",
+	328: "blowing or drifting snow or sand",
+	329: "blowing or drifting snow or sand with visibility less than one kilometre",
+	330: "fog",
+	331: "fog or ice fog patches",
+	332: "fog or ice fog thinning",
+	333: "fog or ice fog unchanged",
+	334: "fog or ice fog thickening",
+	335: "freezing fog",
+	340: "precipitation",
+	341: "light or moderate precipitation",
+	342: "heavy precipitation",
+	343: "light or moderate liquid precipitation",
+	344: "heavy liquid precipitation",
+	345: "light or moderate solid precipitation",
+	346: "heavy solid precipitation",
+	347: "light or moderate freezing precipitation",
+	348: "heavy freezing precipitation",
+	350: "drizzle",
+	351: "very light drizzle",
+	352: "light drizzle",
+	353: "moderate drizzle",
+	354: "heavy drizzle",
+	355: "very light freezing drizzle",
+	356: "light freezing drizzle",
+	357: "moderate freezing drizzle",
+	358: "heavy freezing drizzle",
+	359: "light drizzle and rain",
+	360: "moderate or heavy drizzle and rain",
+	362: "rain",
+	363: "very light rain",
+	364: "light rain",
+	365: "moderate rain",
+	366: "heavy rain",
+	367: "very light freezing rain",
+	368: "light freezing rain",
+	369: "moderate freezing rain",
+	370: "heavy freezing rain",
+	371: "light rain or drizzle and snow",
+	372: "moderate or heavy rain or drizzle and snow",
+	374: "snow",
+	375: "very light snow",
+	376: "light snow",
+	377: "moderate snow",
+	378: "heavy snow",
+	379: "ice pellets",
+	380: "light ice pellets",
+	381: "moderate or heavy ice pellets",
+	382: "snow grains",
+	383: "ice crystals",
+	385: "showers or intermittent precipitation",
+	386: "very light rain showers",
+	387: "light rain showers",
+	388: "moderate rain showers",
+	389: "heavy rain showers",
+	390: "light snow showers",
+	391: "moderate snow showers",
+	392: "heavy snow showers",
+	394: "hail",
+	395: "very light hail",
+	396: "light hail",
+	397: "moderate hail",
+	398: "heavy hail",
+	399: "thunderstorm",
+	400: "thunderstorm with light or moderate precipitation",
+	401: "thunderstorm with heavy precipitation",
+	402: "thunderstorm without precipitation",
+	403: "thunderstorm with light or moderate rain showers",
+	404: "thunderstorm with heavy rain showers",
+	405: "heavy thunderstorm",
+	408: "tornado",
+	410: "unclassified precipitation",
+	411: "light unclassified precipitation",
+	412: "moderate unclassified precipitation",
+	413: "heavy unclassified precipitation",
+	415: "frozen precipitation",
+	416: "light frozen precipitation",
+	417: "moderate frozen precipitation",
+	418: "heavy frozen precipitation",
+}
+
+func swobCloudAmountText(raw string) (string, bool) {
+	code, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return "", false
+	}
+	switch code {
+	case 0, 42, 45, 50:
+		return "Clear", true
+	case 1, 10, 32, 33:
+		return "few clouds", true
+	case 2, 34, 35:
+		return "scattered clouds", true
+	case 3, 36, 37, 38:
+		return "broken clouds", true
+	case 4, 39:
+		return "overcast", true
+	case 6:
+		return "scattered to broken clouds", true
+	case 7:
+		return "broken to overcast clouds", true
+	case 8:
+		return "isolated cumulonimbus clouds", true
+	case 9:
+		return "isolated embedded cumulonimbus clouds", true
+	case 11:
+		return "occasional embedded cumulonimbus clouds", true
+	case 12:
+		return "frequent cumulonimbus clouds", true
+	case 13:
+		return "dense cloud", true
+	case 14:
+		return "multiple cloud layers", true
+	case 15, 40, 44, 46:
+		return "obscured", true
+	case 41:
+		return "", false
+	case 43:
+		return "no significant cloud", true
+	case 47, 49:
+		return "partially obscured", true
+	case 48:
+		return "no clouds detected below 10000 feet", true
+	case 51:
+		return "no clouds detected below 25000 feet", true
+	case 52:
+		return "ceiling and visibility OK", true
+	case 53, 58:
+		return "", true
+	case 54:
+		return "thin few clouds", true
+	case 55:
+		return "thin scattered clouds", true
+	case 56:
+		return "thin broken clouds", true
+	case 57:
+		return "thin overcast", true
+	default:
+		return "", false
+	}
+}
+
+func swobCloudAmountUsesHeight(raw string) bool {
+	code, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return true
+	}
+	switch code {
+	case 0, 15, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 58:
+		return false
+	default:
+		return true
+	}
+}
+
+func swobMetersToRoundedFeet(meters float64) int {
+	return int(math.Round(meters*3.28084/100.0) * 100)
+}
+
+func swobPressureTendency(elements map[string]swobElement) string {
+	codeRaw := swobString(elements, "pres_tend_char_pst3hrs")
+	if codeRaw == "" {
+		return ""
+	}
+	code, err := strconv.Atoi(codeRaw)
+	if err != nil {
+		return ""
+	}
+	switch code {
+	case 1, 2, 3:
+		return "rising"
+	case 4:
+		return "steady"
+	case 5, 6, 7, 8:
+		return "falling"
+	case 16:
+		return "rising rapidly"
+	case 17:
+		return "falling rapidly"
+	default:
+		return ""
+	}
+}
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if strings.EqualFold(existing, value) {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func fetchNWSObservation(ctx context.Context, client *http.Client, stationID string) (map[string]any, error) {
@@ -2551,6 +3708,16 @@ func textValue(value any) string {
 	}
 }
 
+func anySlice(value any) []any {
+	typed, _ := value.([]any)
+	return typed
+}
+
+func mapValue(value any) map[string]any {
+	typed, _ := value.(map[string]any)
+	return typed
+}
+
 func mapAt(source map[string]any, key string) map[string]any {
 	if source == nil {
 		return nil
@@ -2606,6 +3773,26 @@ func firstNonBlank(values ...string) string {
 	return ""
 }
 
+func isDigits(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func setDefaultStationID(payload map[string]any, stationID string) {
+	if payload == nil || strings.TrimSpace(textValue(payload["station_id"])) != "" {
+		return
+	}
+	payload["station_id"] = strings.TrimSpace(stationID)
+}
+
 func configDuration(raw string, fallback time.Duration) time.Duration {
 	if parsed, err := time.ParseDuration(strings.TrimSpace(raw)); err == nil && parsed > 0 {
 		return parsed
@@ -2616,6 +3803,9 @@ func configDuration(raw string, fallback time.Duration) time.Duration {
 func sourceKind(raw string) string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	if value == "" {
+		return "eccc"
+	}
+	if value == "swob" || value == "eccc-swob" || value == "eccc_swob" || value == "msc-swob" || value == "msc_swob" {
 		return "eccc"
 	}
 	if value == "weather.com" || value == "weatherdotcom" {

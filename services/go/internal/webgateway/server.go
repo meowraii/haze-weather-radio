@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"path"
@@ -28,6 +29,7 @@ type Server struct {
 	media      *MediaHub
 	bannerHub  *BannerHub
 	breakIn    *OperatorBreakInManager
+	listeners  *ListenerTracker
 }
 
 // WebSurface controls which routes a gateway instance exposes.
@@ -70,6 +72,7 @@ func NewServerWithSurface(config Config, configPath string, webroot string, surf
 		media:      mediaHub,
 		bannerHub:  bannerHub,
 		breakIn:    NewOperatorBreakInManager(),
+		listeners:  NewListenerTracker(),
 	}
 	if server.surface.allowsAdmin() {
 		server.startBannerStatePublisher(hostBridgeAddr)
@@ -88,7 +91,10 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/alerts", s.publicIndex)
 		mux.HandleFunc("/alerts/archive", s.publicIndex)
 		mux.HandleFunc("/api/public/v1/panel/ws", s.websocket)
+		mux.HandleFunc("/api/public/v1/panel/events", s.publicPanelEvents)
+		mux.HandleFunc("/api/public/v1/panel/state", s.publicPanelState)
 		mux.HandleFunc("/api/public/v1/feed/audio", s.publicFeedAudio)
+		mux.HandleFunc("/api/public/v1/feed/webrtc/offer", s.publicFeedWebRTCOffer)
 		mux.HandleFunc("/api/public/v1/alerts/archive/cap.xml", s.publicAlertsArchiveCAPXML)
 	}
 	if s.surface.allowsAdmin() {
@@ -112,7 +118,11 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/login", s.login)
 		mux.HandleFunc("/api/v1/auth/check", s.authCheckAPI)
 		mux.HandleFunc("/api/v1/auth/login", s.loginAPI)
+		mux.HandleFunc("/api/v1/auth/logout", s.logoutAPI)
 		mux.HandleFunc("/api/v1/panel/ws", s.websocket)
+		mux.HandleFunc("/api/v1/panel/events", s.adminPanelEvents)
+		mux.HandleFunc("/api/v1/panel/state", s.adminPanelState)
+		mux.HandleFunc("/api/v1/panel/command", s.panelCommand)
 	}
 	if s.surface.allowsAdmin() && s.receiver != nil && s.receiver.Enabled() {
 		base := s.receiver.BasePath()
@@ -141,7 +151,7 @@ func (s *Server) publicIndex(writer http.ResponseWriter, request *http.Request) 
 		http.NotFound(writer, request)
 		return
 	}
-	s.serveHTML(writer, request, "index.html")
+	s.servePublicIndexHTML(writer, request)
 }
 
 func publicAlertsPath(path string) bool {
@@ -164,7 +174,7 @@ func (s *Server) admin(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if token := strings.TrimSpace(request.URL.Query().Get("token")); token != "" && s.auth.ValidToken(token) {
-		s.auth.SetCookie(writer, token)
+		s.auth.SetCookieForRequest(writer, request, token)
 		cleanURL := *request.URL
 		query := cleanURL.Query()
 		query.Del("token")
@@ -219,7 +229,7 @@ func (s *Server) loginAPI(writer http.ResponseWriter, request *http.Request) {
 		})
 		return
 	}
-	s.auth.SetCookie(writer, token)
+	s.auth.SetCookieForRequest(writer, request, token)
 	_ = json.NewEncoder(writer).Encode(map[string]any{
 		"type":  "auth_ok",
 		"token": token,
@@ -244,10 +254,64 @@ func (s *Server) authCheckAPI(writer http.ResponseWriter, request *http.Request)
 	})
 }
 
+func (s *Server) logoutAPI(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", "POST")
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := explicitAdminTokenFromRequest(request)
+	if token == "" {
+		token = tokenFromRequest(request)
+	}
+	s.auth.Logout(token)
+	http.SetCookie(writer, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   s.auth.cookieSecureForRequest(request),
+	})
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(writer).Encode(map[string]any{
+		"type":       "logout_ok",
+		"public_url": "/",
+	})
+}
+
 func (s *Server) serveHTML(writer http.ResponseWriter, request *http.Request, name string) {
 	writer.Header().Set("Cache-Control", "no-store")
 	path := filepath.Join(s.webroot, filepath.Clean(name))
 	http.ServeFile(writer, request, path)
+}
+
+func (s *Server) servePublicIndexHTML(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	path := filepath.Join(s.webroot, "index.html")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		http.NotFound(writer, request)
+		return
+	}
+	site := fallbackText(siteName(s.config), "Haze Weather Radio")
+	onAir := fallbackText(displayText(s.config.Operator.OnAirName), site)
+	title := onAir
+	if !strings.Contains(strings.ToLower(title), "weather") && !strings.Contains(strings.ToLower(title), "radio") {
+		title = title + " Weather Radio"
+	}
+	description := fmt.Sprintf("Live weather radio feeds, alerts, and public status for %s.", onAir)
+	htmlText := string(raw)
+	htmlText = strings.Replace(htmlText, `<meta name="description" content="Public status and feed access for Haze Weather Radio">`, `<meta name="description" content="`+html.EscapeString(description)+`">`, 1)
+	htmlText = strings.Replace(htmlText, `<meta name="description" content="Live weather radio feeds, alerts, and public status.">`, `<meta name="description" content="`+html.EscapeString(description)+`">`, 1)
+	htmlText = strings.Replace(htmlText, `<title>Haze Weather Radio</title>`, `<title>`+html.EscapeString(title)+`</title>`, 1)
+	htmlText = strings.Replace(htmlText, `<title>Weather Radio Live Feeds</title>`, `<title>`+html.EscapeString(title)+`</title>`, 1)
+	htmlText = strings.Replace(htmlText, `<h1 id="publicSiteTitle">Haze Weather Radio</h1>`, `<h1 id="publicSiteTitle">`+html.EscapeString(title)+`</h1>`, 1)
+	htmlText = strings.Replace(htmlText, `<h1 id="publicSiteTitle">Weather Radio Live Feeds</h1>`, `<h1 id="publicSiteTitle">`+html.EscapeString(title)+`</h1>`, 1)
+	_, _ = writer.Write([]byte(htmlText))
 }
 
 func (s *Server) staticAsset(writer http.ResponseWriter, request *http.Request) {
@@ -560,6 +624,292 @@ func (s *Server) websocket(writer http.ResponseWriter, request *http.Request) {
 	}
 }
 
+func (s *Server) adminPanelState(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
+	if !s.auth.Authenticated(request) {
+		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	session := s.newPanelHTTPSession(request)
+	state, err := session.panelState()
+	if err != nil {
+		http.Error(writer, "state unavailable", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(writer, state)
+}
+
+func (s *Server) publicPanelState(writer http.ResponseWriter, request *http.Request) {
+	if !requestMethodGETOrHEAD(writer, request) {
+		return
+	}
+	session := s.newPanelHTTPSession(request)
+	state, err := session.publicState()
+	if err != nil {
+		http.Error(writer, "state unavailable", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(writer, state)
+}
+
+func (s *Server) adminPanelEvents(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writer.Header().Set("Allow", "GET")
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.auth.Authenticated(request) {
+		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.streamPanelEvents(writer, request, false)
+}
+
+func (s *Server) publicPanelEvents(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writer.Header().Set("Allow", "GET")
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.streamPanelEvents(writer, request, true)
+}
+
+func (s *Server) streamPanelEvents(writer http.ResponseWriter, request *http.Request, public bool) {
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		http.Error(writer, "streaming unavailable", http.StatusInternalServerError)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Connection", "keep-alive")
+	writer.Header().Set("X-Accel-Buffering", "no")
+	session := s.newPanelHTTPSession(request)
+	stateName := "admin_state"
+	loadState := session.panelState
+	if public {
+		stateName = "public_state"
+		loadState = session.publicState
+	}
+	state, err := loadState()
+	if err != nil {
+		_ = writeSSEEvent(writer, "error", map[string]any{"detail": "state unavailable"})
+		flusher.Flush()
+		return
+	}
+	session.lastStateSignature = stateSignature(state)
+	if err := writeSSEEvent(writer, stateName, state); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case <-ticker.C:
+			state, err := loadState()
+			if err == nil && session.shouldSendState(state) {
+				if err := writeSSEEvent(writer, stateName, state); err != nil {
+					return
+				}
+			} else if err := writeSSEEvent(writer, "heartbeat", map[string]any{"timestamp": time.Now().UTC()}); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) panelCommand(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", "POST")
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := explicitAdminTokenFromRequest(request)
+	headerIntent := strings.EqualFold(strings.TrimSpace(request.Header.Get("X-Haze-Admin-Intent")), "command")
+	if (token == "" || !s.auth.ValidToken(token)) && !(headerIntent && s.auth.Authenticated(request)) {
+		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxWebSocketMessageBytes)
+	var payload struct {
+		Command string         `json:"command"`
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"type": "command_error", "detail": "invalid command request"})
+		return
+	}
+	command := strings.TrimSpace(payload.Command)
+	if command == "" {
+		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"type": "command_error", "detail": "command is required"})
+		return
+	}
+	session := s.newPanelHTTPSession(request)
+	result, err := session.handleCommand(command, payload.Payload)
+	if err != nil {
+		writeJSON(writer, map[string]any{"type": "command_error", "detail": err.Error()})
+		return
+	}
+	writeJSON(writer, map[string]any{"type": "command_result", "result": result})
+}
+
+func (s *Server) publicFeedWebRTCOffer(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", "POST")
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxWebSocketMessageBytes)
+	var payload map[string]any
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"type": "webrtc_error", "detail": "invalid WebRTC offer request"})
+		return
+	}
+	feedID := strings.TrimSpace(stringValue(payload, "feed_id"))
+	if feedID == "" || len(feedID) > webRTCOfferMaxFeedIDLength || !validPublicAudioFeedID(feedID) {
+		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"type": "webrtc_error", "detail": "feed_id is invalid"})
+		return
+	}
+	offerSDP := normalizeWebRTCOfferSDP(firstNonBlank(
+		stringValue(payload, "sdp"),
+		stringValue(mapValue(payload, "data"), "sdp"),
+	))
+	if offerSDP == "" || len(offerSDP) > webRTCOfferMaxSDPLength {
+		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"type": "webrtc_error", "detail": "sdp is required"})
+		return
+	}
+	if !s.config.Webpanel.Public.Feeds.WebRTC.Enabled {
+		writeJSONStatus(writer, http.StatusServiceUnavailable, map[string]any{"type": "webrtc_error", "detail": "feed streaming is not available"})
+		return
+	}
+	access := publicFeedAccess(s.config)
+	if access == "disabled" {
+		writeJSONStatus(writer, http.StatusForbidden, map[string]any{"type": "webrtc_error", "detail": "public feeds are disabled"})
+		return
+	}
+	if access == "auth_required" && !s.auth.Authenticated(request) {
+		writeJSONStatus(writer, http.StatusUnauthorized, map[string]any{"type": "auth_error", "detail": "not authenticated"})
+		return
+	}
+	session := s.newPanelHTTPSession(request)
+	if !session.feedWebRTCEnabled(feedID) {
+		writeJSONStatus(writer, http.StatusNotFound, map[string]any{"type": "webrtc_error", "detail": "feed streaming is not configured or disabled"})
+		return
+	}
+	preferredCodec := firstNonBlank(stringValue(payload, "codec"), stringValue(payload, "preferred_codec"))
+	if len(strings.TrimSpace(preferredCodec)) > webRTCOfferMaxCodecLength {
+		writeJSONStatus(writer, http.StatusBadRequest, map[string]any{"type": "webrtc_error", "detail": "codec is too long"})
+		return
+	}
+	answerRequest := map[string]any{
+		"feed_id":         feedID,
+		"sdp":             offerSDP,
+		"disable_g722":    boolValue(payload, "disable_g722"),
+		"require_opus":    boolValue(payload, "require_opus"),
+		"preferred_codec": preferredCodec,
+		"client_ip":       clientIPForMediaRequest(request),
+		"remote_addr":     request.RemoteAddr,
+	}
+	mediaResult := s.mediaServiceWebRTCAnswerResult(request.Context(), answerRequest)
+	if mediaResult.OK() {
+		answer := mediaResult.Answer
+		answer["type"] = "webrtc_answer"
+		answer["feed_id"] = feedID
+		if _, ok := answer["sdp_type"]; !ok {
+			answer["sdp_type"] = "answer"
+		}
+		writeJSON(writer, answer)
+		return
+	}
+	if mediaResult.Terminal {
+		status := mediaResult.StatusCode
+		if status < 400 {
+			status = http.StatusBadGateway
+		}
+		writeJSONStatus(writer, status, map[string]any{
+			"type":   "webrtc_error",
+			"detail": firstNonBlank(mediaResult.Detail, "haze-media WebRTC offer was rejected"),
+		})
+		return
+	}
+	legacyMediaAvailable := s.media != nil && s.media.Available()
+	if !legacyMediaAvailable {
+		writeJSONStatus(writer, http.StatusServiceUnavailable, map[string]any{"type": "webrtc_error", "detail": "media bridge is not available"})
+		return
+	}
+	release, ok := s.acquireFeedListener(writer, request, feedID)
+	if !ok {
+		return
+	}
+	answer, err := s.media.AnswerWithOptions(request.Context(), feedID, offerSDP, WebRTCAnswerOptions{
+		DisableG722:    boolValue(payload, "disable_g722"),
+		RequireOpus:    boolValue(payload, "require_opus"),
+		PreferredCodec: preferredCodec,
+		OnClose:        release,
+	})
+	if err != nil {
+		release()
+		writeJSON(writer, map[string]any{"type": "webrtc_error", "detail": err.Error()})
+		return
+	}
+	writeJSON(writer, map[string]any{
+		"type":         "webrtc_answer",
+		"feed_id":      feedID,
+		"sdp":          answer.SDP,
+		"sdp_type":     "answer",
+		"media_recent": answer.MediaRecent,
+		"codec":        answer.Codec.String(),
+		"payload_type": answer.PayloadType,
+	})
+}
+
+func (s *Server) newPanelHTTPSession(request *http.Request) *wsSession {
+	return &wsSession{
+		auth:       s.auth,
+		request:    request,
+		config:     s.config,
+		configPath: s.configPath,
+		startedAt:  s.startedAt,
+		media:      s.media,
+		server:     s,
+		breakIns:   map[string]struct{}{},
+	}
+}
+
+func writeSSEEvent(writer http.ResponseWriter, event string, data any) error {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(writer, "event: %s\n", event); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(writer, "data: %s\n\n", raw); err != nil {
+		return err
+	}
+	return nil
+}
+
+func explicitAdminTokenFromRequest(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	if header := strings.TrimSpace(request.Header.Get("Authorization")); header != "" {
+		const prefix = "Bearer "
+		if strings.HasPrefix(strings.ToLower(header), strings.ToLower(prefix)) {
+			return strings.TrimSpace(header[len(prefix):])
+		}
+	}
+	return strings.TrimSpace(request.Header.Get("X-Haze-Admin-Token"))
+}
+
 type wsSession struct {
 	mu                 sync.Mutex
 	conn               *websocket.Conn
@@ -702,7 +1052,7 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 	if !s.feedWebRTCEnabled(feedID) {
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "feed streaming is not configured or disabled"})
 	}
-	if answer, ok := s.server.mediaServiceWebRTCAnswer(ctx, map[string]any{
+	mediaResult := s.server.mediaServiceWebRTCAnswerResult(ctx, map[string]any{
 		"feed_id":         feedID,
 		"sdp":             offerSDP,
 		"disable_g722":    boolValue(message, "disable_g722"),
@@ -710,12 +1060,19 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 		"preferred_codec": preferredCodec,
 		"client_ip":       clientIPForMediaRequest(s.request),
 		"remote_addr":     s.request.RemoteAddr,
-	}); ok {
+	})
+	if mediaResult.OK() {
+		answer := mediaResult.Answer
 		answer["feed_id"] = feedID
 		if _, ok := answer["sdp_type"]; !ok {
 			answer["sdp_type"] = "answer"
 		}
 		return s.reply(ctx, message, "webrtc_answer", answer)
+	}
+	if mediaResult.Terminal {
+		return s.reply(ctx, message, "webrtc_error", map[string]any{
+			"detail": firstNonBlank(mediaResult.Detail, "haze-media WebRTC offer was rejected"),
+		})
 	}
 	if !legacyMediaAvailable {
 		if mediaServiceConfigured {
@@ -723,12 +1080,24 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 		}
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "media bridge is not available"})
 	}
+	var release func()
+	if s.server != nil && s.server.listeners != nil {
+		var ok bool
+		release, _, ok = s.server.listeners.TryAcquire(feedID, listenerClientID(s.request))
+		if !ok {
+			return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "listener already active for this IP and feed"})
+		}
+	}
 	answer, err := s.media.AnswerWithOptions(ctx, feedID, offerSDP, WebRTCAnswerOptions{
 		DisableG722:    boolValue(message, "disable_g722"),
 		RequireOpus:    boolValue(message, "require_opus"),
 		PreferredCodec: preferredCodec,
+		OnClose:        release,
 	})
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": err.Error()})
 	}
 	return s.reply(ctx, message, "webrtc_answer", map[string]any{
@@ -1062,7 +1431,11 @@ func (s *wsSession) publicState() (map[string]any, error) {
 	if s.publicAlertStateCacheable() && s.publicStateCache != nil && time.Since(s.publicStateCacheAt) < publicAlertStateCacheTTL {
 		return s.publicStateCache, nil
 	}
-	state, err := publicStatePayload(s.config, s.configPath, s.startedAt, s.request, s.auth, s.media.Available())
+	listenerStats := map[string]FeedListenerStats{}
+	if s.server != nil {
+		listenerStats = s.server.listenerSnapshot(s.request.Context())
+	}
+	state, err := publicStatePayload(s.config, s.configPath, s.startedAt, s.request, s.auth, s.media.Available(), listenerStats)
 	if err != nil {
 		return nil, err
 	}

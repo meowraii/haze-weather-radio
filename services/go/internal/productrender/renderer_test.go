@@ -71,6 +71,57 @@ func TestCurrentConditionsProductUsesOpenerPackageAndRepeatSegments(t *testing.T
 	}
 }
 
+func TestCurrentConditionsDeduplicatesNearbyStationNames(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	cfg.Feeds[0].Locations.ObservationLocations.Locations = []locationXML{
+		{ID: "CYXE", Source: "eccc"},
+		{ID: "BRIDGE1", Source: "eccc"},
+		{ID: "BRIDGE2", Source: "eccc"},
+		{ID: "OUTLOOK", Source: "eccc"},
+	}
+	storeObservationJSON(t, cfg.Store, "CYXE", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Saskatoon Diefenbaker Int'l Airport"},
+  "station_id": "CYXE",
+  "properties": {"temp": 24, "wind": {"speed": 10}}
+}`)
+	storeObservationJSON(t, cfg.Store, "BRIDGE1", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Burlington Lift Bridge"},
+  "station_id": "BRIDGE1",
+  "properties": {"temp": 22, "wind": {"speed": 3}}
+}`)
+	storeObservationJSON(t, cfg.Store, "BRIDGE2", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Burlington Lift Bridge"},
+  "station_id": "BRIDGE2",
+  "properties": {"temp": 22, "wind": {"speed": 3}}
+}`)
+	storeObservationJSON(t, cfg.Store, "OUTLOOK", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Outlook"},
+  "station_id": "OUTLOOK",
+  "properties": {"temp": 24, "wind": {"speed": 17}}
+}`)
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "current_conditions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(product.Text, "Burlington Lift Bridge"); got != 1 {
+		t.Fatalf("Burlington Lift Bridge count = %d:\n%s", got, product.Text)
+	}
+	if !strings.Contains(product.Text, "Outlook") {
+		t.Fatalf("dedupe removed distinct nearby station:\n%s", product.Text)
+	}
+}
+
 func TestMarineAndAviationReportsUseSharedObservationWithKnots(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)

@@ -169,7 +169,7 @@ func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Req
 		http.Error(writer, "feed WebRTC output is not enabled", http.StatusForbidden)
 		return
 	}
-	if answer, ok := s.mediaServiceWebRTCAnswer(request.Context(), map[string]any{
+	mediaResult := s.mediaServiceWebRTCAnswerResult(request.Context(), map[string]any{
 		"feed_id":         feedID,
 		"sdp":             payload.SDP,
 		"disable_g722":    payload.DisableG722,
@@ -177,12 +177,22 @@ func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Req
 		"preferred_codec": firstNonBlank(payload.Codec, payload.PreferredCodec),
 		"client_ip":       clientIPForMediaRequest(request),
 		"remote_addr":     request.RemoteAddr,
-	}); ok {
+	})
+	if mediaResult.OK() {
+		answer := mediaResult.Answer
 		answer["feed_id"] = feedID
 		if _, ok := answer["sdp_type"]; !ok {
 			answer["sdp_type"] = "answer"
 		}
 		writeJSON(writer, answer)
+		return
+	}
+	if mediaResult.Terminal {
+		status := mediaResult.StatusCode
+		if status < 400 {
+			status = http.StatusBadGateway
+		}
+		http.Error(writer, firstNonBlank(mediaResult.Detail, "haze-media WebRTC offer was rejected"), status)
 		return
 	}
 	if !legacyMediaAvailable {
@@ -193,12 +203,18 @@ func (s *Server) bannerWebRTCOffer(writer http.ResponseWriter, request *http.Req
 		http.Error(writer, "media bridge is not available", http.StatusServiceUnavailable)
 		return
 	}
+	release, ok := s.acquireFeedListener(writer, request, feedID)
+	if !ok {
+		return
+	}
 	answer, err := s.media.AnswerWithOptions(request.Context(), feedID, payload.SDP, WebRTCAnswerOptions{
 		DisableG722:    payload.DisableG722,
 		RequireOpus:    payload.RequireOpus,
 		PreferredCodec: firstNonBlank(payload.Codec, payload.PreferredCodec),
+		OnClose:        release,
 	})
 	if err != nil {
+		release()
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return
 	}

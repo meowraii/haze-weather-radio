@@ -1,6 +1,7 @@
 package webgateway
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -638,6 +639,49 @@ func TestOutputLabelsUseStreamType(t *testing.T) {
 	}
 }
 
+func TestWildcardIcecastOutputEnablesPublicHTTPAudio(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "config.yaml"), `version: test
+feeds_file: managed/configs/feeds.xml
+outputs_file: managed/configs/output.xml
+`)
+	mustWrite(t, filepath.Join(dir, "managed", "configs", "feeds.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<feeds>
+  <feed id="cwxr-on01" enabled="true" />
+  <feed id="cwxr-sk01" enabled="true" />
+</feeds>
+`)
+	mustWrite(t, filepath.Join(dir, "managed", "configs", "output.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<outputs>
+  <feed id="cwxr-*">
+    <webrtc enabled="false"/>
+    <icecast enabled="true"><format>opus</format><acodec>libopus</acodec></icecast>
+  </feed>
+</outputs>
+`)
+
+	feeds, err := loadBasicFeedSummaries(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 2 {
+		t.Fatalf("feeds = %#v", feeds)
+	}
+	for _, feed := range feeds {
+		if feed["http_stream_enabled"] != true {
+			t.Fatalf("feed did not inherit wildcard icecast output: %#v", feed)
+		}
+	}
+	outputs, err := loadOutputsXML(filepath.Join(dir, "config.yaml"), map[string]any{"outputs_file": "managed/configs/output.xml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := outputLabels(outputForFeed(outputs, "cwxr-on01"))
+	if len(labels) != 1 || labels[0] != "icecast" {
+		t.Fatalf("labels = %#v", labels)
+	}
+}
+
 func TestPublicAboutPageIsRemoved(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "index.html"), "<!doctype html><title>about</title>")
@@ -728,6 +772,268 @@ func TestHTTPLoginSetsCookieAndReturnsToken(t *testing.T) {
 	cookies := response.Result().Cookies()
 	if len(cookies) == 0 || cookies[0].Name != sessionCookieName {
 		t.Fatalf("login did not set session cookie: %#v", cookies)
+	}
+}
+
+func TestHTTPLoginUsesLANCompatibleCookieWhenSecureCookiesEnabled(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	config := authEnabledConfig()
+	config.Webpanel.Authentication.SecureCookies = true
+	server := NewServer(config, ".")
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"http://172.16.1.38:6444/api/v1/auth/login",
+		bytes.NewBufferString(`{"password":"secret"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) == 0 || cookies[0].Name != sessionCookieName {
+		t.Fatalf("login did not set session cookie: %#v", cookies)
+	}
+	if cookies[0].Secure {
+		t.Fatalf("LAN login cookie should not be Secure over local HTTP: %#v", cookies[0])
+	}
+}
+
+func TestHTTPLoginUsesSecureCookieForDomainWhenSecureCookiesEnabled(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	config := authEnabledConfig()
+	config.Webpanel.Authentication.SecureCookies = true
+	server := NewServer(config, ".")
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"https://cwrs.rai.blue/api/v1/auth/login",
+		bytes.NewBufferString(`{"password":"secret"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) == 0 || cookies[0].Name != sessionCookieName {
+		t.Fatalf("login did not set session cookie: %#v", cookies)
+	}
+	if !cookies[0].Secure {
+		t.Fatalf("domain login cookie should be Secure: %#v", cookies[0])
+	}
+}
+
+func TestAdminStateEndpointRequiresAuth(t *testing.T) {
+	server := NewServer(authEnabledConfig(), ".")
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/panel/state", nil)
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+func TestAdminStateEndpointReturnsPanelStateWithCookie(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	writePanelFixture(t, dir)
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, dir)
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/panel/state", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["summary"] == nil {
+		t.Fatalf("missing summary: %#v", payload)
+	}
+}
+
+func TestAdminCommandRejectsCookieOnlyCrossSiteStyleRequest(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	server := NewServer(authEnabledConfig(), ".")
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/panel/command", strings.NewReader(`{"command":"health"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+func TestAdminCommandAcceptsExplicitAdminIntent(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	server := NewServer(authEnabledConfig(), ".")
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/panel/command", strings.NewReader(`{"command":"health"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Haze-Admin-Intent", "command")
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["type"] != "command_result" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	result, _ := payload["result"].(map[string]any)
+	if result["service"] != "haze-web" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestAdminSSESendsInitialState(t *testing.T) {
+	t.Setenv("ADMIN_PASSWD", "secret")
+	dir := t.TempDir()
+	writePanelFixture(t, dir)
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, dir)
+	token, err := server.auth.Login("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	request, err := http.NewRequest(http.MethodGet, httpServer.URL+"/api/v1/panel/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	scanner := bufio.NewScanner(response.Body)
+	if !scanner.Scan() {
+		t.Fatalf("missing SSE event line: %v", scanner.Err())
+	}
+	if got := scanner.Text(); got != "event: admin_state" {
+		t.Fatalf("first SSE line = %q", got)
+	}
+}
+
+func TestPublicStateUsesConfiguredPublicHostname(t *testing.T) {
+	t.Setenv("WEB_HOSTNAME", "cwrs.rai.blue")
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://public.example/api/public/v1/panel/state", nil)
+	state, err := publicStatePayload(config, configPath, time.Now().UTC(), request, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := state["summary"].(map[string]any)
+	if summary["public_base_url"] != "https://cwrs.rai.blue" {
+		t.Fatalf("public_base_url = %v", summary["public_base_url"])
+	}
+	if summary["admin_url"] != "https://cwrs.rai.blue/admin" {
+		t.Fatalf("admin_url = %v", summary["admin_url"])
+	}
+}
+
+func TestPublicStateKeepsLANHostWhenPublicHostnameConfigured(t *testing.T) {
+	t.Setenv("WEB_HOSTNAME", "cwrs.rai.blue")
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://172.16.1.38:6444/api/public/v1/panel/state", nil)
+	state, err := publicStatePayload(config, configPath, time.Now().UTC(), request, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := state["summary"].(map[string]any)
+	if summary["public_base_url"] != "http://172.16.1.38:6444" {
+		t.Fatalf("public_base_url = %v", summary["public_base_url"])
+	}
+	if summary["admin_url"] != "/admin" {
+		t.Fatalf("admin_url = %v", summary["admin_url"])
+	}
+}
+
+func TestPublicIndexUsesOnAirNameForSEO(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	mustWrite(t, filepath.Join(dir, "index.html"), `<!doctype html>
+<meta name="description" content="Live weather radio feeds, alerts, and public status.">
+<title>Weather Radio Live Feeds</title>
+<h1 id="publicSiteTitle">Weather Radio Live Feeds</h1>`)
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithConfigPath(config, configPath, dir)
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := response.Body.String()
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, body)
+	}
+	if !strings.Contains(body, "<title>Canada RadioMET</title>") {
+		t.Fatalf("title was not rewritten: %s", body)
+	}
+	if !strings.Contains(body, "Live weather radio feeds, alerts, and public status for Canada RadioMET.") {
+		t.Fatalf("description was not rewritten: %s", body)
 	}
 }
 

@@ -9,7 +9,8 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-use chrono::{Datelike, Local, Timelike, Utc};
+use chrono::{DateTime, Datelike, Local, Timelike, Utc};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
@@ -21,6 +22,7 @@ const ALERT_QUEUE_DIR: &str = "runtime/queues/alerts";
 
 #[derive(Debug, Default, Deserialize)]
 struct RootConfig {
+    feeds_file: Option<String>,
     services: Option<ServicesConfig>,
     playout: Option<PlayoutConfig>,
 }
@@ -159,7 +161,11 @@ impl DaemonServices {
             .and_then(|cfg| cfg.enabled)
             .unwrap_or(false)
         {
-            let schedules = SchedulePlan::from_config(config.playout.as_ref(), &host.config_path);
+            let schedules = SchedulePlan::from_config(
+                config.playout.as_ref(),
+                &host.config_path,
+                config.feeds_file.as_deref(),
+            );
             let tx = publisher.clone();
             let stop_flag = Arc::clone(&stop);
             threads.push(thread::spawn(move || {
@@ -299,7 +305,11 @@ struct SchedulePlan {
 }
 
 impl SchedulePlan {
-    fn from_config(playout: Option<&PlayoutConfig>, config_path: &Path) -> Self {
+    fn from_config(
+        playout: Option<&PlayoutConfig>,
+        config_path: &Path,
+        feeds_file: Option<&str>,
+    ) -> Self {
         let station_id = playout
             .and_then(|cfg| cfg.station_id_schedule.as_ref())
             .map(|cfg| cfg.minutes_or_default(&[0, 15, 30, 45]))
@@ -326,13 +336,20 @@ impl SchedulePlan {
         } else {
             Vec::new()
         };
+        let automation_feeds =
+            load_automation_feeds(config_path, feeds_file).unwrap_or_else(|err| {
+                warn!("automation feed timezones unavailable: {err}");
+                Vec::new()
+            });
         Self {
             station_id_minutes,
             date_time_minutes,
-            automations: load_automation_plan(config_path).unwrap_or_else(|err| {
-                warn!("automation schedule unavailable: {err}");
-                Vec::new()
-            }),
+            automations: load_automation_plan(config_path, &automation_feeds).unwrap_or_else(
+                |err| {
+                    warn!("automation schedule unavailable: {err}");
+                    Vec::new()
+                },
+            ),
         }
     }
 }
@@ -367,7 +384,7 @@ struct AutomationPlan {
     schedule: AutomationSchedule,
     same: AutomationSame,
     content: AutomationContent,
-    target: AutomationTarget,
+    targets: Vec<AutomationFeedTarget>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -404,8 +421,64 @@ struct AutomationContent {
 }
 
 #[derive(Debug, Clone)]
-struct AutomationTarget {
-    feed_ids: Vec<String>,
+struct AutomationFeedTarget {
+    feed_id: String,
+    timezone: ScheduleZone,
+}
+
+#[derive(Debug, Clone)]
+struct AutomationFeed {
+    id: String,
+    timezone: ScheduleZone,
+}
+
+#[derive(Debug, Clone)]
+enum ScheduleZone {
+    Local,
+    Named(Tz),
+}
+
+impl ScheduleZone {
+    fn from_raw(raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("local") {
+            return Some(Self::Local);
+        }
+        trimmed.parse::<Tz>().ok().map(Self::Named)
+    }
+
+    fn name(&self) -> String {
+        match self {
+            Self::Local => "Local".to_string(),
+            Self::Named(zone) => zone.name().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SchedulerFeedsXml {
+    #[serde(rename = "feed", default)]
+    feeds: Vec<SchedulerFeedXml>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SchedulerFeedXml {
+    #[serde(rename = "@id", default)]
+    id: String,
+    #[serde(rename = "@enabled", default)]
+    enabled: String,
+    #[serde(rename = "@timezone", default)]
+    timezone: String,
+    #[serde(default)]
+    playout: SchedulerFeedPlayoutXml,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SchedulerFeedPlayoutXml {
+    #[serde(rename = "@routine", default)]
+    routine: String,
+    #[serde(rename = "@same", default)]
+    same: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -543,7 +616,27 @@ struct AutomationFeedXml {
 }
 
 impl AutomationPlan {
-    fn matching_event(&self, now: &chrono::DateTime<Local>) -> Option<String> {
+    fn matching_event_for_target(
+        &self,
+        now: DateTime<Utc>,
+        target: &AutomationFeedTarget,
+    ) -> Option<String> {
+        match &target.timezone {
+            ScheduleZone::Local => {
+                let local = now.with_timezone(&Local);
+                self.matching_event_at(&local)
+            }
+            ScheduleZone::Named(zone) => {
+                let local = now.with_timezone(zone);
+                self.matching_event_at(&local)
+            }
+        }
+    }
+
+    fn matching_event_at<TzImpl: chrono::TimeZone>(
+        &self,
+        now: &chrono::DateTime<TzImpl>,
+    ) -> Option<String> {
         if !matches_list(&self.schedule.months, now.month()) {
             return None;
         }
@@ -578,22 +671,19 @@ impl AutomationPlan {
         None
     }
 
-    fn event_payload(&self, event: String) -> Value {
-        let feed_id = if self.target.feed_ids.len() == 1 {
-            self.target.feed_ids[0].clone()
-        } else {
-            String::new()
-        };
+    fn event_payload(&self, event: String, target: &AutomationFeedTarget) -> Value {
+        let feed_id = target.feed_id.clone();
         json!({
             "type": "cap.alert.broadcast.requested",
             "source": "automation",
             "data": {
-                "alert_id": format!("automation-{}-{}", self.id, unix_now_ms()),
+                "alert_id": format!("automation-{}-{}-{}", self.id, feed_id, unix_now_ms()),
                 "automation_id": self.id,
                 "title": self.name,
                 "description": self.description,
-                "feed_id": feed_id,
-                "feed_ids": self.target.feed_ids,
+                "feed_id": feed_id.clone(),
+                "feed_ids": [feed_id],
+                "timezone": target.timezone.name(),
                 "include_same": self.same.enabled,
                 "same_originator": self.same.originator,
                 "same_event": event,
@@ -610,7 +700,10 @@ impl AutomationPlan {
     }
 }
 
-fn load_automation_plan(config_path: &Path) -> Result<Vec<AutomationPlan>> {
+fn load_automation_plan(
+    config_path: &Path,
+    automation_feeds: &[AutomationFeed],
+) -> Result<Vec<AutomationPlan>> {
     let base_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     let path = resolve_path(base_dir, Path::new("managed/configs/automations.xml"));
     let fallback_path = resolve_path(base_dir, Path::new("managed/configs/alertTemplates.xml"));
@@ -688,9 +781,7 @@ fn load_automation_plan(config_path: &Path) -> Result<Vec<AutomationPlan>> {
             content: AutomationContent {
                 text: automation_text(item.content),
             },
-            target: AutomationTarget {
-                feed_ids: automation_feeds(item.target),
-            },
+            targets: automation_targets(item.target, automation_feeds),
         });
     }
     Ok(plans)
@@ -727,17 +818,86 @@ fn automation_text(content: AutomationContentXml) -> String {
         .unwrap_or_default()
 }
 
-fn automation_feeds(target: AutomationTargetXml) -> Vec<String> {
-    let mut feeds: Vec<String> = target
+fn load_automation_feeds(
+    config_path: &Path,
+    feeds_file: Option<&str>,
+) -> Result<Vec<AutomationFeed>> {
+    let base_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let feeds_path = resolve_path(
+        base_dir,
+        Path::new(
+            feeds_file
+                .filter(|raw| !raw.trim().is_empty())
+                .unwrap_or("managed/configs/feeds.xml"),
+        ),
+    );
+    let raw = fs::read_to_string(&feeds_path)
+        .with_context(|| format!("failed to read feeds XML {}", feeds_path.display()))?;
+    let raw = expand_env_vars(&raw);
+    let parsed: SchedulerFeedsXml = quick_xml::de::from_str(&raw)
+        .with_context(|| format!("failed to parse feeds XML {}", feeds_path.display()))?;
+    let mut feeds = Vec::new();
+    for feed in parsed.feeds {
+        let id = feed.id.trim().to_string();
+        if id.is_empty() || !xml_bool(&feed.enabled, true) {
+            continue;
+        }
+        let routine_enabled = xml_bool(&feed.playout.routine, true);
+        let same_enabled = xml_bool(&feed.playout.same, true);
+        if !routine_enabled && !same_enabled {
+            continue;
+        }
+        let timezone = ScheduleZone::from_raw(&feed.timezone).unwrap_or_else(|| {
+            warn!(
+                feed_id = %id,
+                timezone = %feed.timezone,
+                "feed timezone is invalid, automation schedule will use daemon local time"
+            );
+            ScheduleZone::Local
+        });
+        feeds.push(AutomationFeed { id, timezone });
+    }
+    Ok(feeds)
+}
+
+fn automation_targets(
+    target: AutomationTargetXml,
+    automation_feeds: &[AutomationFeed],
+) -> Vec<AutomationFeedTarget> {
+    let mut feed_ids: Vec<String> = target
         .feeds
         .into_iter()
         .map(|feed| feed.id.trim().to_string())
         .filter(|id| !id.is_empty())
         .collect();
-    if feeds.is_empty() {
-        feeds.push("*".to_string());
+    feed_ids.sort();
+    feed_ids.dedup();
+    if feed_ids.is_empty() || feed_ids.iter().any(|id| id == "*") {
+        if automation_feeds.is_empty() {
+            return vec![AutomationFeedTarget {
+                feed_id: "*".to_string(),
+                timezone: ScheduleZone::Local,
+            }];
+        }
+        return automation_feeds
+            .iter()
+            .map(|feed| AutomationFeedTarget {
+                feed_id: feed.id.clone(),
+                timezone: feed.timezone.clone(),
+            })
+            .collect();
     }
-    feeds
+    feed_ids
+        .into_iter()
+        .map(|feed_id| {
+            let timezone = automation_feeds
+                .iter()
+                .find(|feed| feed.id == feed_id)
+                .map(|feed| feed.timezone.clone())
+                .unwrap_or(ScheduleZone::Local);
+            AutomationFeedTarget { feed_id, timezone }
+        })
+        .collect()
 }
 
 fn parse_number_list(raw: &str, min: u32, max: u32) -> Vec<u32> {
@@ -792,13 +952,16 @@ fn scheduler_loop(plan: SchedulePlan, publisher: Sender<Value>, stop: Arc<Atomic
     let mut last_minute_key = String::new();
     let mut last_second_key = String::new();
     while !stop.load(Ordering::SeqCst) {
+        let now_utc = Utc::now();
         let now = Local::now();
         let second = now.second();
-        let second_key = now.format("%Y%m%dT%H%M%S").to_string();
+        let second_key = now_utc.format("%Y%m%dT%H%M%S").to_string();
         if second_key != last_second_key {
             for automation in &plan.automations {
-                if let Some(event) = automation.matching_event(&now) {
-                    let _ = publisher.send(automation.event_payload(event));
+                for target in &automation.targets {
+                    if let Some(event) = automation.matching_event_for_target(now_utc, target) {
+                        let _ = publisher.send(automation.event_payload(event, target));
+                    }
                 }
             }
             last_second_key = second_key;
@@ -1853,7 +2016,40 @@ fn unix_now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::sync::mpsc;
+
+    fn weekly_test_plan(targets: Vec<AutomationFeedTarget>) -> AutomationPlan {
+        AutomationPlan {
+            id: "required_weekly_test".to_string(),
+            name: "Required Weekly Test".to_string(),
+            description: String::new(),
+            schedule: AutomationSchedule {
+                weekdays: vec![3],
+                hours: vec![12],
+                minutes: vec![0],
+                seconds: vec![0],
+                weeks: vec![AutomationWeek {
+                    week: 2,
+                    event_override: String::new(),
+                }],
+                ..AutomationSchedule::default()
+            },
+            same: AutomationSame {
+                enabled: true,
+                event: "RWT".to_string(),
+                originator: "WXR".to_string(),
+                locations: Vec::new(),
+                duration: "0015".to_string(),
+                sender_id: String::new(),
+                tone: "WXR".to_string(),
+            },
+            content: AutomationContent {
+                text: String::new(),
+            },
+            targets,
+        }
+    }
 
     fn dns_query(name: &str, qtype: u16) -> Vec<u8> {
         let mut packet = Vec::new();
@@ -1900,6 +2096,70 @@ mod tests {
 
         assert_eq!(&unknown[6..8], &0_u16.to_be_bytes());
         assert_eq!(&aaaa[6..8], &0_u16.to_be_bytes());
+    }
+
+    #[test]
+    fn automation_schedule_uses_target_feed_local_time() {
+        let toronto = AutomationFeedTarget {
+            feed_id: "cwxr-on01".to_string(),
+            timezone: ScheduleZone::Named("America/Toronto".parse().expect("toronto timezone")),
+        };
+        let regina = AutomationFeedTarget {
+            feed_id: "cwxr-sk01".to_string(),
+            timezone: ScheduleZone::Named("America/Regina".parse().expect("regina timezone")),
+        };
+        let plan = weekly_test_plan(vec![toronto.clone(), regina.clone()]);
+
+        let toronto_noon = Utc
+            .with_ymd_and_hms(2026, 7, 8, 16, 0, 0)
+            .single()
+            .expect("toronto noon");
+        assert_eq!(
+            plan.matching_event_for_target(toronto_noon, &toronto)
+                .as_deref(),
+            Some("RWT")
+        );
+        assert_eq!(plan.matching_event_for_target(toronto_noon, &regina), None);
+
+        let regina_noon = Utc
+            .with_ymd_and_hms(2026, 7, 8, 18, 0, 0)
+            .single()
+            .expect("regina noon");
+        assert_eq!(
+            plan.matching_event_for_target(regina_noon, &regina)
+                .as_deref(),
+            Some("RWT")
+        );
+    }
+
+    #[test]
+    fn wildcard_automation_targets_expand_to_configured_feeds() {
+        let feeds = vec![
+            AutomationFeed {
+                id: "cwxr-on01".to_string(),
+                timezone: ScheduleZone::Named("America/Toronto".parse().expect("toronto timezone")),
+            },
+            AutomationFeed {
+                id: "cwxr-ab01".to_string(),
+                timezone: ScheduleZone::Named(
+                    "America/Edmonton".parse().expect("edmonton timezone"),
+                ),
+            },
+        ];
+        let targets = automation_targets(
+            AutomationTargetXml {
+                feeds: vec![AutomationFeedXml {
+                    id: "*".to_string(),
+                }],
+            },
+            &feeds,
+        );
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].feed_id, "cwxr-on01");
+        assert_eq!(targets[0].timezone.name(), "America/Toronto");
+        assert_eq!(targets[1].feed_id, "cwxr-ab01");
+        assert_eq!(targets[1].timezone.name(), "America/Edmonton");
     }
 
     #[test]

@@ -164,6 +164,80 @@ func wavPCM16(raw []byte) ([]byte, audioInfo, error) {
 	}, nil
 }
 
+func writePCM16WAV(path string, pcm []byte, sampleRate int, channels int) error {
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	if channels <= 0 {
+		channels = 1
+	}
+	if len(pcm)%2 != 0 {
+		return fmt.Errorf("PCM payload must contain complete s16le samples")
+	}
+	dataSize := uint32(len(pcm))
+	riffSize := uint32(36) + dataSize
+	byteRate := uint32(sampleRate * channels * 2)
+	blockAlign := uint16(channels * 2)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	file, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	writeErr := func() error {
+		if _, err := file.Write([]byte("RIFF")); err != nil {
+			return err
+		}
+		if err := binary.Write(file, binary.LittleEndian, riffSize); err != nil {
+			return err
+		}
+		if _, err := file.Write([]byte("WAVEfmt ")); err != nil {
+			return err
+		}
+		if err := binary.Write(file, binary.LittleEndian, uint32(16)); err != nil {
+			return err
+		}
+		if err := binary.Write(file, binary.LittleEndian, uint16(1)); err != nil {
+			return err
+		}
+		if err := binary.Write(file, binary.LittleEndian, uint16(channels)); err != nil {
+			return err
+		}
+		if err := binary.Write(file, binary.LittleEndian, uint32(sampleRate)); err != nil {
+			return err
+		}
+		if err := binary.Write(file, binary.LittleEndian, byteRate); err != nil {
+			return err
+		}
+		if err := binary.Write(file, binary.LittleEndian, blockAlign); err != nil {
+			return err
+		}
+		if err := binary.Write(file, binary.LittleEndian, uint16(16)); err != nil {
+			return err
+		}
+		if _, err := file.Write([]byte("data")); err != nil {
+			return err
+		}
+		if err := binary.Write(file, binary.LittleEndian, dataSize); err != nil {
+			return err
+		}
+		_, err := file.Write(pcm)
+		return err
+	}()
+	closeErr := file.Close()
+	if writeErr != nil {
+		_ = os.Remove(tmp)
+		return writeErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	return os.Rename(tmp, path)
+}
+
 func downloadFile(ctx context.Context, sourceURL string, outputPath string, maxBytes int64) error {
 	if strings.TrimSpace(sourceURL) == "" {
 		return fmt.Errorf("missing audio URL")

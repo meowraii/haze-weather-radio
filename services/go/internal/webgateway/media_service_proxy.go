@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -13,11 +14,24 @@ import (
 
 const mediaServiceWebRTCOfferTimeout = 1500 * time.Millisecond
 
+type mediaServiceWebRTCAnswerResult struct {
+	Answer     map[string]any
+	StatusCode int
+	Detail     string
+	Terminal   bool
+}
+
+func (r mediaServiceWebRTCAnswerResult) OK() bool {
+	return strings.TrimSpace(stringValue(r.Answer, "sdp")) != ""
+}
+
 func clientIPForMediaRequest(request *http.Request) string {
 	if request == nil {
 		return ""
 	}
 	for _, raw := range []string{
+		request.Header.Get("CF-Connecting-IP"),
+		request.Header.Get("True-Client-IP"),
 		strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-For"), ",")[0]),
 		request.Header.Get("X-Real-IP"),
 		request.RemoteAddr,
@@ -37,47 +51,80 @@ func clientIPForMediaRequest(request *http.Request) string {
 }
 
 func (s *Server) mediaServiceWebRTCAnswer(ctx context.Context, payload map[string]any) (map[string]any, bool) {
+	result := s.mediaServiceWebRTCAnswerResult(ctx, payload)
+	return result.Answer, result.OK()
+}
+
+func (s *Server) mediaServiceWebRTCAnswerResult(ctx context.Context, payload map[string]any) mediaServiceWebRTCAnswerResult {
 	baseURL := mediaServiceBaseURL(s.config)
-	return mediaServiceWebRTCAnswerFromBase(ctx, baseURL, payload)
+	return mediaServiceWebRTCAnswerResultFromBase(ctx, baseURL, payload)
 }
 
 func mediaServiceWebRTCAnswerFromBase(ctx context.Context, baseURL string, payload map[string]any) (map[string]any, bool) {
+	result := mediaServiceWebRTCAnswerResultFromBase(ctx, baseURL, payload)
+	return result.Answer, result.OK()
+}
+
+func mediaServiceWebRTCAnswerResultFromBase(ctx context.Context, baseURL string, payload map[string]any) mediaServiceWebRTCAnswerResult {
 	if baseURL == "" {
-		return nil, false
+		return mediaServiceWebRTCAnswerResult{}
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return nil, false
+		return mediaServiceWebRTCAnswerResult{StatusCode: http.StatusInternalServerError, Detail: err.Error(), Terminal: true}
 	}
 	offerCtx, cancel := context.WithTimeout(ctx, mediaServiceWebRTCOfferTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(offerCtx, http.MethodPost, baseURL+"/api/v1/webrtc/offer", bytes.NewReader(raw))
 	if err != nil {
-		return nil, false
+		return mediaServiceWebRTCAnswerResult{StatusCode: http.StatusInternalServerError, Detail: err.Error(), Terminal: true}
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		log.Printf("haze-media WebRTC unavailable: %v", err)
-		return nil, false
+		return mediaServiceWebRTCAnswerResult{}
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNotImplemented || response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusServiceUnavailable {
-		return nil, false
+		return mediaServiceWebRTCAnswerResult{StatusCode: response.StatusCode}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		log.Printf("haze-media WebRTC returned %s", response.Status)
-		return nil, false
+		return mediaServiceWebRTCAnswerResult{
+			StatusCode: response.StatusCode,
+			Detail:     mediaServiceWebRTCErrorDetail(response),
+			Terminal:   true,
+		}
 	}
 	var answer map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
 		log.Printf("haze-media WebRTC answer was invalid: %v", err)
-		return nil, false
+		return mediaServiceWebRTCAnswerResult{StatusCode: response.StatusCode}
 	}
 	if strings.TrimSpace(stringValue(answer, "sdp")) == "" {
-		return nil, false
+		return mediaServiceWebRTCAnswerResult{StatusCode: response.StatusCode}
 	}
-	return answer, true
+	return mediaServiceWebRTCAnswerResult{Answer: answer, StatusCode: response.StatusCode}
+}
+
+func mediaServiceWebRTCErrorDetail(response *http.Response) string {
+	detail := response.Status
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 4096))
+	if err != nil {
+		return detail
+	}
+	body := strings.TrimSpace(string(raw))
+	if body == "" {
+		return detail
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err == nil {
+		detail = firstNonBlank(stringValue(payload, "error"), stringValue(payload, "detail"), detail)
+	} else {
+		detail = body
+	}
+	return detail
 }
 
 func mediaServiceWebRTCAvailable(ctx context.Context, baseURL string) (bool, bool) {

@@ -840,7 +840,7 @@ func outputTargetsForFeeds(configPath string, feedIDs []string) ([]sameOutputTar
 		if !wanted[id] || !xmlBool(feed.EnabledRaw, true) {
 			continue
 		}
-		targets = append(targets, outputTargetsForFeed(id, outputs[id])...)
+		targets = append(targets, outputTargetsForFeed(id, outputForFeed(outputs, id))...)
 	}
 	return targets, nil
 }
@@ -890,6 +890,14 @@ func outputTargetsForFeed(feedID string, output outputXML) []sameOutputTarget {
 			Type:   targetType,
 			Format: strings.TrimSpace(output.Stream.Format),
 			Acodec: strings.TrimSpace(output.Stream.Acodec),
+		})
+	}
+	if xmlBool(output.Icecast.EnabledRaw, false) {
+		targets = append(targets, sameOutputTarget{
+			FeedID: feedID,
+			Type:   "icecast",
+			Format: strings.TrimSpace(output.Icecast.Format),
+			Acodec: strings.TrimSpace(output.Icecast.Acodec),
 		})
 	}
 	if xmlBool(output.RTMP.EnabledRaw, false) {

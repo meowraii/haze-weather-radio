@@ -98,6 +98,7 @@ type WebRTCAnswerOptions struct {
 	DisableG722    bool
 	RequireOpus    bool
 	PreferredCodec string
+	OnClose        func()
 }
 
 type WebRTCAnswer struct {
@@ -462,6 +463,9 @@ func (h *MediaHub) AnswerWithOptions(ctx context.Context, feedID string, offerSD
 	}
 	cleanup = func() {
 		cleanupOnce.Do(func() {
+			if options.OnClose != nil {
+				options.OnClose()
+			}
 			stopDisconnectTimer()
 			cancelPeer()
 			h.mu.Lock()

@@ -179,6 +179,156 @@ func TestBuildTWCConditionsNameOverrideWins(t *testing.T) {
 	}
 }
 
+func TestECCCObservationIDKindAutoDetectsSubsource(t *testing.T) {
+	tests := []struct {
+		id   string
+		want string
+	}{
+		{id: "sk-40", want: "citypage"},
+		{id: "CYXE", want: "swob"},
+		{id: "4057152", want: "swob"},
+		{id: "71496", want: "swob"},
+		{id: "52.1,-106.6", want: "point"},
+		{id: "065100", want: "citypage"},
+	}
+	for _, test := range tests {
+		t.Run(test.id, func(t *testing.T) {
+			if got := ecccObservationIDKind(test.id); got != test.want {
+				t.Fatalf("kind = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSourceKindKeepsSWOBUnderECCC(t *testing.T) {
+	for _, raw := range []string{"swob", "eccc-swob", "eccc_swob", "msc-swob"} {
+		if got := sourceKind(raw); got != "eccc" {
+			t.Fatalf("sourceKind(%q) = %q, want eccc", raw, got)
+		}
+	}
+}
+
+func TestSWOBPresentWeatherUsesEnvironmentCanadaWording(t *testing.T) {
+	elements := map[string]swobElement{
+		"prsnt_wx_1": {Value: "364"},
+		"prsnt_wx_2": {Value: "310"},
+	}
+	if got := swobPresentWeather(elements); got != "Light Rain" {
+		t.Fatalf("present weather = %q", got)
+	}
+	elements = map[string]swobElement{
+		"prsnt_wx_1": {Value: "310"},
+	}
+	if got := swobPresentWeather(elements); got != "Mist" {
+		t.Fatalf("mist present weather = %q", got)
+	}
+	elements["prsnt_wx_1"] = swobElement{Value: "125"}
+	if got := swobPresentWeather(elements); got != "" {
+		t.Fatalf("clear present weather = %q, want empty", got)
+	}
+}
+
+func TestSWOBSkyConditionDecodesCloudAmountAndHeight(t *testing.T) {
+	elements := map[string]swobElement{
+		"cld_amt_code_1": {Value: "37"},
+		"cld_bas_hgt_1":  {Value: "1220"},
+	}
+	if got := swobSkyCondition(elements); got != "broken clouds at 4000 feet" {
+		t.Fatalf("sky condition = %q", got)
+	}
+	if got := swobCloudCondition(elements); got != "Mostly Cloudy" {
+		t.Fatalf("public cloud condition = %q", got)
+	}
+	elements = map[string]swobElement{"cld_amt_code_1": {Value: "1"}}
+	if got := swobCloudCondition(elements); got != "Mainly Sunny" {
+		t.Fatalf("public mainly sunny condition = %q", got)
+	}
+	elements = map[string]swobElement{"cld_amt_code_1": {Value: "45"}}
+	if got := swobSkyCondition(elements); got != "Clear" {
+		t.Fatalf("clear sky condition = %q", got)
+	}
+	if got := swobCloudCondition(elements); got != "Clear" {
+		t.Fatalf("public clear condition = %q", got)
+	}
+}
+
+func TestBuildECCCSWOBConditionsUsesStationAndFallbackFields(t *testing.T) {
+	var obs swobObservation
+	obs.Metadata.Set.Identification.Elements = []swobElement{
+		{Name: "stn_nam", Value: "Saskatoon RCS"},
+		{Name: "tc_id", Value: "POX"},
+		{Name: "date_tm", Value: "2026-07-08T20:00:00.000Z"},
+	}
+	obs.Result.Elements.Elements = []swobElement{
+		{Name: "air_temp", Value: "22.4"},
+		{Name: "avg_wnd_spd_10m_pst10mts", Value: "11.2"},
+		{Name: "avg_wnd_dir_10m_pst10mts", Value: "151"},
+		{Name: "max_wnd_gst_spd_10m_pst10mts", Value: "24.1"},
+		{Name: "avg_vis_pst10mts", Value: "16.1"},
+		{Name: "pres_tend_char_pst3hrs", Value: "5"},
+		{Name: "prsnt_wx_1", Value: "300"},
+		{Name: "cld_amt_code_1", Value: "2"},
+		{Name: "cld_bas_hgt_1", Value: "1200"},
+	}
+	payload := buildECCCSWOBConditions(map[string]any{
+		"_swob": swobCollection{Members: []swobMember{{Observation: obs}}},
+	}, locationXML{ID: "71496", Source: "eccc"})
+
+	if got := payload["station_id"]; got != "POX" {
+		t.Fatalf("station_id = %#v, want POX", got)
+	}
+	props := payload["properties"].(map[string]any)
+	if got := props["condition"].(map[string]any)["en"]; got != "Partly Cloudy" {
+		t.Fatalf("condition = %#v", got)
+	}
+	if got := props["sky_condition"].(map[string]any)["en"]; got != "scattered clouds at 3900 feet" {
+		t.Fatalf("sky condition = %#v", got)
+	}
+	wind := props["wind"].(map[string]any)
+	if got := wind["speed"]; got != 11.2 {
+		t.Fatalf("wind speed = %#v", got)
+	}
+	pressure := props["pressure"].(map[string]any)
+	if got := pressure["tendency"].(map[string]any)["en"]; got != "falling" {
+		t.Fatalf("pressure tendency = %#v", got)
+	}
+}
+
+func TestSWOBRealtimeFeatureNormalizesToSWOBCollection(t *testing.T) {
+	collection := swobCollectionFromRealtimeFeature(map[string]any{
+		"properties": map[string]any{
+			"date_tm-value":                  "2026-07-08 8:33:00 PM",
+			"stn_nam-value":                  "LAKE WINNIPEG S. BASIN",
+			"msc_id-value":                   "9401177",
+			"air_temp":                       18.2,
+			"avg_wnd_spd_10m_pst10mts":       22.4,
+			"avg_wnd_dir_10m_pst10mts":       180,
+			"avg_wnd_dir_10m_pst10mts-uom":   "°",
+			"avg_wnd_dir_10m_pst10mts-qa":    100,
+			"avg_wnd_spd_10m_pst10mts-uom":   "km/h",
+			"avg_wnd_spd_10m_pst10mts-qa":    100,
+			"avg_wnd_spd_10m_pst10mts_1":     21.9,
+			"avg_wnd_spd_10m_pst10mts_1-uom": "km/h",
+		},
+	})
+	payload := buildECCCSWOBConditions(map[string]any{"_swob": collection}, locationXML{ID: "9401177", Source: "eccc"})
+	if got := payload["station_id"]; got != "9401177" {
+		t.Fatalf("station_id = %#v", got)
+	}
+	station := payload["station"].(map[string]any)
+	if got := station["en"]; got != "LAKE WINNIPEG S. BASIN" {
+		t.Fatalf("station = %#v", got)
+	}
+	props := payload["properties"].(map[string]any)
+	wind := props["wind"].(map[string]any)
+	if got := wind["speed"]; got != 22.4 {
+		t.Fatalf("wind speed = %#v", got)
+	}
+	if got := wind["direction"]; got != "S" {
+		t.Fatalf("wind direction = %#v", got)
+	}
+}
+
 func TestAQHIPeriodsAcceptsUnderscoreKeys(t *testing.T) {
 	periods := aqhiPeriods(map[string]any{
 		"forecast_period": map[string]any{

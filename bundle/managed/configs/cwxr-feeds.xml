@@ -364,6 +364,15 @@
         <location id="VSMB36V" source="eccc"/>
       </climateLocations>
 
+      <marineForecastLocations>
+        <subregion id="m0000109" source="eccc"/>
+        <subregion id="m0000037" source="eccc"/>
+      </marineForecastLocations>
+
+      <marineConditions>
+        <location id="9401177" source="eccc"/>
+      </marineConditions>
+
     </locations>
 
     <transmitter_metadata>
@@ -509,8 +518,10 @@
         <location id="on-59" source="eccc"/>
         <location id="on-4" source="eccc"/>
         <location id="on-54" source="eccc"/>
-        <location id="on-79" source="eccc"/>
-        <location id="on-95" source="eccc"/>
+        <location id="on-107" source="eccc"/>
+        <location id="on-109" source="eccc"/>
+        <location id="on-125" source="eccc"/>
+        <location id="on-47" source="eccc"/>
       </observationLocations>
 
       <airQualityLocations>

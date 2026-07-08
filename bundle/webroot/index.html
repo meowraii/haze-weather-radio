@@ -3,13 +3,13 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Public status and feed access for Haze Weather Radio">
-    <title>Haze Weather Radio</title>
+    <meta name="description" content="Live weather radio feeds, alerts, and public status.">
+    <title>Weather Radio Live Feeds</title>
     <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
     <link rel="manifest" href="/assets/site.webmanifest">
-    <link rel="stylesheet" href="/assets/styles.css?v=20260624-oldweb-project-strip">
-    <link rel="stylesheet" href="/assets/layout.css?v=20260624-oldweb-project-strip">
+    <link rel="stylesheet" href="/assets/styles.css?v=20260708-public-feed-controls">
+    <link rel="stylesheet" href="/assets/layout.css?v=20260708-public-feed-controls">
 </head>
 <body>
     <div class="app-shell public-app-shell">
@@ -45,7 +45,7 @@
             <main class="dashboard public-dashboard">
                 <section class="public-home-section public-home-floating" id="publicSummary" hidden>
                     <div class="public-home-title">
-                        <h1 id="publicSiteTitle">Haze Weather Radio</h1>
+                        <h1 id="publicSiteTitle">Weather Radio Live Feeds</h1>
                         <p>Unified weather information, alerting, and public feed access.</p>
                     </div>
 
@@ -76,7 +76,7 @@
                 </section>
 
                 <section class="section-block" id="publicFeedsSection" hidden>
-                    <p id="publicFeedNotice" class="status-banner">Checking feed access...</p>
+                    <p id="publicFeedNotice" class="status-banner" hidden>Checking feed access...</p>
                     <div class="feed-grid" id="publicFeedsGrid"></div>
                 </section>
 
@@ -99,6 +99,6 @@
     </div>
 
     <script src="/assets/js/lib/public-icons.js"></script>
-    <script type="module" src="/assets/js/public.js?v=20260624-listen-runtime-refresh"></script>
+    <script type="module" src="/assets/js/public.js?v=20260708-public-feed-controls"></script>
 </body>
 </html>

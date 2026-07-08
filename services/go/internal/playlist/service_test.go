@@ -332,6 +332,73 @@ func TestBuildProductAudioItemUsesRoutineQueueAudioPath(t *testing.T) {
 	}
 }
 
+func TestBuildSegmentedProductItemIncludesAudioOpener(t *testing.T) {
+	dir := t.TempDir()
+	audioRel := filepath.Join("audio", "vocal", "marine.wav")
+	audioPath := filepath.Join(dir, audioRel)
+	openerPCM := []byte{1, 0, 2, 0, 3, 0, 4, 0}
+	ttsPCM := []byte{9, 0, 8, 0, 7, 0, 6, 0}
+	if err := writePCM16WAV(audioPath, openerPCM, 48000, 1); err != nil {
+		t.Fatal(err)
+	}
+	clientConn, serverConn := net.Pipe()
+	bridge := &bridgeClient{
+		conn:            clientConn,
+		events:          make(chan map[string]any, 16),
+		pendingProducts: map[string]chan productResult{},
+		pendingSynth:    map[string]chan synthResult{},
+	}
+	go bridge.readLoop()
+	defer bridge.Close()
+	go serveSegmentSynthBridge(t, serverConn, ttsPCM)
+	outputDir := filepath.Join(dir, "runtime", "audio", "playlist")
+	planner := &feedPlanner{
+		cfg: loadedConfig{
+			BaseDir:   dir,
+			OutputDir: outputDir,
+			Root: rootConfig{
+				Playout: playoutConfig{SampleRate: 48000, Channels: 1},
+			},
+		},
+		bridge: bridge,
+		feed:   feedXML{ID: "cwxr-on01", Timezone: "America/Toronto"},
+	}
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+
+	item, ok, err := planner.buildSegmentedProductItem(context.Background(), renderedProduct{
+		PackageID: "marine_reports",
+		Title:     "Marine Reports",
+		ReaderID:  "00",
+		Language:  "en-CA",
+		Segments: []renderedSegment{
+			{Kind: "audio", Label: "opener", AudioPath: audioRel},
+			{Kind: "package", Label: "report", Text: "The marine report for Toronto Island."},
+		},
+	}, "marine_reports", "routine", "", now, now, "marine-segment-test")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("segmented product was not recognized")
+	}
+	if item.Kind != "product" || item.PackageID != "marine_reports" {
+		t.Fatalf("item = %#v", item)
+	}
+	raw, err := os.ReadFile(item.AudioPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcm, _, err := wavPCM16(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]byte{}, openerPCM...), ttsPCM...)
+	if !bytes.Equal(pcm, want) {
+		t.Fatalf("combined PCM = %#v, want %#v", pcm, want)
+	}
+}
+
 func TestMinuteTargetFindsNextWallClockSecond(t *testing.T) {
 	from := time.Date(2026, 6, 15, 12, 4, 59, 0, time.UTC)
 	until := from.Add(2 * time.Minute)
@@ -635,6 +702,24 @@ func TestStartupPrimerQueuesStaticItemsAndSkipsUnavailableCurrentConditions(t *t
 	}
 }
 
+func TestStartupPrimerCursorSkipsCurrentConditions(t *testing.T) {
+	planner := &feedPlanner{
+		cfg: loadedConfig{
+			Root: rootConfig{
+				Playout: playoutConfig{
+					PlaylistOrder: []string{"current_conditions", "forecast", "air_quality"},
+				},
+			},
+		},
+	}
+
+	planner.advanceRoutineCursorPast("current_conditions")
+
+	if got := planner.nextRoutinePackage(); got != "forecast" {
+		t.Fatalf("next routine package = %q, want forecast", got)
+	}
+}
+
 func TestStartupProductCanUseCachedAudioWithoutTTSBridge(t *testing.T) {
 	dir := t.TempDir()
 	outputDir := filepath.Join(dir, "runtime", "audio", "playlist")
@@ -739,6 +824,38 @@ func serveStartupPrimerBridge(t *testing.T, conn net.Conn, ready chan<- map[stri
 			}
 		case "playlist.item.ready":
 			ready <- message
+		}
+	}
+}
+
+func serveSegmentSynthBridge(t *testing.T, conn net.Conn, pcm []byte) {
+	t.Helper()
+	decoder := json.NewDecoder(conn)
+	encoder := json.NewEncoder(conn)
+	for {
+		var message map[string]any
+		if err := decoder.Decode(&message); err != nil {
+			return
+		}
+		data, _ := message["data"].(map[string]any)
+		if message["type"] != "tts.synthesize" {
+			continue
+		}
+		jobID := firstText(message, data, "job_id", "subject")
+		outputPath := firstText(message, data, "output_path")
+		if err := writePCM16WAV(outputPath, pcm, 48000, 1); err != nil {
+			t.Errorf("write synthesized segment WAV: %v", err)
+			return
+		}
+		if err := encoder.Encode(map[string]any{
+			"type":    "tts.synthesized",
+			"subject": jobID,
+			"data": map[string]any{
+				"job_id":      jobID,
+				"output_path": outputPath,
+			},
+		}); err != nil {
+			return
 		}
 	}
 }

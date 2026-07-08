@@ -40,7 +40,15 @@ type renderedProduct struct {
 	Text      string            `json:"text"`
 	ReaderID  string            `json:"reader_id"`
 	Language  string            `json:"language"`
+	Segments  []renderedSegment `json:"segments"`
 	Metadata  map[string]string `json:"metadata"`
+}
+
+type renderedSegment struct {
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	Text      string `json:"text"`
+	AudioPath string `json:"audio_path"`
 }
 
 type synthJob struct {
