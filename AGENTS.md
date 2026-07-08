@@ -57,6 +57,17 @@ Its structure is defined as an Event-Driven Architecture (EDA), a highly asynchr
 - Build scripts should validate missing runtime DLLs/shared libraries and fail with actionable messages.
 - GitHub Actions should build portable archives for Windows and Linux and sync bundled `audio`, `managed`, and `webroot` assets into the portable package.
 
+## Live instances
+
+- The primary live Haze instance runs on `172.16.1.31` at `/home/rai/haze-weather-radio`.
+- For source changes that affect the primary live instance, rebuild the affected binaries, sync them into `/home/rai/haze-weather-radio/bin`, sync required config/assets, then restart with `systemctl --user restart haze-weather-radio.service`.
+- After restarting the primary live instance, check `systemctl --user status haze-weather-radio.service` and relevant `journalctl --user -u haze-weather-radio.service` logs.
+- The CWRS/CWXR (Canadian Weather Radio Service) Haze instance is the separate CWXR VM at `172.16.1.38`. It is usually reachable through the Windows share `\\DESKTOP-QOQ6ERC\Users\rai\haze-weather-radio`.
+- Unless the user explicitly scopes a deployment to only one environment, changes that affect running Haze behavior should be deployed to both the primary live instance and the CWRS/CWXR instance.
+- For CWRS/CWXR, keep `bundle/managed/configs/cwxr-feeds.xml` synced into the runtime as `managed/configs/feeds.xml`, and keep shared products/output/IVR configs in sync when touched.
+- SSH or WinRM access to the CWRS/CWXR VM may be unavailable. If remote restart is not possible, still sync the updated files over SMB, report that restart could not be performed, and do not pretend the runtime picked up the changes.
+- Never overwrite live `.env`, logs, runtime state, local data, managed operator files, or generated audio unless the user explicitly asks for that specific destructive action.
+
 ## Web panel
 
 - Keep admin controls fast, explicit, and event-driven.

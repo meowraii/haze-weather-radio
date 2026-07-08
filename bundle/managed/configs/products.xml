@@ -37,7 +37,7 @@
       <text hide="true">If you have comments, questions or concerns,</text>
       <text key="call">please call us at {phone}</text>
     </lang>
-    <lang iso="fr-CA" readerid="00">
+    <lang iso="fr-CA" readerid="02">
       <text>Vous écoutez {on_air_name}.</text>
       <text>Desservant {service_area} sur une fréquence porteuse radio météo standard de {freq_mhz}.</text>
       <description /> <!-- see feeds.xml -->
@@ -57,7 +57,7 @@
     <lang iso="en" readerid="01">
       <text key="opener">It is {hour}:{minute} {day_name}, {month_name} {day_num}, {year}, {timezone}.</text>
     </lang>
-    <lang iso="fr-CA" readerid="01">
+    <lang iso="fr-CA" readerid="03">
       <text key="opener">Il est {hour} h {minute}, le {day_name} {day_num} {month_name} {year}, {timezone}.</text>
     </lang>
     <lang iso="es" readerid="01">
@@ -97,7 +97,7 @@
       </nearby>
       <text key="report_time" lang="en-US"></text>
     </lang>
-    <lang iso="fr-CA" readerid="00" >
+    <lang iso="fr-CA" readerid="02" >
       <text key="opener">Les conditions météorologiques actuelles. Émises par {source} à {issue_hour} {issue_ampm} {issue_timezone}.</text>
       <primary>
         <placeholder>Le rapport pour {location} n'était pas disponible.</placeholder>
@@ -180,7 +180,7 @@
         </extended>
       </region>
     </lang>
-    <lang iso="fr-CA" readerid="01" >
+    <lang iso="fr-CA" readerid="03" >
       <text key="opener">Voici vos prévisions officielles de {source}, émises à {issue_hour} {issue_ampm} {issue_timezone}.</text>
       <region hide="true">
 
@@ -238,7 +238,7 @@
         <text key="forecast_insmoke_eccc">The air quality health index is expected to be {val} in smoke.</text>
       </forecast>
     </lang>
-    <lang iso="fr-CA" readerid="00">
+    <lang iso="fr-CA" readerid="02">
       <observation>
         <placeholder key="unavailable_report">Les renseignements sur la qualité de l'air pour {name} n'étaient pas disponibles.</placeholder>
         <text key="now_eccc">La cote air santé a été observée à {name} et indiquait une valeur de {val} à {time}.</text>
@@ -285,7 +285,7 @@
         <text>{summary_text}</text>
       </summary>
     </lang>
-    <lang iso="fr-CA" readerid="01">
+    <lang iso="fr-CA" readerid="03">
       <text key="opener">Le résumé climatologique de {source}.</text>
       <summary>
         <placeholder>Le résumé climatologique pour {location} n'était pas disponible.</placeholder>
@@ -320,7 +320,7 @@
         </extended>
       </forecast>
     </lang>
-    <lang iso="fr-CA" readerid="01">
+    <lang iso="fr-CA" readerid="03">
       <text key="opener">Les prévisions maritimes de {source} pour {area}, émises à {issue_hour} h {issue_minute} {issue_ampm} {issue_timezone}.</text>
       <forecast>
         <warnings>
@@ -375,7 +375,7 @@
         </winds>
       </report>
     </lang>
-    <lang iso="fr-CA" readerid="00">
+    <lang iso="fr-CA" readerid="02">
       <text key="opener">Les rapports maritimes actuels.</text>
       <report>
         <placeholder>Le rapport pour {location} n'était pas disponible.</placeholder>
@@ -428,7 +428,7 @@
         </winds>
       </report>
     </lang>
-    <lang iso="fr-CA" readerid="00">
+    <lang iso="fr-CA" readerid="02">
       <text key="opener">Les rapports météorologiques aéronautiques actuels.</text>
       <report>
         <placeholder>Le rapport météorologique aéronautique pour {location} n'était pas disponible.</placeholder>
@@ -475,7 +475,7 @@
         <text key="hazards">Associated hazards may include {hazards}.</text>
       </outlook>
     </lang>
-    <lang iso="fr-CA" readerid="00">
+    <lang iso="fr-CA" readerid="02">
       <text key="opener">Le bulletin sur les orages d'Environnement Canada couvrant {site}.</text>
       <outlook>
         <placeholder>Aucun bulletin actif sur les orages n'est disponible pour {site}.</placeholder>
@@ -516,7 +516,7 @@
           </gauge>
       </nearby>
     </lang>
-    <lang iso="fr-CA" readerid="00">
+    <lang iso="fr-CA" readerid="02">
       <text key="opener">Rapports hydrométriques fournis par Environnement et Changement climatique Canada.</text>
       <primary>
         <placeholder>Aucun rapport sur les conditions de la rivière n'est disponible pour {site}.</placeholder>
@@ -567,7 +567,7 @@
 
   <product id="user_bulletin" variant="0" enabled="true">
     <lang iso="en" readerid="00" />
-    <lang iso="fr" readerid="00" />
+    <lang iso="fr" readerid="02" />
     <lang iso="es" readerid="00" />
   </product>
 
