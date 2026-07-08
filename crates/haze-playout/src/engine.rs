@@ -392,6 +392,11 @@ async fn dispatch_event(
             let Some(handle) = handles.get(feed_id).cloned() else {
                 return;
             };
+            let package_id = bridge::first_text(&event, data, &["package_id", "pkg_id"]);
+            let Some(permit) = try_reserve_routine_slot(&handle.audio_tx, feed_id, package_id)
+            else {
+                return;
+            };
             let cfg = Arc::clone(cfg);
             let audio_cache = Arc::clone(audio_cache);
             let data = data.clone();
@@ -399,7 +404,7 @@ async fn dispatch_event(
             tokio::spawn(async move {
                 match audio_item_from_ready(&cfg, &audio_cache, &handle.feed, data).await {
                     Ok(item) => {
-                        enqueue_routine_item(&handle.audio_tx, &feed_id, item);
+                        permit.send(item);
                     }
                     Err(err) => tracing::warn!(feed_id, "playlist item rejected: {err}"),
                 }
@@ -1844,12 +1849,17 @@ async fn package_builder(
         {
             continue;
         }
+        let Some(permit) = try_reserve_routine_slot(&audio_tx, &feed.id, &request.package_id)
+        else {
+            if audio_tx.is_closed() {
+                break;
+            }
+            continue;
+        };
         match build_package(&cfg, &client, &audio_cache, &feed, &request.package_id).await {
             Ok(item) => {
                 recent.insert(request.package_id.clone(), Instant::now());
-                if !enqueue_routine_item(&audio_tx, &feed.id, item) && audio_tx.is_closed() {
-                    break;
-                }
+                permit.send(item);
             }
             Err(err) => tracing::warn!(
                 feed_id = feed.id,
@@ -1860,28 +1870,28 @@ async fn package_builder(
     }
 }
 
-fn enqueue_routine_item(tx: &mpsc::Sender<AudioItem>, feed_id: &str, item: AudioItem) -> bool {
-    let queue_id = item.id.clone();
-    let package_id = item.package_id.clone();
-    match tx.try_send(item) {
-        Ok(()) => true,
+fn try_reserve_routine_slot(
+    tx: &mpsc::Sender<AudioItem>,
+    feed_id: &str,
+    package_id: &str,
+) -> Option<mpsc::OwnedPermit<AudioItem>> {
+    match tx.clone().try_reserve_owned() {
+        Ok(permit) => Some(permit),
         Err(TrySendError::Full(_)) => {
-            tracing::warn!(
+            tracing::debug!(
                 feed_id,
-                queue_id,
                 package_id,
-                "routine playout queue is full; dropping stale rendered audio"
+                "routine playout queue is full; skipping stale rendered audio"
             );
-            false
+            None
         }
         Err(TrySendError::Closed(_)) => {
             tracing::warn!(
                 feed_id,
-                queue_id,
                 package_id,
                 "playout queue closed before routine item could be queued"
             );
-            false
+            None
         }
     }
 }
