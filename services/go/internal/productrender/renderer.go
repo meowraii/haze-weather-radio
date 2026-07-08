@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -441,6 +442,11 @@ func (r renderer) observationReportProduct(base Product, feed feedXML) (Product,
 	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
 
 	segments := []Segment{}
+	if audioPath := r.packageAudio(base.PackageID, "opener", base.Language); audioPath != "" {
+		segments = append(segments, Segment{Kind: "audio", Label: "opener", AudioPath: audioPath})
+	} else if opener := r.packageText(base.PackageID, "opener", base.Language, "", nil); opener != "" {
+		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
+	}
 	for index, obs := range append([]observation{snapshot.Primary}, snapshot.Observations...) {
 		if strings.TrimSpace(obs.LocationName) == "" || (index > 0 && sameObservation(obs, snapshot.Primary)) {
 			continue
@@ -524,7 +530,7 @@ func (r renderer) renderObservationReport(base Product, obs observation) string 
 	if wind := r.renderObservationWindBlock(base, values); wind != "" {
 		parts = append(parts, wind)
 	}
-	return sentence(strings.Join(parts, " "))
+	return reportText(parts)
 }
 
 func (r renderer) renderObservationWindBlock(base Product, values map[string]string) string {
@@ -602,16 +608,18 @@ func (r renderer) forecastPeriodText(base Product, period forecastPeriod) string
 func (r renderer) appendForecastPeriodSegments(segments []Segment, base Product, regionName string, periods []forecastPeriod) []Segment {
 	combined := []string{}
 	combinedLabels := []string{}
+	shortTermDay := ""
 	for _, period := range periods {
 		if period.Text == "" {
 			continue
 		}
+		period = normalizeForecastPeriodName(period, shortTermDay)
 		label := strings.TrimSpace(period.Name)
 		text := r.forecastPeriodText(base, period)
 		if text == "" {
 			continue
 		}
-		if forecastPeriodTextKey(period.Name) == "today" || forecastPeriodTextKey(period.Name) == "tonight" {
+		if forecastPeriodIsShortTerm(period.Name, &shortTermDay) {
 			segments = append(segments, Segment{Kind: "package", Label: forecastPeriodSegmentLabel(regionName, label), Text: text})
 			continue
 		}
@@ -631,6 +639,34 @@ func (r renderer) appendForecastPeriodSegments(segments []Segment, base Product,
 		segments = append(segments, Segment{Kind: "package", Label: forecastPeriodSegmentLabel(regionName, label), Text: strings.Join(combined, " ")})
 	}
 	return segments
+}
+
+func normalizeForecastPeriodName(period forecastPeriod, previousDay string) forecastPeriod {
+	name := strings.Join(strings.Fields(strings.TrimSpace(period.Name)), " ")
+	if name == "" {
+		return period
+	}
+	lower := strings.ToLower(strings.Trim(name, " .,:;-"))
+	if (lower == "night" || lower == "overnight") && previousDay != "" {
+		period.Name = previousDay + " " + name
+	}
+	return period
+}
+
+func forecastPeriodIsShortTerm(name string, shortTermDay *string) bool {
+	key := forecastPeriodTextKey(name)
+	if key == "today" || key == "tonight" {
+		return true
+	}
+	day := forecastPeriodDayName(name)
+	if day == "" {
+		return false
+	}
+	if *shortTermDay == "" {
+		*shortTermDay = day
+		return true
+	}
+	return strings.EqualFold(*shortTermDay, day)
 }
 
 func forecastPeriodSegmentLabel(regionName string, periodLabel string) string {
@@ -1531,6 +1567,29 @@ func (r renderer) packageText(pkgID string, key string, lang string, fallback st
 	return renderTemplateText(text, values)
 }
 
+func (r renderer) packageAudio(pkgID string, key string, lang string) string {
+	pkgID = strings.ToLower(strings.TrimSpace(pkgID))
+	key = strings.ToLower(strings.TrimSpace(key))
+	if byKey, ok := r.cfg.ProductAudio[pkgID]; ok {
+		if byLang, ok := byKey[key]; ok {
+			if configured := localizedTextEntry(byLang, lang); configured != "" && r.audioFileExists(configured) {
+				return configured
+			}
+		}
+	}
+	return ""
+}
+
+func (r renderer) audioFileExists(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	resolved := resolvePath(r.cfg.BaseDir, path)
+	info, err := os.Stat(filepath.Clean(resolved))
+	return err == nil && !info.IsDir()
+}
+
 func (r renderer) packageTextFirst(pkgID string, keys []string, lang string, fallback string, values map[string]string) string {
 	for _, key := range keys {
 		if r.packageTextConfigured(pkgID, key, lang) {
@@ -1661,7 +1720,47 @@ func renderTemplateText(text string, values map[string]string) string {
 	for key, value := range values {
 		text = strings.ReplaceAll(text, "{"+key+"}", strings.TrimSpace(value))
 	}
-	return strings.Join(strings.Fields(text), " ")
+	return normalizeRenderedTemplateText(text)
+}
+
+func normalizeRenderedTemplateText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(text, "\n")
+	for index := range lines {
+		lines[index] = strings.Join(strings.Fields(lines[index]), " ")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func reportText(parts []string) string {
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = normalizeRenderedTemplateText(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	return finishReportText(strings.Join(clean, "\n"))
+}
+
+func finishReportText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	last := text[len(text)-1]
+	switch last {
+	case '.', '!', '?':
+		return text
+	case ',', ';', ':':
+		return strings.TrimRight(text, " ,;:") + "."
+	default:
+		return text + "."
+	}
 }
 
 func inputTypeForPath(path string) string {
@@ -2300,6 +2399,36 @@ func forecastPeriodTextKey(name string) string {
 		if strings.HasPrefix(normalized, "sunday ") {
 			return "sun"
 		}
+		return ""
+	}
+}
+
+func forecastPeriodDayName(name string) string {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(name)), " "))
+	normalized = strings.Trim(normalized, " .,:;-")
+	normalized = strings.TrimSuffix(normalized, " night")
+	normalized = strings.TrimSuffix(normalized, " overnight")
+	normalized = strings.TrimSpace(strings.Trim(normalized, " .,:;-"))
+	words := strings.Fields(normalized)
+	if len(words) == 0 {
+		return ""
+	}
+	switch words[0] {
+	case "mon", "monday":
+		return "monday"
+	case "tue", "tues", "tuesday":
+		return "tuesday"
+	case "wed", "weds", "wednesday":
+		return "wednesday"
+	case "thu", "thur", "thurs", "thursday":
+		return "thursday"
+	case "fri", "friday":
+		return "friday"
+	case "sat", "saturday":
+		return "saturday"
+	case "sun", "sunday":
+		return "sunday"
+	default:
 		return ""
 	}
 }

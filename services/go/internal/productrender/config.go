@@ -268,6 +268,7 @@ type loadedConfig struct {
 	Feeds         []feedXML
 	Packages      map[string]packageProfile
 	ProductText   map[string]map[string]map[string]string
+	ProductAudio  map[string]map[string]map[string]string
 	ForecastNames map[string]forecastRegionName
 	BaseDir       string
 	Store         datastore.Store
@@ -293,7 +294,7 @@ func loadConfig(configPath string) (loadedConfig, error) {
 	if err != nil {
 		return loadedConfig{}, err
 	}
-	packages, productText, err := loadProductsConfig(baseDir)
+	packages, productText, productAudio, err := loadProductsConfig(baseDir)
 	if err != nil {
 		return loadedConfig{}, err
 	}
@@ -306,29 +307,30 @@ func loadConfig(configPath string) (loadedConfig, error) {
 		Feeds:         feeds,
 		Packages:      packages,
 		ProductText:   productText,
+		ProductAudio:  productAudio,
 		ForecastNames: forecastNames,
 		BaseDir:       baseDir,
 	}, nil
 }
 
-func loadProductsConfig(baseDir string) (map[string]packageProfile, map[string]map[string]map[string]string, error) {
+func loadProductsConfig(baseDir string) (map[string]packageProfile, map[string]map[string]map[string]string, map[string]map[string]map[string]string, error) {
 	combinedPath := resolvePath(baseDir, "managed/configs/products.xml")
-	packages, productText, err := loadCombinedProducts(combinedPath)
+	packages, productText, productAudio, err := loadCombinedProducts(combinedPath)
 	if err == nil {
-		return packages, productText, nil
+		return packages, productText, productAudio, nil
 	}
 	if !os.IsNotExist(err) {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	packages, err = loadPackages(resolvePath(baseDir, "managed/configs/packages.xml"))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	productText, err = loadProductText(resolvePath(baseDir, "managed/configs/product_text.xml"))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return packages, productText, nil
+	return packages, productText, map[string]map[string]map[string]string{}, nil
 }
 
 func loadForecastRegionNamesFromSQLite(baseDir string) map[string]forecastRegionName {
@@ -456,20 +458,21 @@ func loadPackages(path string) (map[string]packageProfile, error) {
 	return profiles, nil
 }
 
-func loadCombinedProducts(path string) (map[string]packageProfile, map[string]map[string]map[string]string, error) {
+func loadCombinedProducts(path string) (map[string]packageProfile, map[string]map[string]map[string]string, map[string]map[string]map[string]string, error) {
 	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	raw = []byte(os.ExpandEnv(string(raw)))
 	var parsed productsXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
-		return nil, nil, fmt.Errorf("parse products XML: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse products XML: %w", err)
 	}
 	defaultEnabled := xmlBool(parsed.Defaults.Enabled, true)
 	defaultReader := strings.TrimSpace(parsed.Defaults.ReaderID)
 	packages := map[string]packageProfile{}
 	productText := map[string]map[string]map[string]string{}
+	productAudio := map[string]map[string]map[string]string{}
 	for _, item := range append(parsed.Products, parsed.Packages...) {
 		id := strings.ToLower(strings.TrimSpace(item.ID))
 		if id == "" {
@@ -512,11 +515,11 @@ func loadCombinedProducts(path string) (map[string]packageProfile, map[string]ma
 		}
 		addProductTextEntries(productText, id, "", item.Texts)
 		for _, lang := range item.Langs {
-			addProductScriptEntries(productText, id, productLangCode(lang), lang.InnerXML)
+			addProductScriptEntries(productText, productAudio, id, productLangCode(lang), lang.InnerXML)
 			addProductTextEntries(productText, id, productLangCode(lang), lang.Texts)
 		}
 	}
-	return packages, productText, nil
+	return packages, productText, productAudio, nil
 }
 
 func productLangCode(lang productLangXML) string {
@@ -555,7 +558,27 @@ func addProductTextEntry(out map[string]map[string]map[string]string, pkgID stri
 	out[pkgID][key][lang] = strings.TrimSpace(text)
 }
 
-func addProductScriptEntries(out map[string]map[string]map[string]string, pkgID string, inheritedLang string, innerXML string) {
+func addProductAudioEntry(out map[string]map[string]map[string]string, pkgID string, lang string, key string, path string, overwrite bool) {
+	if out[pkgID] == nil {
+		out[pkgID] = map[string]map[string]string{}
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return
+	}
+	lang = normalizeLangKey(lang)
+	if out[pkgID][key] == nil {
+		out[pkgID][key] = map[string]string{}
+	}
+	if _, exists := out[pkgID][key][lang]; exists && !overwrite {
+		return
+	}
+	if path = strings.TrimSpace(path); path != "" {
+		out[pkgID][key][lang] = path
+	}
+}
+
+func addProductScriptEntries(textOut map[string]map[string]map[string]string, audioOut map[string]map[string]map[string]string, pkgID string, inheritedLang string, innerXML string) {
 	decoder := xml.NewDecoder(strings.NewReader("<root>" + innerXML + "</root>"))
 	var stack []string
 	ordinals := map[string]int{}
@@ -577,19 +600,38 @@ func addProductScriptEntries(out map[string]map[string]map[string]string, pkgID 
 				if key == "" {
 					key = implicitProductTextKey(name, stack, ordinals)
 					lang := firstNonBlank(attrValue(typed.Attr, "lang"), inheritedLang)
-					addProductTextEntry(out, pkgID, lang, key, body, true)
+					addProductTextEntry(textOut, pkgID, lang, key, body, true)
 					continue
 				}
 				lang := firstNonBlank(attrValue(typed.Attr, "lang"), inheritedLang)
 				if prefix := strings.Join(stack, "."); prefix != "" {
-					addProductTextEntry(out, pkgID, lang, prefix+"."+key, body, true)
+					addProductTextEntry(textOut, pkgID, lang, prefix+"."+key, body, true)
 					if len(stack) > 1 && stack[0] == "region" {
-						addProductTextEntry(out, pkgID, lang, strings.Join(stack[1:], ".")+"."+key, body, true)
+						addProductTextEntry(textOut, pkgID, lang, strings.Join(stack[1:], ".")+"."+key, body, true)
 					}
-					addProductTextEntry(out, pkgID, lang, key, body, false)
+					addProductTextEntry(textOut, pkgID, lang, key, body, false)
 					continue
 				}
-				addProductTextEntry(out, pkgID, lang, key, body, true)
+				addProductTextEntry(textOut, pkgID, lang, key, body, true)
+			case "audio":
+				var body string
+				if err := decoder.DecodeElement(&body, &typed); err != nil {
+					return
+				}
+				key := attrValue(typed.Attr, "key")
+				if key == "" {
+					key = implicitProductTextKey("text", stack, ordinals)
+				}
+				lang := firstNonBlank(attrValue(typed.Attr, "lang"), inheritedLang)
+				if prefix := strings.Join(stack, "."); prefix != "" {
+					addProductAudioEntry(audioOut, pkgID, lang, prefix+"."+key, body, true)
+					if len(stack) > 1 && stack[0] == "region" {
+						addProductAudioEntry(audioOut, pkgID, lang, strings.Join(stack[1:], ".")+"."+key, body, true)
+					}
+					addProductAudioEntry(audioOut, pkgID, lang, key, body, false)
+					continue
+				}
+				addProductAudioEntry(audioOut, pkgID, lang, key, body, true)
 			case "root", "lang":
 			default:
 				stack = append(stack, name)

@@ -21,9 +21,10 @@ type Product struct {
 
 // Segment preserves the product structure before it is flattened for TTS.
 type Segment struct {
-	Kind  string `json:"kind"`
-	Label string `json:"label,omitempty"`
-	Text  string `json:"text"`
+	Kind      string `json:"kind"`
+	Label     string `json:"label,omitempty"`
+	Text      string `json:"text,omitempty"`
+	AudioPath string `json:"audio_path,omitempty"`
 }
 
 // InputRef identifies a provider snapshot or event that shaped the render.

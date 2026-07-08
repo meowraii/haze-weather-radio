@@ -181,16 +181,17 @@ func (r renderer) loadLiveObservationSnapshot(feed feedXML, lang string, snapsho
 }
 
 func (r renderer) loadLiveObservationReportSnapshot(feed feedXML, pkgID string, lang string, snapshot *observationSnapshot) (string, bool) {
-	locations := feed.Locations.ObservationLocations.Locations
+	var locations []locationXML
 	switch strings.ToLower(strings.TrimSpace(pkgID)) {
 	case "aviation_reports":
-		if len(feed.Locations.AviationReportLocations.Locations) > 0 {
-			locations = feed.Locations.AviationReportLocations.Locations
-		}
+		locations = feed.Locations.AviationReportLocations.Locations
 	case "marine_reports":
-		if len(feed.Locations.MarineConditions.Locations) > 0 {
-			locations = feed.Locations.MarineConditions.Locations
-		}
+		locations = feed.Locations.MarineConditions.Locations
+	default:
+		locations = feed.Locations.ObservationLocations.Locations
+	}
+	if len(locations) == 0 {
+		return "", false
 	}
 	return r.loadObservationSnapshotFromLocations(locations, lang, snapshot)
 }

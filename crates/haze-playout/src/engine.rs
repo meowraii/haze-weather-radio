@@ -1818,6 +1818,12 @@ async fn build_package(
     }
     let product = render_product_with_fallback(cfg, client, feed, package_id).await?;
     if let Some(item) =
+        audio_item_from_mixed_rendered_product(cfg, client, audio_cache, feed, package_id, &product)
+            .await?
+    {
+        return Ok(item);
+    }
+    if let Some(item) =
         audio_item_from_rendered_product(cfg, audio_cache, feed, package_id, &product).await?
     {
         return Ok(item);
@@ -1911,6 +1917,146 @@ async fn audio_item_from_rendered_product(
     }))
 }
 
+async fn audio_item_from_mixed_rendered_product(
+    cfg: &LoadedConfig,
+    client: &BridgeClient,
+    audio_cache: &AudioCache,
+    feed: &FeedConfig,
+    package_id: &str,
+    product: &RenderedProduct,
+) -> Result<Option<AudioItem>> {
+    if !product
+        .segments
+        .iter()
+        .any(|segment| !segment.audio_path.trim().is_empty())
+    {
+        return Ok(None);
+    }
+
+    let title = fallback_text(&product.title, &title_for_package(package_id));
+    let reader_id = fallback_text(&product.reader_id, &cfg.reader_id(package_id));
+    let language = fallback_text(&product.language, &feed.language());
+    let job_id = queue_id(&format!("{}-{package_id}", feed.id));
+    let mut text_parts = Vec::<String>::new();
+    let mut chunks = Vec::<Arc<[u8]>>::new();
+    let mut source_paths = Vec::<String>::new();
+
+    async fn flush_text_parts(
+        text_parts: &mut Vec<String>,
+        chunks: &mut Vec<Arc<[u8]>>,
+        cfg: &LoadedConfig,
+        client: &BridgeClient,
+        audio_cache: &AudioCache,
+        feed: &FeedConfig,
+        package_id: &str,
+        job_id: &str,
+        reader_id: &str,
+        language: &str,
+    ) -> Result<()> {
+        if text_parts.is_empty() {
+            return Ok(());
+        }
+        let text = text_parts.join("\n\n");
+        text_parts.clear();
+        let output_path = cfg
+            .base_dir
+            .join("runtime/audio/playout")
+            .join(&feed.id)
+            .join(format!("{job_id}-part-{}.wav", chunks.len() + 1));
+        let pcm = audio_cache
+            .synthesize_wav(
+                client,
+                SynthJob {
+                    id: queue_id(&format!("{}-{package_id}-part", feed.id)),
+                    text,
+                    reader_id: reader_id.to_string(),
+                    language: language.to_string(),
+                    output_path,
+                },
+                cfg,
+            )
+            .await?;
+        chunks.push(pcm);
+        Ok(())
+    }
+
+    for segment in &product.segments {
+        let audio_path = segment.audio_path.trim();
+        if audio_path.is_empty() {
+            if !segment.text.trim().is_empty() {
+                text_parts.push(segment.text.clone());
+            }
+            continue;
+        }
+        flush_text_parts(
+            &mut text_parts,
+            &mut chunks,
+            cfg,
+            client,
+            audio_cache,
+            feed,
+            package_id,
+            &job_id,
+            &reader_id,
+            &language,
+        )
+        .await?;
+        let path = resolve_path(&cfg.base_dir, audio_path);
+        let pcm = audio_cache.read_wav_pcm(&path, cfg).await?;
+        source_paths.push(audio_path.to_string());
+        chunks.push(pcm);
+    }
+    flush_text_parts(
+        &mut text_parts,
+        &mut chunks,
+        cfg,
+        client,
+        audio_cache,
+        feed,
+        package_id,
+        &job_id,
+        &reader_id,
+        &language,
+    )
+    .await?;
+
+    if chunks.is_empty() {
+        return Ok(None);
+    }
+    let total_len = chunks
+        .iter()
+        .fold(0usize, |total, chunk| total.saturating_add(chunk.len()));
+    let mut mixed = Vec::with_capacity(total_len);
+    for chunk in chunks {
+        mixed.extend_from_slice(&chunk);
+    }
+    let pcm: Arc<[u8]> = Arc::from(mixed.into_boxed_slice());
+    let duration_ms = pcm_duration_ms(
+        pcm.len(),
+        cfg.root.playout.sample_rate,
+        cfg.root.playout.channels,
+    );
+    Ok(Some(AudioItem {
+        id: job_id,
+        package_id: package_id.to_string(),
+        title,
+        pcm,
+        metadata: AudioItemMetadata {
+            audio_path: source_paths.join(","),
+            duration_ms,
+            ..Default::default()
+        },
+        resume_offset: 0,
+        gap_after: package_gap(cfg),
+        not_before: None,
+        queued_at: Utc::now().to_rfc3339(),
+        target_start: String::new(),
+        predicted_start: String::new(),
+        predicted_finish: String::new(),
+        source: ItemSource::Generated,
+    }))
+}
+
 fn metadata_text<'a>(metadata: &'a HashMap<String, String>, key: &str) -> &'a str {
     metadata
         .iter()
@@ -1955,6 +2101,7 @@ async fn render_product_with_fallback(
         reader_id: cfg.reader_id(package_id),
         language: feed.language(),
         metadata: HashMap::new(),
+        segments: Vec::new(),
     })
 }
 

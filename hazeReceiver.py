@@ -45,9 +45,10 @@ DEFAULT_DEVIATION_HZ = 5000
 DEFAULT_AUDIO_FILTERS = (
     'highpass=f=40,'
     'lowpass=f=5000,'
-    'volume=36dB,'
+    'volume=30dB,'
     'alimiter=limit=0.90:level=disabled'
 )
+DEFAULT_PIFM_EXTRA_ARGS = ('--power', '0')
 
 log = logging.getLogger(__name__)
 
@@ -2663,7 +2664,7 @@ def _parse_args() -> ReceiverConfig:
         ffmpeg_log_level=str(args.ffmpeg_log_level or 'warning'),
         audio_filters=str(args.audio_filters or 'anull'),
         pifmadv_bin=str(args.pifmadv_bin or pifm_bin),
-        pifm_extra_args=tuple(args.pi_extra_arg),
+        pifm_extra_args=(*DEFAULT_PIFM_EXTRA_ARGS, *tuple(args.pi_extra_arg)),
         reconnect_initial_delay_s=max(0.1, float(args.reconnect_initial_delay)),
         reconnect_max_delay_s=max(0.1, float(args.reconnect_max_delay)),
         reconnect_backoff=max(1.0, float(args.reconnect_backoff)),

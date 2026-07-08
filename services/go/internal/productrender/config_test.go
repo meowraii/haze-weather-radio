@@ -34,6 +34,7 @@ func TestLoadCombinedProductsBuildsProfilesAndText(t *testing.T) {
   </product>
   <product id="current_conditions" enabled="true">
     <lang iso="en" readerid="03">
+      <audio key="opener">./audio/vocal/current.wav</audio>
       <primary>
         <placeholder>The report at {location} was not available.</placeholder>
         <text>At {location},</text>
@@ -47,7 +48,7 @@ func TestLoadCombinedProductsBuildsProfilesAndText(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	packages, productText, err := loadCombinedProducts(path)
+	packages, productText, productAudio, err := loadCombinedProducts(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +99,9 @@ func TestLoadCombinedProductsBuildsProfilesAndText(t *testing.T) {
 	}
 	if got := productText["current_conditions"]["primary.text.2"]["en"]; got != "The temperature was {ctemp} degrees." {
 		t.Fatalf("primary text 2 = %q", got)
+	}
+	if got := productAudio["current_conditions"]["opener"]["en"]; got != "./audio/vocal/current.wav" {
+		t.Fatalf("current conditions opener audio = %q", got)
 	}
 }
 

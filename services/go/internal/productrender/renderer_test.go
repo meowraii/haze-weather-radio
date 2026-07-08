@@ -72,6 +72,8 @@ func TestMarineAndAviationReportsUseSharedObservationWithKnots(t *testing.T) {
 	cfg := loadFixtureConfig(t, dir)
 	cfg.Packages["marine_reports"] = packageProfile{Enabled: true, ReaderID: "00"}
 	cfg.Packages["aviation_reports"] = packageProfile{Enabled: true, ReaderID: "00"}
+	cfg.Feeds[0].Locations.MarineConditions.Locations = []locationXML{{ID: "CYXE", Source: "eccc"}}
+	cfg.Feeds[0].Locations.AviationReportLocations.Locations = []locationXML{{ID: "CYXE", Source: "eccc"}}
 	cfg.ProductText["marine_reports"] = map[string]map[string]string{
 		"report.text.1":       {"en-ca": "The marine report for {location},"},
 		"report.text.2":       {"en-ca": "the weather was {weather}."},
@@ -111,6 +113,9 @@ func TestMarineAndAviationReportsUseSharedObservationWithKnots(t *testing.T) {
 	if !strings.Contains(marine.Text, "Winds were north west at 21 knots") || strings.Contains(marine.Text, "at 10 21 knots") {
 		t.Fatalf("marine report wind wording wrong:\n%s", marine.Text)
 	}
+	if !strings.Contains(marine.Text, "Airport,\nthe weather was Mostly Cloudy.") {
+		t.Fatalf("marine report collapsed punctuation or line pacing:\n%s", marine.Text)
+	}
 	for _, wanted := range []string{
 		"The aviation weather report for Saskatoon Diefenbaker Int'l Airport",
 		"visibility, 15 statute miles.",
@@ -120,6 +125,106 @@ func TestMarineAndAviationReportsUseSharedObservationWithKnots(t *testing.T) {
 		if !strings.Contains(aviation.Text, wanted) {
 			t.Fatalf("aviation report missing %q:\n%s", wanted, aviation.Text)
 		}
+	}
+	if !strings.Contains(aviation.Text, "Airport,\nvisibility, 15 statute miles.\naltimeter setting, 29.94 inches.") {
+		t.Fatalf("aviation report collapsed punctuation or line pacing:\n%s", aviation.Text)
+	}
+}
+
+func TestObservationReportUsesExistingAudioOpenerSegment(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	audioPath := filepath.Join(dir, "audio", "vocal", "marine.wav")
+	if err := os.MkdirAll(filepath.Dir(audioPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(audioPath, []byte("placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := loadFixtureConfig(t, dir)
+	cfg.Packages["marine_reports"] = packageProfile{Enabled: true, ReaderID: "00"}
+	cfg.Feeds[0].Locations.MarineConditions.Locations = []locationXML{{ID: "CYXE", Source: "eccc"}}
+	cfg.ProductAudio = map[string]map[string]map[string]string{
+		"marine_reports": {"opener": {"en-ca": "./audio/vocal/marine.wav"}},
+	}
+	cfg.ProductText["marine_reports"] = map[string]map[string]string{
+		"opener":              {"en-ca": "The text opener should be replaced."},
+		"report.text.1":       {"en-ca": "The marine report for {location}."},
+		"report.winds.text.1": {"en-ca": "Winds were {dir_text} at {spd_maritime}."},
+		"report.winds.text.2": {"en-ca": "The wind was calm."},
+	}
+	storeObservationJSON(t, cfg.Store, "CYXE", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Saskatoon Diefenbaker Int'l Airport"},
+  "station_id": "CYXE",
+  "properties": {
+    "temp": 24,
+    "wind": {"direction": "NW", "speed": 18}
+  }
+}`)
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "marine_reports"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(product.Segments) < 2 || product.Segments[0].AudioPath != "./audio/vocal/marine.wav" {
+		t.Fatalf("segments = %#v", product.Segments)
+	}
+	if strings.Contains(product.Text, "text opener") {
+		t.Fatalf("audio opener leaked fallback text:\n%s", product.Text)
+	}
+	if !strings.Contains(product.Text, "The marine report for Saskatoon Diefenbaker Int'l Airport.") {
+		t.Fatalf("report text missing:\n%s", product.Text)
+	}
+}
+
+func TestObservationReportProductsRequireDedicatedLocationBlocks(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	cfg.Packages["marine_reports"] = packageProfile{Enabled: true, ReaderID: "00"}
+	cfg.Packages["aviation_reports"] = packageProfile{Enabled: true, ReaderID: "00"}
+	cfg.ProductText["marine_reports"] = map[string]map[string]string{
+		"report.text.1": {"en-ca": "The marine report for {location}."},
+	}
+	cfg.ProductText["aviation_reports"] = map[string]map[string]string{
+		"report.text.1": {"en-ca": "The aviation weather report for {location}."},
+	}
+	cfg.Feeds[0].Locations.AviationReportLocations.Locations = nil
+	cfg.Feeds[0].Locations.MarineConditions.Locations = []locationXML{{ID: "CXTO", Source: "eccc"}}
+	storeObservationJSON(t, cfg.Store, "sk-40", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Saskatoon"},
+  "station_id": "sk-40",
+  "properties": {"temp": 24}
+}`)
+	storeObservationJSON(t, cfg.Store, "CXTO", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Toronto Island"},
+  "station_id": "CXTO",
+  "properties": {"temp": 18}
+}`)
+
+	marine, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "marine_reports"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(marine.Text, "The marine report for Toronto Island.") {
+		t.Fatalf("marine report used wrong station:\n%s", marine.Text)
+	}
+	if _, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "aviation_reports"}); err == nil {
+		t.Fatalf("aviation report should not fall back to generic observation locations")
+	}
+}
+
+func TestRenderTemplateTextPreservesPunctuationAndLines(t *testing.T) {
+	got := renderTemplateText("Wait...  {thing},\nthen continue.", map[string]string{"thing": "now"})
+	want := "Wait... now,\nthen continue."
+	if got != want {
+		t.Fatalf("renderTemplateText = %q, want %q", got, want)
 	}
 }
 
@@ -287,10 +392,11 @@ func TestForecastProductUsesNestedProductTemplates(t *testing.T) {
   "issued_at": "2026-06-15T20:00:00-06:00",
   "name": {"en": "Outlook - Watrous - Hanley - Imperial and Dinsmore region"},
   "forecast": [
-    {"period": {"en": "Today"}, "textSummary": {"en": "Sunny"}},
     {"period": {"en": "Tonight"}, "textSummary": {"en": "Cloudy with showers"}},
-    {"period": {"en": "Tuesday night"}, "textSummary": {"en": "Clearing in the evening"}},
-    {"period": {"en": "Wednesday"}, "textSummary": {"en": "Chance of showers"}}
+    {"period": {"en": "Wednesday"}, "textSummary": {"en": "Sunny"}},
+    {"period": {"en": "Wednesday Night"}, "textSummary": {"en": "Partly cloudy"}},
+    {"period": {"en": "Thursday"}, "textSummary": {"en": "Sunny"}},
+    {"period": {"en": "Thursday Night"}, "textSummary": {"en": "Clear"}}
   ]
 }`)
 
@@ -300,30 +406,37 @@ func TestForecastProductUsesNestedProductTemplates(t *testing.T) {
 	}
 	for _, wanted := range []string{
 		"Now for your official Environment Canada forecast, Issued at 8 PM Central Standard Time.",
-		"For today. Sunny.",
 		"For tonight. Cloudy with showers.",
+		"For Wednesday. Sunny.",
+		"For Wednesday Night. Partly cloudy.",
 		"The extended outlook.",
-		"For Tuesday night. Clearing in the evening.",
-		"For Wednesday. Chance of showers.",
+		"For Thursday. Sunny.",
+		"For Thursday Night. Clear.",
 	} {
 		if !strings.Contains(product.Text, wanted) {
 			t.Fatalf("forecast missing %q:\n%s", wanted, product.Text)
 		}
 	}
+	if strings.Index(product.Text, "For Wednesday Night. Partly cloudy.") > strings.Index(product.Text, "The extended outlook.") {
+		t.Fatalf("Wednesday night should be before extended outlook:\n%s", product.Text)
+	}
+	if strings.Index(product.Text, "The extended outlook.") > strings.Index(product.Text, "For Thursday. Sunny.") {
+		t.Fatalf("Thursday should be after extended outlook:\n%s", product.Text)
+	}
 	var extendedSegments int
 	for _, segment := range product.Segments {
-		if strings.Contains(segment.Label, "Tuesday night") && strings.Contains(segment.Label, "Wednesday") {
+		if strings.Contains(segment.Text, "The extended outlook.") {
 			extendedSegments++
-			if !strings.Contains(segment.Text, "The extended outlook.") || !strings.Contains(segment.Text, "For Tuesday night.") || !strings.Contains(segment.Text, "For Wednesday.") {
-				t.Fatalf("extended segment did not combine future days:\n%#v", segment)
+			if strings.Contains(segment.Text, "For Wednesday Night.") || !strings.Contains(segment.Text, "For Thursday.") || !strings.Contains(segment.Text, "For Thursday Night.") {
+				t.Fatalf("extended segment had wrong periods:\n%#v", segment)
 			}
 		}
 	}
-	if extendedSegments != 1 {
-		t.Fatalf("extended forecast segment count = %d, segments=%#v", extendedSegments, product.Segments)
-	}
 	if strings.Contains(product.Text, "Today. Sunny") {
 		t.Fatalf("forecast used legacy period wording:\n%s", product.Text)
+	}
+	if extendedSegments != 1 {
+		t.Fatalf("extended forecast segment count = %d, segments=%#v", extendedSegments, product.Segments)
 	}
 }
 

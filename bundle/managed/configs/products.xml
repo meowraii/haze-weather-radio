@@ -360,23 +360,23 @@
 
   <product id="marine_reports" variant="0" enabled="true">
     <lang iso="en" readerid="00">
-      <audio key="opener">./audio/vocal/AC_CURRENT_MARINE_REPORTS.wav</audio>
+      <audio key="opener">./audio/vocal/AC_CURRENT_MARINE_REPORTS_EN.wav</audio>
       <report>
         <placeholder>The report at {location} was not available.</placeholder>
-        <text>The marine report for {location},</text>
-        <text hide="true">the weather was {weather}.</text>
+        <text>The marine report for {location}.</text>
+        <text hide="true">Weather, {weather}.</text>
         <text>Air temperature, {ctemp} degrees.</text>
         <text hide="true">Relative humidity, {hum} percent.</text>
         <text hide="true">Altimeter setting, {pressure}.</text>
         <winds>
           <placeholder>The wind report was not available.</placeholder>
-          <text>Winds were {dir_text} at {spd_maritime}</text>
+          <text>Winds were {dir_text} at {spd_maritime}.</text>
           <text>The wind was calm.</text>
         </winds>
       </report>
     </lang>
     <lang iso="fr-CA" readerid="02">
-      <text key="opener">Les rapports maritimes actuels.</text>
+      <audio key="opener">./audio/vocal/AC_CURRENT_MARINE_REPORTS_FR.wav</audio>
       <report>
         <placeholder>Le rapport pour {location} n'était pas disponible.</placeholder>
         <text>Le rapport maritime pour {location},</text>
@@ -412,18 +412,18 @@
 
   <product id="aviation_reports" variant="0" enabled="true">
     <lang iso="en" readerid="00">
-      <audio key="opener">./audio/vocal/AC_CURRENT_AVIATION_REPORTS.wav</audio>
+      <text key="opener">The current aviation weather reports.</text>
       <report>
         <placeholder>The aviation weather report for {location} was not available.</placeholder>
-        <text>The aviation weather report for {location},</text>
-        <text hide="true">visibility, {visibility}.</text>
-        <text hide="true">sky condition, {sky_condition}.</text>
-        <text hide="true">present weather, {weather}.</text>
-        <text hide="true">temperature, {ctemp} degrees. Dewpoint, {c_dewp} degrees.</text>
-        <text hide="true">altimeter setting, {altimeter}.</text>
+        <text>The aviation weather report for {location}.</text>
+        <text hide="true">Visibility, {visibility}.</text>
+        <text hide="true">Sky condition, {sky_condition}.</text>
+        <text hide="true">Present weather, {weather}.</text>
+        <text hide="true">Temperature, {ctemp} degrees. Dewpoint, {c_dewp} degrees.</text>
+        <text hide="true">Altimeter setting, {altimeter}.</text>
         <winds>
           <placeholder>The wind report was not available.</placeholder>
-          <text>Winds were {dir_text} at {spd_aviation}</text>
+          <text>Winds were {dir_text} at {spd_aviation}.</text>
           <text>The wind was calm.</text>
         </winds>
       </report>
@@ -558,7 +558,7 @@
 
 
   <product id="geophysical_alert" variant="0" enabled="true">
-    <lang iso="en" readerid="00" />
+    <lang iso="en" readerid="01" />
   </product>
 
   <product id="alerts" variant="0" enabled="true">
@@ -568,7 +568,6 @@
   <product id="user_bulletin" variant="0" enabled="true">
     <lang iso="en" readerid="00" />
     <lang iso="fr" readerid="02" />
-    <lang iso="es" readerid="00" />
   </product>
 
 </ProductText>

@@ -69,6 +69,21 @@ pub(crate) struct RenderedProduct {
     pub(crate) language: String,
     #[serde(default)]
     pub(crate) metadata: HashMap<String, String>,
+    #[serde(default)]
+    pub(crate) segments: Vec<RenderedSegment>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct RenderedSegment {
+    #[serde(default)]
+    pub(crate) kind: String,
+    #[serde(default)]
+    pub(crate) label: String,
+    #[serde(default)]
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) audio_path: String,
 }
 
 pub(crate) async fn connect(addr: &str) -> Result<BridgeConnection> {

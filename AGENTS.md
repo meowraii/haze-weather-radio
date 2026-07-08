@@ -63,8 +63,10 @@ Its structure is defined as an Event-Driven Architecture (EDA), a highly asynchr
 - For source changes that affect the primary live instance, rebuild the affected binaries, sync them into `/home/rai/haze-weather-radio/bin`, sync required config/assets, then restart with `systemctl --user restart haze-weather-radio.service`.
 - After restarting the primary live instance, check `systemctl --user status haze-weather-radio.service` and relevant `journalctl --user -u haze-weather-radio.service` logs.
 - The CWRS/CWXR (Canadian Weather Radio Service) Haze instance is the separate CWXR VM at `172.16.1.38`. It is usually reachable through the Windows share `\\DESKTOP-QOQ6ERC\Users\rai\haze-weather-radio`.
+- The RF receiver/transmitter Raspberry Pi runs at `172.16.1.37` and is reachable with `ssh pi`. It runs `haze-receiver.service`, which launches `/home/rai/hazeReceiver.py` and feeds PiFmAdv for local receiver testing.
 - Unless the user explicitly scopes a deployment to only one environment, changes that affect running Haze behavior should be deployed to both the primary live instance and the CWRS/CWXR instance.
 - For CWRS/CWXR, keep `bundle/managed/configs/cwxr-feeds.xml` synced into the runtime as `managed/configs/feeds.xml`, and keep shared products/output/IVR configs in sync when touched.
+- For RF receiver changes, sync `hazeReceiver.py` to `/home/rai/hazeReceiver.py` on the Pi, preserve an on-device backup when practical, restart with `sudo systemctl restart haze-receiver.service`, then confirm `systemctl status haze-receiver.service` and that PiFmAdv starts with the intended frequency, deviation, and power arguments.
 - SSH or WinRM access to the CWRS/CWXR VM may be unavailable. If remote restart is not possible, still sync the updated files over SMB, report that restart could not be performed, and do not pretend the runtime picked up the changes.
 - Never overwrite live `.env`, logs, runtime state, local data, managed operator files, or generated audio unless the user explicitly asks for that specific destructive action.
 
