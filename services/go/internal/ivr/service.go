@@ -235,9 +235,6 @@ func (s *Service) runConnected(ctx context.Context) error {
 			}
 		}()
 	}
-	if s.cfg.IVR.Cache.RefreshOnStartup {
-		go s.prewarm(ctx, s.cfg.IVR.Cache.PrewarmCodes, false)
-	}
 	if s.cfg.IVR.Cache.StaticOnStartup {
 		go s.generateStaticPrompts(ctx)
 	}
@@ -265,7 +262,6 @@ func (s *Service) routes() http.Handler {
 	mux.HandleFunc("/ivr/v1/audio", s.handleAudio)
 	mux.HandleFunc("/ivr/v1/alert_audio", s.handleAlertAudio)
 	mux.HandleFunc("/ivr/v1/twiml", s.handleTwiML)
-	mux.HandleFunc("/ivr/v1/cache/prewarm", s.handlePrewarm)
 	mux.HandleFunc("/ivr/v1/metrics", s.handleMetrics)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
@@ -1164,19 +1160,6 @@ func (s *Service) writeUnavailableTwiML(writer http.ResponseWriter, request *htt
 	writeTwiML(writer, twimlPlay(promptURL(request, "error", "unavailable", s.promptValues(nil)))+twimlRedirect(twimlURL(request, "/ivr/v1/twiml", nil)))
 }
 
-func (s *Service) handlePrewarm(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodPost {
-		http.Error(writer, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	codes := s.cfg.IVR.Cache.PrewarmCodes
-	if raw := request.URL.Query().Get("codes"); raw != "" {
-		codes = splitCSV(raw)
-	}
-	s.prewarm(request.Context(), codes, request.URL.Query().Get("force") == "1")
-	writeJSON(writer, map[string]any{"accepted": true, "codes": codes})
-}
-
 func (s *Service) handleMetrics(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, map[string]any{
 		"lookups":        s.metrics.Lookups.Load(),
@@ -1264,20 +1247,6 @@ func (s *Service) defaultFeedLocationForID(feedID string) (ResolvedLocation, err
 		return ResolvedLocation{}, fmt.Errorf("feed %q is not configured or enabled", feedID)
 	}
 	return ResolvedLocation{}, fmt.Errorf("no enabled IVR feed is configured")
-}
-
-func (s *Service) prewarm(ctx context.Context, codes []string, force bool) {
-	for _, code := range codes {
-		if ctx.Err() != nil {
-			return
-		}
-		if strings.TrimSpace(code) == "" {
-			continue
-		}
-		if _, err := s.productForCode(ctx, code, nil, force); err != nil {
-			log.Printf("IVR prewarm failed for %s: %v", code, err)
-		}
-	}
 }
 
 func (s *Service) generateStaticPrompts(ctx context.Context) {

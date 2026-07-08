@@ -21,9 +21,11 @@ type liveObservationFile struct {
 	Station    any    `json:"station"`
 	StationID  string `json:"station_id"`
 	Properties struct {
-		Temp      *float64 `json:"temp"`
-		Condition any      `json:"condition"`
-		Wind      struct {
+		Temp         *float64 `json:"temp"`
+		Condition    any      `json:"condition"`
+		SkyCondition any      `json:"sky_condition"`
+		Altimeter    string   `json:"altimeter"`
+		Wind         struct {
 			Speed     *float64 `json:"speed"`
 			Direction string   `json:"direction"`
 			Gust      *float64 `json:"gust"`
@@ -117,6 +119,55 @@ type liveClimateFile struct {
 	} `json:"astronomy"`
 }
 
+type liveMarineForecastFile struct {
+	ID         string `json:"id"`
+	Properties struct {
+		LastUpdated string `json:"lastUpdated"`
+		Area        struct {
+			Value     any `json:"value"`
+			Region    any `json:"region"`
+			SubRegion any `json:"subRegion"`
+		} `json:"area"`
+		RegularForecast struct {
+			Locations           []liveMarineForecastLocation `json:"locations"`
+			IssuedDatetimeUTC   string                       `json:"issuedDatetimeUTC"`
+			IssuedDatetimeLocal string                       `json:"issuedDatetimeLocal"`
+		} `json:"regularForecast"`
+		ExtendedForecast struct {
+			Locations           []liveMarineExtendedLocation `json:"locations"`
+			IssuedDatetimeUTC   string                       `json:"issuedDatetimeUTC"`
+			IssuedDatetimeLocal string                       `json:"issuedDatetimeLocal"`
+		} `json:"extendedForecast"`
+		WaveForecast struct {
+			Locations           []liveMarineForecastLocation `json:"locations"`
+			IssuedDatetimeUTC   string                       `json:"issuedDatetimeUTC"`
+			IssuedDatetimeLocal string                       `json:"issuedDatetimeLocal"`
+		} `json:"waveForecast"`
+		Warnings struct {
+			Locations []liveMarineForecastLocation `json:"locations"`
+		} `json:"warnings"`
+	} `json:"properties"`
+}
+
+type liveMarineForecastLocation struct {
+	Name             string `json:"name"`
+	WeatherCondition struct {
+		PeriodOfCoverage any `json:"periodOfCoverage"`
+		Wind             any `json:"wind"`
+		TextSummary      any `json:"textSummary"`
+		Value            any `json:"value"`
+	} `json:"weatherCondition"`
+}
+
+type liveMarineExtendedLocation struct {
+	WeatherCondition struct {
+		ForecastPeriods []struct {
+			Name  any `json:"name"`
+			Value any `json:"value"`
+		} `json:"forecastPeriods"`
+	} `json:"weatherCondition"`
+}
+
 type liveSpecialtyProductFile struct {
 	Source     string           `json:"source"`
 	Collection string           `json:"collection"`
@@ -126,10 +177,29 @@ type liveSpecialtyProductFile struct {
 }
 
 func (r renderer) loadLiveObservationSnapshot(feed feedXML, snapshot *observationSnapshot) (string, bool) {
+	return r.loadObservationSnapshotFromLocations(feed.Locations.ObservationLocations.Locations, feedLanguage(feed), snapshot)
+}
+
+func (r renderer) loadLiveObservationReportSnapshot(feed feedXML, pkgID string, snapshot *observationSnapshot) (string, bool) {
 	lang := feedLanguage(feed)
+	locations := feed.Locations.ObservationLocations.Locations
+	switch strings.ToLower(strings.TrimSpace(pkgID)) {
+	case "aviation_reports":
+		if len(feed.Locations.AviationReportLocations.Locations) > 0 {
+			locations = feed.Locations.AviationReportLocations.Locations
+		}
+	case "marine_reports":
+		if len(feed.Locations.MarineConditions.Locations) > 0 {
+			locations = feed.Locations.MarineConditions.Locations
+		}
+	}
+	return r.loadObservationSnapshotFromLocations(locations, lang, snapshot)
+}
+
+func (r renderer) loadObservationSnapshotFromLocations(locations []locationXML, lang string, snapshot *observationSnapshot) (string, bool) {
 	var inputs []string
 	var observations []observation
-	for _, loc := range feed.Locations.ObservationLocations.Locations {
+	for _, loc := range locations {
 		obs, path, ok := r.liveObservation(loc, lang)
 		if !ok {
 			continue
@@ -174,6 +244,7 @@ func observationFromLiveFile(loc locationXML, lang string, raw liveObservationFi
 		Source:           fallbackText(raw.Source, loc.Source),
 		LocationName:     name,
 		Condition:        localizedString(raw.Properties.Condition, lang),
+		SkyCondition:     localizedString(raw.Properties.SkyCondition, lang),
 		TemperatureC:     raw.Properties.Temp,
 		DewpointC:        raw.Properties.Dewpoint,
 		HumidityPercent:  raw.Properties.Humidity,
@@ -183,6 +254,7 @@ func observationFromLiveFile(loc locationXML, lang string, raw liveObservationFi
 		VisibilityKM:     raw.Properties.Visibility,
 		PressureKPA:      raw.Properties.Pressure.Value,
 		PressureTendency: localizedString(raw.Properties.Pressure.Tendency, lang),
+		Altimeter:        raw.Properties.Altimeter,
 		ObservedAt:       raw.ObservedAt,
 	}
 }
@@ -330,6 +402,87 @@ func (r renderer) loadLiveClimateSnapshot(feed feedXML, snapshot *climateSnapsho
 		return input, true
 	}
 	return "", false
+}
+
+func (r renderer) loadLiveMarineForecastSnapshot(feed feedXML, snapshot *marineForecastSnapshot) (string, bool) {
+	lang := feedLanguage(feed)
+	for _, loc := range feedMarineForecastLocations(feed) {
+		var raw liveMarineForecastFile
+		input, ok := r.loadStoreProductPayload("marine_forecast", loc.Source, loc.ID, &raw)
+		if !ok {
+			continue
+		}
+		area := firstNonBlank(loc.NameOverride, localizedString(raw.Properties.Area.Value, lang), localizedString(raw.Properties.Area.SubRegion, lang), loc.ID)
+		regular := marineForecastLocations(raw.Properties.RegularForecast.Locations, lang, "wind")
+		waves := marineForecastLocations(raw.Properties.WaveForecast.Locations, lang, "wave")
+		extended := marineExtendedForecastPeriods(raw.Properties.ExtendedForecast.Locations, lang)
+		warnings := marineForecastLocations(raw.Properties.Warnings.Locations, lang, "warning")
+		if len(regular) == 0 && len(waves) == 0 && len(extended) == 0 && len(warnings) == 0 {
+			continue
+		}
+		*snapshot = marineForecastSnapshot{
+			IssuedAt:  firstNonBlank(raw.Properties.RegularForecast.IssuedDatetimeLocal, raw.Properties.RegularForecast.IssuedDatetimeUTC, raw.Properties.ExtendedForecast.IssuedDatetimeLocal, raw.Properties.ExtendedForecast.IssuedDatetimeUTC),
+			UpdatedAt: raw.Properties.LastUpdated,
+			Area:      area,
+			Regular:   regular,
+			Waves:     waves,
+			Extended:  extended,
+			Warnings:  warnings,
+		}
+		return input, true
+	}
+	return "", false
+}
+
+func feedMarineForecastLocations(feed feedXML) []locationXML {
+	out := make([]locationXML, 0, len(feed.Locations.MarineForecastLocations.Locations)+len(feed.Locations.MarineForecastLocations.Subregions))
+	out = append(out, feed.Locations.MarineForecastLocations.Locations...)
+	out = append(out, feed.Locations.MarineForecastLocations.Subregions...)
+	return out
+}
+
+func marineForecastLocations(locations []liveMarineForecastLocation, lang string, field string) []marineForecastLocation {
+	out := make([]marineForecastLocation, 0, len(locations))
+	for _, loc := range locations {
+		text := ""
+		switch field {
+		case "wave":
+			text = localizedString(loc.WeatherCondition.TextSummary, lang)
+		case "warning":
+			text = firstNonBlank(localizedString(loc.WeatherCondition.TextSummary, lang), localizedString(loc.WeatherCondition.Value, lang), localizedString(loc.WeatherCondition.Wind, lang))
+		default:
+			text = localizedString(loc.WeatherCondition.Wind, lang)
+		}
+		text = cleanMarineForecastText(text)
+		if text == "" {
+			continue
+		}
+		out = append(out, marineForecastLocation{
+			Name:   fallbackText(loc.Name, "marine area"),
+			Period: cleanMarineForecastText(localizedString(loc.WeatherCondition.PeriodOfCoverage, lang)),
+			Text:   text,
+		})
+	}
+	return out
+}
+
+func marineExtendedForecastPeriods(locations []liveMarineExtendedLocation, lang string) []marineForecastPeriod {
+	var out []marineForecastPeriod
+	for _, loc := range locations {
+		for _, period := range loc.WeatherCondition.ForecastPeriods {
+			name := cleanMarineForecastText(localizedString(period.Name, lang))
+			text := cleanMarineForecastText(localizedString(period.Value, lang))
+			if name == "" || text == "" {
+				continue
+			}
+			out = append(out, marineForecastPeriod{Name: name, Text: text})
+		}
+	}
+	return out
+}
+
+func cleanMarineForecastText(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
 func (r renderer) loadLiveBulletinSnapshot(feed feedXML, snapshot *bulletinSnapshot) (string, bool) {

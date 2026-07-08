@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  products.xml
+      this config determines the exact wording of the products used on air.
+      `id` determines what data will be available to the product renderer.
+      data variables are encapsulated with { }: {example}
+      `hide` determines when the particular sentence should not be read.
+      available options are:
+          - `false` (or null) this sentence will always be read whether there is data or not. if the data is unavailable, it will replace the variable with "unavailable".
+          - `true` this sentence will not be read when the corresponding data is not available.
+      other `lang` keys will only be read if the specific feed is marked as bilingual (e.g. more languages than `en-US`). Otherwise, only the first lang key will be used.
+
+      global variables: (-> example // remarks)
+      `callsign` -> "XLF322"
+      `on_air_name` -> "All Hazards, Canada Radio Met" // on air name pronunciation in config.yaml
+      `operator_name` -> "meow rai" // operator name pronunciation in config.yaml
+      `freq_mhz` -> "one hundred and sixty two point five five megahertz"
+      `freq_khz` -> "seven twenty kilohertz"
+      `service_area` -> "Saskatoon"
+      `service_region` -> "City of Saskatoon"
+      `day_name` -> "Tuesday"
+      `month_name` -> "July"
+      `day_num` -> "seven"
+      `hour` -> "eleven"
+      `minute` -> "o ten"
+      `second` -> "forty nine"
+      `year` -> "two thousand twenty six"
+      `timezone` -> "Central Standard Time" // issue_timezone is separate, as product data may be timestamped in a different timezone than the feed's timezone.
+-->
+<ProductText version="1.1">
+
+  <product id="station_id" variant="0" enabled="true">
+    <lang iso="en" readerid="00">
+      <text>You are listening to {on_air_name}.</text>
+      <text>Servicing {service_area} on a standard weather radio carrier frequency of {freq_mhz}.</text>
+      <description /> <!-- see feeds.xml -->
+      <text hide="true">If you have comments, questions or concerns,</text>
+      <text key="call">please call us at {phone}</text>
+    </lang>
+  </product>
+
+  <product id="date_time" variant="0" enabled="true">
+    <lang iso="en" readerid="01">
+      <text key="opener">It is {hour}:{minute} {day_name}, {month_name} {day_num}, {year}, {timezone}.</text>
+    </lang>
+  </product>
+
+
+  <product id="current_conditions" variant="0" enabled="true">
+    <lang iso="en" readerid="00" >
+      <text key="opener">The current weather conditions. Issued by {source} at {issue_hour} {issue_ampm} {issue_timezone}.</text>
+      <primary>
+        <placeholder>The report at {location} was not available.</placeholder>
+        <text>At {location},</text>
+        <text hide="true">the weather was {weather}.</text>
+        <text>The temperature was {ctemp} degrees.</text>
+        <text hide="true">Dewpoint {c_dewp} degrees.</text>
+        <text hide="true">And the relative humidity was {hum} percent</text>
+        <text hide="true">The pressure was {pressure} and {tendency}.</text>
+        <winds>
+          <placeholder>The wind report was not available.</placeholder>
+          <text>Winds were {dir_text} at 10 {spd_metric}</text>
+          <text>The wind was calm.</text>
+        </winds>
+      </primary>
+      <text key="area_opener" lang="en-US">Across the {callsign} listening area:</text>
+      <nearby>
+        <placeholder>The report at {location} was not available.</placeholder>
+        <text>At {location},</text>
+        <text>The temperature was {ctemp} degrees.</text>
+        <text hide="true">Sky condition was {weather}.</text>
+        <winds>
+          <placeholder>The wind report was not available.</placeholder>
+          <text>Winds were {dir_text} at 10 {spd_metric}</text>
+          <text>The wind was calm.</text>
+        </winds>
+      </nearby>
+      <text key="report_time" lang="en-US"></text>
+    </lang>
+
+  </product>
+
+
+  <product id="forecast" variant="0" enabled="true">
+    <lang iso="en" readerid="01" >
+      <text key="opener">Now for your official {source} forecast, Issued at {issue_hour} {issue_ampm} {issue_timezone}.</text>
+      <region hide="true">
+
+        <shortterm>
+          <text key="region">For areas in and around {region}.</text>
+          <text key="region_plain">For the {region}.</text>
+          <text key="today">For today. {fc_text}</text>
+          <text key="tonight">For tonight. {fc_text}</text>
+        </shortterm>
+
+        <extended>
+          <text key="opener">The extended outlook.</text>
+          <text key="period">For {period}. {fc_text}</text>
+          <text key="normals">Normals for the period. Low {norm_low_c}, and high {norm_high_c}</text>
+        </extended>
+      </region>
+    </lang>
+  </product>
+
+
+  <product id="air_quality" variant="0" enabled="true">
+    <lang iso="en" readerid="00">
+      <observation>
+        <placeholder key="unavailable_report">The air quality information for {name} was unavailable.</placeholder>
+        <text key="now_eccc">The air quality health index was observed at {name} and reported a value of {val} at {time}.</text>
+      </observation>
+      <risk>
+        <text key="low_eccc">This is ideal air quality for outdoor activities for both at-risk and general populations.</text>
+        <text key="moderate_eccc">This is acceptable air quality for outdoor activities for most people. However, at-risk individuals should consider reducing or rescheduling strenuous outdoor activities if symptoms occur.</text>
+        <text key="high_eccc">This is unhealthy air quality for at-risk individuals, which include children, seniors, and those with pre-existing respiratory or heart conditions. At-risk individuals should reduce or reschedule strenuous outdoor activities. The general population is not likely to be affected.</text>
+        <text key="very_high_eccc">This is hazardous air quality for most people. At-risk individuals should avoid strenuous outdoor activities. Everyone else should also reduce or reschedule strenuous outdoor activities.</text>
+      </risk>
+      <forecast>
+        <text key="forecast_opener_eccc">The air quality health index forecast for {name} is {val} for {period_name} and is considered {risk}.</text>
+        <text key="forecast_eccc">For {period_name}, the maximum air quality health index is forecast to be {val}, or {risk}.</text>
+        <text key="forecast_trailing_eccc">{period2_val} on {period2_name}, and lastly, {period3_val} on {period3_name}.</text>
+        <text key="forecast_insmoke_eccc">The air quality health index is expected to be {val} in smoke.</text>
+      </forecast>
+    </lang>
+  </product>
+
+
+  <product id="climate_summary" variant="0" enabled="true">
+    <lang iso="en" readerid="01">
+      <text key="opener">The {source} climate summary.</text>
+      <summary>
+        <placeholder>The climate summary for {location} was not available.</placeholder>
+        <text>{summary_text}</text>
+      </summary>
+    </lang>
+  </product>
+
+  <product id="marine_forecast" variant="0" enabled="true">
+    <lang iso="en" readerid="01">
+      <text key="opener">The {source} marine forecast for {area}, issued at {issue_hour} {issue_minute} {issue_ampm} {issue_timezone}.</text>
+      <forecast>
+        <warnings>
+          <text key="location">Marine warning for {location}. {warning}</text>
+        </warnings>
+        <regular>
+          <text key="location">For {location}. {period} {wind}</text>
+        </regular>
+        <waves>
+          <text key="location">Waves for {location}. {period} {waves}</text>
+        </waves>
+        <extended>
+          <text key="opener">The extended marine outlook.</text>
+          <text key="period">For {period}. {forecast}</text>
+        </extended>
+      </forecast>
+    </lang>
+  </product>
+
+  <product id="marine_reports" variant="0" enabled="true">
+    <lang iso="en" readerid="00">
+      <audio key="opener">./audio/vocal/AC_CURRENT_MARINE_REPORTS.wav</audio>
+      <report>
+        <placeholder>The report at {location} was not available.</placeholder>
+        <text>The marine report for {location},</text>
+        <text hide="true">the weather was {weather}.</text>
+        <text>Air temperature, {ctemp} degrees.</text>
+        <text hide="true">Relative humidity, {hum} percent.</text>
+        <text hide="true">Altimeter setting, {pressure}.</text>
+        <winds>
+          <placeholder>The wind report was not available.</placeholder>
+          <text>Winds were {dir_text} at {spd_maritime}</text>
+          <text>The wind was calm.</text>
+        </winds>
+      </report>
+    </lang>
+  </product>
+
+
+  <product id="aviation_reports" variant="0" enabled="true">
+    <lang iso="en" readerid="00">
+      <audio key="opener">./audio/vocal/AC_CURRENT_AVIATION_REPORTS.wav</audio>
+      <report>
+        <placeholder>The aviation weather report for {location} was not available.</placeholder>
+        <text>The aviation weather report for {location},</text>
+        <text hide="true">visibility, {visibility}.</text>
+        <text hide="true">sky condition, {sky_condition}.</text>
+        <text hide="true">present weather, {weather}.</text>
+        <text hide="true">temperature, {ctemp} degrees. Dewpoint, {c_dewp} degrees.</text>
+        <text hide="true">altimeter setting, {altimeter}.</text>
+        <winds>
+          <placeholder>The wind report was not available.</placeholder>
+          <text>Winds were {dir_text} at {spd_aviation}</text>
+          <text>The wind was calm.</text>
+        </winds>
+      </report>
+    </lang>
+  </product>
+
+
+  <product id="thunderstorm_outlook" variant="0" enabled="true">
+    <lang iso="en" readerid="00">
+      <text key="opener">The Environment Canada Thunderstorm Outlook covering {site}.</text>
+      <outlook>
+        <placeholder>No active thunderstorm outlook is available for {site}.</placeholder>
+        <text key="none">No thunderstorms are expected for {period}.</text>
+        <text key="risk">For {period}, the thunderstorm risk is {risk}.</text>
+        <text key="hazards">Associated hazards may include {hazards}.</text>
+      </outlook>
+    </lang>
+  </product>
+
+
+  <product id="hydrometric" variant="0" enabled="true">
+    <lang iso="en" readerid="00">
+      <text key="opener">Hydrometric reports courtesy of Environment and Climate Change Canada.</text>
+      <primary>
+        <placeholder>No river condition report is available for {site}.</placeholder>
+        <gauge>
+          <text>{water_station} reported a water level of {level}.</text>
+          <text>The discharge rate was {discharge}.</text>
+        </gauge>
+      </primary>
+      <nearby>
+        <text key="upstream">Upstream.</text>
+        <text key="downstream">Downstream.</text>
+        <text key="and">and,</text>
+          <gauge>
+            <text>{water_station}, water level {level}.</text>
+            <text>Discharge, {discharge}.</text>
+          </gauge>
+      </nearby>
+    </lang>
+  </product>
+
+
+  <product id="geophysical_alert" variant="0" enabled="true" />
+
+  <product id="alerts" variant="0" enabled="true" />
+
+  <product id="user_bulletin" variant="0" enabled="true" />
+
+</ProductText>

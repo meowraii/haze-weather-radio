@@ -261,7 +261,6 @@ struct TtsConfig {
     out_dir: Option<String>,
     timeout: Option<String>,
     piper_voices_dir: Option<String>,
-    piper_prewarm: Option<bool>,
     kokoro_model_dir: Option<String>,
     kokoro_runtime_provider: Option<String>,
     kokoro_threads: Option<usize>,
@@ -1030,9 +1029,6 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     .filter(|value| !value.trim().is_empty())
                 {
                     args.extend(["--piper-voices-dir".to_string(), voices_dir.to_string()]);
-                }
-                if let Some(prewarm) = tts.piper_prewarm {
-                    args.push(format!("--piper-prewarm={prewarm}"));
                 }
                 if let Some(model_dir) = tts
                     .kokoro_model_dir

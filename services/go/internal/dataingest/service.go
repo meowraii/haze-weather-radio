@@ -65,14 +65,23 @@ type feedXML struct {
 		ObservationLocations struct {
 			Locations []locationXML `xml:"location"`
 		} `xml:"observationLocations"`
+		AviationReportLocations struct {
+			Locations []locationXML `xml:"location"`
+		} `xml:"aviationReportLocations"`
 		AirQualityLocations struct {
 			Locations []locationXML `xml:"location"`
 		} `xml:"airQualityLocations"`
 		ClimateLocations struct {
 			Locations []locationXML `xml:"location"`
 		} `xml:"climateLocations"`
+		MarineForecastLocations struct {
+			Locations  []locationXML `xml:"location"`
+			Subregions []locationXML `xml:"subregion"`
+		} `xml:"marineForecastLocations"`
 		HydrometricLocations struct {
-			Locations []locationXML `xml:"location"`
+			Locations  []locationXML               `xml:"location"`
+			Upstream   hydrometricLocationGroupXML `xml:"upstream"`
+			Downstream hydrometricLocationGroupXML `xml:"downstream"`
 		} `xml:"hydrometricLocations"`
 	} `xml:"locations"`
 }
@@ -82,6 +91,10 @@ type coverageRegionXML struct {
 	Source         string `xml:"source,attr"`
 	Name           string `xml:"name,attr"`
 	DeriveForecast string `xml:"derive_forecast,attr"`
+}
+
+type hydrometricLocationGroupXML struct {
+	Locations []locationXML `xml:"location"`
 }
 
 type locationXML struct {
@@ -239,6 +252,29 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 			}
 			publishDataReady(publisher, feed.ID, "current_conditions", loc.ID)
 		}
+		for _, loc := range feed.Locations.AviationReportLocations.Locations {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if strings.TrimSpace(loc.ID) == "" {
+				continue
+			}
+			payload, err := fetchAviationObservation(ctx, client, loc)
+			if err != nil {
+				log.Printf("aviation observation fetch failed for %s/%s: %v", sourceKind(loc.Source), loc.ID, err)
+				continue
+			}
+			payload["station_id"] = loc.ID
+			if raw, ok := payload["_raw_citypage"].(map[string]any); ok {
+				ecccCache[loc.ID] = raw
+			}
+			delete(payload, "_raw_citypage")
+			if err := persistObservation(ctx, store, loc, payload); err != nil {
+				log.Printf("aviation observation store failed for %s: %v", loc.ID, err)
+				continue
+			}
+			publishDataReady(publisher, feed.ID, "aviation_reports", loc.ID)
+		}
 		for _, region := range feed.Locations.Coverage.Regions {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -305,6 +341,24 @@ func fetchOnce(ctx context.Context, cfg loadedConfig, client *http.Client, publi
 				continue
 			}
 			publishDataReady(publisher, feed.ID, "climate_summary", loc.ID)
+		}
+		for _, loc := range feedMarineForecastLocations(feed) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if sourceKind(loc.Source) != "eccc" || strings.TrimSpace(loc.ID) == "" {
+				continue
+			}
+			payload, err := fetchMarineForecast(ctx, client, loc.ID)
+			if err != nil {
+				log.Printf("ECCC marine forecast fetch failed for %s: %v", loc.ID, err)
+				continue
+			}
+			if err := persistMarineForecast(ctx, store, loc, payload); err != nil {
+				log.Printf("marine forecast store failed for %s: %v", loc.ID, err)
+				continue
+			}
+			publishDataReady(publisher, feed.ID, "marine_forecast", loc.ID)
 		}
 		fetchFeedSpecialtyProducts(ctx, client, publisher, store, feed, ecccCache)
 	}
@@ -422,6 +476,17 @@ func fetchObservation(ctx context.Context, client *http.Client, loc locationXML)
 	}
 }
 
+func fetchAviationObservation(ctx context.Context, client *http.Client, loc locationXML) (map[string]any, error) {
+	if sourceKind(loc.Source) != "eccc" {
+		return fetchObservation(ctx, client, loc)
+	}
+	raw, err := fetchECCCSWOBLatest(ctx, client, loc.ID)
+	if err != nil {
+		return nil, err
+	}
+	return buildECCCSWOBConditions(raw, loc), nil
+}
+
 func buildECCCConditions(raw map[string]any) map[string]any {
 	props := mapAt(raw, "properties")
 	cc := mapAt(props, "currentConditions")
@@ -443,6 +508,216 @@ func buildECCCConditions(raw map[string]any) map[string]any {
 			"heatIndex":  nil,
 		},
 	}
+}
+
+type swobCollection struct {
+	Members []swobMember `xml:"member"`
+}
+
+type swobMember struct {
+	Observation swobObservation `xml:"Observation"`
+}
+
+type swobObservation struct {
+	Metadata struct {
+		Set struct {
+			Identification struct {
+				Elements []swobElement `xml:"element"`
+			} `xml:"identification-elements"`
+		} `xml:"set"`
+	} `xml:"metadata"`
+	SamplingTime struct {
+		TimeInstant struct {
+			TimePosition string `xml:"timePosition"`
+		} `xml:"TimeInstant"`
+	} `xml:"samplingTime"`
+	Result struct {
+		Elements struct {
+			Elements []swobElement `xml:"element"`
+		} `xml:"elements"`
+	} `xml:"result"`
+}
+
+type swobElement struct {
+	Name  string `xml:"name,attr"`
+	UOM   string `xml:"uom,attr"`
+	Value string `xml:"value,attr"`
+}
+
+func fetchECCCSWOBLatest(ctx context.Context, client *http.Client, stationID string) (map[string]any, error) {
+	stationID = strings.ToUpper(strings.TrimSpace(stationID))
+	if stationID == "" {
+		return nil, fmt.Errorf("missing SWOB station id")
+	}
+	baseURL := "https://dd.weather.gc.ca/today/observations/swob-ml/latest/"
+	name, err := latestSWOBFilename(ctx, client, baseURL, stationID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := fetchText(ctx, client, baseURL+url.PathEscape(name))
+	if err != nil {
+		return nil, err
+	}
+	var parsed swobCollection
+	if err := xml.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, err
+	}
+	return map[string]any{"_swob": parsed}, nil
+}
+
+func latestSWOBFilename(ctx context.Context, client *http.Client, baseURL string, stationID string) (string, error) {
+	listing, err := fetchText(ctx, client, baseURL)
+	if err != nil {
+		return "", err
+	}
+	candidates := []string{}
+	for _, token := range strings.Split(listing, "\"") {
+		name := strings.TrimSpace(token)
+		upper := strings.ToUpper(name)
+		if strings.HasPrefix(upper, stationID+"-") && strings.HasSuffix(upper, "-SWOB.XML") {
+			candidates = append(candidates, name)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no latest SWOB file found for %s", stationID)
+	}
+	for _, name := range candidates {
+		if strings.Contains(strings.ToUpper(name), "-MAN-SWOB.XML") {
+			return name, nil
+		}
+	}
+	for _, name := range candidates {
+		if strings.Contains(strings.ToUpper(name), "-AUTO-SWOB.XML") {
+			return name, nil
+		}
+	}
+	return candidates[0], nil
+}
+
+func buildECCCSWOBConditions(raw map[string]any, loc locationXML) map[string]any {
+	collection, _ := raw["_swob"].(swobCollection)
+	if len(collection.Members) == 0 {
+		return map[string]any{"source": "eccc", "station_id": loc.ID}
+	}
+	obs := collection.Members[0].Observation
+	ident := swobElementMap(obs.Metadata.Set.Identification.Elements)
+	values := swobElementMap(obs.Result.Elements.Elements)
+	stationName := firstNonBlank(loc.NameOverride, swobString(ident, "stn_nam"), loc.ID)
+	observedAt := firstNonBlank(swobString(ident, "date_tm"), obs.SamplingTime.TimeInstant.TimePosition)
+	windDirection := ""
+	if degrees, ok := swobFloat(values, "avg_wnd_dir_10m_pst2mts"); ok {
+		windDirection, _ = degreesToCardinal(degrees, true).(string)
+	}
+	pressureKPA := any(nil)
+	if hpa, ok := swobFloat(values, "mslp"); ok {
+		pressureKPA = math.Round((hpa/10)*100) / 100
+	} else if hpa, ok := swobFloat(values, "stn_pres"); ok {
+		pressureKPA = math.Round((hpa/10)*100) / 100
+	}
+	return map[string]any{
+		"source":      "eccc",
+		"station_id":  firstNonBlank(swobString(ident, "icao_stn_id"), loc.ID),
+		"observed_at": observedAt,
+		"station":     map[string]any{"en": stationName},
+		"properties": map[string]any{
+			"temp":          swobNullable(values, "air_temp"),
+			"condition":     map[string]any{"en": swobPresentWeather(values)},
+			"sky_condition": map[string]any{"en": swobSkyCondition(values)},
+			"altimeter":     swobAltimeter(values),
+			"wind": map[string]any{
+				"speed":     swobNullable(values, "avg_wnd_spd_10m_pst2mts"),
+				"direction": windDirection,
+				"gust":      swobNullable(values, "max_wnd_gst_spd_10m_pst10mts"),
+			},
+			"humidity":   swobNullable(values, "rel_hum"),
+			"dewpoint":   swobNullable(values, "dwpt_temp"),
+			"visibility": swobNullable(values, "vis"),
+			"pressure":   map[string]any{"value": pressureKPA, "tendency": nil},
+			"windChill":  nil,
+			"humidex":    nil,
+			"heatIndex":  nil,
+		},
+	}
+}
+
+func swobElementMap(elements []swobElement) map[string]swobElement {
+	out := make(map[string]swobElement, len(elements))
+	for _, element := range elements {
+		if strings.TrimSpace(element.Name) != "" {
+			out[strings.TrimSpace(element.Name)] = element
+		}
+	}
+	return out
+}
+
+func swobString(elements map[string]swobElement, name string) string {
+	value := strings.TrimSpace(elements[name].Value)
+	if value == "" || strings.EqualFold(value, "MSNG") {
+		return ""
+	}
+	return value
+}
+
+func swobFloat(elements map[string]swobElement, name string) (float64, bool) {
+	value := swobString(elements, name)
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func swobNullable(elements map[string]swobElement, name string) any {
+	value, ok := swobFloat(elements, name)
+	if !ok {
+		return nil
+	}
+	return value
+}
+
+func swobAltimeter(elements map[string]swobElement) string {
+	value, ok := swobFloat(elements, "altmetr_setng")
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%.2f inches", value)
+}
+
+func swobPresentWeather(elements map[string]swobElement) string {
+	switch swobString(elements, "prsnt_wx_1") {
+	case "", "125":
+		return ""
+	default:
+		return "reported weather code " + swobString(elements, "prsnt_wx_1")
+	}
+}
+
+func swobSkyCondition(elements map[string]swobElement) string {
+	parts := []string{}
+	for index := 1; index <= 4; index++ {
+		height, ok := swobFloat(elements, fmt.Sprintf("cld_bas_hgt_%d", index))
+		if !ok {
+			continue
+		}
+		feet := int(math.Round(height*3.28084/100.0) * 100)
+		if feet <= 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("cloud layer at %d feet", feet))
+	}
+	if len(parts) == 0 {
+		if vertical, ok := swobFloat(elements, "vert_vis"); ok {
+			feet := int(math.Round(vertical*3.28084/100.0) * 100)
+			if feet > 0 {
+				return fmt.Sprintf("vertical visibility %d feet", feet)
+			}
+		}
+		return ""
+	}
+	return strings.Join(parts, ", ")
 }
 
 func fetchNWSObservation(ctx context.Context, client *http.Client, stationID string) (map[string]any, error) {
@@ -754,6 +1029,22 @@ func fetchAQHI(ctx context.Context, client *http.Client, stationID string) (map[
 		return nil, fmt.Errorf("no AQHI data for %s", stationID)
 	}
 	return payload, nil
+}
+
+func fetchMarineForecast(ctx context.Context, client *http.Client, id string) (map[string]any, error) {
+	url := fmt.Sprintf("https://api.weather.gc.ca/collections/marineweather-realtime/items/%s?lang=en", url.QueryEscape(strings.TrimSpace(id)))
+	var raw map[string]any
+	if err := fetchJSON(ctx, client, url, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func feedMarineForecastLocations(feed feedXML) []locationXML {
+	out := make([]locationXML, 0, len(feed.Locations.MarineForecastLocations.Locations)+len(feed.Locations.MarineForecastLocations.Subregions))
+	out = append(out, feed.Locations.MarineForecastLocations.Locations...)
+	out = append(out, feed.Locations.MarineForecastLocations.Subregions...)
+	return out
 }
 
 func fetchClimateSummary(ctx context.Context, client *http.Client, loc locationXML, timezone string, now time.Time) (map[string]any, error) {
@@ -1544,10 +1835,7 @@ func fetchFeedSpecialtyProducts(ctx context.Context, client *http.Client, publis
 		fn   func(context.Context, *http.Client, feedXML, map[string]map[string]any) (map[string]any, error)
 	}{
 		{"thunderstorm_outlook", fetchThunderstormOutlookProduct},
-		{"coastal_flood", fetchCoastalFloodProduct},
-		{"hurricane_tracks", fetchHurricaneTracksProduct},
 		{"hydrometric", fetchHydrometricProduct},
-		{"precipitation_analysis", fetchPrecipitationAnalysisProduct},
 	}
 	for _, fetcher := range fetchers {
 		if ctx.Err() != nil {
@@ -1630,70 +1918,10 @@ func fetchThunderstormOutlookProduct(ctx context.Context, client *http.Client, f
 	return specialtyPayload("thunderstorm_outlook", "Thunderstorm Outlook", timestamp, items), nil
 }
 
-func fetchCoastalFloodProduct(ctx context.Context, client *http.Client, feed feedXML, _ map[string]map[string]any) (map[string]any, error) {
-	features, timestamp, err := fetchCollectionFeatures(ctx, client, "coastal_flood_risk_index", "limit=1000&sortby=-validity_datetime")
-	if err != nil {
-		return nil, err
-	}
-	subtypes := feedSpecialtySubtypes(feed)
-	now := time.Now().UTC()
-	items := []map[string]any{}
-	for _, feature := range features {
-		props := feature.Properties
-		if !featureCurrent(props, now) || !featureSubtypeMatchesFeed(props, subtypes) {
-			continue
-		}
-		items = append(items, map[string]any{
-			"id":           firstNonBlank(feature.ID, textValue(props["id"])),
-			"area":         textValue(props["product_sub_type"]),
-			"risk":         props["metobject.risk.value"],
-			"likelihood":   props["metobject.likelihood.value"],
-			"impact":       props["metobject.impact.value"],
-			"storm_surge":  props["metobject.storm_surge.value"],
-			"tide":         props["metobject.tide.value"],
-			"waves":        props["metobject.waves.value"],
-			"published_at": textValue(props["publication_datetime"]),
-			"valid_at":     textValue(props["validity_datetime"]),
-			"expires_at":   textValue(props["expiration_datetime"]),
-		})
-	}
-	return specialtyPayload("coastal_flood", "Coastal Flooding Risk", timestamp, items), nil
-}
-
-func fetchHurricaneTracksProduct(ctx context.Context, client *http.Client, feed feedXML, _ map[string]map[string]any) (map[string]any, error) {
-	if !feedSupportsHurricane(feed) {
-		return nil, nil
-	}
-	features, timestamp, err := fetchCollectionFeatures(ctx, client, "hurricanes-cyclone-realtime", "limit=100&active=true&latest_publication=true&sortby=-publication_datetime")
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now().UTC()
-	items := []map[string]any{}
-	for _, feature := range features {
-		props := feature.Properties
-		if !featureCurrent(props, now) {
-			continue
-		}
-		items = append(items, map[string]any{
-			"id":             firstNonBlank(feature.ID, textValue(props["id"])),
-			"storm_name":     textValue(props["storm_name"]),
-			"classification": textValue(props["metobject.classification"]),
-			"sub_type":       textValue(props["metobject.sub_type"]),
-			"max_wind_kt":    props["metobject.max_wind.value"],
-			"gust_kt":        props["metobject.wind_gust.value"],
-			"pressure_mb":    props["metobject.pressure.value"],
-			"published_at":   textValue(props["publication_datetime"]),
-			"valid_at":       textValue(props["validity_datetime"]),
-			"forecast_at":    textValue(props["forecast_datetime"]),
-		})
-	}
-	return specialtyPayload("hurricane_tracks", "Hurricane Tracks", timestamp, items), nil
-}
-
 func fetchHydrometricProduct(ctx context.Context, client *http.Client, feed feedXML, _ map[string]map[string]any) (map[string]any, error) {
 	items := []map[string]any{}
-	for _, loc := range feed.Locations.HydrometricLocations.Locations {
+	for index, entry := range feedHydrometricLocations(feed) {
+		loc := entry.Location
 		if sourceKind(loc.Source) != "eccc" || strings.TrimSpace(loc.ID) == "" {
 			continue
 		}
@@ -1711,6 +1939,8 @@ func fetchHydrometricProduct(ctx context.Context, client *http.Client, feed feed
 			"id":           firstNonBlank(features[0].ID, textValue(props["IDENTIFIER"])),
 			"station_id":   firstNonBlank(textValue(props["STATION_NUMBER"]), loc.ID),
 			"station":      firstNonBlank(loc.NameOverride, titleText(textValue(props["STATION_NAME"]))),
+			"relation":     entry.Relation,
+			"order":        index,
 			"observed_at":  firstNonBlank(textValue(props["DATETIME_LST"]), textValue(props["DATETIME"])),
 			"level_m":      props["LEVEL"],
 			"discharge":    props["DISCHARGE"],
@@ -1722,27 +1952,22 @@ func fetchHydrometricProduct(ctx context.Context, client *http.Client, feed feed
 	return specialtyPayload("hydrometric", "River Conditions", time.Now().UTC().Format(time.RFC3339), items), nil
 }
 
-func fetchPrecipitationAnalysisProduct(ctx context.Context, client *http.Client, feed feedXML, ecccCache map[string]map[string]any) (map[string]any, error) {
-	lon, lat, location, ok := feedReferencePoint(ctx, client, feed, ecccCache)
-	if !ok {
-		return nil, nil
+type hydrometricLocationEntry struct {
+	Location locationXML
+	Relation string
+}
+
+func feedHydrometricLocations(feed feedXML) []hydrometricLocationEntry {
+	out := make([]hydrometricLocationEntry, 0, len(feed.Locations.HydrometricLocations.Locations)+len(feed.Locations.HydrometricLocations.Upstream.Locations)+len(feed.Locations.HydrometricLocations.Downstream.Locations))
+	appendAll := func(relation string, locations []locationXML) {
+		for _, loc := range locations {
+			out = append(out, hydrometricLocationEntry{Location: loc, Relation: relation})
+		}
 	}
-	const radius = 0.5
-	query := fmt.Sprintf("f=json&bbox=%.4f,%.4f,%.4f,%.4f", lon-radius, lat-radius, lon+radius, lat+radius)
-	var raw map[string]any
-	if err := fetchJSON(ctx, client, "https://api.weather.gc.ca/collections/weather%3Ardpa%3A10km%3A24f/coverage?"+query, &raw); err != nil {
-		return nil, err
-	}
-	stats, ok := rdpaStats(raw)
-	if !ok {
-		return nil, nil
-	}
-	stats["location"] = location
-	stats["longitude"] = lon
-	stats["latitude"] = lat
-	stats["radius_degrees"] = radius
-	stats["published_at"] = time.Now().UTC().Format(time.RFC3339)
-	return specialtyPayload("precipitation_analysis", "Precipitation Analysis", textValue(stats["published_at"]), []map[string]any{stats}), nil
+	appendAll("primary", feed.Locations.HydrometricLocations.Locations)
+	appendAll("upstream", feed.Locations.HydrometricLocations.Upstream.Locations)
+	appendAll("downstream", feed.Locations.HydrometricLocations.Downstream.Locations)
+	return out
 }
 
 func fetchCollectionFeatures(ctx context.Context, client *http.Client, collection string, query string) ([]geoFeature, string, error) {
@@ -1847,16 +2072,6 @@ func feedProvinceCodes(feed feedXML) map[string]struct{} {
 	return out
 }
 
-func feedSupportsHurricane(feed feedXML) bool {
-	for province := range feedProvinceCodes(feed) {
-		switch province {
-		case "NB", "NL", "NS", "PE", "QC":
-			return true
-		}
-	}
-	return false
-}
-
 func feedReferencePoint(ctx context.Context, client *http.Client, feed feedXML, ecccCache map[string]map[string]any) (float64, float64, string, bool) {
 	for _, loc := range feed.Locations.ObservationLocations.Locations {
 		if sourceKind(loc.Source) != "eccc" {
@@ -1930,41 +2145,6 @@ func citypagePoint(raw map[string]any) (float64, float64, string, bool) {
 	props := mapAt(raw, "properties")
 	name := localizedText(props["name"], "en")
 	return lon, lat, name, true
-}
-
-func rdpaStats(raw map[string]any) (map[string]any, bool) {
-	apcp := mapAt(mapAt(raw, "ranges"), "APCP")
-	values, _ := apcp["values"].([]any)
-	if len(values) == 0 {
-		return nil, false
-	}
-	count := 0
-	sum := 0.0
-	minValue := math.Inf(1)
-	maxValue := math.Inf(-1)
-	for _, value := range values {
-		numeric, ok := numberValue(value)
-		if !ok {
-			continue
-		}
-		count++
-		sum += numeric
-		if numeric < minValue {
-			minValue = numeric
-		}
-		if numeric > maxValue {
-			maxValue = numeric
-		}
-	}
-	if count == 0 {
-		return nil, false
-	}
-	return map[string]any{
-		"count":   count,
-		"min_mm":  math.Round(minValue*10) / 10,
-		"max_mm":  math.Round(maxValue*10) / 10,
-		"mean_mm": math.Round((sum/float64(count))*10) / 10,
-	}, true
 }
 
 func numberValue(value any) (float64, bool) {
@@ -2305,6 +2485,35 @@ func persistClimateSummary(ctx context.Context, store datastore.Store, loc locat
 	}
 	return store.StoreProductPayload(ctx, datastore.ProductPayloadRecord{
 		Kind:    "climate_summary",
+		Source:  source,
+		ID:      loc.ID,
+		Payload: payload,
+	})
+}
+
+func persistMarineForecast(ctx context.Context, store datastore.Store, loc locationXML, payload map[string]any) error {
+	if store == nil {
+		return datastore.ErrNotConfigured
+	}
+	source := sourceKind(loc.Source)
+	props := mapAt(payload, "properties")
+	area := mapAt(props, "area")
+	name := firstNonBlank(loc.NameOverride, localizedText(mapAt(area, "value"), "en"), loc.ID)
+	if err := store.UpsertLocation(ctx, datastore.LocationRecord{
+		Source:     source,
+		LocationID: loc.ID,
+		Kind:       "marine_forecast_area",
+		NameEN:     name,
+		NameFR:     firstNonBlank(localizedText(mapAt(area, "value"), "fr"), name),
+		Metadata: map[string]any{
+			"configured_source": loc.Source,
+			"name_override":     loc.NameOverride,
+		},
+	}); err != nil {
+		return err
+	}
+	return store.StoreProductPayload(ctx, datastore.ProductPayloadRecord{
+		Kind:    "marine_forecast",
 		Source:  source,
 		ID:      loc.ID,
 		Payload: payload,

@@ -1,144 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- custom output config for Canada Weather Radio Service -->
 <outputs>
-  <feed id="cwxr-sk01">
+  <feed id="cwxr-*">
     <webrtc enabled="false"/>
 
-    <stream enabled="true">
-      <type>icecast</type>
+    <icecast enabled="true">
       <host>${HAZE_ICECAST_HOST}</host>
       <port>${HAZE_ICECAST_PORT}</port>
       <username>${HAZE_ICECAST_USERNAME}</username>
       <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
-      <mount>/cwxr-sk01</mount>
+      <mount></mount>
       <ssl>false</ssl>
       <format>opus</format>
       <bitrate_kbps>64</bitrate_kbps>
       <acodec>libopus</acodec>
-    </stream>
-
-    <udp enabled="false"/>
-    <rtp enabled="false"/>
-    <rtmp enabled="false"/>
-    <srt enabled="false"/>
-    <rtsp enabled="false"/>
-    <audio_device enabled="false"/>
-  </feed>
-
-  <feed id="cwxr-sk02">
-    <webrtc enabled="false"/>
-
-    <stream enabled="true">
-      <type>icecast</type>
-      <host>${HAZE_ICECAST_HOST}</host>
-      <port>${HAZE_ICECAST_PORT}</port>
-      <username>${HAZE_ICECAST_USERNAME}</username>
-      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
-      <mount>/cwxr-sk02</mount>
-      <ssl>false</ssl>
-      <format>opus</format>
-      <bitrate_kbps>64</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </stream>
-
-    <udp enabled="false"/>
-    <rtp enabled="false"/>
-    <rtmp enabled="false"/>
-    <srt enabled="false"/>
-    <rtsp enabled="false"/>
-
-    <audio_device enabled="false"/>
-  </feed>
-
-  <feed id="cwxr-ab01">
-    <webrtc enabled="false"/>
-
-    <stream enabled="true">
-      <type>icecast</type>
-      <host>${HAZE_ICECAST_HOST}</host>
-      <port>${HAZE_ICECAST_PORT}</port>
-      <username>${HAZE_ICECAST_USERNAME}</username>
-      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
-      <mount>/cwxr-ab01</mount>
-      <ssl>false</ssl>
-      <format>opus</format>
-      <bitrate_kbps>64</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </stream>
-
-    <udp enabled="false"/>
-    <rtp enabled="false"/>
-    <rtmp enabled="false"/>
-    <srt enabled="false"/>
-    <rtsp enabled="false"/>
-
-    <audio_device enabled="false"/>
-  </feed>
-
-  <feed id="cwxr-mb01">
-    <webrtc enabled="false"/>
-
-    <stream enabled="true">
-      <type>icecast</type>
-      <host>${HAZE_ICECAST_HOST}</host>
-      <port>${HAZE_ICECAST_PORT}</port>
-      <username>${HAZE_ICECAST_USERNAME}</username>
-      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
-      <mount>/cwxr-mb01</mount>
-      <ssl>false</ssl>
-      <format>opus</format>
-      <bitrate_kbps>64</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </stream>
-
-    <udp enabled="false"/>
-    <rtp enabled="false"/>
-    <rtmp enabled="false"/>
-    <srt enabled="false"/>
-    <rtsp enabled="false"/>
-
-    <audio_device enabled="false"/>
-  </feed>
-
-  <feed id="cwxr-ab02">
-    <webrtc enabled="false"/>
-
-    <stream enabled="true">
-      <type>icecast</type>
-      <host>${HAZE_ICECAST_HOST}</host>
-      <port>${HAZE_ICECAST_PORT}</port>
-      <username>${HAZE_ICECAST_USERNAME}</username>
-      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
-      <mount>/cwxr-ab02</mount>
-      <ssl>false</ssl>
-      <format>opus</format>
-      <bitrate_kbps>64</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </stream>
-
-    <udp enabled="false"/>
-    <rtp enabled="false"/>
-    <rtmp enabled="false"/>
-    <srt enabled="false"/>
-    <rtsp enabled="false"/>
-    <audio_device enabled="false"/>
-  </feed>
-
-  <feed id="cwxr-qc01">
-    <webrtc enabled="false"/>
-
-    <stream enabled="true">
-      <type>icecast</type>
-      <host>${HAZE_ICECAST_HOST}</host>
-      <port>${HAZE_ICECAST_PORT}</port>
-      <username>${HAZE_ICECAST_USERNAME}</username>
-      <password>${HAZE_ICECAST_SOURCE_PASSWORD}</password>
-      <mount>/cwxr-qc01</mount>
-      <ssl>false</ssl>
-      <format>opus</format>
-      <bitrate_kbps>64</bitrate_kbps>
-      <acodec>libopus</acodec>
-    </stream>
+    </icecast>
 
     <udp enabled="false"/>
     <rtp enabled="false"/>

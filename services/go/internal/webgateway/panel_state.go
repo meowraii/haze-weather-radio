@@ -157,6 +157,10 @@ type packageCatalogXML struct {
 		ID         string `xml:"id,attr"`
 		EnabledRaw string `xml:"enabled,attr"`
 	} `xml:"package"`
+	Products []struct {
+		ID         string `xml:"id,attr"`
+		EnabledRaw string `xml:"enabled,attr"`
+	} `xml:"product"`
 }
 
 func panelStatePayload(config Config, configPath string, startedAt time.Time, request *http.Request, mediaAvailable bool) (map[string]any, error) {
@@ -1700,17 +1704,21 @@ func loadPackageIDs(configPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := textAt(root, []string{"packages_file"}, "managed/configs/packages.xml", 240)
+	path := textAt(root, []string{"products_file"}, "managed/configs/products.xml", 240)
 	raw, err := os.ReadFile(resolveConfigPath(configPath, path))
+	if err != nil && os.IsNotExist(err) {
+		path = textAt(root, []string{"packages_file"}, "managed/configs/packages.xml", 240)
+		raw, err = os.ReadFile(resolveConfigPath(configPath, path))
+	}
 	if err != nil {
 		return nil, err
 	}
 	var parsed packageCatalogXML
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse packages XML: %w", err)
+		return nil, fmt.Errorf("failed to parse package catalog XML: %w", err)
 	}
 	out := []string{}
-	for _, item := range parsed.Packages {
+	for _, item := range append(parsed.Products, parsed.Packages...) {
 		id := strings.TrimSpace(item.ID)
 		if id == "" || !xmlBool(item.EnabledRaw, true) {
 			continue

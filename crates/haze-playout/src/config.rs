@@ -129,6 +129,8 @@ struct FeedOutputConfig {
     #[serde(default)]
     webrtc: OutputNodeConfig,
     #[serde(default)]
+    icecast: OutputNodeConfig,
+    #[serde(default)]
     stream: OutputNodeConfig,
     #[serde(default)]
     udp: OutputNodeConfig,
@@ -273,7 +275,7 @@ pub(crate) struct OutputConfig {
     #[serde(default)]
     pub(crate) webrtc: OutputNodeConfig,
     #[serde(default)]
-    pub(crate) stream: OutputNodeConfig,
+    pub(crate) icecast: OutputNodeConfig,
     #[serde(default)]
     pub(crate) udp: OutputNodeConfig,
     #[serde(default)]
@@ -325,6 +327,16 @@ struct PackagesXml {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+struct ProductsXml {
+    #[serde(default)]
+    defaults: PackageDefaultsXml,
+    #[serde(rename = "product", default)]
+    products: Vec<ProductXml>,
+    #[serde(rename = "package", default)]
+    packages: Vec<ProductXml>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 struct PackageDefaultsXml {
     #[serde(default)]
     enabled: String,
@@ -340,6 +352,30 @@ struct PackageXml {
     enabled: Option<String>,
     #[serde(default)]
     reader_id: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ProductXml {
+    #[serde(rename = "@id", default)]
+    id: String,
+    #[serde(rename = "@enabled", default)]
+    enabled: Option<String>,
+    #[serde(rename = "@reader_id", default)]
+    reader_id_attr: String,
+    #[serde(rename = "@readerid", default)]
+    readerid_attr: String,
+    #[serde(default)]
+    reader_id: String,
+    #[serde(rename = "lang", default)]
+    langs: Vec<ProductLangXml>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ProductLangXml {
+    #[serde(rename = "@reader_id", default)]
+    reader_id_attr: String,
+    #[serde(rename = "@readerid", default)]
+    readerid_attr: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -381,15 +417,32 @@ pub(crate) fn load_config(config_path: &Path) -> Result<LoadedConfig> {
     let mut feeds = load_feeds(&feeds_path)?;
     let outputs = load_outputs(&outputs_path)?;
     for feed in &mut feeds {
-        feed.output = outputs.get(feed.id.trim()).cloned().unwrap_or_default();
+        feed.output = outputs.output_for_feed(feed.id.trim()).unwrap_or_default();
     }
-    let packages = load_packages(&resolve_path(&base_dir, "managed/configs/packages.xml"))?;
+    let packages = load_package_catalog(&base_dir)?;
     Ok(LoadedConfig {
         root,
         feeds,
         packages,
         base_dir,
     })
+}
+
+fn load_package_catalog(base_dir: &Path) -> Result<BTreeMap<String, PackageConfig>> {
+    let products_path = resolve_path(base_dir, "managed/configs/products.xml");
+    match load_products(&products_path) {
+        Ok(packages) => Ok(packages),
+        Err(err) => {
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+            {
+                load_packages(&resolve_path(base_dir, "managed/configs/packages.xml"))
+            } else {
+                Err(err)
+            }
+        }
+    }
 }
 
 fn load_feeds(path: &Path) -> Result<Vec<FeedConfig>> {
@@ -401,34 +454,88 @@ fn load_feeds(path: &Path) -> Result<Vec<FeedConfig>> {
     Ok(parsed.feeds)
 }
 
-fn load_outputs(path: &Path) -> Result<BTreeMap<String, OutputConfig>> {
+#[derive(Debug, Clone, Default)]
+struct OutputCatalog {
+    exact: BTreeMap<String, OutputConfig>,
+    wildcard: Vec<(String, OutputConfig)>,
+}
+
+impl OutputCatalog {
+    fn output_for_feed(&self, feed_id: &str) -> Option<OutputConfig> {
+        self.exact
+            .get(feed_id)
+            .cloned()
+            .or_else(|| wildcard_output_for(feed_id, &self.wildcard))
+    }
+}
+
+fn load_outputs(path: &Path) -> Result<OutputCatalog> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read outputs XML {}", path.display()))?;
     let raw = expand_env_vars(&raw);
     let parsed: OutputsXml = quick_xml::de::from_str(&raw)
         .with_context(|| format!("failed to parse outputs XML {}", path.display()))?;
-    let mut outputs = BTreeMap::new();
+    let mut catalog = OutputCatalog::default();
     for feed in parsed.feeds {
         let id = feed.id.trim();
         if id.is_empty() {
             continue;
         }
-        outputs.insert(
-            id.to_string(),
-            OutputConfig {
-                webrtc: feed.webrtc,
-                stream: feed.stream,
-                udp: feed.udp,
-                rtp: feed.rtp,
-                rtmp: feed.rtmp,
-                srt: feed.srt,
-                rtsp: feed.rtsp,
-                audio_device: feed.audio_device,
-                file: feed.file,
-            },
-        );
+        let config = OutputConfig {
+            webrtc: feed.webrtc,
+            icecast: preferred_icecast_node(feed.icecast, feed.stream),
+            udp: feed.udp,
+            rtp: feed.rtp,
+            rtmp: feed.rtmp,
+            srt: feed.srt,
+            rtsp: feed.rtsp,
+            audio_device: feed.audio_device,
+            file: feed.file,
+        };
+        if output_id_is_wildcard(id) {
+            catalog.wildcard.push((id.to_string(), config));
+        } else {
+            catalog.exact.insert(id.to_string(), config);
+        }
     }
-    Ok(outputs)
+    Ok(catalog)
+}
+
+fn preferred_icecast_node(icecast: OutputNodeConfig, stream: OutputNodeConfig) -> OutputNodeConfig {
+    if icecast.is_configured() {
+        icecast
+    } else {
+        stream
+    }
+}
+
+fn output_id_is_wildcard(pattern: &str) -> bool {
+    pattern.contains('*') || pattern.contains('?')
+}
+
+fn wildcard_output_for(feed_id: &str, entries: &[(String, OutputConfig)]) -> Option<OutputConfig> {
+    entries
+        .iter()
+        .find(|(pattern, _)| wildcard_match(pattern, feed_id))
+        .map(|(_, config)| config.clone())
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    wildcard_match_inner(pattern.as_bytes(), value.as_bytes())
+}
+
+fn wildcard_match_inner(pattern: &[u8], value: &[u8]) -> bool {
+    match pattern.split_first() {
+        None => value.is_empty(),
+        Some((&b'*', rest)) => {
+            wildcard_match_inner(rest, value)
+                || (!value.is_empty() && wildcard_match_inner(pattern, &value[1..]))
+        }
+        Some((&b'?', rest)) => !value.is_empty() && wildcard_match_inner(rest, &value[1..]),
+        Some((&literal, rest)) => value
+            .split_first()
+            .is_some_and(|(&head, tail)| head == literal && wildcard_match_inner(rest, tail)),
+    }
 }
 
 fn load_packages(path: &Path) -> Result<BTreeMap<String, PackageConfig>> {
@@ -466,6 +573,67 @@ fn load_packages(path: &Path) -> Result<BTreeMap<String, PackageConfig>> {
         );
     }
     Ok(packages)
+}
+
+fn load_products(path: &Path) -> Result<BTreeMap<String, PackageConfig>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read products XML {}", path.display()))?;
+    let raw = expand_env_vars(&raw);
+    let parsed: ProductsXml = quick_xml::de::from_str(&raw)
+        .with_context(|| format!("failed to parse products XML {}", path.display()))?;
+    let default_enabled = xml_bool(&parsed.defaults.enabled, true);
+    let default_reader = parsed.defaults.reader_id.trim().to_string();
+    let mut packages = BTreeMap::new();
+    for package in parsed.products.into_iter().chain(parsed.packages) {
+        let id = package.id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        let reader = first_non_blank([
+            package.reader_id_attr.as_str(),
+            package.readerid_attr.as_str(),
+            package.reader_id.as_str(),
+        ]);
+        let reader = if reader.is_empty() {
+            package
+                .langs
+                .iter()
+                .map(|lang| {
+                    first_non_blank([lang.reader_id_attr.as_str(), lang.readerid_attr.as_str()])
+                })
+                .find(|reader| !reader.is_empty())
+                .unwrap_or("")
+        } else {
+            reader
+        };
+        let reader = if reader.is_empty() {
+            default_reader.as_str()
+        } else {
+            reader
+        };
+        packages.insert(
+            id.to_string(),
+            PackageConfig {
+                enabled: package
+                    .enabled
+                    .as_deref()
+                    .map(|raw| xml_bool(raw, default_enabled))
+                    .unwrap_or(default_enabled),
+                reader_id: reader.to_string(),
+            },
+        );
+    }
+    Ok(packages)
+}
+
+fn first_non_blank<const N: usize>(values: [&str; N]) -> &str {
+    for value in values {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    ""
 }
 
 fn expand_env_vars(raw: &str) -> String {
@@ -695,6 +863,20 @@ impl OutputNodeConfig {
             .map(|raw| xml_bool(raw, false))
             .unwrap_or(false)
     }
+
+    fn is_configured(&self) -> bool {
+        self.enabled.is_some()
+            || !self.r#type.trim().is_empty()
+            || !self.ip.trim().is_empty()
+            || !self.port.trim().is_empty()
+            || !self.host.trim().is_empty()
+            || !self.url.trim().is_empty()
+            || !self.path.trim().is_empty()
+            || !self.format.trim().is_empty()
+            || !self.acodec.trim().is_empty()
+            || !self.bitrate_kbps.trim().is_empty()
+            || !self.device.trim().is_empty()
+    }
 }
 
 pub(crate) fn xml_bool(raw: &str, fallback: bool) -> bool {
@@ -851,5 +1033,97 @@ mod tests {
         assert_eq!(parsed.feeds.len(), 1);
         assert_eq!(parsed.feeds[0].id, "sk-0001");
         assert!(parsed.feeds[0].udp.is_enabled());
+    }
+
+    #[test]
+    fn output_catalog_matches_wildcard_feed_ids() {
+        let dir = std::env::temp_dir().join(format!(
+            "haze-playout-output-wildcard-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("output.xml");
+        std::fs::write(
+            &path,
+            r#"
+<outputs>
+  <feed id="cwxr-*">
+    <icecast enabled="true"><host>icecast.example.test</host></icecast>
+  </feed>
+  <feed id="cwxr-sk01">
+    <udp enabled="true"><ip>127.0.0.1</ip></udp>
+  </feed>
+</outputs>
+"#,
+        )
+        .expect("outputs xml");
+
+        let catalog = load_outputs(&path).expect("load outputs");
+        assert!(catalog
+            .output_for_feed("cwxr-ab01")
+            .unwrap()
+            .icecast
+            .is_enabled());
+        assert!(catalog
+            .output_for_feed("cwxr-sk01")
+            .unwrap()
+            .udp
+            .is_enabled());
+        assert!(catalog.output_for_feed("sk-0001").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_stream_alias_loads_as_icecast_output() {
+        let parsed: OutputsXml = quick_xml::de::from_str(
+            r#"
+<outputs>
+  <feed id="sk-0001">
+    <stream enabled="true"><type>icecast</type><host>icecast.example.test</host></stream>
+  </feed>
+</outputs>
+"#,
+        )
+        .expect("outputs XML");
+        let config = preferred_icecast_node(
+            parsed.feeds[0].icecast.clone(),
+            parsed.feeds[0].stream.clone(),
+        );
+        assert!(config.is_enabled());
+        assert_eq!(config.host, "icecast.example.test");
+    }
+
+    #[test]
+    fn loads_products_catalog_with_lang_reader_ids() {
+        let dir =
+            std::env::temp_dir().join(format!("haze-playout-products-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("products.xml");
+        std::fs::write(
+            &path,
+            r#"
+<ProductText version="1.1">
+  <defaults><enabled>true</enabled><reader_id>00</reader_id></defaults>
+  <product id="forecast" enabled="true">
+    <lang iso="en" readerid="01"><text key="opener">Forecast.</text></lang>
+  </product>
+  <product id="alerts" enabled="false">
+    <lang iso="en" readerid="02"><text key="opener">Alerts.</text></lang>
+  </product>
+</ProductText>
+"#,
+        )
+        .expect("products xml");
+
+        let packages = load_products(&path).expect("load products");
+        assert_eq!(packages["forecast"].reader_id, "01");
+        assert!(packages["forecast"].enabled);
+        assert_eq!(packages["alerts"].reader_id, "02");
+        assert!(!packages["alerts"].enabled);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

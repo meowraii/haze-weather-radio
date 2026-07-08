@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,8 @@ import (
 type renderer struct {
 	cfg loadedConfig
 }
+
+var templateVariableRE = regexp.MustCompile(`\{([A-Za-z0-9_]+)\}`)
 
 func newRenderer(cfg loadedConfig) renderer {
 	return renderer{cfg: cfg}
@@ -129,6 +132,10 @@ func (r renderer) Render(request renderRequest) (Product, error) {
 		product = r.dateTimeProduct(base, feed)
 	case "current_conditions":
 		product, err = r.currentConditionsProduct(base, feed)
+	case "marine_reports", "aviation_reports":
+		product, err = r.observationReportProduct(base, feed)
+	case "marine_forecast":
+		product, err = r.marineForecastProduct(base, feed)
 	case "forecast":
 		product, err = r.forecastProduct(base, feed)
 	case "air_quality":
@@ -139,12 +146,6 @@ func (r renderer) Render(request renderRequest) (Product, error) {
 		product, err = r.thunderstormOutlookProduct(base, feed)
 	case "hydrometric":
 		product, err = r.hydrometricProduct(base, feed)
-	case "coastal_flood":
-		product, err = r.coastalFloodProduct(base, feed)
-	case "hurricane_tracks":
-		product, err = r.hurricaneTracksProduct(base, feed)
-	case "precipitation_analysis":
-		product, err = r.precipitationAnalysisProduct(base, feed)
 	case "user_bulletin":
 		product, err = r.userBulletinProduct(base, feed)
 	case "alerts":
@@ -281,20 +282,27 @@ func (r renderer) stationIDProduct(base Product, feed feedXML) Product {
 	site := feedSiteName(feed)
 	callsign := feedCallsign(feed)
 	frequency := feedFrequencyMHz(feed)
-	parts := []string{r.packageText(base.PackageID, "opener", base.Language, "You are listening to {on_air_name}.", map[string]string{
-		"on_air_name": onAirName,
-		"site":        site,
-		"callsign":    callsign,
-		"frequency":   frequency,
-	})}
-	if callsignSpoken := spokenCallsign(callsign); callsignSpoken != "" {
-		parts = append(parts, fmt.Sprintf("Callsign %s.", callsignSpoken))
+	values := map[string]string{
+		"on_air_name":    onAirName,
+		"site":           site,
+		"service_area":   fallbackText(site, feed.ID),
+		"service_region": fallbackText(feedDescription(feed, base.Language), site),
+		"callsign":       callsign,
+		"frequency":      frequency,
+		"freq_mhz":       frequency,
 	}
-	if frequency != "" {
-		location := fallbackText(site, feed.ID)
-		parts = append(parts, fmt.Sprintf("Broadcasting from %s on a frequency of %s megahertz.", location, frequency))
-	} else if site != "" {
-		parts = append(parts, fmt.Sprintf("Serving %s.", site))
+	parts := r.packageTextSequence(base.PackageID, "", base.Language, values)
+	if len(parts) == 0 {
+		parts = []string{r.packageText(base.PackageID, "opener", base.Language, "You are listening to {on_air_name}.", values)}
+		if callsignSpoken := spokenCallsign(callsign); callsignSpoken != "" {
+			parts = append(parts, fmt.Sprintf("Callsign %s.", callsignSpoken))
+		}
+		if frequency != "" {
+			location := fallbackText(site, feed.ID)
+			parts = append(parts, fmt.Sprintf("Broadcasting from %s on a frequency of %s megahertz.", location, frequency))
+		} else if site != "" {
+			parts = append(parts, fmt.Sprintf("Serving %s.", site))
+		}
 	}
 	if desc := feedDescription(feed, base.Language); desc != "" {
 		parts = append(parts, desc)
@@ -353,13 +361,14 @@ func (r renderer) currentConditionsProduct(base Product, feed feedXML) (Product,
 	callsign := fallbackText(feedCallsign(feed), feedSiteName(feed))
 	reported := reportTime(snapshot.ReportedAt, feed.Timezone)
 	source := spokenWeatherSource(firstNonBlank(snapshot.Primary.Source, sourceFromObservations(snapshot.Observations), sourceFromObservations(snapshot.AreaObservations)))
-	segments := []Segment{}
-	if text := r.packageText(base.PackageID, "opener", base.Language, "The current weather conditions. Issued by {source} at {time}.", map[string]string{
+	values := issueTimeTemplateValues(snapshot.ReportedAt, feed.Timezone, map[string]string{
 		"source":   fallbackText(source, "Environment and Climate Change Canada"),
 		"time":     fallbackText(reported, "the latest report time"),
 		"callsign": callsign,
 		"site":     feedSiteName(feed),
-	}); text != "" {
+	})
+	segments := []Segment{}
+	if text := r.packageText(base.PackageID, "opener", base.Language, "The current weather conditions. Issued by {source} at {time}.", values); text != "" {
 		segments = append(segments, Segment{Kind: "opener", Label: "main_opener", Text: text})
 	}
 	if text := r.packageText(base.PackageID, "report_time", base.Language, "", map[string]string{
@@ -404,6 +413,112 @@ func (r renderer) currentConditionsProduct(base Product, feed feedXML) (Product,
 	return base, nil
 }
 
+func (r renderer) observationReportProduct(base Product, feed feedXML) (Product, error) {
+	var snapshot observationSnapshot
+	inputPath, ok := r.loadLiveObservationReportSnapshot(feed, base.PackageID, &snapshot)
+	if !ok {
+		return Product{}, fmt.Errorf("%s observations are unavailable for feed %s", strings.ToLower(titleForPackage(base.PackageID)), feed.ID)
+	}
+	base.Title = titleForPackage(base.PackageID)
+	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
+
+	segments := []Segment{}
+	for index, obs := range append([]observation{snapshot.Primary}, snapshot.Observations...) {
+		if strings.TrimSpace(obs.LocationName) == "" || (index > 0 && sameObservation(obs, snapshot.Primary)) {
+			continue
+		}
+		if text := r.renderObservationReport(base, obs); text != "" {
+			label := "report"
+			if index == 0 {
+				label = "primary_report"
+			}
+			segments = append(segments, Segment{Kind: "package", Label: label, Text: text})
+		}
+	}
+	if len(segments) == 0 {
+		return Product{}, fmt.Errorf("%s observations are unavailable for feed %s", strings.ToLower(titleForPackage(base.PackageID)), feed.ID)
+	}
+	base.Segments = segments
+	return base, nil
+}
+
+func (r renderer) marineForecastProduct(base Product, feed feedXML) (Product, error) {
+	var snapshot marineForecastSnapshot
+	inputPath, ok := r.loadLiveMarineForecastSnapshot(feed, &snapshot)
+	if !ok {
+		return Product{}, fmt.Errorf("marine forecast is unavailable for feed %s", feed.ID)
+	}
+	base.Title = "Marine Forecast"
+	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
+	values := issueTimeTemplateValues(snapshot.IssuedAt, feed.Timezone, map[string]string{
+		"source": "Environment Canada",
+		"area":   snapshot.Area,
+	})
+	segments := []Segment{{
+		Kind:  "opener",
+		Label: "opener",
+		Text:  r.packageText(base.PackageID, "opener", base.Language, "The {source} marine forecast for {area}, issued at {time}.", values),
+	}}
+	for _, item := range snapshot.Warnings {
+		segments = append(segments, Segment{Kind: "warning", Label: item.Name, Text: r.packageTextFirst(base.PackageID, []string{"forecast.warnings.location", "warnings.location"}, base.Language, "For {location}. {warning}", map[string]string{
+			"location": item.Name,
+			"period":   item.Period,
+			"warning":  sentence(item.Text),
+		})})
+	}
+	for _, item := range snapshot.Regular {
+		segments = append(segments, Segment{Kind: "package", Label: item.Name, Text: r.packageTextFirst(base.PackageID, []string{"forecast.regular.location", "regular.location"}, base.Language, "For {location}. {period} {wind}", map[string]string{
+			"location": item.Name,
+			"period":   sentence(item.Period),
+			"wind":     sentence(item.Text),
+		})})
+	}
+	for _, item := range snapshot.Waves {
+		segments = append(segments, Segment{Kind: "package", Label: item.Name + " waves", Text: r.packageTextFirst(base.PackageID, []string{"forecast.waves.location", "waves.location"}, base.Language, "Waves for {location}. {period} {waves}", map[string]string{
+			"location": item.Name,
+			"period":   sentence(item.Period),
+			"waves":    sentence(item.Text),
+		})})
+	}
+	if len(snapshot.Extended) > 0 {
+		parts := []string{}
+		if opener := r.packageTextFirst(base.PackageID, []string{"forecast.extended.opener", "extended.opener"}, base.Language, "The extended marine outlook.", nil); opener != "" {
+			parts = append(parts, sentence(opener))
+		}
+		for _, item := range snapshot.Extended {
+			parts = append(parts, r.packageTextFirst(base.PackageID, []string{"forecast.extended.period", "extended.period"}, base.Language, "For {period}. {forecast}", map[string]string{
+				"period":   item.Name,
+				"forecast": sentence(item.Text),
+			}))
+		}
+		segments = append(segments, Segment{Kind: "package", Label: "extended", Text: strings.Join(parts, " ")})
+	}
+	base.Segments = segments
+	return base, nil
+}
+
+func (r renderer) renderObservationReport(base Product, obs observation) string {
+	values := observationTemplateValues(obs)
+	parts := r.packageTextSequenceFiltered(base.PackageID, "report", base.Language, values)
+	if len(parts) == 0 {
+		return fullObservationText(obs)
+	}
+	if wind := r.renderObservationWindBlock(base, values); wind != "" {
+		parts = append(parts, wind)
+	}
+	return sentence(strings.Join(parts, " "))
+}
+
+func (r renderer) renderObservationWindBlock(base Product, values map[string]string) string {
+	if values["wind_calm"] == "true" {
+		return r.packageTextFirst(base.PackageID, []string{"report.winds.text.2", "winds.text.2"}, base.Language, "The wind was calm.", values)
+	}
+	if values["dir_text"] == "" || values["spd_metric"] == "" {
+		return r.packageTextFirst(base.PackageID, []string{"report.winds.placeholder", "winds.placeholder"}, base.Language, "", values)
+	}
+	return r.packageTextFirst(base.PackageID, []string{"report.winds.text.1", "winds.text.1"}, base.Language, "Winds were {dir_text} at {spd_metric}", values)
+}
+
 func (r renderer) forecastProduct(base Product, feed feedXML) (Product, error) {
 	var snapshot forecastSnapshot
 	inputPath, ok := r.loadLiveForecastSnapshot(feed, &snapshot)
@@ -414,16 +529,18 @@ func (r renderer) forecastProduct(base Product, feed feedXML) (Product, error) {
 	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
 	callsign := fallbackText(feedCallsign(feed), feedSiteName(feed))
 	segments := []Segment{}
+	openerConfigured := r.packageTextConfigured(base.PackageID, "opener", base.Language)
+	openerValues := issueTimeTemplateValues(snapshot.IssuedAt, feed.Timezone, map[string]string{
+		"callsign": callsign,
+		"site":     feedSiteName(feed),
+		"source":   forecastSourceName(feed),
+	})
 	if isTelephoneProduct(base) {
 		segments = append(segments, Segment{Kind: "opener", Label: "telephone_opener", Text: r.telephoneForecastOpener(base, feed, snapshot)})
 	} else {
-		segments = append(segments, Segment{Kind: "opener", Text: r.packageText(base.PackageID, "opener", base.Language, "Forecast for the {callsign} listening area:", map[string]string{
-			"callsign": callsign,
-			"site":     feedSiteName(feed),
-			"source":   forecastSourceName(feed),
-		})})
+		segments = append(segments, Segment{Kind: "opener", Text: r.packageText(base.PackageID, "opener", base.Language, "Forecast for the {callsign} listening area:", openerValues)})
 	}
-	if issued := reportTime(snapshot.IssuedAt, feed.Timezone); issued != "" && !isTelephoneProduct(base) {
+	if issued := reportTime(snapshot.IssuedAt, feed.Timezone); issued != "" && !isTelephoneProduct(base) && (!openerConfigured || r.packageTextConfigured(base.PackageID, "issued_at", base.Language)) {
 		segments = append(segments, Segment{Kind: "opener", Label: "issued_at", Text: r.packageText(base.PackageID, "issued_at", base.Language, "Issued at {time}.", map[string]string{
 			"time":     issued,
 			"callsign": callsign,
@@ -433,30 +550,81 @@ func (r renderer) forecastProduct(base Product, feed feedXML) (Product, error) {
 	for _, region := range snapshot.Regions {
 		name := normalizeRegionTitle(region.Name)
 		if name != "" && !isTelephoneProduct(base) {
-			segments = append(segments, Segment{Kind: "opener", Label: "forecast_region", Text: r.packageText(base.PackageID, forecastRegionTextKey(name), base.Language, forecastRegionIntroFallback(name), map[string]string{
+			segments = append(segments, Segment{Kind: "opener", Label: "forecast_region", Text: r.packageTextFirst(base.PackageID, forecastRegionTextKeys(name), base.Language, forecastRegionIntroFallback(name), map[string]string{
 				"region": name,
 			})})
 		}
-		for _, period := range region.Periods {
-			if period.Text == "" {
-				continue
-			}
-			label := strings.TrimSpace(period.Name)
-			segments = append(segments, Segment{Kind: "package", Label: strings.TrimSpace(strings.Join([]string{name, label}, ", ")), Text: periodForecastText(period)})
-		}
+		segments = r.appendForecastPeriodSegments(segments, base, name, region.Periods)
 	}
-	for _, period := range snapshot.Periods {
-		if period.Text == "" {
-			continue
-		}
-		label := strings.TrimSpace(period.Name)
-		segments = append(segments, Segment{Kind: "package", Label: label, Text: periodForecastText(period)})
-	}
+	segments = r.appendForecastPeriodSegments(segments, base, "", snapshot.Periods)
 	if len(segments) == 1 {
 		segments = append(segments, Segment{Kind: "package", Text: "No active forecast periods are available."})
 	}
 	base.Segments = segments
 	return base, nil
+}
+
+func (r renderer) forecastPeriodText(base Product, period forecastPeriod) string {
+	key := forecastPeriodTextKey(period.Name)
+	keys := forecastPeriodTextKeys(key)
+	if key == "" || !r.packageAnyTextConfigured(base.PackageID, keys, base.Language) {
+		return periodForecastText(period)
+	}
+	periodValue, dayValue, nightValue := forecastPeriodTemplateValues(period.Name)
+	rendered := r.packageTextFirst(base.PackageID, keys, base.Language, "", map[string]string{
+		"period":      periodValue,
+		"period_name": periodValue,
+		"day":         dayValue,
+		"night":       nightValue,
+		"fc_text":     sentence(period.Text),
+	})
+	return sentence(rendered)
+}
+
+func (r renderer) appendForecastPeriodSegments(segments []Segment, base Product, regionName string, periods []forecastPeriod) []Segment {
+	combined := []string{}
+	combinedLabels := []string{}
+	for _, period := range periods {
+		if period.Text == "" {
+			continue
+		}
+		label := strings.TrimSpace(period.Name)
+		text := r.forecastPeriodText(base, period)
+		if text == "" {
+			continue
+		}
+		if forecastPeriodTextKey(period.Name) == "today" || forecastPeriodTextKey(period.Name) == "tonight" {
+			segments = append(segments, Segment{Kind: "package", Label: forecastPeriodSegmentLabel(regionName, label), Text: text})
+			continue
+		}
+		combined = append(combined, text)
+		if label != "" {
+			combinedLabels = append(combinedLabels, label)
+		}
+	}
+	if len(combined) > 0 {
+		label := "extended forecast"
+		if len(combinedLabels) > 0 {
+			label = strings.Join(combinedLabels, ", ")
+		}
+		if opener := r.packageTextFirst(base.PackageID, []string{"extended.opener"}, base.Language, "", nil); opener != "" {
+			combined = append([]string{sentence(opener)}, combined...)
+		}
+		segments = append(segments, Segment{Kind: "package", Label: forecastPeriodSegmentLabel(regionName, label), Text: strings.Join(combined, " ")})
+	}
+	return segments
+}
+
+func forecastPeriodSegmentLabel(regionName string, periodLabel string) string {
+	regionName = strings.TrimSpace(regionName)
+	periodLabel = strings.TrimSpace(periodLabel)
+	if regionName == "" {
+		return periodLabel
+	}
+	if periodLabel == "" {
+		return regionName
+	}
+	return regionName + ", " + periodLabel
 }
 
 func (r renderer) telephoneForecastOpener(base Product, feed feedXML, snapshot forecastSnapshot) string {
@@ -655,7 +823,9 @@ func (r renderer) thunderstormOutlookProduct(base Product, feed feedXML) (Produc
 	segments := []Segment{{
 		Kind:  "opener",
 		Label: "opener",
-		Text:  thunderstormOutlookOpener(snapshot, site, feed.Timezone),
+		Text: r.packageText(base.PackageID, "opener", base.Language, thunderstormOutlookOpener(snapshot, site, feed.Timezone), map[string]string{
+			"site": site,
+		}),
 	}}
 	for _, item := range sortedThunderstormItems(snapshot.Items) {
 		if !specialtyItemCurrent(item, now) || specialtyString(item, "thunderstorm", base.Language) == "" {
@@ -690,101 +860,52 @@ func (r renderer) hydrometricProduct(base Product, feed feedXML) (Product, error
 	if opener := r.packageText(base.PackageID, "opener", base.Language, "River conditions for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
 		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
 	}
-	for _, item := range snapshot.Items {
-		if text := r.hydrometricText(item, base.Language, feed.Timezone); text != "" {
-			segments = append(segments, Segment{Kind: "package", Label: "river_gauge", Text: text})
-		}
-		if len(segments) >= 6 {
-			break
+	groups := hydrometricGroups(snapshot.Items)
+	primaryParts := []string{}
+	for _, item := range groups["primary"] {
+		if text := r.hydrometricGaugeText(base, "primary.gauge", item, base.Language, feed.Timezone); text != "" {
+			primaryParts = append(primaryParts, text)
 		}
 	}
-	if len(segments) <= 1 {
+	if len(primaryParts) == 0 {
+		if placeholder := r.packageText(base.PackageID, "primary.placeholder", base.Language, "", map[string]string{"site": feedSiteName(feed)}); placeholder != "" {
+			primaryParts = append(primaryParts, placeholder)
+		}
+	}
+	if len(primaryParts) > 0 {
+		segments = append(segments, Segment{Kind: "package", Label: "primary_gauge", Text: strings.Join(primaryParts, " ")})
+	}
+	nearbyParts := []string{}
+	if len(groups["upstream"]) > 0 {
+		if text := r.packageText(base.PackageID, "nearby.upstream", base.Language, "Upstream.", nil); text != "" {
+			nearbyParts = append(nearbyParts, sentence(text))
+		}
+		for _, item := range groups["upstream"] {
+			if text := r.hydrometricGaugeText(base, "nearby.gauge", item, base.Language, feed.Timezone); text != "" {
+				nearbyParts = append(nearbyParts, text)
+			}
+		}
+	}
+	if len(groups["upstream"]) > 0 && len(groups["downstream"]) > 0 {
+		if text := r.packageText(base.PackageID, "nearby.and", base.Language, "and,", nil); text != "" {
+			nearbyParts = append(nearbyParts, strings.TrimSpace(text))
+		}
+	}
+	if len(groups["downstream"]) > 0 {
+		if text := r.packageText(base.PackageID, "nearby.downstream", base.Language, "Downstream.", nil); text != "" {
+			nearbyParts = append(nearbyParts, sentence(text))
+		}
+		for _, item := range groups["downstream"] {
+			if text := r.hydrometricGaugeText(base, "nearby.gauge", item, base.Language, feed.Timezone); text != "" {
+				nearbyParts = append(nearbyParts, text)
+			}
+		}
+	}
+	if len(nearbyParts) > 0 {
+		segments = append(segments, Segment{Kind: "package", Label: "nearby_gauges", Text: strings.Join(nearbyParts, " ")})
+	}
+	if len(segments) <= 1 || (len(primaryParts) == 0 && len(nearbyParts) == 0) {
 		return Product{}, fmt.Errorf("river conditions are unavailable for feed %s", feed.ID)
-	}
-	base.Segments = segments
-	return base, nil
-}
-
-func (r renderer) coastalFloodProduct(base Product, feed feedXML) (Product, error) {
-	var snapshot liveSpecialtyProductFile
-	inputPath, ok := r.loadSpecialtyProductSnapshot("coastal_flood", feed, &snapshot)
-	if !ok {
-		return Product{}, fmt.Errorf("coastal flooding risk is unavailable for feed %s", feed.ID)
-	}
-	base.Title = "Coastal Flooding Risk"
-	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
-	segments := []Segment{}
-	if opener := r.packageText(base.PackageID, "opener", base.Language, "Coastal flooding risk for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
-		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
-	}
-	now := time.Now()
-	for _, item := range snapshot.Items {
-		if !specialtyItemCurrent(item, now) {
-			continue
-		}
-		if text := r.coastalFloodText(item, base.Language, feed.Timezone); text != "" {
-			segments = append(segments, Segment{Kind: "package", Label: "coastal_flood_risk", Text: text})
-		}
-		if len(segments) >= 6 {
-			break
-		}
-	}
-	if len(segments) <= 1 {
-		return Product{}, fmt.Errorf("coastal flooding risk is unavailable for feed %s", feed.ID)
-	}
-	base.Segments = segments
-	return base, nil
-}
-
-func (r renderer) hurricaneTracksProduct(base Product, feed feedXML) (Product, error) {
-	var snapshot liveSpecialtyProductFile
-	inputPath, ok := r.loadSpecialtyProductSnapshot("hurricane_tracks", feed, &snapshot)
-	if !ok {
-		return Product{}, fmt.Errorf("hurricane track information is unavailable for feed %s", feed.ID)
-	}
-	base.Title = "Hurricane Tracks"
-	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
-	segments := []Segment{}
-	if opener := r.packageText(base.PackageID, "opener", base.Language, "Hurricane track information for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
-		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
-	}
-	for _, item := range snapshot.Items {
-		if text := r.hurricaneTrackText(item, base.Language, feed.Timezone); text != "" {
-			segments = append(segments, Segment{Kind: "package", Label: "tropical_cyclone", Text: text})
-		}
-		if len(segments) >= 6 {
-			break
-		}
-	}
-	if len(segments) <= 1 {
-		return Product{}, fmt.Errorf("hurricane track information is unavailable for feed %s", feed.ID)
-	}
-	base.Segments = segments
-	return base, nil
-}
-
-func (r renderer) precipitationAnalysisProduct(base Product, feed feedXML) (Product, error) {
-	var snapshot liveSpecialtyProductFile
-	inputPath, ok := r.loadSpecialtyProductSnapshot("precipitation_analysis", feed, &snapshot)
-	if !ok {
-		return Product{}, fmt.Errorf("precipitation analysis is unavailable for feed %s", feed.ID)
-	}
-	base.Title = "Precipitation Analysis"
-	base.Inputs = append(base.Inputs, InputRef{Type: inputTypeForPath(inputPath), ID: inputPath})
-	segments := []Segment{}
-	if opener := r.packageText(base.PackageID, "opener", base.Language, "Recent precipitation analysis for the {site} area.", map[string]string{"site": feedSiteName(feed)}); opener != "" {
-		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
-	}
-	for _, item := range snapshot.Items {
-		if text := r.precipitationAnalysisText(item, base.Language, feed.Timezone); text != "" {
-			segments = append(segments, Segment{Kind: "package", Label: "rdpa", Text: text})
-		}
-		if len(segments) >= 3 {
-			break
-		}
-	}
-	if len(segments) <= 1 {
-		return Product{}, fmt.Errorf("precipitation analysis is unavailable for feed %s", feed.ID)
 	}
 	base.Segments = segments
 	return base, nil
@@ -1146,14 +1267,11 @@ func sameDate(left time.Time, right time.Time) bool {
 func (r renderer) hydrometricText(item map[string]any, lang string, timezone string) string {
 	station := fallbackText(specialtyString(item, "station", lang), "the river gauge")
 	parts := []string{"At " + station}
-	if level := specialtyNumber(item, "level_m"); level != "" {
-		parts = append(parts, "the water level was "+level+" metres")
+	if level := hydrometricLevelText(item, lang); level != "" {
+		parts = append(parts, "the water level was "+level)
 	}
-	if discharge := specialtyNumber(item, "discharge"); discharge != "" {
-		parts = append(parts, "the discharge was "+discharge+" cubic metres per second")
-	}
-	if note := specialtyString(item, "level_note", lang); note != "" {
-		parts = append(parts, note)
+	if discharge := hydrometricDischargeText(item); discharge != "" {
+		parts = append(parts, "the discharge was "+discharge)
 	}
 	if observed := reportTime(specialtyString(item, "observed_at", lang), timezone); observed != "" {
 		parts = append(parts, "reported at "+observed)
@@ -1161,74 +1279,74 @@ func (r renderer) hydrometricText(item map[string]any, lang string, timezone str
 	return sentence(strings.Join(parts, ", "))
 }
 
-func (r renderer) coastalFloodText(item map[string]any, lang string, timezone string) string {
-	area := fallbackText(specialtyString(item, "area", lang), "the coast")
-	parts := []string{"For " + area}
-	if risk := specialtyLevel(item, "risk"); risk != "" {
-		parts = append(parts, "coastal flooding risk level "+risk)
+func (r renderer) hydrometricGaugeText(base Product, prefix string, item map[string]any, lang string, timezone string) string {
+	values := hydrometricTemplateValues(item, lang, timezone)
+	parts := r.packageTextSequenceFiltered(base.PackageID, prefix, lang, values)
+	if len(parts) == 0 {
+		return r.hydrometricText(item, lang, timezone)
 	}
-	if likelihood := specialtyLevel(item, "likelihood"); likelihood != "" {
-		parts = append(parts, "likelihood level "+likelihood)
+	return strings.Join(parts, " ")
+}
+
+func hydrometricTemplateValues(item map[string]any, lang string, timezone string) map[string]string {
+	station := firstNonBlank(specialtyString(item, "station", lang), specialtyString(item, "station_id", lang), "the river gauge")
+	values := map[string]string{
+		"water_station": station,
+		"station":       station,
+		"level":         hydrometricLevelText(item, lang),
+		"discharge":     hydrometricDischargeText(item),
 	}
-	if impact := specialtyLevel(item, "impact"); impact != "" {
-		parts = append(parts, "impact level "+impact)
+	if observed := reportTime(specialtyString(item, "observed_at", lang), timezone); observed != "" {
+		values["observed_at"] = observed
 	}
-	for _, field := range []struct {
-		key   string
-		label string
-	}{
-		{"storm_surge", "storm surge"},
-		{"tide", "tide"},
-		{"waves", "wave impacts"},
-	} {
-		if value := specialtyLevel(item, field.key); value != "" {
-			parts = append(parts, field.label+" level "+value)
+	return values
+}
+
+func hydrometricLevelText(item map[string]any, lang string) string {
+	level := specialtyNumber(item, "level_m")
+	if level == "" {
+		return ""
+	}
+	text := level + " metres"
+	if note := specialtyString(item, "level_note", lang); note != "" {
+		text += " " + note
+	}
+	return text
+}
+
+func hydrometricDischargeText(item map[string]any) string {
+	discharge := specialtyNumber(item, "discharge")
+	if discharge == "" {
+		return ""
+	}
+	return discharge + " cubic metres per second"
+}
+
+func hydrometricGroups(items []map[string]any) map[string][]map[string]any {
+	out := map[string][]map[string]any{
+		"primary":    {},
+		"upstream":   {},
+		"downstream": {},
+	}
+	sorted := append([]map[string]any(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		left, _ := numberFromAny(sorted[i]["order"])
+		right, _ := numberFromAny(sorted[j]["order"])
+		if left != right {
+			return left < right
+		}
+		return specialtyString(sorted[i], "station_id", "en") < specialtyString(sorted[j], "station_id", "en")
+	})
+	for _, item := range sorted {
+		relation := strings.ToLower(strings.TrimSpace(specialtyString(item, "relation", "en")))
+		switch relation {
+		case "upstream", "downstream":
+			out[relation] = append(out[relation], item)
+		default:
+			out["primary"] = append(out["primary"], item)
 		}
 	}
-	if valid := reportTime(specialtyString(item, "valid_at", lang), timezone); valid != "" {
-		parts = append(parts, "valid around "+valid)
-	}
-	return sentence(strings.Join(parts, "; "))
-}
-
-func (r renderer) hurricaneTrackText(item map[string]any, lang string, timezone string) string {
-	name := fallbackText(specialtyString(item, "storm_name", lang), "the tropical cyclone")
-	classification := readableSpecialtyToken(firstNonBlank(specialtyString(item, "classification", lang), specialtyString(item, "sub_type", lang)))
-	parts := []string{"Tropical cyclone " + titleText(name)}
-	if classification != "" {
-		parts = append(parts, "classified as "+classification)
-	}
-	if wind := specialtyNumber(item, "max_wind_kt"); wind != "" {
-		parts = append(parts, "maximum sustained winds "+wind+" knots")
-	}
-	if gust := specialtyNumber(item, "gust_kt"); gust != "" {
-		parts = append(parts, "gusts "+gust+" knots")
-	}
-	if pressure := specialtyNumber(item, "pressure_mb"); pressure != "" {
-		parts = append(parts, "central pressure "+pressure+" millibars")
-	}
-	if valid := reportTime(specialtyString(item, "valid_at", lang), timezone); valid != "" {
-		parts = append(parts, "valid at "+valid)
-	}
-	return sentence(strings.Join(parts, ", "))
-}
-
-func (r renderer) precipitationAnalysisText(item map[string]any, lang string, timezone string) string {
-	location := fallbackText(specialtyString(item, "location", lang), "the area")
-	minimum := specialtyNumber(item, "min_mm")
-	maximum := specialtyNumber(item, "max_mm")
-	mean := specialtyNumber(item, "mean_mm")
-	parts := []string{"For " + location}
-	if minimum != "" && maximum != "" {
-		parts = append(parts, "estimated 24 hour precipitation ranged from "+minimum+" to "+maximum+" millimetres")
-	}
-	if mean != "" {
-		parts = append(parts, "with an area average near "+mean+" millimetres")
-	}
-	if reported := reportTime(specialtyString(item, "published_at", lang), timezone); reported != "" {
-		parts = append(parts, "analysis retrieved at "+reported)
-	}
-	return sentence(strings.Join(parts, ", "))
+	return out
 }
 
 func specialtyItemCurrent(item map[string]any, now time.Time) bool {
@@ -1395,6 +1513,106 @@ func (r renderer) packageText(pkgID string, key string, lang string, fallback st
 	return renderTemplateText(text, values)
 }
 
+func (r renderer) packageTextFirst(pkgID string, keys []string, lang string, fallback string, values map[string]string) string {
+	for _, key := range keys {
+		if r.packageTextConfigured(pkgID, key, lang) {
+			return r.packageText(pkgID, key, lang, fallback, values)
+		}
+	}
+	return renderTemplateText(fallback, values)
+}
+
+func (r renderer) packageTextConfigured(pkgID string, key string, lang string) bool {
+	pkgID = strings.ToLower(strings.TrimSpace(pkgID))
+	key = strings.ToLower(strings.TrimSpace(key))
+	if byKey, ok := r.cfg.ProductText[pkgID]; ok {
+		if byLang, ok := byKey[key]; ok {
+			return localizedTextEntry(byLang, lang) != ""
+		}
+	}
+	return false
+}
+
+func (r renderer) packageAnyTextConfigured(pkgID string, keys []string, lang string) bool {
+	for _, key := range keys {
+		if r.packageTextConfigured(pkgID, key, lang) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r renderer) packageTextSequence(pkgID string, prefix string, lang string, values map[string]string) []string {
+	var out []string
+	prefix = strings.Trim(strings.ToLower(strings.TrimSpace(prefix)), ".")
+	for index := 1; index < 100; index++ {
+		key := fmt.Sprintf("text.%d", index)
+		if prefix != "" {
+			key = prefix + "." + key
+		}
+		if !r.packageTextConfigured(pkgID, key, lang) {
+			break
+		}
+		if text := r.packageText(pkgID, key, lang, "", values); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func (r renderer) packageTextSequenceFiltered(pkgID string, prefix string, lang string, values map[string]string) []string {
+	var out []string
+	prefix = strings.Trim(strings.ToLower(strings.TrimSpace(prefix)), ".")
+	for index := 1; index < 100; index++ {
+		key := fmt.Sprintf("text.%d", index)
+		if prefix != "" {
+			key = prefix + "." + key
+		}
+		if !r.packageTextConfigured(pkgID, key, lang) {
+			break
+		}
+		raw := r.packageTextRaw(pkgID, key, lang)
+		if templateHasMissingValue(raw, values) {
+			continue
+		}
+		if text := renderTemplateText(raw, values); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func (r renderer) packageTextRaw(pkgID string, key string, lang string) string {
+	pkgID = strings.ToLower(strings.TrimSpace(pkgID))
+	key = strings.ToLower(strings.TrimSpace(key))
+	if byKey, ok := r.cfg.ProductText[pkgID]; ok {
+		if byLang, ok := byKey[key]; ok {
+			return localizedTextEntry(byLang, lang)
+		}
+	}
+	return ""
+}
+
+func templateHasMissingValue(template string, values map[string]string) bool {
+	for _, name := range templateVariableNames(template) {
+		if strings.TrimSpace(values[name]) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func templateVariableNames(template string) []string {
+	matches := templateVariableRE.FindAllStringSubmatch(template, -1)
+	out := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			out = append(out, match[1])
+		}
+	}
+	return out
+}
+
 func localizedTextEntry(values map[string]string, lang string) string {
 	if len(values) == 0 {
 		return ""
@@ -1514,6 +1732,70 @@ func windText(obs observation, sentenceCase bool) string {
 		text += fmt.Sprintf(" with gusts up to %s kilometres per hour", rounded(*obs.WindGustKMH))
 	}
 	return text
+}
+
+func observationTemplateValues(obs observation) map[string]string {
+	values := map[string]string{
+		"location":      fallbackText(obs.LocationName, obs.ID),
+		"weather":       obs.Condition,
+		"dir_text":      readableDirection(obs.WindDirection),
+		"sky_condition": obs.SkyCondition,
+	}
+	if obs.TemperatureC != nil {
+		values["ctemp"] = rounded(*obs.TemperatureC)
+	}
+	if obs.DewpointC != nil {
+		values["c_dewp"] = rounded(*obs.DewpointC)
+	}
+	if obs.HumidityPercent != nil {
+		values["hum"] = rounded(*obs.HumidityPercent)
+	}
+	if obs.VisibilityKM != nil {
+		values["visibility"] = aviationVisibility(*obs.VisibilityKM)
+	}
+	if obs.PressureKPA != nil {
+		values["pressure"] = oneDecimal(*obs.PressureKPA) + " kilopascals"
+		values["altimeter"] = altimeterInHg(*obs.PressureKPA)
+	}
+	if strings.TrimSpace(obs.Altimeter) != "" {
+		values["altimeter"] = strings.TrimSpace(obs.Altimeter)
+	}
+	if obs.WindSpeedKMH != nil {
+		values["spd_metric"] = rounded(*obs.WindSpeedKMH) + " kilometres per hour"
+		values["spd_maritime"] = wholeKnots(*obs.WindSpeedKMH)
+		values["spd_aviation"] = wholeKnots(*obs.WindSpeedKMH)
+		if *obs.WindSpeedKMH < 1 {
+			values["wind_calm"] = "true"
+		}
+	}
+	if obs.WindGustKMH != nil {
+		values["gust_metric"] = rounded(*obs.WindGustKMH) + " kilometres per hour"
+		values["gust_aviation"] = wholeKnots(*obs.WindGustKMH)
+	}
+	return values
+}
+
+func wholeKnots(kmh float64) string {
+	return strconv.Itoa(int(math.Round(kmhToKnots(kmh)))) + " knots"
+}
+
+func kmhToKnots(value float64) float64 {
+	return value / 1.852
+}
+
+func altimeterInHg(pressureKPA float64) string {
+	return fmt.Sprintf("%.2f inches", pressureKPA*0.295299830714)
+}
+
+func aviationVisibility(visibilityKM float64) string {
+	miles := visibilityKM * 0.621371
+	if miles >= 10 {
+		return strconv.Itoa(int(math.Round(miles))) + " statute miles"
+	}
+	if math.Abs(miles-math.Round(miles)) < 0.05 {
+		return rounded(miles) + " statute miles"
+	}
+	return oneDecimal(miles) + " statute miles"
 }
 
 func sameObservation(left observation, right observation) bool {
@@ -1640,6 +1922,37 @@ func reportTime(raw string, timezone string) string {
 		parsed = parsed.In(loc)
 	}
 	return strings.TrimSpace(compactClock(parsed) + " " + timezoneName(parsed.Format("MST")))
+}
+
+func issueTimeTemplateValues(raw string, timezone string, values map[string]string) map[string]string {
+	if values == nil {
+		values = map[string]string{}
+	}
+	reported := reportTime(raw, timezone)
+	if reported != "" {
+		values["time"] = reported
+	}
+	parsed, err := parseLooseTime(strings.TrimSpace(raw))
+	if err != nil {
+		return values
+	}
+	if loc, locErr := time.LoadLocation(fallbackText(timezone, "Local")); locErr == nil {
+		parsed = parsed.In(loc)
+	}
+	hour := parsed.Hour()
+	ampm := "AM"
+	if hour >= 12 {
+		ampm = "PM"
+	}
+	hour12 := hour % 12
+	if hour12 == 0 {
+		hour12 = 12
+	}
+	values["issue_hour"] = strconv.Itoa(hour12)
+	values["issue_minute"] = fmt.Sprintf("%02d", parsed.Minute())
+	values["issue_ampm"] = ampm
+	values["issue_timezone"] = timezoneName(parsed.Format("MST"))
+	return values
 }
 
 func timezoneName(abbrev string) string {
@@ -1815,6 +2128,11 @@ func forecastRegionTextKey(region string) string {
 	return "region"
 }
 
+func forecastRegionTextKeys(region string) []string {
+	key := forecastRegionTextKey(region)
+	return []string{"shortterm." + key, key}
+}
+
 func pauseForecastRegionName(value string, language string) string {
 	cleaned := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 	if cleaned == "" {
@@ -1920,6 +2238,84 @@ func periodForecastText(period forecastPeriod) string {
 	return sentence(strings.TrimSpace(name + ". " + text))
 }
 
+func forecastPeriodTextKey(name string) string {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(name)), " "))
+	normalized = strings.Trim(normalized, " .,:;-")
+	switch normalized {
+	case "today", "this morning", "this afternoon", "this evening":
+		return "today"
+	case "tonight":
+		return "tonight"
+	case "monday":
+		return "mon"
+	case "tuesday":
+		return "tue"
+	case "wednesday":
+		return "wed"
+	case "thursday":
+		return "thu"
+	case "friday":
+		return "fri"
+	case "saturday":
+		return "sat"
+	case "sunday":
+		return "sun"
+	default:
+		if strings.HasPrefix(normalized, "monday ") {
+			return "mon"
+		}
+		if strings.HasPrefix(normalized, "tuesday ") {
+			return "tue"
+		}
+		if strings.HasPrefix(normalized, "wednesday ") {
+			return "wed"
+		}
+		if strings.HasPrefix(normalized, "thursday ") {
+			return "thu"
+		}
+		if strings.HasPrefix(normalized, "friday ") {
+			return "fri"
+		}
+		if strings.HasPrefix(normalized, "saturday ") {
+			return "sat"
+		}
+		if strings.HasPrefix(normalized, "sunday ") {
+			return "sun"
+		}
+		return ""
+	}
+}
+
+func forecastPeriodTextKeys(key string) []string {
+	switch key {
+	case "today", "tonight":
+		return []string{"shortterm." + key, key}
+	case "":
+		return nil
+	default:
+		return []string{"extended.period", key}
+	}
+}
+
+func forecastPeriodTemplateValues(name string) (period string, day string, night string) {
+	period = strings.Join(strings.Fields(strings.TrimSpace(name)), " ")
+	if period == "" {
+		return "", "", ""
+	}
+	words := strings.Fields(period)
+	if len(words) == 0 {
+		return period, "", ""
+	}
+	last := strings.ToLower(strings.Trim(words[len(words)-1], " .,:;-"))
+	if last == "night" || last == "overnight" {
+		day = strings.Join(words[:len(words)-1], " ")
+		night = words[len(words)-1]
+		return period, day, night
+	}
+	day = period
+	return period, day, ""
+}
+
 func sentence(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -1956,16 +2352,16 @@ func titleForPackage(pkgID string) string {
 		return "Air Quality"
 	case "climate_summary":
 		return "Climate Summary"
+	case "marine_forecast":
+		return "Marine Forecast"
+	case "marine_reports":
+		return "Marine Reports"
+	case "aviation_reports":
+		return "Aviation Weather Reports"
 	case "thunderstorm_outlook":
 		return "Thunderstorm Outlook"
 	case "hydrometric":
 		return "River Conditions"
-	case "coastal_flood":
-		return "Coastal Flooding Risk"
-	case "hurricane_tracks":
-		return "Hurricane Tracks"
-	case "precipitation_analysis":
-		return "Precipitation Analysis"
 	case "geophysical_alert":
 		return "Geophysical Alert"
 	case "alerts":

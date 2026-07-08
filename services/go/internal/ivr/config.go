@@ -155,15 +155,13 @@ type rtpConfig struct {
 }
 
 type cacheConfig struct {
-	Dir              string   `yaml:"dir"`
-	TTL              string   `yaml:"ttl"`
-	PrewarmCodes     []string `yaml:"prewarm_codes"`
-	PhoneSampleRate  int      `yaml:"phone_sample_rate"`
-	PhoneCodec       string   `yaml:"phone_codec"`
-	MaxEntries       int      `yaml:"max_entries"`
-	StampedeWaiters  int      `yaml:"stampede_waiters"`
-	RefreshOnStartup bool     `yaml:"refresh_on_startup"`
-	StaticOnStartup  bool     `yaml:"static_prompts_on_startup"`
+	Dir             string `yaml:"dir"`
+	TTL             string `yaml:"ttl"`
+	PhoneSampleRate int    `yaml:"phone_sample_rate"`
+	PhoneCodec      string `yaml:"phone_codec"`
+	MaxEntries      int    `yaml:"max_entries"`
+	StampedeWaiters int    `yaml:"stampede_waiters"`
+	StaticOnStartup bool   `yaml:"static_prompts_on_startup"`
 }
 
 type loadedConfig struct {

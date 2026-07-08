@@ -206,6 +206,8 @@ struct OutputFeedXml {
     #[serde(default)]
     webrtc: OutputNodeXml,
     #[serde(default)]
+    icecast: OutputNodeXml,
+    #[serde(default)]
     stream: OutputNodeXml,
     #[serde(default)]
     udp: OutputNodeXml,
@@ -250,6 +252,20 @@ struct OutputNodeXml {
 impl OutputNodeXml {
     fn is_enabled(&self) -> bool {
         xml_bool(self.enabled.as_deref(), false)
+    }
+
+    fn is_configured(&self) -> bool {
+        self.enabled.is_some()
+            || !self.r#type.trim().is_empty()
+            || !self.host.trim().is_empty()
+            || !self.port.trim().is_empty()
+            || !self.username.trim().is_empty()
+            || !self.password.trim().is_empty()
+            || !self.mount.trim().is_empty()
+            || !self.ssl.trim().is_empty()
+            || !self.format.trim().is_empty()
+            || !self.acodec.trim().is_empty()
+            || !self.bitrate_kbps.trim().is_empty()
     }
 
     fn portable_bitrate_kbps(&self) -> u32 {
@@ -475,7 +491,10 @@ impl FeedRuntime {
             stats,
         });
         start_feed_clock_thread(Arc::clone(&runtime), input_rx);
-        if let Some(icecast) = output.and_then(|output| output.icecast_config) {
+        if let Some(mut icecast) = output.and_then(|output| output.icecast_config) {
+            if icecast.mount.trim().is_empty() {
+                icecast.mount = format!("/{}", runtime.feed_id.trim().trim_start_matches('/'));
+            }
             start_icecast_output(Arc::clone(&runtime), icecast, gstreamer_available);
         }
         runtime
@@ -676,17 +695,32 @@ impl MediaState {
 
     fn feed(&self, feed_id: &str) -> Option<Arc<FeedRuntime>> {
         let feed_id = feed_id.trim().to_string();
-        if !self.configured_outputs.contains_key(&feed_id) {
+        let output = self.configured_output_for_feed(&feed_id);
+        if output.is_none() {
             return None;
         }
         let mut feeds = self.feeds.lock().expect("feed registry poisoned");
         if let Some(feed) = feeds.get(&feed_id) {
             return Some(Arc::clone(feed));
         }
-        let output = self.configured_outputs.get(&feed_id).cloned();
         let runtime = FeedRuntime::new(feed_id.clone(), output, self.gstreamer_available);
         feeds.insert(feed_id, Arc::clone(&runtime));
         Some(runtime)
+    }
+
+    fn configured_output_for_feed(&self, feed_id: &str) -> Option<OutputFeed> {
+        self.configured_outputs.get(feed_id).cloned().or_else(|| {
+            self.configured_outputs
+                .iter()
+                .find(|(pattern, _)| {
+                    output_id_is_wildcard(pattern) && wildcard_match(pattern, feed_id)
+                })
+                .map(|(_, output)| {
+                    let mut output = output.clone();
+                    output.id = feed_id.to_string();
+                    output
+                })
+        })
     }
 
     fn publish_pcm(&self, chunk: PcmChunk) {
@@ -3665,51 +3699,92 @@ fn load_outputs(path: &Path) -> Result<BTreeMap<String, OutputFeed>> {
         .with_context(|| format!("failed to read outputs XML {}", path.display()))?;
     let parsed: OutputsXml = quick_xml::de::from_str(&expand_env_vars(&raw))
         .with_context(|| format!("failed to parse outputs XML {}", path.display()))?;
-    let mut outputs = BTreeMap::new();
+    let mut exact = BTreeMap::new();
+    let mut wildcard = Vec::new();
     for feed in parsed.feeds {
         let id = feed.id.trim();
         if id.is_empty() {
             continue;
         }
-        let icecast_config = icecast_output_from_node(&feed.stream);
-        let icecast = icecast_config.is_some();
-        let icecast_mount = icecast_config.as_ref().map(|stream| stream.mount.clone());
-        outputs.insert(
-            id.to_string(),
-            OutputFeed {
-                id: id.to_string(),
-                webrtc: feed.webrtc.is_enabled(),
-                http: true,
-                webrtc_ready: false,
-                icecast,
-                icecast_mount,
-                icecast_config,
-                external: feed.stream.is_enabled()
-                    || feed.udp.is_enabled()
-                    || feed.rtp.is_enabled()
-                    || feed.rtmp.is_enabled()
-                    || feed.srt.is_enabled()
-                    || feed.rtsp.is_enabled()
-                    || feed.audio_device.is_enabled(),
-            },
-        );
+        let icecast_node = preferred_icecast_node(feed.icecast, feed.stream);
+        let external = icecast_node.is_enabled()
+            || feed.udp.is_enabled()
+            || feed.rtp.is_enabled()
+            || feed.rtmp.is_enabled()
+            || feed.srt.is_enabled()
+            || feed.rtsp.is_enabled()
+            || feed.audio_device.is_enabled();
+        let output = output_feed_from_node(id, icecast_node, feed.webrtc, external);
+        if output_id_is_wildcard(id) {
+            wildcard.push((id.to_string(), output));
+        } else {
+            exact.insert(id.to_string(), output);
+        }
     }
-    Ok(outputs)
+    Ok(expand_output_wildcards(exact, wildcard))
+}
+
+fn output_feed_from_node(
+    id: &str,
+    icecast_node: OutputNodeXml,
+    webrtc: OutputNodeXml,
+    external: bool,
+) -> OutputFeed {
+    let icecast_config = icecast_output_from_node(&icecast_node);
+    let icecast = icecast_config.is_some();
+    let icecast_mount = icecast_config.as_ref().and_then(|stream| {
+        if stream.mount.trim().is_empty() {
+            None
+        } else {
+            Some(stream.mount.clone())
+        }
+    });
+    OutputFeed {
+        id: id.to_string(),
+        webrtc: webrtc.is_enabled(),
+        http: true,
+        webrtc_ready: false,
+        icecast,
+        icecast_mount,
+        icecast_config,
+        external,
+    }
+}
+
+fn expand_output_wildcards(
+    exact: BTreeMap<String, OutputFeed>,
+    wildcard: Vec<(String, OutputFeed)>,
+) -> BTreeMap<String, OutputFeed> {
+    let mut outputs = exact;
+    for (pattern, output) in wildcard {
+        outputs.entry(pattern).or_insert(output);
+    }
+    outputs
+}
+
+fn preferred_icecast_node(icecast: OutputNodeXml, stream: OutputNodeXml) -> OutputNodeXml {
+    if icecast.is_configured() {
+        icecast
+    } else {
+        stream
+    }
 }
 
 fn icecast_output_from_node(node: &OutputNodeXml) -> Option<IcecastOutput> {
     if !node.is_enabled() {
         return None;
     }
-    let kind = node.r#type.trim().to_ascii_lowercase();
+    let kind = first_non_blank(&[Some(node.r#type.as_str()), Some("icecast")])
+        .trim()
+        .to_ascii_lowercase();
     if kind != "icecast" {
         return None;
     }
     let host = node.host.trim();
     let mount = node.mount.trim();
     let password = node.password.trim();
-    if host.is_empty() || mount.is_empty() || password.is_empty() {
-        warn!("Icecast stream is enabled but host, mount, or password is missing");
+    if host.is_empty() || password.is_empty() {
+        warn!("Icecast output is enabled but host or password is missing");
         return None;
     }
     Some(IcecastOutput {
@@ -3717,7 +3792,9 @@ fn icecast_output_from_node(node: &OutputNodeXml) -> Option<IcecastOutput> {
         port: node.port.trim().parse::<u16>().unwrap_or(8000),
         username: first_non_blank(&[Some(node.username.as_str()), Some("source")]),
         password: password.to_string(),
-        mount: if mount.starts_with('/') {
+        mount: if mount.is_empty() {
+            String::new()
+        } else if mount.starts_with('/') {
             mount.to_string()
         } else {
             format!("/{mount}")
@@ -3727,6 +3804,28 @@ fn icecast_output_from_node(node: &OutputNodeXml) -> Option<IcecastOutput> {
         acodec: first_non_blank(&[Some(node.acodec.as_str()), Some("libopus")]),
         bitrate_kbps: node.portable_bitrate_kbps(),
     })
+}
+
+fn output_id_is_wildcard(pattern: &str) -> bool {
+    pattern.contains('*') || pattern.contains('?')
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    wildcard_match_inner(pattern.as_bytes(), value.as_bytes())
+}
+
+fn wildcard_match_inner(pattern: &[u8], value: &[u8]) -> bool {
+    match pattern.split_first() {
+        None => value.is_empty(),
+        Some((&b'*', rest)) => {
+            wildcard_match_inner(rest, value)
+                || (!value.is_empty() && wildcard_match_inner(pattern, &value[1..]))
+        }
+        Some((&b'?', rest)) => !value.is_empty() && wildcard_match_inner(rest, &value[1..]),
+        Some((&literal, rest)) => value
+            .split_first()
+            .is_some_and(|(&head, tail)| head == literal && wildcard_match_inner(rest, tail)),
+    }
 }
 
 fn default_outputs_file() -> String {
@@ -4083,21 +4182,20 @@ mod tests {
             r#"
             <outputs>
               <feed id="sk-0001">
-                <stream enabled="true">
-                  <type>icecast</type>
+                <icecast enabled="true">
                   <host>icecast.example.test</host>
                   <port>8000</port>
                   <password>secret</password>
                   <mount>sk-0001</mount>
                   <format>opus</format>
-                </stream>
+                </icecast>
               </feed>
             </outputs>
             "#,
         )
         .unwrap();
 
-        let icecast = icecast_output_from_node(&parsed.feeds[0].stream).unwrap();
+        let icecast = icecast_output_from_node(&parsed.feeds[0].icecast).unwrap();
 
         assert_eq!(icecast.host, "icecast.example.test");
         assert_eq!(icecast.port, 8000);
@@ -4108,23 +4206,53 @@ mod tests {
     }
 
     #[test]
-    fn icecast_output_requires_mount() {
+    fn icecast_output_allows_blank_mount_for_feed_id_default() {
         let parsed: OutputsXml = quick_xml::de::from_str(
             r#"
             <outputs>
               <feed id="sk-0001">
-                <stream enabled="true">
-                  <type>icecast</type>
+                <icecast enabled="true">
                   <host>icecast.example.test</host>
                   <password>secret</password>
-                </stream>
+                </icecast>
               </feed>
             </outputs>
             "#,
         )
         .unwrap();
 
-        assert!(icecast_output_from_node(&parsed.feeds[0].stream).is_none());
+        let icecast = icecast_output_from_node(&parsed.feeds[0].icecast).unwrap();
+        assert_eq!(icecast.mount, "");
+    }
+
+    #[test]
+    fn media_state_matches_wildcard_outputs() {
+        let parsed: OutputsXml = quick_xml::de::from_str(
+            r#"
+            <outputs>
+              <feed id="cwxr-*">
+                <icecast enabled="true">
+                  <host>icecast.example.test</host>
+                  <password>secret</password>
+                </icecast>
+              </feed>
+            </outputs>
+            "#,
+        )
+        .unwrap();
+        let feed = parsed.feeds.into_iter().next().unwrap();
+        let icecast_node = preferred_icecast_node(feed.icecast, feed.stream);
+        let output = output_feed_from_node(feed.id.trim(), icecast_node, feed.webrtc, true);
+        let state = MediaState::new(
+            BTreeMap::from([(feed.id, output)]),
+            BackendMode::Legacy,
+            false,
+            Vec::new(),
+        );
+        let output = state.configured_output_for_feed("cwxr-sk01").unwrap();
+        assert_eq!(output.id, "cwxr-sk01");
+        assert!(output.icecast);
+        assert_eq!(output.icecast_config.unwrap().mount, "");
     }
 
     #[test]

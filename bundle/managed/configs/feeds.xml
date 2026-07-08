@@ -78,6 +78,10 @@
         <location id="sk-26" source="eccc"/>
       </observationLocations>
 
+      <aviationReportLocations>
+        <location id="CYXE" source="eccc" name_override="Saskatoon Diefenbaker International Airport"/>
+      </aviationReportLocations>
+
       <airQualityLocations>
         <location id="HAHJJ" source="eccc"/>
       </airQualityLocations>
@@ -87,7 +91,15 @@
       </climateLocations>
 
       <hydrometricLocations>
-        <location id="05HG001" source="eccc" name_override="South Saskatchewan River at Saskatoon"/>
+        <location id="05HG001" source="eccc"/>
+        <upstream>
+          <location id="05JG006" source="eccc"/>
+          <location id="05HD039" source="eccc"/>
+          <location id="05HC005" source="eccc"/>
+        </upstream>
+        <downstream>
+          <location id="05KD007" source="eccc"/>
+        </downstream>
       </hydrometricLocations>
 
     </locations>

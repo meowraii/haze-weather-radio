@@ -84,7 +84,6 @@ services:
       out_dir: "runtime/audio/tts"
       timeout: "60s"
       piper_voices_dir: "managed/voices/piper"
-      piper_prewarm: false
       kokoro_model_dir: "managed/voices/kokoro-multi-lang-v1_0"
       kokoro_runtime_provider: "cpu" # cpu, cuda, or coreml
       kokoro_threads: 1
@@ -158,27 +157,6 @@ services:
         phone_codec: "g722"
         max_entries: 5000
         stampede_waiters: 64
-        refresh_on_startup: false
-        prewarm_codes:
-          - "08074" # Vancouver
-          - "08085" # Victoria
-          - "07052" # Calgary
-          - "07050" # Edmonton
-          - "06040" # Saskatoon
-          - "06032" # Regina
-          - "05038" # Winnipeg
-          - "04143" # Toronto
-          - "04024" # Mississauga
-          - "04004" # Brampton
-          - "04077" # Hamilton
-          - "04082" # Kitchener-Waterloo
-          - "04137" # London
-          - "04118" # Ottawa, Kanata-Orleans
-          - "04052" # Ottawa, Richmond-Metcalfe
-          - "03147" # Montreal
-          - "03133" # Quebec
-          - "01119" # Halifax
-          - "02024" # St. John's
       default_language: "en-US"
       default_reader_id: "00"
       default_packages: ["current_conditions", "forecast"]
@@ -273,9 +251,6 @@ playout:
     - climate_summary
     - thunderstorm_outlook
     - hydrometric
-    - coastal_flood
-    - hurricane_tracks
-    - precipitation_analysis
     - geophysical_alert
     - user_bulletin
 

@@ -9,9 +9,6 @@ const PACKAGE_DESCRIPTIONS = {
     climate_summary: 'Climate summary',
     thunderstorm_outlook: 'Thunderstorm outlook',
     hydrometric: 'Hydrometric conditions',
-    coastal_flood: 'Coastal flood guidance',
-    hurricane_tracks: 'Hurricane tracks',
-    precipitation_analysis: 'Precipitation analysis',
     geophysical_alert: 'Geophysical alert',
     alerts: 'Active alerts',
 };

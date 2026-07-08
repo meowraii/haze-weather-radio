@@ -34,20 +34,10 @@ type PiperProvider struct {
 
 	downloadMu       sync.Mutex
 	runtimeMu        sync.Mutex
-	prewarm          bool
 	voiceIndexCached piperVoiceIndex
 	voiceIndexErr    error
 	resolvedVoices   map[string]resolvedPiperVoice
 	nativeEngines    map[string]piperNativeEngineEntry
-}
-
-// PiperRuntimeOptions keeps legacy daemon settings compatible. Piper synthesis is native-only.
-type PiperRuntimeOptions struct {
-	Mode         string
-	Workers      int
-	Prewarm      bool
-	UseCUDA      bool
-	WorkerScript string
 }
 
 type resolvedPiperVoice struct {
@@ -121,7 +111,6 @@ func NewPiperProvider(executable string, voicesDir string) *PiperProvider {
 		MetadataURL:    defaultPiperMetadataURL,
 		VoiceBaseURL:   defaultPiperVoiceBaseURL,
 		HTTPClient:     defaultPiperHTTPClient(),
-		prewarm:        true,
 		resolvedVoices: map[string]resolvedPiperVoice{},
 		nativeEngines:  map[string]piperNativeEngineEntry{},
 	}
@@ -142,29 +131,6 @@ func defaultPiperHTTPClient() *http.Client {
 }
 
 func (p *PiperProvider) ID() string { return "piper" }
-
-// ConfigureRuntime updates native Piper runtime options that still affect startup.
-func (p *PiperProvider) ConfigureRuntime(options PiperRuntimeOptions) {
-	p.runtimeMu.Lock()
-	defer p.runtimeMu.Unlock()
-	p.prewarm = options.Prewarm
-}
-
-// Prewarm initializes the native Piper runtime and verifies synthesis for the requested voice.
-func (p *PiperProvider) Prewarm(ctx context.Context, req Request) error {
-	modelPath, configPath, err := p.ensureVoice(ctx, req.VoiceID)
-	if err != nil {
-		return err
-	}
-	voice := resolvedPiperVoice{ID: cleanPiperVoiceID(req.VoiceID), ModelPath: modelPath, ConfigPath: configPath}
-	warmReq := req
-	if strings.TrimSpace(warmReq.Text) == "" {
-		warmReq.Text = "Ready."
-	}
-	warmReq.OutputFormat = FormatPCM16LE
-	_, err = p.synthesizeWithNative(ctx, voice, warmReq)
-	return err
-}
 
 func (p *PiperProvider) ListVoices(ctx context.Context) ([]Voice, error) {
 	index, err := p.voiceIndex(ctx)

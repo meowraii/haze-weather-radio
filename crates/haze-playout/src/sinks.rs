@@ -49,7 +49,7 @@ pub(crate) fn sinks_for_feed(cfg: &LoadedConfig, feed: &FeedConfig) -> Vec<Box<d
         );
     }
     for (label, node) in [
-        ("stream", &feed.output.stream),
+        ("icecast", &feed.output.icecast),
         ("rtmp", &feed.output.rtmp),
         ("srt", &feed.output.srt),
         ("rtsp", &feed.output.rtsp),

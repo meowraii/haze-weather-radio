@@ -164,7 +164,7 @@ func loadConfig(configPath string, outDir string) (loadedConfig, error) {
 		root.Playout.Pacing.PackageGapS = 1
 	}
 	if len(root.Playout.PlaylistOrder) == 0 {
-		root.Playout.PlaylistOrder = []string{"current_conditions", "air_quality", "forecast", "climate_summary", "thunderstorm_outlook", "hydrometric", "coastal_flood", "hurricane_tracks", "precipitation_analysis", "geophysical_alert", "user_bulletin"}
+		root.Playout.PlaylistOrder = []string{"current_conditions", "air_quality", "forecast", "climate_summary", "thunderstorm_outlook", "hydrometric", "geophysical_alert", "user_bulletin"}
 	}
 	baseDir := filepath.Dir(filepath.Clean(configPath))
 	feeds, err := loadFeeds(resolvePath(baseDir, fallbackText(root.FeedsFile, "managed/configs/feeds.xml")))

@@ -404,19 +404,3 @@ func mustTime(t *testing.T, raw string) time.Time {
 	}
 	return parsed
 }
-
-func TestRDPAStatsSummarizesCoverageValues(t *testing.T) {
-	stats, ok := rdpaStats(map[string]any{
-		"ranges": map[string]any{
-			"APCP": map[string]any{
-				"values": []any{nil, 0.04, 1.26, 2.51},
-			},
-		},
-	})
-	if !ok {
-		t.Fatal("stats were not built")
-	}
-	if stats["min_mm"] != 0.0 || stats["max_mm"] != 2.5 || stats["mean_mm"] != 1.3 {
-		t.Fatalf("stats = %#v", stats)
-	}
-}

@@ -50,11 +50,8 @@
   </menu>
 
   <menu id="specialty_menu" timeout="8s" retries="2">
-    <line key="main">Specialty products. 1 for river conditions, 2 for recent precipitation analysis, 3 for coastal flooding risk, or 4 for hurricane track information. Press pound to return to the previous menu.</line>
+    <line key="main">Specialty products. 1 for river conditions. Press pound to return to the previous menu.</line>
     <option digit="1" action="product" packages="hydrometric"/>
-    <option digit="2" action="product" packages="precipitation_analysis"/>
-    <option digit="3" action="product" packages="coastal_flood"/>
-    <option digit="4" action="product" packages="hurricane_tracks"/>
   </menu>
 
   <menu id="weather_product" cache_ttl="10m">

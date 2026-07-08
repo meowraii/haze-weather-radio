@@ -66,6 +66,120 @@ func TestCurrentConditionsProductUsesOpenerPackageAndRepeatSegments(t *testing.T
 	}
 }
 
+func TestMarineAndAviationReportsUseSharedObservationWithKnots(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	cfg.Packages["marine_reports"] = packageProfile{Enabled: true, ReaderID: "00"}
+	cfg.Packages["aviation_reports"] = packageProfile{Enabled: true, ReaderID: "00"}
+	cfg.ProductText["marine_reports"] = map[string]map[string]string{
+		"report.text.1":       {"en-ca": "The marine report for {location},"},
+		"report.text.2":       {"en-ca": "the weather was {weather}."},
+		"report.text.3":       {"en-ca": "Air temperature, {ctemp} degrees."},
+		"report.winds.text.1": {"en-ca": "Winds were {dir_text} at {spd_maritime}"},
+		"report.winds.text.2": {"en-ca": "The wind was calm."},
+	}
+	cfg.ProductText["aviation_reports"] = map[string]map[string]string{
+		"report.text.1":       {"en-ca": "The aviation weather report for {location},"},
+		"report.text.2":       {"en-ca": "visibility, {visibility}."},
+		"report.text.3":       {"en-ca": "altimeter setting, {altimeter}."},
+		"report.winds.text.1": {"en-ca": "Winds were {dir_text} at {spd_aviation}"},
+		"report.winds.text.2": {"en-ca": "The wind was calm."},
+	}
+	storeObservationJSON(t, cfg.Store, "CYXE", `{
+  "source": "eccc",
+  "observed_at": "2026-06-15T20:00:00-06:00",
+  "station": {"en": "Saskatoon Diefenbaker Int'l Airport"},
+  "station_id": "CYXE",
+  "properties": {
+    "condition": {"en": "Mostly Cloudy"},
+    "temp": 24,
+    "wind": {"direction": "NW", "speed": 38},
+    "visibility": 24,
+    "pressure": {"value": 101.4}
+  }
+}`)
+
+	marine, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "marine_reports"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	aviation, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "aviation_reports"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(marine.Text, "Winds were north west at 21 knots") || strings.Contains(marine.Text, "at 10 21 knots") {
+		t.Fatalf("marine report wind wording wrong:\n%s", marine.Text)
+	}
+	for _, wanted := range []string{
+		"The aviation weather report for Saskatoon Diefenbaker Int'l Airport",
+		"visibility, 15 statute miles.",
+		"altimeter setting, 29.94 inches.",
+		"Winds were north west at 21 knots",
+	} {
+		if !strings.Contains(aviation.Text, wanted) {
+			t.Fatalf("aviation report missing %q:\n%s", wanted, aviation.Text)
+		}
+	}
+}
+
+func TestMarineForecastProductRendersRealtimePayload(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	cfg.Packages["marine_forecast"] = packageProfile{Enabled: true, ReaderID: "01"}
+	cfg.Feeds[0].Locations.MarineForecastLocations.Subregions = []locationXML{{ID: "m0000144", Source: "eccc"}}
+	cfg.ProductText["marine_forecast"] = map[string]map[string]string{
+		"opener":                     {"en-ca": "The {source} marine forecast for {area}, issued at {issue_hour} {issue_minute} {issue_ampm} {issue_timezone}."},
+		"forecast.regular.location":  {"en-ca": "For {location}. {period} {wind}"},
+		"forecast.waves.location":    {"en-ca": "Waves for {location}. {period} {waves}"},
+		"forecast.extended.opener":   {"en-ca": "The extended marine outlook."},
+		"forecast.extended.period":   {"en-ca": "For {period}. {forecast}"},
+		"forecast.warnings.location": {"en-ca": "Marine warning for {location}. {warning}"},
+	}
+	storeProductPayloadJSON(t, cfg.Store, "marine_forecast", "eccc", "m0000144", `{
+  "id": "m0000144",
+  "properties": {
+    "lastUpdated": "2026-07-07T14:30:51Z",
+    "area": {"value": {"en": "Lake Ontario"}},
+    "regularForecast": {
+      "issuedDatetimeLocal": "2026-07-07T10:30:00-04:00",
+      "locations": [
+        {"name": "Lake Ontario East", "weatherCondition": {"periodOfCoverage": {"en": "Today Tonight and Wednesday."}, "wind": {"en": "Wind east 10 knots veering to southeast 10 this evening."}}}
+      ]
+    },
+    "waveForecast": {
+      "locations": [
+        {"name": "Lake Ontario East", "weatherCondition": {"periodOfCoverage": {"en": "Today Tonight and Wednesday."}, "textSummary": {"en": "Waves 0.5 metres or less."}}}
+      ]
+    },
+    "extendedForecast": {
+      "locations": [
+        {"weatherCondition": {"forecastPeriods": [
+          {"name": {"en": "Thursday"}, "value": {"en": "Wind light becoming southwest 15 knots in the afternoon."}}
+        ]}}
+      ]
+    },
+    "warnings": {"locations": []}
+  }
+}`)
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "marine_forecast"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []string{
+		"The Environment Canada marine forecast for Lake Ontario, issued at 8 30 AM Central Standard Time.",
+		"For Lake Ontario East. Today Tonight and Wednesday. Wind east 10 knots veering to southeast 10 this evening.",
+		"Waves for Lake Ontario East. Today Tonight and Wednesday. Waves 0.5 metres or less.",
+		"The extended marine outlook. For Thursday. Wind light becoming southwest 15 knots in the afternoon.",
+	} {
+		if !strings.Contains(product.Text, wanted) {
+			t.Fatalf("marine forecast missing %q:\n%s", wanted, product.Text)
+		}
+	}
+}
+
 func TestReportTimeConvertsUTCProductTimestampsToFeedTimezone(t *testing.T) {
 	for _, raw := range []string{"2026 Jul 05 1700 UTC", "2026-07-05T17:00:00Z"} {
 		if got := reportTime(raw, "America/Regina"); got != "11 AM Central Standard Time" {
@@ -141,6 +255,75 @@ func TestForecastProductSaysRegionOncePerRegion(t *testing.T) {
 	}
 	if !strings.Contains(product.Text, "Tonight. Cloudy with showers.") || !strings.Contains(product.Text, "Tuesday. Sunny.") {
 		t.Fatalf("period text missing:\n%s", product.Text)
+	}
+}
+
+func TestForecastProductUsesNestedProductTemplates(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	_ = os.Remove(filepath.Join(dir, "managed", "configs", "packages.xml"))
+	mustWrite(t, filepath.Join(dir, "managed", "configs", "products.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<ProductText version="1.1">
+  <product id="forecast" enabled="true">
+    <lang iso="en-CA" readerid="01">
+      <text key="opener">Now for your official {source} forecast, Issued at {issue_hour} {issue_ampm} {issue_timezone}.</text>
+      <region>
+        <shortterm>
+          <text key="region">For areas in and around {region}.</text>
+          <text key="region_plain">For the {region}.</text>
+          <text key="today">For today. {fc_text}</text>
+          <text key="tonight">For tonight. {fc_text}</text>
+        </shortterm>
+        <extended>
+          <text key="opener">The extended outlook.</text>
+          <text key="period">For {period}. {fc_text}</text>
+        </extended>
+      </region>
+    </lang>
+  </product>
+</ProductText>`)
+	cfg := loadFixtureConfig(t, dir)
+	storeForecastJSON(t, cfg.Store, "065500", "065500", `{
+  "issued_at": "2026-06-15T20:00:00-06:00",
+  "name": {"en": "Outlook - Watrous - Hanley - Imperial and Dinsmore region"},
+  "forecast": [
+    {"period": {"en": "Today"}, "textSummary": {"en": "Sunny"}},
+    {"period": {"en": "Tonight"}, "textSummary": {"en": "Cloudy with showers"}},
+    {"period": {"en": "Tuesday night"}, "textSummary": {"en": "Clearing in the evening"}},
+    {"period": {"en": "Wednesday"}, "textSummary": {"en": "Chance of showers"}}
+  ]
+}`)
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "forecast"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []string{
+		"Now for your official Environment Canada forecast, Issued at 8 PM Central Standard Time.",
+		"For today. Sunny.",
+		"For tonight. Cloudy with showers.",
+		"The extended outlook.",
+		"For Tuesday night. Clearing in the evening.",
+		"For Wednesday. Chance of showers.",
+	} {
+		if !strings.Contains(product.Text, wanted) {
+			t.Fatalf("forecast missing %q:\n%s", wanted, product.Text)
+		}
+	}
+	var extendedSegments int
+	for _, segment := range product.Segments {
+		if strings.Contains(segment.Label, "Tuesday night") && strings.Contains(segment.Label, "Wednesday") {
+			extendedSegments++
+			if !strings.Contains(segment.Text, "The extended outlook.") || !strings.Contains(segment.Text, "For Tuesday night.") || !strings.Contains(segment.Text, "For Wednesday.") {
+				t.Fatalf("extended segment did not combine future days:\n%#v", segment)
+			}
+		}
+	}
+	if extendedSegments != 1 {
+		t.Fatalf("extended forecast segment count = %d, segments=%#v", extendedSegments, product.Segments)
+	}
+	if strings.Contains(product.Text, "Today. Sunny") {
+		t.Fatalf("forecast used legacy period wording:\n%s", product.Text)
 	}
 }
 
@@ -664,6 +847,27 @@ func TestSpecialtyProductsRenderStoredPayloads(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
 	cfg := loadFixtureConfig(t, dir)
+	cfg.ProductText["hydrometric"] = map[string]map[string]string{
+		"opener":              {"en-ca": "Hydrometric reports courtesy of Environment and Climate Change Canada."},
+		"primary.placeholder": {"en-ca": "No river condition report is available for {site}."},
+		"primary.gauge.text.1": {
+			"en-ca": "{water_station} reported a water level of {level}.",
+		},
+		"primary.gauge.text.2": {
+			"en-ca": "The discharge rate was {discharge}.",
+		},
+		"nearby.upstream": {"en-ca": "Upstream."},
+		"nearby.downstream": {
+			"en-ca": "Downstream.",
+		},
+		"nearby.and": {"en-ca": "and,"},
+		"nearby.gauge.text.1": {
+			"en-ca": "{water_station}, water level {level}.",
+		},
+		"nearby.gauge.text.2": {
+			"en-ca": "Discharge, {discharge}.",
+		},
+	}
 	tests := []struct {
 		name    string
 		kind    string
@@ -701,65 +905,41 @@ func TestSpecialtyProductsRenderStoredPayloads(t *testing.T) {
   "title": "River Conditions",
   "updated_at": "2026-06-18T18:00:00Z",
   "items": [{
+    "station_id": "05HG001",
     "station": "South Saskatchewan River at Saskatoon",
+    "relation": "primary",
+    "order": 0,
     "observed_at": "2026-06-18T17:00:00-06:00",
     "level_m": 2.424,
     "discharge": 288
+  }, {
+    "station_id": "05JG006",
+    "station": "Red Deer River near Bindloss",
+    "relation": "upstream",
+    "order": 1,
+    "observed_at": "2026-06-18T17:00:00-06:00",
+    "level_m": 5.91,
+    "discharge": 111
+  }, {
+    "station_id": "05KD007",
+    "station": "Saskatchewan River below the Forks",
+    "relation": "downstream",
+    "order": 3,
+    "observed_at": "2026-06-18T17:00:00-06:00",
+    "level_m": 378.266,
+    "discharge": 787
   }]
 }`,
-			want: []string{"River conditions for the Saskatoon area.", "At South Saskatchewan River at Saskatoon", "the water level was 2.4 metres", "the discharge was 288 cubic metres per second"},
-		},
-		{
-			name: "coastal flood",
-			kind: "coastal_flood",
-			payload: `{
-  "source": "eccc",
-  "title": "Coastal Flooding Risk",
-  "updated_at": "2026-06-18T18:00:00Z",
-  "items": [{
-    "area": "Atlantic",
-    "risk": 3,
-    "likelihood": 2,
-    "impact": 4,
-    "expires_at": "2099-06-18T23:00:00Z"
-  }]
-}`,
-			want: []string{"Coastal flooding risk for the Saskatoon area.", "For Atlantic", "coastal flooding risk level 3", "impact level 4"},
-		},
-		{
-			name: "hurricane tracks",
-			kind: "hurricane_tracks",
-			payload: `{
-  "source": "eccc",
-  "title": "Hurricane Tracks",
-  "updated_at": "2026-06-18T18:00:00Z",
-  "items": [{
-    "storm_name": "ONE",
-    "classification": "POTENTIAL_TROPICAL",
-    "max_wind_kt": 25,
-    "gust_kt": 35,
-    "pressure_mb": 1007,
-    "valid_at": "2026-06-18T18:00:00Z"
-  }]
-}`,
-			want: []string{"Hurricane track information for the Saskatoon area.", "Tropical cyclone One", "classified as potential tropical", "maximum sustained winds 25 knots"},
-		},
-		{
-			name: "precipitation analysis",
-			kind: "precipitation_analysis",
-			payload: `{
-  "source": "eccc",
-  "title": "Precipitation Analysis",
-  "updated_at": "2026-06-18T18:00:00Z",
-  "items": [{
-    "location": "Saskatoon",
-    "min_mm": 0,
-    "max_mm": 2.5,
-    "mean_mm": 1.3,
-    "published_at": "2026-06-18T18:00:00Z"
-  }]
-}`,
-			want: []string{"Recent precipitation analysis for the Saskatoon area.", "For Saskatoon", "estimated 24 hour precipitation ranged from 0 to 2.5 millimetres", "area average near 1.3 millimetres"},
+			want: []string{
+				"Hydrometric reports courtesy of Environment and Climate Change Canada.",
+				"South Saskatchewan River at Saskatoon reported a water level of 2.4 metres.",
+				"The discharge rate was 288 cubic metres per second.",
+				"Upstream.",
+				"Red Deer River near Bindloss, water level 5.9 metres.",
+				"and, Downstream.",
+				"Saskatchewan River below the Forks, water level 378.3 metres.",
+				"Discharge, 787 cubic metres per second.",
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -1702,6 +1882,16 @@ services:
       <climateLocations>
         <location id="4057165" source="eccc" name_override="Saskatoon" normal_id="4057120"/>
       </climateLocations>
+      <hydrometricLocations>
+        <location id="05HG001" source="eccc"/>
+        <upstream>
+          <location id="05JG006" source="eccc"/>
+          <location id="05HD039" source="eccc"/>
+        </upstream>
+        <downstream>
+          <location id="05KD007" source="eccc"/>
+        </downstream>
+      </hydrometricLocations>
     </locations>
     <transmitter_metadata>
       <transmitter>

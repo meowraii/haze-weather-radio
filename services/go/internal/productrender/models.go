@@ -74,6 +74,7 @@ type observation struct {
 	Source           string   `json:"source,omitempty"`
 	LocationName     string   `json:"location_name"`
 	Condition        string   `json:"condition"`
+	SkyCondition     string   `json:"sky_condition,omitempty"`
 	TemperatureC     *float64 `json:"temperature_c"`
 	DewpointC        *float64 `json:"dewpoint_c"`
 	HumidityPercent  *float64 `json:"humidity_percent"`
@@ -83,6 +84,7 @@ type observation struct {
 	VisibilityKM     *float64 `json:"visibility_km"`
 	PressureKPA      *float64 `json:"pressure_kpa"`
 	PressureTendency string   `json:"pressure_tendency"`
+	Altimeter        string   `json:"altimeter,omitempty"`
 	ObservedAt       string   `json:"observed_at"`
 }
 
@@ -123,6 +125,27 @@ type climateSnapshot struct {
 	ReportedAt string   `json:"reported_at"`
 	Location   string   `json:"location"`
 	Summary    []string `json:"summary"`
+}
+
+type marineForecastSnapshot struct {
+	IssuedAt  string
+	UpdatedAt string
+	Area      string
+	Regular   []marineForecastLocation
+	Waves     []marineForecastLocation
+	Extended  []marineForecastPeriod
+	Warnings  []marineForecastLocation
+}
+
+type marineForecastLocation struct {
+	Name   string
+	Period string
+	Text   string
+}
+
+type marineForecastPeriod struct {
+	Name string
+	Text string
 }
 
 type bulletinSnapshot struct {

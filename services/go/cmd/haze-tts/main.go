@@ -52,7 +52,6 @@ func run() error {
 	piperVoicesDir := flag.String("piper-voices-dir", envOrDefault("HAZE_PIPER_VOICES_DIR", filepath.Join("managed", "voices", "piper")), "Piper voice model directory")
 	_ = flag.String("piper-mode", "", "deprecated; Piper is native-only")
 	_ = flag.Int("piper-workers", 0, "deprecated; Piper is native-only")
-	piperPrewarm := flag.Bool("piper-prewarm", envBoolOrDefault("HAZE_PIPER_PREWARM", false), "prewarm native Piper voices on service startup")
 	_ = flag.Bool("piper-cuda", false, "deprecated; use HAZE_PIPER_PROVIDER or HAZE_KOKORO_PROVIDER")
 	kokoroModelDir := flag.String("kokoro-model-dir", envOrDefault("HAZE_KOKORO_MODEL_DIR", filepath.Join("managed", "voices", "kokoro-multi-lang-v1_0")), "Kokoro model directory")
 	kokoroRuntimeProvider := flag.String("kokoro-runtime-provider", envOrDefault("HAZE_KOKORO_PROVIDER", "cpu"), "Kokoro sherpa-onnx provider: cpu, cuda, or coreml")
@@ -92,7 +91,6 @@ func run() error {
 			Timezone:     *timezone,
 			OutDir:       *outDir,
 			Timeout:      *timeout,
-			PiperPrewarm: *piperPrewarm,
 			Workers:      1,
 			SpeakyAPIURL: *speakyAPIURL,
 			RuntimeIdle:  *runtimeIdleTimeout,
@@ -165,7 +163,6 @@ type serviceConfig struct {
 	Timezone     string
 	OutDir       string
 	Timeout      time.Duration
-	PiperPrewarm bool
 	Workers      int
 	SpeakyAPIURL string
 	RuntimeIdle  time.Duration
@@ -434,11 +431,6 @@ func synthesisPriority(message map[string]any) string {
 func newServiceState(ctx context.Context, cfg serviceConfig) (*serviceState, error) {
 	providers := tts.DefaultProviders()
 	configureSpeakyAPIProvider(providers, cfg.SpeakyAPIURL)
-	if piper, ok := providers["piper"].(*tts.PiperProvider); ok {
-		piper.ConfigureRuntime(tts.PiperRuntimeOptions{
-			Prewarm: cfg.PiperPrewarm,
-		})
-	}
 	readers, err := tts.LoadReaders(cfg.Readers)
 	if err != nil {
 		readers = nil
@@ -450,9 +442,6 @@ func newServiceState(ctx context.Context, cfg serviceConfig) (*serviceState, err
 		readersErr:   err,
 		dictionaries: map[string]dictionaryResult{},
 	}
-	if cfg.PiperPrewarm {
-		state.prewarmPiper(ctx)
-	}
 	return state, nil
 }
 
@@ -461,33 +450,6 @@ func configureSpeakyAPIProvider(providers map[string]tts.Provider, baseURL strin
 		return
 	}
 	providers["speakyapi"] = tts.NewSpeakyAPIProvider(baseURL)
-}
-
-func (s *serviceState) prewarmPiper(ctx context.Context) {
-	piper, ok := s.providers["piper"].(*tts.PiperProvider)
-	if !ok {
-		return
-	}
-	for _, reader := range s.readers {
-		if ctx.Err() != nil {
-			return
-		}
-		if tts.NormalizeProvider(reader.Provider) != "piper" {
-			continue
-		}
-		prewarmCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		err := piper.Prewarm(prewarmCtx, tts.Request{
-			Text:         "Ready.",
-			VoiceID:      reader.VoiceID,
-			Language:     reader.Language,
-			OutputFormat: tts.FormatPCM16LE,
-			Volume:       100,
-		})
-		cancel()
-		if err != nil {
-			log.Printf("piper prewarm for reader %s failed: %v", reader.ID, err)
-		}
-	}
 }
 
 func (s *serviceState) serviceReader(readerID string, language string) (tts.Reader, bool, error) {
