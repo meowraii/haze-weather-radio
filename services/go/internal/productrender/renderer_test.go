@@ -54,14 +54,19 @@ func TestCurrentConditionsProductUsesOpenerPackageAndRepeatSegments(t *testing.T
 	for _, wanted := range []string{
 		"The current weather conditions. Issued by Environment and Climate Change Canada at 8 PM Central Standard Time",
 		"The weather at Saskatoon Diefenbaker Int'l Airport was Mostly Cloudy",
-		"Outlook, 24 degrees, winds were north west at 17 kilometres per hour",
+		"Outlook",
+		"24 degrees",
+		"winds were north west at 17 kilometres per hour.",
 		"Again, at Saskatoon Diefenbaker Int'l Airport",
 	} {
 		if !strings.Contains(product.Text, wanted) {
 			t.Fatalf("product text missing %q:\n%s", wanted, product.Text)
 		}
 	}
-	if len(product.Segments) < 4 {
+	if strings.Contains(product.Text, "at 10 17 kilometres per hour") || strings.Count(product.Text, "winds were north west at 17 kilometres per hour") != 1 {
+		t.Fatalf("current conditions wind pacing or wording wrong:\n%s", product.Text)
+	}
+	if len(product.Segments) < 10 {
 		t.Fatalf("segments = %#v", product.Segments)
 	}
 }
@@ -113,7 +118,7 @@ func TestMarineAndAviationReportsUseSharedObservationWithKnots(t *testing.T) {
 	if !strings.Contains(marine.Text, "Winds were north west at 21 knots") || strings.Contains(marine.Text, "at 10 21 knots") {
 		t.Fatalf("marine report wind wording wrong:\n%s", marine.Text)
 	}
-	if !strings.Contains(marine.Text, "Airport,\nthe weather was Mostly Cloudy.") {
+	if !strings.Contains(marine.Text, "Airport,\n\nthe weather was Mostly Cloudy.") {
 		t.Fatalf("marine report collapsed punctuation or line pacing:\n%s", marine.Text)
 	}
 	for _, wanted := range []string{
@@ -126,7 +131,7 @@ func TestMarineAndAviationReportsUseSharedObservationWithKnots(t *testing.T) {
 			t.Fatalf("aviation report missing %q:\n%s", wanted, aviation.Text)
 		}
 	}
-	if !strings.Contains(aviation.Text, "Airport,\nvisibility, 15 statute miles.\naltimeter setting, 29.94 inches.") {
+	if !strings.Contains(aviation.Text, "Airport,\n\nvisibility, 15 statute miles.\n\naltimeter setting, 29.94 inches.") {
 		t.Fatalf("aviation report collapsed punctuation or line pacing:\n%s", aviation.Text)
 	}
 }
@@ -277,7 +282,8 @@ func TestMarineForecastProductRendersRealtimePayload(t *testing.T) {
 		"The Environment Canada marine forecast for Lake Ontario, issued at 8 30 AM Central Standard Time.",
 		"For Lake Ontario East. Today Tonight and Wednesday. Wind east 10 knots veering to southeast 10 this evening.",
 		"Waves for Lake Ontario East. Today Tonight and Wednesday. Waves 0.5 metres or less.",
-		"The extended marine outlook. For Thursday. Wind light becoming southwest 15 knots in the afternoon.",
+		"The extended marine outlook.",
+		"For Thursday. Wind light becoming southwest 15 knots in the afternoon.",
 	} {
 		if !strings.Contains(product.Text, wanted) {
 			t.Fatalf("marine forecast missing %q:\n%s", wanted, product.Text)
@@ -1049,7 +1055,8 @@ func TestSpecialtyProductsRenderStoredPayloads(t *testing.T) {
 				"The discharge rate was 288 cubic metres per second.",
 				"Upstream.",
 				"Red Deer River near Bindloss, water level 5.9 metres.",
-				"and, Downstream.",
+				"and,",
+				"Downstream.",
 				"Saskatchewan River below the Forks, water level 378.3 metres.",
 				"Discharge, 787 cubic metres per second.",
 			},

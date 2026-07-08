@@ -19,3 +19,8 @@ pub(crate) fn install_shutdown_handler() -> Result<()> {
 pub(crate) fn shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
 }
+
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn request_shutdown() {
+    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+}

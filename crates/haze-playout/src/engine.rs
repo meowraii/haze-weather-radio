@@ -24,12 +24,17 @@ const ALERT_QUEUE_DIR: &str = "runtime/queues/alerts";
 const PCM_CHUNK_MS: u32 = 20;
 const MEDIA_PUBLISH_CHUNK_MS: u32 = 40;
 const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 750;
-const PCM_PUBLISH_QUEUE_CAPACITY: usize = 16;
+const PCM_PUBLISH_QUEUE_CAPACITY: usize = 8;
+const ROUTINE_AUDIO_QUEUE_CAPACITY: usize = 16;
+const PRIORITY_AUDIO_QUEUE_CAPACITY: usize = 16;
+const PACKAGE_REQUEST_QUEUE_CAPACITY: usize = 8;
+const DEFERRED_ROUTINE_QUEUE_CAPACITY: usize = 2;
+const COMPLETED_ROUTINE_HISTORY_CAPACITY: usize = 128;
 const REALTIME_MAX_CATCHUP_CHUNKS: usize = 2;
 const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
-const AUDIO_CACHE_MAX_BYTES: usize = 96 * 1024 * 1024;
-const AUDIO_CACHE_MAX_READY_ENTRIES: usize = 192;
-const AUDIO_CACHE_MAX_IDLE: Duration = Duration::from_secs(120);
+const AUDIO_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
+const AUDIO_CACHE_MAX_READY_ENTRIES: usize = 96;
+const AUDIO_CACHE_MAX_IDLE: Duration = Duration::from_secs(45);
 const AUDIO_CACHE_PRUNE_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
@@ -394,12 +399,7 @@ async fn dispatch_event(
             tokio::spawn(async move {
                 match audio_item_from_ready(&cfg, &audio_cache, &handle.feed, data).await {
                     Ok(item) => {
-                        if handle.audio_tx.send(item).await.is_err() {
-                            tracing::warn!(
-                                feed_id,
-                                "playout queue closed before playlist item could be queued"
-                            );
-                        }
+                        enqueue_routine_item(&handle.audio_tx, &feed_id, item);
                     }
                     Err(err) => tracing::warn!(feed_id, "playlist item rejected: {err}"),
                 }
@@ -631,10 +631,10 @@ impl FeedHandle {
         alert_poll: Duration,
         audio_cache: Arc<AudioCache>,
     ) -> Self {
-        let (audio_tx, audio_rx) = mpsc::channel(32);
-        let (priority_tx, priority_rx) = mpsc::channel(32);
+        let (audio_tx, audio_rx) = mpsc::channel(ROUTINE_AUDIO_QUEUE_CAPACITY);
+        let (priority_tx, priority_rx) = mpsc::channel(PRIORITY_AUDIO_QUEUE_CAPACITY);
         let (breakin_tx, breakin_rx) = mpsc::channel(128);
-        let (request_tx, request_rx) = mpsc::channel(32);
+        let (request_tx, request_rx) = mpsc::channel(PACKAGE_REQUEST_QUEUE_CAPACITY);
         let (control_tx, control_rx) = mpsc::channel(16);
 
         tokio::spawn(package_builder(
@@ -750,6 +750,7 @@ impl FeedRunner {
         let mut active_priority_ids = HashSet::<String>::new();
         let mut active_routine_ids = HashSet::<String>::new();
         let mut completed_routine_ids = HashSet::<String>::new();
+        let mut completed_routine_order = VecDeque::<String>::new();
         let mut deferred_routine = VecDeque::<AudioItem>::new();
         let mut live_breakin: Option<LiveBreakIn> = None;
         let mut out = vec![0u8; chunk.len()];
@@ -764,6 +765,7 @@ impl FeedRunner {
                         deferred_routine.clear();
                         active_routine_ids.clear();
                         completed_routine_ids.clear();
+                        completed_routine_order.clear();
                     }
                 }
                 Some(command) = self.breakin_rx.recv() => {
@@ -792,15 +794,18 @@ impl FeedRunner {
                                         item,
                                     );
                                 } else {
-                                    deferred_routine
-                                        .push_front(interrupted_routine_item(item, position));
+                                    defer_routine_front(
+                                        &mut deferred_routine,
+                                        &self.feed.id,
+                                        interrupted_routine_item(item, position),
+                                    );
                                 }
                             }
                             if let Some(item) = pending.take() {
                                 if item.is_alert() {
                                     priority_pending.push_front(item);
                                 } else {
-                                    deferred_routine.push_back(item);
+                                    defer_routine_back(&mut deferred_routine, &self.feed.id, item);
                                 }
                             }
                             position = 0;
@@ -896,11 +901,15 @@ impl FeedRunner {
                                     self.feed.id.clone(),
                                     item.clone(),
                                 );
-                                deferred_routine.push_front(interrupted_routine_item(item, position));
+                                defer_routine_front(
+                                    &mut deferred_routine,
+                                    &self.feed.id,
+                                    interrupted_routine_item(item, position),
+                                );
                             }
                             if let Some(item) = pending.take() {
                                 if !item.is_alert() {
-                                    deferred_routine.push_back(item);
+                                    defer_routine_back(&mut deferred_routine, &self.feed.id, item);
                                 } else {
                                     priority_pending.push_front(item);
                                 }
@@ -911,7 +920,7 @@ impl FeedRunner {
                             && pending.as_ref().is_some_and(|item| !item.is_alert())
                         {
                             if let Some(item) = pending.take() {
-                                deferred_routine.push_back(item);
+                                defer_routine_back(&mut deferred_routine, &self.feed.id, item);
                             }
                             gap_until = Instant::now();
                         }
@@ -1021,7 +1030,11 @@ impl FeedRunner {
                                     active_priority_ids.remove(&item.id);
                                 } else {
                                     active_routine_ids.remove(&item.id);
-                                    completed_routine_ids.insert(item.id.clone());
+                                    remember_completed_routine_item(
+                                        &mut completed_routine_ids,
+                                        &mut completed_routine_order,
+                                        &item.id,
+                                    );
                                 }
                                 let gap_after = item.gap_after;
                                 spawn_finish_item(self.client.clone(), self.feed.id.clone(), item);
@@ -1086,6 +1099,47 @@ impl AudioItem {
 fn interrupted_routine_item(mut item: AudioItem, position: usize) -> AudioItem {
     item.resume_offset = position.min(item.pcm.len());
     item
+}
+
+fn defer_routine_front(queue: &mut VecDeque<AudioItem>, feed_id: &str, item: AudioItem) {
+    trim_deferred_routine_for_insert(queue, feed_id);
+    queue.push_front(item);
+}
+
+fn defer_routine_back(queue: &mut VecDeque<AudioItem>, feed_id: &str, item: AudioItem) {
+    trim_deferred_routine_for_insert(queue, feed_id);
+    queue.push_back(item);
+}
+
+fn trim_deferred_routine_for_insert(queue: &mut VecDeque<AudioItem>, feed_id: &str) {
+    while queue.len() >= DEFERRED_ROUTINE_QUEUE_CAPACITY {
+        let Some(dropped) = queue.pop_back() else {
+            break;
+        };
+        tracing::warn!(
+            feed_id,
+            queue_id = dropped.id,
+            package_id = dropped.package_id,
+            "deferred routine queue is full; dropping stale interrupted audio"
+        );
+    }
+}
+
+fn remember_completed_routine_item(
+    completed_ids: &mut HashSet<String>,
+    completed_order: &mut VecDeque<String>,
+    id: &str,
+) {
+    let id = id.trim();
+    if id.is_empty() || !completed_ids.insert(id.to_string()) {
+        return;
+    }
+    completed_order.push_back(id.to_string());
+    while completed_order.len() > COMPLETED_ROUTINE_HISTORY_CAPACITY {
+        if let Some(oldest) = completed_order.pop_front() {
+            completed_ids.remove(&oldest);
+        }
+    }
 }
 
 fn spawn_accept_item(client: BridgeClient, feed_id: String, item: AudioItem) {
@@ -1793,7 +1847,7 @@ async fn package_builder(
         match build_package(&cfg, &client, &audio_cache, &feed, &request.package_id).await {
             Ok(item) => {
                 recent.insert(request.package_id.clone(), Instant::now());
-                if audio_tx.send(item).await.is_err() {
+                if !enqueue_routine_item(&audio_tx, &feed.id, item) && audio_tx.is_closed() {
                     break;
                 }
             }
@@ -1802,6 +1856,32 @@ async fn package_builder(
                 package_id = request.package_id,
                 "package failed: {err}"
             ),
+        }
+    }
+}
+
+fn enqueue_routine_item(tx: &mpsc::Sender<AudioItem>, feed_id: &str, item: AudioItem) -> bool {
+    let queue_id = item.id.clone();
+    let package_id = item.package_id.clone();
+    match tx.try_send(item) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            tracing::warn!(
+                feed_id,
+                queue_id,
+                package_id,
+                "routine playout queue is full; dropping stale rendered audio"
+            );
+            false
+        }
+        Err(TrySendError::Closed(_)) => {
+            tracing::warn!(
+                feed_id,
+                queue_id,
+                package_id,
+                "playout queue closed before routine item could be queued"
+            );
+            false
         }
     }
 }
@@ -1925,10 +2005,10 @@ async fn audio_item_from_mixed_rendered_product(
     package_id: &str,
     product: &RenderedProduct,
 ) -> Result<Option<AudioItem>> {
-    if !product
+    if product
         .segments
         .iter()
-        .any(|segment| !segment.audio_path.trim().is_empty())
+        .all(|segment| segment.text.trim().is_empty() && segment.audio_path.trim().is_empty())
     {
         return Ok(None);
     }
@@ -1985,6 +2065,19 @@ async fn audio_item_from_mixed_rendered_product(
         if audio_path.is_empty() {
             if !segment.text.trim().is_empty() {
                 text_parts.push(segment.text.clone());
+                flush_text_parts(
+                    &mut text_parts,
+                    &mut chunks,
+                    cfg,
+                    client,
+                    audio_cache,
+                    feed,
+                    package_id,
+                    &job_id,
+                    &reader_id,
+                    &language,
+                )
+                .await?;
             }
             continue;
         }
@@ -3048,6 +3141,51 @@ mod tests {
         let resumed = interrupted_routine_item(item, 99);
 
         assert_eq!(resumed.resume_offset, 16);
+    }
+
+    #[test]
+    fn deferred_routine_queue_drops_oldest_stale_audio() {
+        let mut deferred = VecDeque::new();
+
+        defer_routine_back(
+            &mut deferred,
+            "sk-0001",
+            test_audio_item("routine-1", "One"),
+        );
+        defer_routine_back(
+            &mut deferred,
+            "sk-0001",
+            test_audio_item("routine-2", "Two"),
+        );
+        defer_routine_back(
+            &mut deferred,
+            "sk-0001",
+            test_audio_item("routine-3", "Three"),
+        );
+
+        assert_eq!(deferred.len(), DEFERRED_ROUTINE_QUEUE_CAPACITY);
+        assert_eq!(deferred[0].id, "routine-1");
+        assert_eq!(deferred[1].id, "routine-3");
+    }
+
+    #[test]
+    fn completed_routine_history_is_bounded() {
+        let mut completed = HashSet::<String>::new();
+        let mut order = VecDeque::<String>::new();
+
+        for index in 0..(COMPLETED_ROUTINE_HISTORY_CAPACITY + 2) {
+            remember_completed_routine_item(
+                &mut completed,
+                &mut order,
+                &format!("routine-{index}"),
+            );
+        }
+
+        assert_eq!(completed.len(), COMPLETED_ROUTINE_HISTORY_CAPACITY);
+        assert_eq!(order.len(), COMPLETED_ROUTINE_HISTORY_CAPACITY);
+        assert!(!completed.contains("routine-0"));
+        assert!(!completed.contains("routine-1"));
+        assert!(completed.contains("routine-2"));
     }
 
     #[tokio::test]

@@ -17,6 +17,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crate::config::{resolve_path, FeedConfig, LoadedConfig, OutputNodeConfig};
 use haze_media::{pcm16_samples, read_i16};
 
+const ENCODER_WORKER_QUEUE_CAPACITY: usize = 16;
+
 pub(crate) trait Sink: Send {
     fn name(&self) -> &str;
     fn write(&mut self, pcm: &[u8]) -> Result<()>;
@@ -339,7 +341,7 @@ impl EncoderUdpSink {
             codec = worker.codec,
             "playout UDP encoded sink started"
         );
-        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(128);
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(ENCODER_WORKER_QUEUE_CAPACITY);
         let worker_name = name.clone();
         let worker = thread::spawn(move || worker.run(rx, worker_name));
         Ok(Self {

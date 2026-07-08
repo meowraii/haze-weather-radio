@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const PRIORITY_AUDIO_EXPIRE_GRACE_MS: i64 = 2_000;
+const MAX_BANNER_ALERTS: usize = 8;
+const MAX_BANNER_TEXT_CHARS: usize = 1_800;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RuntimeState {
@@ -51,7 +53,6 @@ pub(crate) struct PriorityAudio {
     pub(crate) duration_ms: Option<u64>,
     pub(crate) sample_rate: u32,
     pub(crate) channels: u16,
-    pub(crate) alert_packet: Option<Value>,
     pub(crate) banner_text: Option<String>,
     pub(crate) background_color: Option<String>,
     pub(crate) priority: Option<String>,
@@ -106,9 +107,10 @@ impl RuntimeState {
 
     fn apply_banner_state(&mut self, event: &Value) -> bool {
         let payload_value = event.get("data").cloned().unwrap_or(Value::Null);
-        let Ok(payload) = serde_json::from_value::<BannerPayload>(payload_value) else {
+        let Ok(mut payload) = serde_json::from_value::<BannerPayload>(payload_value) else {
             return false;
         };
+        compact_banner_payload(&mut payload);
         let feed_id = fallback_text(&payload.feed_id, &text_at(event, &["subject"]), "*");
         let changed = self.banners.get(&feed_id) != Some(&payload);
         if changed {
@@ -143,10 +145,6 @@ impl RuntimeState {
                 .and_then(|value| u16::try_from(value).ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(1),
-            alert_packet: data
-                .get("alert_packet")
-                .cloned()
-                .or_else(|| event.get("alert_packet").cloned()),
             banner_text: non_empty(fallback_text(
                 &text_at(data, &["banner_text"]),
                 &text_at(event, &["banner_text"]),
@@ -253,6 +251,42 @@ impl RuntimeState {
         self.active_audio.retain(|_, audio| audio.is_active_at(now));
         self.active_audio.len() != before
     }
+}
+
+fn compact_banner_payload(payload: &mut BannerPayload) {
+    payload.alerts.truncate(MAX_BANNER_ALERTS);
+    for alert in &mut payload.alerts {
+        let mut fields = BTreeMap::new();
+        for key in [
+            "banner_text",
+            "message",
+            "scroll_text",
+            "headline",
+            "title",
+            "event_name",
+            "event",
+            "description",
+            "identifier",
+        ] {
+            if let Some(text) = alert
+                .fields
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                fields.insert(
+                    key.to_string(),
+                    Value::String(limit_chars(text, MAX_BANNER_TEXT_CHARS)),
+                );
+            }
+        }
+        alert.fields = fields;
+    }
+}
+
+fn limit_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 impl CgenControlOverride {
@@ -467,6 +501,37 @@ mod tests {
         let banner = state.banner_for("sk-0001").expect("banner");
         assert_eq!(banner.signature, "abc");
         assert_eq!(banner.alerts.len(), 1);
+    }
+
+    #[test]
+    fn banner_state_keeps_only_render_fields() {
+        let mut state = RuntimeState::default();
+        let long_text = "x".repeat(MAX_BANNER_TEXT_CHARS + 50);
+        assert!(state.apply_event(&json!({
+            "type": "banner.state.updated",
+            "subject": "sk-0001",
+            "data": {
+                "active": true,
+                "feed_id": "sk-0001",
+                "alerts": [
+                    {
+                        "message": long_text,
+                        "alert_packet": {"big": "payload"},
+                        "ignored": "not rendered"
+                    }
+                ]
+            }
+        })));
+
+        let banner = state.banner_for("sk-0001").expect("banner");
+        let fields = &banner.alerts[0].fields;
+        assert!(fields.contains_key("message"));
+        assert!(!fields.contains_key("alert_packet"));
+        assert!(!fields.contains_key("ignored"));
+        assert_eq!(
+            fields["message"].as_str().expect("message").chars().count(),
+            MAX_BANNER_TEXT_CHARS
+        );
     }
 
     #[test]

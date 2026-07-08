@@ -77,11 +77,24 @@ func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
 	}
 	segments := make([]Segment, 0, len(products))
 	for _, product := range products {
-		segments = append(segments, Segment{
-			Kind:  "product",
-			Label: product.PackageID,
-			Text:  product.Text,
-		})
+		if len(product.Segments) == 0 {
+			segments = append(segments, Segment{
+				Kind:  "product",
+				Label: product.PackageID,
+				Text:  product.Text,
+			})
+			continue
+		}
+		for _, segment := range product.Segments {
+			if strings.TrimSpace(segment.Text) == "" && strings.TrimSpace(segment.AudioPath) == "" {
+				continue
+			}
+			if segment.Kind == "" {
+				segment.Kind = "product"
+			}
+			segment.Label = segmentLabel(product.PackageID, segment.Label)
+			segments = append(segments, segment)
+		}
 	}
 	return Product{
 		ID:          safeID(fmt.Sprintf("wx-%s-%s-%d", feed.ID, request.Code, now.UnixNano())),
@@ -318,7 +331,7 @@ func (r renderer) stationIDProduct(base Product, feed feedXML) Product {
 		parts = append(parts, replacement)
 	}
 	base.Title = "Station Identification"
-	base.Segments = []Segment{{Kind: "static", Label: "station_id", Text: strings.Join(parts, " ")}}
+	base.Segments = appendTextSegments(nil, "static", "station_id", parts)
 	return base
 }
 
@@ -398,7 +411,7 @@ func (r renderer) currentConditionsProduct(base Product, feed feedXML) (Product,
 		segments = append(segments, Segment{Kind: "opener", Label: "report_time", Text: text})
 	}
 	if strings.TrimSpace(snapshot.Primary.LocationName) != "" {
-		segments = append(segments, Segment{Kind: "package", Label: "primary_observation", Text: fullObservationText(snapshot.Primary)})
+		segments = append(segments, r.currentObservationSegments(base, snapshot.Primary, "primary", true)...)
 	}
 
 	area := snapshot.AreaObservations
@@ -421,15 +434,62 @@ func (r renderer) currentConditionsProduct(base Product, feed feedXML) (Product,
 			})
 			addedAreaOpener = true
 		}
-		if text := shortObservationText(obs); text != "" {
-			segments = append(segments, Segment{Kind: "package", Label: "area_observation", Text: text})
-		}
+		segments = append(segments, r.currentObservationSegments(base, obs, "area", false)...)
 	}
 	if repeat := repeatObservationText(snapshot.Primary); repeat != "" && !isTelephoneProduct(base) {
 		segments = append(segments, Segment{Kind: "closure", Label: "repeat_primary", Text: repeat})
 	}
 	base.Segments = segments
 	return base, nil
+}
+
+func (r renderer) currentObservationSegments(base Product, obs observation, labelPrefix string, primary bool) []Segment {
+	values := observationTemplateValues(obs)
+	templatePrefix := "nearby"
+	fallbackParts := []string{}
+	if primary {
+		templatePrefix = "primary"
+		fallbackParts = fullObservationBodyParts(obs)
+	} else {
+		fallbackParts = shortObservationBodyParts(obs)
+	}
+	parts := r.packageTextSequenceFiltered(base.PackageID, templatePrefix, base.Language, values)
+	if len(parts) == 0 {
+		parts = fallbackParts
+	}
+	if wind := r.currentObservationWindText(base, templatePrefix, obs, values, primary); wind != "" {
+		parts = append(parts, wind)
+	}
+	return appendTextSegments(nil, "package", labelPrefix+"_observation", parts)
+}
+
+func (r renderer) currentObservationWindText(base Product, prefix string, obs observation, values map[string]string, primary bool) string {
+	keysPrefix := strings.Trim(strings.ToLower(strings.TrimSpace(prefix)), ".")
+	if values["wind_calm"] == "true" {
+		return r.packageTextFirst(base.PackageID, []string{keysPrefix + ".winds.text.2", "winds.text.2"}, base.Language, "The wind was calm.", values)
+	}
+	if obs.WindDirection == "" && obs.WindSpeedKMH == nil {
+		return r.packageTextFirst(base.PackageID, []string{keysPrefix + ".winds.placeholder", "winds.placeholder"}, base.Language, "", values)
+	}
+	raw := r.packageTextRaw(base.PackageID, keysPrefix+".winds.text.1", base.Language)
+	if currentWindTemplateUsable(raw, values) {
+		return renderTemplateText(raw, values)
+	}
+	return sentence(windText(obs, primary))
+}
+
+func currentWindTemplateUsable(raw string, values map[string]string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || templateHasMissingValue(raw, values) {
+		return false
+	}
+	normalized := strings.Join(strings.Fields(strings.ToLower(raw)), " ")
+	for _, bad := range []string{" 10 {spd_metric}", " at 10 {spd_metric}", " à 10 {spd_metric}", " a 10 {spd_metric}"} {
+		if strings.Contains(normalized, strings.TrimSpace(bad)) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r renderer) observationReportProduct(base Product, feed feedXML) (Product, error) {
@@ -451,12 +511,16 @@ func (r renderer) observationReportProduct(base Product, feed feedXML) (Product,
 		if strings.TrimSpace(obs.LocationName) == "" || (index > 0 && sameObservation(obs, snapshot.Primary)) {
 			continue
 		}
-		if text := r.renderObservationReport(base, obs); text != "" {
+		reportSegments := r.renderObservationReportSegments(base, obs)
+		if len(reportSegments) > 0 {
 			label := "report"
 			if index == 0 {
 				label = "primary_report"
 			}
-			segments = append(segments, Segment{Kind: "package", Label: label, Text: text})
+			for _, segment := range reportSegments {
+				segment.Label = segmentLabel(label, segment.Label)
+				segments = append(segments, segment)
+			}
 		}
 	}
 	if len(segments) == 0 {
@@ -484,53 +548,51 @@ func (r renderer) marineForecastProduct(base Product, feed feedXML) (Product, er
 		Text:  r.packageText(base.PackageID, "opener", base.Language, "The {source} marine forecast for {area}, issued at {time}.", values),
 	}}
 	for _, item := range snapshot.Warnings {
-		segments = append(segments, Segment{Kind: "warning", Label: item.Name, Text: r.packageTextFirst(base.PackageID, []string{"forecast.warnings.location", "warnings.location"}, base.Language, "For {location}. {warning}", map[string]string{
+		segments = append(segments, Segment{Kind: "warning", Label: segmentLabel(item.Name, "warning"), Text: r.packageTextFirst(base.PackageID, []string{"forecast.warnings.location", "warnings.location"}, base.Language, "For {location}. {warning}", map[string]string{
 			"location": item.Name,
 			"period":   item.Period,
 			"warning":  sentence(item.Text),
 		})})
 	}
 	for _, item := range snapshot.Regular {
-		segments = append(segments, Segment{Kind: "package", Label: item.Name, Text: r.packageTextFirst(base.PackageID, []string{"forecast.regular.location", "regular.location"}, base.Language, "For {location}. {period} {wind}", map[string]string{
+		segments = append(segments, Segment{Kind: "package", Label: segmentLabel(item.Name, "regular"), Text: r.packageTextFirst(base.PackageID, []string{"forecast.regular.location", "regular.location"}, base.Language, "For {location}. {period} {wind}", map[string]string{
 			"location": item.Name,
 			"period":   sentence(item.Period),
 			"wind":     sentence(item.Text),
 		})})
 	}
 	for _, item := range snapshot.Waves {
-		segments = append(segments, Segment{Kind: "package", Label: item.Name + " waves", Text: r.packageTextFirst(base.PackageID, []string{"forecast.waves.location", "waves.location"}, base.Language, "Waves for {location}. {period} {waves}", map[string]string{
+		segments = append(segments, Segment{Kind: "package", Label: segmentLabel(item.Name, "waves"), Text: r.packageTextFirst(base.PackageID, []string{"forecast.waves.location", "waves.location"}, base.Language, "Waves for {location}. {period} {waves}", map[string]string{
 			"location": item.Name,
 			"period":   sentence(item.Period),
 			"waves":    sentence(item.Text),
 		})})
 	}
 	if len(snapshot.Extended) > 0 {
-		parts := []string{}
 		if opener := r.packageTextFirst(base.PackageID, []string{"forecast.extended.opener", "extended.opener"}, base.Language, "The extended marine outlook.", nil); opener != "" {
-			parts = append(parts, sentence(opener))
+			segments = append(segments, Segment{Kind: "opener", Label: "extended_opener", Text: sentence(opener)})
 		}
 		for _, item := range snapshot.Extended {
-			parts = append(parts, r.packageTextFirst(base.PackageID, []string{"forecast.extended.period", "extended.period"}, base.Language, "For {period}. {forecast}", map[string]string{
+			segments = append(segments, Segment{Kind: "package", Label: segmentLabel("extended", item.Name), Text: r.packageTextFirst(base.PackageID, []string{"forecast.extended.period", "extended.period"}, base.Language, "For {period}. {forecast}", map[string]string{
 				"period":   item.Name,
 				"forecast": sentence(item.Text),
-			}))
+			})})
 		}
-		segments = append(segments, Segment{Kind: "package", Label: "extended", Text: strings.Join(parts, " ")})
 	}
 	base.Segments = segments
 	return base, nil
 }
 
-func (r renderer) renderObservationReport(base Product, obs observation) string {
+func (r renderer) renderObservationReportSegments(base Product, obs observation) []Segment {
 	values := observationTemplateValues(obs)
 	parts := r.packageTextSequenceFiltered(base.PackageID, "report", base.Language, values)
 	if len(parts) == 0 {
-		return fullObservationText(obs)
+		parts = fullObservationBodyParts(obs)
 	}
 	if wind := r.renderObservationWindBlock(base, values); wind != "" {
 		parts = append(parts, wind)
 	}
-	return reportText(parts)
+	return appendTextSegments(nil, "package", "line", finishReportParts(parts))
 }
 
 func (r renderer) renderObservationWindBlock(base Product, values map[string]string) string {
@@ -915,50 +977,40 @@ func (r renderer) hydrometricProduct(base Product, feed feedXML) (Product, error
 		segments = append(segments, Segment{Kind: "opener", Label: "opener", Text: opener})
 	}
 	groups := hydrometricGroups(snapshot.Items)
-	primaryParts := []string{}
+	primarySegments := []Segment{}
 	for _, item := range groups["primary"] {
-		if text := r.hydrometricGaugeText(base, "primary.gauge", item, base.Language, feed.Timezone); text != "" {
-			primaryParts = append(primaryParts, text)
-		}
+		primarySegments = append(primarySegments, r.hydrometricGaugeSegments(base, "primary.gauge", "primary_gauge", item, base.Language, feed.Timezone)...)
 	}
-	if len(primaryParts) == 0 {
+	if len(primarySegments) == 0 {
 		if placeholder := r.packageText(base.PackageID, "primary.placeholder", base.Language, "", map[string]string{"site": feedSiteName(feed)}); placeholder != "" {
-			primaryParts = append(primaryParts, placeholder)
+			primarySegments = append(primarySegments, Segment{Kind: "package", Label: "primary_placeholder", Text: placeholder})
 		}
 	}
-	if len(primaryParts) > 0 {
-		segments = append(segments, Segment{Kind: "package", Label: "primary_gauge", Text: strings.Join(primaryParts, " ")})
-	}
-	nearbyParts := []string{}
+	segments = append(segments, primarySegments...)
+	nearbySegments := []Segment{}
 	if len(groups["upstream"]) > 0 {
 		if text := r.packageText(base.PackageID, "nearby.upstream", base.Language, "Upstream.", nil); text != "" {
-			nearbyParts = append(nearbyParts, sentence(text))
+			nearbySegments = append(nearbySegments, Segment{Kind: "package", Label: "nearby_upstream", Text: sentence(text)})
 		}
 		for _, item := range groups["upstream"] {
-			if text := r.hydrometricGaugeText(base, "nearby.gauge", item, base.Language, feed.Timezone); text != "" {
-				nearbyParts = append(nearbyParts, text)
-			}
+			nearbySegments = append(nearbySegments, r.hydrometricGaugeSegments(base, "nearby.gauge", "nearby_gauge", item, base.Language, feed.Timezone)...)
 		}
 	}
 	if len(groups["upstream"]) > 0 && len(groups["downstream"]) > 0 {
 		if text := r.packageText(base.PackageID, "nearby.and", base.Language, "and,", nil); text != "" {
-			nearbyParts = append(nearbyParts, strings.TrimSpace(text))
+			nearbySegments = append(nearbySegments, Segment{Kind: "package", Label: "nearby_and", Text: strings.TrimSpace(text)})
 		}
 	}
 	if len(groups["downstream"]) > 0 {
 		if text := r.packageText(base.PackageID, "nearby.downstream", base.Language, "Downstream.", nil); text != "" {
-			nearbyParts = append(nearbyParts, sentence(text))
+			nearbySegments = append(nearbySegments, Segment{Kind: "package", Label: "nearby_downstream", Text: sentence(text)})
 		}
 		for _, item := range groups["downstream"] {
-			if text := r.hydrometricGaugeText(base, "nearby.gauge", item, base.Language, feed.Timezone); text != "" {
-				nearbyParts = append(nearbyParts, text)
-			}
+			nearbySegments = append(nearbySegments, r.hydrometricGaugeSegments(base, "nearby.gauge", "nearby_gauge", item, base.Language, feed.Timezone)...)
 		}
 	}
-	if len(nearbyParts) > 0 {
-		segments = append(segments, Segment{Kind: "package", Label: "nearby_gauges", Text: strings.Join(nearbyParts, " ")})
-	}
-	if len(segments) <= 1 || (len(primaryParts) == 0 && len(nearbyParts) == 0) {
+	segments = append(segments, nearbySegments...)
+	if len(segments) <= 1 || (len(primarySegments) == 0 && len(nearbySegments) == 0) {
 		return Product{}, fmt.Errorf("river conditions are unavailable for feed %s", feed.ID)
 	}
 	base.Segments = segments
@@ -1334,12 +1386,20 @@ func (r renderer) hydrometricText(item map[string]any, lang string, timezone str
 }
 
 func (r renderer) hydrometricGaugeText(base Product, prefix string, item map[string]any, lang string, timezone string) string {
+	return strings.Join(r.hydrometricGaugeParts(base, prefix, item, lang, timezone), " ")
+}
+
+func (r renderer) hydrometricGaugeSegments(base Product, prefix string, label string, item map[string]any, lang string, timezone string) []Segment {
+	return appendTextSegments(nil, "package", label, r.hydrometricGaugeParts(base, prefix, item, lang, timezone))
+}
+
+func (r renderer) hydrometricGaugeParts(base Product, prefix string, item map[string]any, lang string, timezone string) []string {
 	values := hydrometricTemplateValues(item, lang, timezone)
 	parts := r.packageTextSequenceFiltered(base.PackageID, prefix, lang, values)
 	if len(parts) == 0 {
-		return r.hydrometricText(item, lang, timezone)
+		return []string{r.hydrometricText(item, lang, timezone)}
 	}
-	return strings.Join(parts, " ")
+	return finishReportParts(parts)
 }
 
 func hydrometricTemplateValues(item map[string]any, lang string, timezone string) map[string]string {
@@ -1519,7 +1579,7 @@ func (r renderer) textStoreProduct(base Product, title string, source string, id
 	}
 	base.Title = title
 	base.Inputs = append(base.Inputs, InputRef{Type: "store", ID: fmt.Sprintf("products.text/%s/%s", source, id)})
-	base.Segments = []Segment{{Kind: "package", Text: text}}
+	base.Segments = appendTextSegments(nil, "package", "text", splitPlaintextProductSegments(text))
 	return base, nil
 }
 
@@ -1747,6 +1807,21 @@ func reportText(parts []string) string {
 	return finishReportText(strings.Join(clean, "\n"))
 }
 
+func finishReportParts(parts []string) []string {
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = normalizeRenderedTemplateText(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	clean[len(clean)-1] = finishReportText(clean[len(clean)-1])
+	return clean
+}
+
 func finishReportText(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -1763,6 +1838,51 @@ func finishReportText(text string) string {
 	}
 }
 
+func appendTextSegments(segments []Segment, kind string, labelPrefix string, parts []string) []Segment {
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if text := normalizeRenderedTemplateText(part); text != "" {
+			clean = append(clean, text)
+		}
+	}
+	for index, text := range clean {
+		label := labelPrefix
+		if len(clean) > 1 {
+			label = fmt.Sprintf("%s_%d", labelPrefix, index+1)
+		}
+		segments = append(segments, Segment{Kind: kind, Label: label, Text: text})
+	}
+	return segments
+}
+
+func segmentLabel(parts ...string) string {
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	return strings.Join(clean, "_")
+}
+
+func splitPlaintextProductSegments(text string) []string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	rawParts := strings.Split(text, "\n")
+	parts := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	if len(parts) == 0 && strings.TrimSpace(text) != "" {
+		parts = append(parts, strings.TrimSpace(text))
+	}
+	return parts
+}
+
 func inputTypeForPath(path string) string {
 	if strings.HasPrefix(path, "store:") {
 		return "store"
@@ -1774,6 +1894,18 @@ func inputTypeForPath(path string) string {
 }
 
 func fullObservationText(obs observation) string {
+	return sentence(strings.Join(fullObservationParts(obs), ". "))
+}
+
+func fullObservationParts(obs observation) []string {
+	return fullObservationPartsWithWind(obs, true)
+}
+
+func fullObservationBodyParts(obs observation) []string {
+	return fullObservationPartsWithWind(obs, false)
+}
+
+func fullObservationPartsWithWind(obs observation, includeWind bool) []string {
 	location := fallbackText(obs.LocationName, "the reporting station")
 	parts := []string{fmt.Sprintf("The weather at %s", location)}
 	if obs.Condition != "" {
@@ -1788,8 +1920,10 @@ func fullObservationText(obs observation) string {
 	if obs.HumidityPercent != nil {
 		parts = append(parts, fmt.Sprintf("and the relative humidity was %s percent", rounded(*obs.HumidityPercent)))
 	}
-	if wind := windText(obs, true); wind != "" {
-		parts = append(parts, wind)
+	if includeWind {
+		if wind := windText(obs, true); wind != "" {
+			parts = append(parts, wind)
+		}
 	}
 	if obs.VisibilityKM != nil {
 		parts = append(parts, fmt.Sprintf("Visibility was up to %s kilometres", rounded(*obs.VisibilityKM)))
@@ -1801,21 +1935,35 @@ func fullObservationText(obs observation) string {
 		}
 		parts = append(parts, pressure)
 	}
-	return sentence(strings.Join(parts, ". "))
+	return parts
 }
 
 func shortObservationText(obs observation) string {
+	return sentence(strings.Join(shortObservationParts(obs), ", "))
+}
+
+func shortObservationParts(obs observation) []string {
+	return shortObservationPartsWithWind(obs, true)
+}
+
+func shortObservationBodyParts(obs observation) []string {
+	return shortObservationPartsWithWind(obs, false)
+}
+
+func shortObservationPartsWithWind(obs observation, includeWind bool) []string {
 	if obs.LocationName == "" {
-		return ""
+		return nil
 	}
 	parts := []string{obs.LocationName}
 	if obs.TemperatureC != nil {
 		parts = append(parts, degrees(*obs.TemperatureC))
 	}
-	if wind := windText(obs, false); wind != "" {
-		parts = append(parts, wind)
+	if includeWind {
+		if wind := windText(obs, false); wind != "" {
+			parts = append(parts, wind)
+		}
 	}
-	return sentence(strings.Join(parts, ", "))
+	return parts
 }
 
 func repeatObservationText(obs observation) string {

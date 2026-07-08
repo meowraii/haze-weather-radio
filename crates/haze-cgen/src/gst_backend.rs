@@ -4005,7 +4005,6 @@ mod tests {
             duration_ms: Some(60_000),
             sample_rate: 48_000,
             channels: 2,
-            alert_packet: None,
             banner_text: None,
             background_color: None,
             priority: None,

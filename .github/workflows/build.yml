@@ -33,7 +33,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libopus-dev pkg-config \
+          sudo apt-get install -y ffmpeg libasound2-dev libopus-dev pkg-config \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
             libswresample-dev libswscale-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
@@ -41,6 +41,7 @@ jobs:
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly
           pkg-config --exists libavcodec opus gstreamer-1.0 gstreamer-app-1.0
+          ffmpeg -hide_banner -version
 
       - name: Install Windows native build dependencies
         if: runner.os == 'Windows'
@@ -71,18 +72,32 @@ jobs:
           $bin = Join-Path $clang64 "bin"
           $pkgConfig = Join-Path $bin "pkg-config.exe"
           if (-not (Test-Path -LiteralPath $pkgConfig)) {
-            throw "Missing pkg-config.exe at $pkgConfig"
+            $pkgConfig = Join-Path $bin "pkgconf.exe"
           }
+          if (-not (Test-Path -LiteralPath $pkgConfig)) {
+            throw "Missing pkg-config/pkgconf executable under $bin"
+          }
+          $pkgConfigPath = "$clang64\lib\pkgconfig;$clang64\share\pkgconfig"
+          $ffmpegPkgConfigPath = "$clang64\lib\pkgconfig"
+          function Set-CiEnv {
+            param([string] $Name, [string] $Value)
+            Set-Item -Path "Env:$Name" -Value $Value
+            "$Name=$Value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          $env:Path = "$bin;$env:Path"
           Add-Content -Path $env:GITHUB_PATH -Value $bin
-          "PKG_CONFIG=$pkgConfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "PKG_CONFIG_PATH=$clang64\lib\pkgconfig;$clang64\share\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "PKG_CONFIG_LIBDIR=$clang64\lib\pkgconfig;$clang64\share\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "FFMPEG_PKG_CONFIG_PATH=$clang64\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=x86_64-w64-mingw32-clang.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "CC_x86_64_pc_windows_gnullvm=x86_64-w64-mingw32-clang.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "CXX_x86_64_pc_windows_gnullvm=x86_64-w64-mingw32-clang++.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "AR_x86_64_pc_windows_gnullvm=llvm-ar.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Set-CiEnv "PKG_CONFIG" $pkgConfig
+          Set-CiEnv "PKG_CONFIG_PATH" $pkgConfigPath
+          Set-CiEnv "PKG_CONFIG_LIBDIR" $pkgConfigPath
+          Set-CiEnv "PKG_CONFIG_ALLOW_CROSS" "1"
+          Set-CiEnv "FFMPEG_PKG_CONFIG_PATH" $ffmpegPkgConfigPath
+          Set-CiEnv "LIBCLANG_PATH" $bin
+          Set-CiEnv "CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER" "x86_64-w64-mingw32-clang.exe"
+          Set-CiEnv "CC_x86_64_pc_windows_gnullvm" "x86_64-w64-mingw32-clang.exe"
+          Set-CiEnv "CXX_x86_64_pc_windows_gnullvm" "x86_64-w64-mingw32-clang++.exe"
+          Set-CiEnv "AR_x86_64_pc_windows_gnullvm" "llvm-ar.exe"
           & $pkgConfig --exists glib-2.0 libavcodec opus gstreamer-1.0 gstreamer-app-1.0
+          & (Join-Path $bin "ffmpeg.exe") -hide_banner -version
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -218,7 +233,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libopus-dev pkg-config \
+          sudo apt-get install -y ffmpeg libasound2-dev libopus-dev pkg-config \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
             libswresample-dev libswscale-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
@@ -226,6 +241,7 @@ jobs:
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly
           pkg-config --exists libavcodec opus gstreamer-1.0 gstreamer-app-1.0
+          ffmpeg -hide_banner -version
 
       - name: Set up Go
         uses: actions/setup-go@v5

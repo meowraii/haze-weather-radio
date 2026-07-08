@@ -580,7 +580,6 @@ mod tests {
             duration_ms: None,
             sample_rate: 48_000,
             channels: 2,
-            alert_packet: None,
             banner_text: Some("Audio banner".to_string()),
             background_color: None,
             priority: None,

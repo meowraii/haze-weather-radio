@@ -6,6 +6,8 @@ mod same_cli;
 #[allow(dead_code)]
 mod same_core;
 mod signals;
+#[cfg(windows)]
+mod windows_service_host;
 
 use std::env;
 use std::fmt;
@@ -51,6 +53,16 @@ pub struct DaemonArgs {
     #[arg(short = 'l', long)]
     pub log_level: Option<String>,
 
+    /// Run under the Windows Service Control Manager.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    pub service: bool,
+
+    /// Windows service name used when registering with the Service Control Manager.
+    #[cfg(windows)]
+    #[arg(long, hide = true, default_value = "HazeWeatherRadio")]
+    pub service_name: String,
+
     /// Initialize the host runtime and exit without starting long-running services.
     #[arg(long = "host-smoke", alias = "runtime-smoke")]
     pub host_smoke: bool,
@@ -63,6 +75,11 @@ pub enum DaemonCommand {
         #[command(subcommand)]
         command: same_cli::SameCommand,
     },
+}
+
+#[cfg(windows)]
+pub fn run_windows_service(args: DaemonArgs) -> Result<()> {
+    windows_service_host::run(args)
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +154,13 @@ pub fn run(args: DaemonArgs) -> Result<()> {
         info!("host smoke check completed");
         return Ok(());
     }
+    #[cfg(windows)]
+    {
+        if !args.service {
+            signals::install_shutdown_handler()?;
+        }
+    }
+    #[cfg(not(windows))]
     signals::install_shutdown_handler()?;
     let mut daemon_services = daemon_services::DaemonServices::start(
         &host,
