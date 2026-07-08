@@ -263,6 +263,9 @@
       <lang code="en-US"
             text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
             suffix="We do not imply any association with Environment Canada."/>
+      <lang code="fr-CA"
+            text="Ce service est exploité grâce à un effort conjoint de Sherwood Weather et du projet open source Haze Weather Radio."
+            suffix="Nous n'impliquons aucune association avec Environnement Canada."/>
     </description>
 
     <locations>
@@ -396,13 +399,16 @@
 
     <languages>
       <lang code="en-US" interval="0"/>
-      <!-- <lang code="fr-CA" interval="0"/> -->
+      <lang code="fr-CA" interval="0"/>
     </languages>
 
     <description>
       <lang code="en-US"
             text="This service is operated by a joint effort between Sherwood Weather, and the Haze Weather Radio open source project."
             suffix="We do not imply any association with Environment Canada."/>
+      <lang code="fr-CA"
+            text="Ce service est exploité grâce à un effort conjoint de Sherwood Weather et du projet open source Haze Weather Radio."
+            suffix="Nous n'impliquons aucune association avec Environnement Canada."/>
     </description>
 
     <locations>

@@ -67,9 +67,7 @@ type feedXML struct {
 		NWSCAP feedAlertSourceXML `xml:"nws_cap"`
 	} `xml:"alerts"`
 	Languages struct {
-		Langs []struct {
-			Code string `xml:"code,attr"`
-		} `xml:"lang"`
+		Langs []feedLangXML `xml:"lang"`
 	} `xml:"languages"`
 	Description struct {
 		Langs []struct {
@@ -115,6 +113,11 @@ type feedXML struct {
 type feedAlertSourceXML struct {
 	EnabledRaw string         `xml:"enabled,attr"`
 	Filter     alertFilterXML `xml:"filter"`
+}
+
+type feedLangXML struct {
+	Code     string `xml:"code,attr"`
+	Interval string `xml:"interval,attr"`
 }
 
 type alertFilterXML struct {
@@ -243,9 +246,11 @@ type packageXML struct {
 }
 
 type packageProfile struct {
-	Enabled   bool
-	ReaderID  string
-	Locations packageLocations
+	Enabled      bool
+	ReaderID     string
+	ReaderByLang map[string]string
+	Languages    []string
+	Locations    packageLocations
 }
 
 type packageLocationsXML struct {
@@ -482,10 +487,28 @@ func loadCombinedProducts(path string) (map[string]packageProfile, map[string]ma
 		if reader == "" {
 			reader = defaultReader
 		}
+		readerByLang := map[string]string{}
+		languages := []string{}
+		seenLangs := map[string]struct{}{}
+		for _, lang := range item.Langs {
+			code := productLangCode(lang)
+			if normalized := normalizeLangKey(code); normalized != "" && normalized != "*" {
+				if _, exists := seenLangs[normalized]; !exists {
+					seenLangs[normalized] = struct{}{}
+					languages = append(languages, normalized)
+				}
+			}
+			langReader := firstNonBlank(lang.ReaderID, lang.ReaderID2)
+			if code != "" && langReader != "" {
+				readerByLang[normalizeLangKey(code)] = langReader
+			}
+		}
 		packages[id] = packageProfile{
-			Enabled:   xmlBool(item.EnabledRaw, defaultEnabled),
-			ReaderID:  reader,
-			Locations: normalizePackageLocations(item.Locations),
+			Enabled:      xmlBool(item.EnabledRaw, defaultEnabled),
+			ReaderID:     reader,
+			ReaderByLang: readerByLang,
+			Languages:    languages,
+			Locations:    normalizePackageLocations(item.Locations),
 		}
 		addProductTextEntries(productText, id, "", item.Texts)
 		for _, lang := range item.Langs {
@@ -674,11 +697,50 @@ func normalizeLangKey(lang string) string {
 	return lang
 }
 
+func shortLangKey(lang string) string {
+	lang = normalizeLangKey(lang)
+	if lang == "*" {
+		return ""
+	}
+	if index := strings.Index(lang, "-"); index > 0 {
+		return lang[:index]
+	}
+	return lang
+}
+
 func (cfg loadedConfig) readerID(pkgID string) string {
 	if profile, ok := cfg.Packages[pkgID]; ok {
 		return profile.ReaderID
 	}
 	return ""
+}
+
+func (cfg loadedConfig) readerIDForLanguage(pkgID string, lang string) string {
+	profile, ok := cfg.Packages[strings.ToLower(strings.TrimSpace(pkgID))]
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{normalizeLangKey(lang), shortLangKey(lang), "en-ca", "en", "*"} {
+		if reader := strings.TrimSpace(profile.ReaderByLang[key]); reader != "" {
+			return reader
+		}
+	}
+	return profile.ReaderID
+}
+
+func (cfg loadedConfig) packageRenderLanguage(pkgID string, lang string) string {
+	profile, ok := cfg.Packages[strings.ToLower(strings.TrimSpace(pkgID))]
+	if !ok || len(profile.Languages) == 0 {
+		return strings.TrimSpace(lang)
+	}
+	langKey := normalizeLangKey(lang)
+	short := shortLangKey(langKey)
+	for _, allowed := range profile.Languages {
+		if langKey == allowed || short != "" && short == shortLangKey(allowed) {
+			return strings.TrimSpace(lang)
+		}
+	}
+	return profile.Languages[0]
 }
 
 func (cfg loadedConfig) packageEnabled(pkgID string) bool {
@@ -694,12 +756,53 @@ func (cfg loadedConfig) packageLocations(pkgID string) packageLocations {
 }
 
 func feedLanguage(feed feedXML) string {
-	for _, lang := range feed.Languages.Langs {
-		if code := strings.TrimSpace(lang.Code); code != "" {
-			return code
-		}
+	languages := feedLanguages(feed)
+	if len(languages) > 0 {
+		return languages[0].Code
 	}
 	return "en-US"
+}
+
+func feedLanguages(feed feedXML) []feedLangXML {
+	out := make([]feedLangXML, 0, len(feed.Languages.Langs))
+	seen := map[string]struct{}{}
+	for _, lang := range feed.Languages.Langs {
+		code := strings.TrimSpace(lang.Code)
+		if code == "" {
+			continue
+		}
+		key := normalizeLangKey(code)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, feedLangXML{Code: code, Interval: strings.TrimSpace(lang.Interval)})
+	}
+	return out
+}
+
+func feedRenderLanguage(feed feedXML, requested string) string {
+	languages := feedLanguages(feed)
+	if len(languages) == 0 {
+		return "en-US"
+	}
+	primary := languages[0].Code
+	if len(languages) == 1 {
+		return primary
+	}
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return primary
+	}
+	requestedKey := normalizeLangKey(requested)
+	requestedShort := shortLangKey(requestedKey)
+	for _, lang := range languages {
+		codeKey := normalizeLangKey(lang.Code)
+		if requestedKey == codeKey || requestedShort != "" && requestedShort == shortLangKey(codeKey) {
+			return lang.Code
+		}
+	}
+	return primary
 }
 
 func feedSiteName(feed feedXML) string {

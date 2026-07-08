@@ -37,11 +37,31 @@
       <text hide="true">If you have comments, questions or concerns,</text>
       <text key="call">please call us at {phone}</text>
     </lang>
+    <lang iso="fr-CA" readerid="00">
+      <text>Vous écoutez {on_air_name}.</text>
+      <text>Desservant {service_area} sur une fréquence porteuse radio météo standard de {freq_mhz}.</text>
+      <description /> <!-- see feeds.xml -->
+      <text hide="true">Si vous avez des commentaires, des questions ou des préoccupations,</text>
+      <text key="call">veuillez nous appeler au {phone}</text>
+    </lang>
+    <lang iso="es" readerid="00">
+      <text>Está escuchando {on_air_name}.</text>
+      <text>Prestando servicio a {service_area} en una frecuencia portadora estándar de radio meteorológica de {freq_mhz}.</text>
+      <description /> <!-- see feeds.xml -->
+      <text hide="true">Si tiene comentarios, preguntas o inquietudes,</text>
+      <text key="call">llámenos al {phone}</text>
+    </lang>
   </product>
 
   <product id="date_time" variant="0" enabled="true">
     <lang iso="en" readerid="01">
       <text key="opener">It is {hour}:{minute} {day_name}, {month_name} {day_num}, {year}, {timezone}.</text>
+    </lang>
+    <lang iso="fr-CA" readerid="01">
+      <text key="opener">Il est {hour} h {minute}, le {day_name} {day_num} {month_name} {year}, {timezone}.</text>
+    </lang>
+    <lang iso="es" readerid="01">
+      <text key="opener">Son las {hour}:{minute}, {day_name}, {day_num} de {month_name} de {year}, {timezone}.</text>
     </lang>
   </product>
 
@@ -77,6 +97,66 @@
       </nearby>
       <text key="report_time" lang="en-US"></text>
     </lang>
+    <lang iso="fr-CA" readerid="00" >
+      <text key="opener">Les conditions météorologiques actuelles. Émises par {source} à {issue_hour} {issue_ampm} {issue_timezone}.</text>
+      <primary>
+        <placeholder>Le rapport pour {location} n'était pas disponible.</placeholder>
+        <text>À {location},</text>
+        <text hide="true">le temps était {weather}.</text>
+        <text>La température était de {ctemp} degrés.</text>
+        <text hide="true">Le point de rosée était de {c_dewp} degrés.</text>
+        <text hide="true">Et l'humidité relative était de {hum} pour cent</text>
+        <text hide="true">La pression était de {pressure} et {tendency}.</text>
+        <winds>
+          <placeholder>Le rapport de vent n'était pas disponible.</placeholder>
+          <text>Les vents soufflaient de {dir_text} à 10 {spd_metric}</text>
+          <text>Le vent était calme.</text>
+        </winds>
+      </primary>
+      <text key="area_opener">Dans la zone d'écoute de {callsign} :</text>
+      <nearby>
+        <placeholder>Le rapport pour {location} n'était pas disponible.</placeholder>
+        <text>À {location},</text>
+        <text>La température était de {ctemp} degrés.</text>
+        <text hide="true">L'état du ciel était {weather}.</text>
+        <winds>
+          <placeholder>Le rapport de vent n'était pas disponible.</placeholder>
+          <text>Les vents soufflaient de {dir_text} à 10 {spd_metric}</text>
+          <text>Le vent était calme.</text>
+        </winds>
+      </nearby>
+      <text key="report_time"></text>
+    </lang>
+    <lang iso="es" readerid="00" >
+      <text key="opener">Las condiciones meteorológicas actuales. Emitidas por {source} a las {issue_hour} {issue_ampm} {issue_timezone}.</text>
+      <primary>
+        <placeholder>El informe de {location} no estaba disponible.</placeholder>
+        <text>En {location},</text>
+        <text hide="true">el tiempo era {weather}.</text>
+        <text>La temperatura era de {ctemp} grados.</text>
+        <text hide="true">Punto de rocío {c_dewp} grados.</text>
+        <text hide="true">Y la humedad relativa era de {hum} por ciento</text>
+        <text hide="true">La presión era de {pressure} y {tendency}.</text>
+        <winds>
+          <placeholder>El informe de viento no estaba disponible.</placeholder>
+          <text>Los vientos eran de {dir_text} a 10 {spd_metric}</text>
+          <text>El viento estaba en calma.</text>
+        </winds>
+      </primary>
+      <text key="area_opener">En toda el área de escucha de {callsign}:</text>
+      <nearby>
+        <placeholder>El informe de {location} no estaba disponible.</placeholder>
+        <text>En {location},</text>
+        <text>La temperatura era de {ctemp} grados.</text>
+        <text hide="true">La condición del cielo era {weather}.</text>
+        <winds>
+          <placeholder>El informe de viento no estaba disponible.</placeholder>
+          <text>Los vientos eran de {dir_text} a 10 {spd_metric}</text>
+          <text>El viento estaba en calma.</text>
+        </winds>
+      </nearby>
+      <text key="report_time"></text>
+    </lang>
 
   </product>
 
@@ -94,9 +174,45 @@
         </shortterm>
 
         <extended>
-          <text key="opener">The extended outlook.</text>
+          <text key="opener">The extended outlook...</text>
           <text key="period">For {period}. {fc_text}</text>
           <text key="normals">Normals for the period. Low {norm_low_c}, and high {norm_high_c}</text>
+        </extended>
+      </region>
+    </lang>
+    <lang iso="fr-CA" readerid="01" >
+      <text key="opener">Voici vos prévisions officielles de {source}, émises à {issue_hour} {issue_ampm} {issue_timezone}.</text>
+      <region hide="true">
+
+        <shortterm>
+          <text key="region">Pour les secteurs de {region} et des environs.</text>
+          <text key="region_plain">Pour {region}.</text>
+          <text key="today">Pour aujourd'hui. {fc_text}</text>
+          <text key="tonight">Pour ce soir et cette nuit. {fc_text}</text>
+        </shortterm>
+
+        <extended>
+          <text key="opener">Les prévisions à long terme...</text>
+          <text key="period">Pour {period}. {fc_text}</text>
+          <text key="normals">Les normales pour la période. Minimum {norm_low_c}, et maximum {norm_high_c}</text>
+        </extended>
+      </region>
+    </lang>
+    <lang iso="es" readerid="01" >
+      <text key="opener">Ahora, su pronóstico oficial de {source}, emitido a las {issue_hour} {issue_ampm} {issue_timezone}.</text>
+      <region hide="true">
+
+        <shortterm>
+          <text key="region">Para las áreas en {region} y sus alrededores.</text>
+          <text key="region_plain">Para {region}.</text>
+          <text key="today">Para hoy. {fc_text}</text>
+          <text key="tonight">Para esta noche. {fc_text}</text>
+        </shortterm>
+
+        <extended>
+          <text key="opener">El pronóstico extendido...</text>
+          <text key="period">Para {period}. {fc_text}</text>
+          <text key="normals">Normales para el período. Mínima {norm_low_c}, y máxima {norm_high_c}</text>
         </extended>
       </region>
     </lang>
@@ -122,6 +238,42 @@
         <text key="forecast_insmoke_eccc">The air quality health index is expected to be {val} in smoke.</text>
       </forecast>
     </lang>
+    <lang iso="fr-CA" readerid="00">
+      <observation>
+        <placeholder key="unavailable_report">Les renseignements sur la qualité de l'air pour {name} n'étaient pas disponibles.</placeholder>
+        <text key="now_eccc">La cote air santé a été observée à {name} et indiquait une valeur de {val} à {time}.</text>
+      </observation>
+      <risk>
+        <text key="low_eccc">Il s'agit d'une qualité de l'air idéale pour les activités extérieures, tant pour les personnes à risque que pour la population générale.</text>
+        <text key="moderate_eccc">Il s'agit d'une qualité de l'air acceptable pour les activités extérieures de la plupart des gens. Toutefois, les personnes à risque devraient envisager de réduire ou de reporter les activités extérieures exigeantes si des symptômes se manifestent.</text>
+        <text key="high_eccc">Il s'agit d'une qualité de l'air malsaine pour les personnes à risque, notamment les enfants, les personnes âgées et les personnes ayant des problèmes respiratoires ou cardiaques préexistants. Les personnes à risque devraient réduire ou reporter les activités extérieures exigeantes. Il est peu probable que la population générale soit touchée.</text>
+        <text key="very_high_eccc">Il s'agit d'une qualité de l'air dangereuse pour la plupart des gens. Les personnes à risque devraient éviter les activités extérieures exigeantes. Les autres devraient également réduire ou reporter les activités extérieures exigeantes.</text>
+      </risk>
+      <forecast>
+        <text key="forecast_opener_eccc">La prévision de la cote air santé pour {name} est de {val} pour {period_name} et est considérée comme {risk}.</text>
+        <text key="forecast_eccc">Pour {period_name}, la cote air santé maximale prévue est de {val}, ou {risk}.</text>
+        <text key="forecast_trailing_eccc">{period2_val} pour {period2_name}, et enfin, {period3_val} pour {period3_name}.</text>
+        <text key="forecast_insmoke_eccc">La cote air santé devrait être de {val} dans la fumée.</text>
+      </forecast>
+    </lang>
+    <lang iso="es" readerid="00">
+      <observation>
+        <placeholder key="unavailable_report">La información sobre la calidad del aire para {name} no estaba disponible.</placeholder>
+        <text key="now_eccc">El índice de salud de la calidad del aire fue observado en {name} e informó un valor de {val} a las {time}.</text>
+      </observation>
+      <risk>
+        <text key="low_eccc">Esta es una calidad del aire ideal para actividades al aire libre tanto para las poblaciones en riesgo como para la población general.</text>
+        <text key="moderate_eccc">Esta es una calidad del aire aceptable para actividades al aire libre para la mayoría de las personas. Sin embargo, las personas en riesgo deberían considerar reducir o reprogramar las actividades extenuantes al aire libre si aparecen síntomas.</text>
+        <text key="high_eccc">Esta es una calidad del aire insalubre para las personas en riesgo, que incluyen niños, personas mayores y quienes tienen afecciones respiratorias o cardíacas preexistentes. Las personas en riesgo deberían reducir o reprogramar las actividades extenuantes al aire libre. No es probable que la población general se vea afectada.</text>
+        <text key="very_high_eccc">Esta es una calidad del aire peligrosa para la mayoría de las personas. Las personas en riesgo deberían evitar las actividades extenuantes al aire libre. Todas las demás personas también deberían reducir o reprogramar las actividades extenuantes al aire libre.</text>
+      </risk>
+      <forecast>
+        <text key="forecast_opener_eccc">El pronóstico del índice de salud de la calidad del aire para {name} es {val} para {period_name} y se considera {risk}.</text>
+        <text key="forecast_eccc">Para {period_name}, se pronostica que el índice máximo de salud de la calidad del aire será {val}, o {risk}.</text>
+        <text key="forecast_trailing_eccc">{period2_val} el {period2_name}, y por último, {period3_val} el {period3_name}.</text>
+        <text key="forecast_insmoke_eccc">Se espera que el índice de salud de la calidad del aire sea {val} en humo.</text>
+      </forecast>
+    </lang>
   </product>
 
 
@@ -130,6 +282,20 @@
       <text key="opener">The {source} climate summary.</text>
       <summary>
         <placeholder>The climate summary for {location} was not available.</placeholder>
+        <text>{summary_text}</text>
+      </summary>
+    </lang>
+    <lang iso="fr-CA" readerid="01">
+      <text key="opener">Le résumé climatologique de {source}.</text>
+      <summary>
+        <placeholder>Le résumé climatologique pour {location} n'était pas disponible.</placeholder>
+        <text>{summary_text}</text>
+      </summary>
+    </lang>
+    <lang iso="es" readerid="01">
+      <text key="opener">El resumen climático de {source}.</text>
+      <summary>
+        <placeholder>El resumen climático para {location} no estaba disponible.</placeholder>
         <text>{summary_text}</text>
       </summary>
     </lang>
@@ -154,6 +320,42 @@
         </extended>
       </forecast>
     </lang>
+    <lang iso="fr-CA" readerid="01">
+      <text key="opener">Les prévisions maritimes de {source} pour {area}, émises à {issue_hour} h {issue_minute} {issue_ampm} {issue_timezone}.</text>
+      <forecast>
+        <warnings>
+          <text key="location">Avertissement maritime pour {location}. {warning}</text>
+        </warnings>
+        <regular>
+          <text key="location">Pour {location}. {period} {wind}</text>
+        </regular>
+        <waves>
+          <text key="location">Vagues pour {location}. {period} {waves}</text>
+        </waves>
+        <extended>
+          <text key="opener">Les prévisions maritimes à long terme.</text>
+          <text key="period">Pour {period}. {forecast}</text>
+        </extended>
+      </forecast>
+    </lang>
+    <lang iso="es" readerid="01">
+      <text key="opener">El pronóstico marítimo de {source} para {area}, emitido a las {issue_hour}:{issue_minute} {issue_ampm} {issue_timezone}.</text>
+      <forecast>
+        <warnings>
+          <text key="location">Aviso marítimo para {location}. {warning}</text>
+        </warnings>
+        <regular>
+          <text key="location">Para {location}. {period} {wind}</text>
+        </regular>
+        <waves>
+          <text key="location">Oleaje para {location}. {period} {waves}</text>
+        </waves>
+        <extended>
+          <text key="opener">El pronóstico marítimo extendido.</text>
+          <text key="period">Para {period}. {forecast}</text>
+        </extended>
+      </forecast>
+    </lang>
   </product>
 
   <product id="marine_reports" variant="0" enabled="true">
@@ -170,6 +372,38 @@
           <placeholder>The wind report was not available.</placeholder>
           <text>Winds were {dir_text} at {spd_maritime}</text>
           <text>The wind was calm.</text>
+        </winds>
+      </report>
+    </lang>
+    <lang iso="fr-CA" readerid="00">
+      <text key="opener">Les rapports maritimes actuels.</text>
+      <report>
+        <placeholder>Le rapport pour {location} n'était pas disponible.</placeholder>
+        <text>Le rapport maritime pour {location},</text>
+        <text hide="true">le temps était {weather}.</text>
+        <text>Température de l'air, {ctemp} degrés.</text>
+        <text hide="true">Humidité relative, {hum} pour cent.</text>
+        <text hide="true">Réglage altimétrique, {pressure}.</text>
+        <winds>
+          <placeholder>Le rapport de vent n'était pas disponible.</placeholder>
+          <text>Les vents soufflaient de {dir_text} à {spd_maritime}</text>
+          <text>Le vent était calme.</text>
+        </winds>
+      </report>
+    </lang>
+    <lang iso="es" readerid="00">
+      <text key="opener">Los informes marítimos actuales.</text>
+      <report>
+        <placeholder>El informe de {location} no estaba disponible.</placeholder>
+        <text>El informe marítimo para {location},</text>
+        <text hide="true">el tiempo era {weather}.</text>
+        <text>Temperatura del aire, {ctemp} grados.</text>
+        <text hide="true">Humedad relativa, {hum} por ciento.</text>
+        <text hide="true">Ajuste altimétrico, {pressure}.</text>
+        <winds>
+          <placeholder>El informe de viento no estaba disponible.</placeholder>
+          <text>Los vientos eran de {dir_text} a {spd_maritime}</text>
+          <text>El viento estaba en calma.</text>
         </winds>
       </report>
     </lang>
@@ -194,6 +428,40 @@
         </winds>
       </report>
     </lang>
+    <lang iso="fr-CA" readerid="00">
+      <text key="opener">Les rapports météorologiques aéronautiques actuels.</text>
+      <report>
+        <placeholder>Le rapport météorologique aéronautique pour {location} n'était pas disponible.</placeholder>
+        <text>Le rapport météorologique aéronautique pour {location},</text>
+        <text hide="true">visibilité, {visibility}.</text>
+        <text hide="true">état du ciel, {sky_condition}.</text>
+        <text hide="true">temps présent, {weather}.</text>
+        <text hide="true">température, {ctemp} degrés. Point de rosée, {c_dewp} degrés.</text>
+        <text hide="true">réglage altimétrique, {altimeter}.</text>
+        <winds>
+          <placeholder>Le rapport de vent n'était pas disponible.</placeholder>
+          <text>Les vents soufflaient de {dir_text} à {spd_aviation}</text>
+          <text>Le vent était calme.</text>
+        </winds>
+      </report>
+    </lang>
+    <lang iso="es" readerid="00">
+      <text key="opener">Los informes meteorológicos aeronáuticos actuales.</text>
+      <report>
+        <placeholder>El informe meteorológico aeronáutico para {location} no estaba disponible.</placeholder>
+        <text>El informe meteorológico aeronáutico para {location},</text>
+        <text hide="true">visibilidad, {visibility}.</text>
+        <text hide="true">condición del cielo, {sky_condition}.</text>
+        <text hide="true">tiempo presente, {weather}.</text>
+        <text hide="true">temperatura, {ctemp} grados. Punto de rocío, {c_dewp} grados.</text>
+        <text hide="true">ajuste altimétrico, {altimeter}.</text>
+        <winds>
+          <placeholder>El informe de viento no estaba disponible.</placeholder>
+          <text>Los vientos eran de {dir_text} a {spd_aviation}</text>
+          <text>El viento estaba en calma.</text>
+        </winds>
+      </report>
+    </lang>
   </product>
 
 
@@ -205,6 +473,24 @@
         <text key="none">No thunderstorms are expected for {period}.</text>
         <text key="risk">For {period}, the thunderstorm risk is {risk}.</text>
         <text key="hazards">Associated hazards may include {hazards}.</text>
+      </outlook>
+    </lang>
+    <lang iso="fr-CA" readerid="00">
+      <text key="opener">Le bulletin sur les orages d'Environnement Canada couvrant {site}.</text>
+      <outlook>
+        <placeholder>Aucun bulletin actif sur les orages n'est disponible pour {site}.</placeholder>
+        <text key="none">Aucun orage n'est prévu pour {period}.</text>
+        <text key="risk">Pour {period}, le risque d'orage est {risk}.</text>
+        <text key="hazards">Les dangers associés peuvent comprendre {hazards}.</text>
+      </outlook>
+    </lang>
+    <lang iso="es" readerid="00">
+      <text key="opener">El pronóstico de tormentas eléctricas de Environment Canada que cubre {site}.</text>
+      <outlook>
+        <placeholder>No hay ningún pronóstico activo de tormentas eléctricas disponible para {site}.</placeholder>
+        <text key="none">No se esperan tormentas eléctricas para {period}.</text>
+        <text key="risk">Para {period}, el riesgo de tormentas eléctricas es {risk}.</text>
+        <text key="hazards">Los peligros asociados pueden incluir {hazards}.</text>
       </outlook>
     </lang>
   </product>
@@ -230,13 +516,59 @@
           </gauge>
       </nearby>
     </lang>
+    <lang iso="fr-CA" readerid="00">
+      <text key="opener">Rapports hydrométriques fournis par Environnement et Changement climatique Canada.</text>
+      <primary>
+        <placeholder>Aucun rapport sur les conditions de la rivière n'est disponible pour {site}.</placeholder>
+        <gauge>
+          <text>{water_station} a signalé un niveau d'eau de {level}.</text>
+          <text>Le débit était de {discharge}.</text>
+        </gauge>
+      </primary>
+      <nearby>
+        <text key="upstream">En amont.</text>
+        <text key="downstream">En aval.</text>
+        <text key="and">et,</text>
+          <gauge>
+            <text>{water_station}, niveau d'eau {level}.</text>
+            <text>Débit, {discharge}.</text>
+          </gauge>
+      </nearby>
+    </lang>
+    <lang iso="es" readerid="00">
+      <text key="opener">Informes hidrométricos cortesía de Environment and Climate Change Canada.</text>
+      <primary>
+        <placeholder>No hay ningún informe de condiciones del río disponible para {site}.</placeholder>
+        <gauge>
+          <text>{water_station} informó un nivel de agua de {level}.</text>
+          <text>El caudal era de {discharge}.</text>
+        </gauge>
+      </primary>
+      <nearby>
+        <text key="upstream">Aguas arriba.</text>
+        <text key="downstream">Aguas abajo.</text>
+        <text key="and">y,</text>
+          <gauge>
+            <text>{water_station}, nivel de agua {level}.</text>
+            <text>Caudal, {discharge}.</text>
+          </gauge>
+      </nearby>
+    </lang>
   </product>
 
 
-  <product id="geophysical_alert" variant="0" enabled="true" />
+  <product id="geophysical_alert" variant="0" enabled="true">
+    <lang iso="en" readerid="00" />
+  </product>
 
-  <product id="alerts" variant="0" enabled="true" />
+  <product id="alerts" variant="0" enabled="true">
+    <lang iso="en" readerid="00" />
+  </product>
 
-  <product id="user_bulletin" variant="0" enabled="true" />
+  <product id="user_bulletin" variant="0" enabled="true">
+    <lang iso="en" readerid="00" />
+    <lang iso="fr" readerid="00" />
+    <lang iso="es" readerid="00" />
+  </product>
 
 </ProductText>

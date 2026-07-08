@@ -1,0 +1,27 @@
+<Readers>
+    <reader id="00" provider="sapi5">
+        <gender>male</gender>
+        <language>en-US</language>
+        <voice_id>VE_American_English_Tom_22khz</voice_id>
+    </reader>
+    <reader id="01" provider="sapi5">
+        <gender>female</gender>
+        <language>en-US</language>
+        <voice_id>VE_American_English_Ava_22khz</voice_id>
+    </reader>
+    <reader id="02" provider="sapi5">
+        <gender>male</gender>
+        <language>fr-CA</language>
+        <voice_id>VE_Canadian_French_Nicolas_22khz</voice_id>
+    </reader>
+    <reader id="03" provider="sapi5">
+        <gender>female</gender>
+        <language>fr-CA</language>
+        <voice_id>VE_Canadian_French_Chantal_22khz</voice_id>
+    </reader>
+    <reader id="HAHAFUNNYTIKTOKVOICE" provider="kokoro">
+        <gender>male</gender>
+        <language>en-US</language>
+        <voice_id>11</voice_id>
+    </reader>
+</Readers>

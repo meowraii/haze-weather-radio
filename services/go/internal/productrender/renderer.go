@@ -42,6 +42,7 @@ func (r renderer) RenderWxOnDemand(request wxOnDemandRequest) (Product, error) {
 			RequestID:    request.RequestID + "-" + safeID(packageID),
 			FeedID:       feed.ID,
 			PackageID:    packageID,
+			Language:     request.Language,
 			Force:        request.Force,
 			FeedOverride: &feed,
 			Telephone:    request.Telephone,
@@ -122,7 +123,7 @@ func (r renderer) Render(request renderRequest) (Product, error) {
 		return Product{}, fmt.Errorf("package %q is disabled", request.PackageID)
 	}
 
-	base := productBase(r.cfg, feed, request.PackageID, request.Telephone)
+	base := productBase(r.cfg, feed, request.PackageID, request.Language, request.Telephone)
 	var product Product
 	var err error
 	switch strings.ToLower(strings.TrimSpace(request.PackageID)) {
@@ -172,6 +173,9 @@ func (r renderer) onDemandFeed(request wxOnDemandRequest) (feedXML, error) {
 		ID:         "wx-on-demand",
 		EnabledRaw: "true",
 		Timezone:   firstNonBlank(request.Timezone, "UTC"),
+	}
+	if language := strings.TrimSpace(request.Language); language != "" {
+		feed.Languages.Langs = []feedLangXML{{Code: language}}
 	}
 	if feedID != "" {
 		configured, ok := r.cfg.feedByID(feedID)
@@ -256,13 +260,14 @@ func onDemandSource(request wxOnDemandRequest) string {
 	}
 }
 
-func productBase(cfg loadedConfig, feed feedXML, pkgID string, telephone bool) Product {
+func productBase(cfg loadedConfig, feed feedXML, pkgID string, language string, telephone bool) Product {
+	renderLanguage := cfg.packageRenderLanguage(pkgID, feedRenderLanguage(feed, language))
 	product := Product{
 		FeedID:    feed.ID,
 		PackageID: pkgID,
 		Title:     titleForPackage(pkgID),
-		ReaderID:  cfg.readerID(pkgID),
-		Language:  feedLanguage(feed),
+		ReaderID:  cfg.readerIDForLanguage(pkgID, renderLanguage),
+		Language:  renderLanguage,
 		Metadata: map[string]string{
 			"site_name": feedSiteName(feed),
 			"callsign":  feedCallsign(feed),
@@ -282,6 +287,7 @@ func (r renderer) stationIDProduct(base Product, feed feedXML) Product {
 	site := feedSiteName(feed)
 	callsign := feedCallsign(feed)
 	frequency := feedFrequencyMHz(feed)
+	frequencyMHz := frequencyMHzSpeech(frequency)
 	values := map[string]string{
 		"on_air_name":    onAirName,
 		"site":           site,
@@ -289,7 +295,7 @@ func (r renderer) stationIDProduct(base Product, feed feedXML) Product {
 		"service_region": fallbackText(feedDescription(feed, base.Language), site),
 		"callsign":       callsign,
 		"frequency":      frequency,
-		"freq_mhz":       frequency,
+		"freq_mhz":       frequencyMHz,
 	}
 	parts := r.packageTextSequence(base.PackageID, "", base.Language, values)
 	if len(parts) == 0 {
@@ -313,6 +319,18 @@ func (r renderer) stationIDProduct(base Product, feed feedXML) Product {
 	base.Title = "Station Identification"
 	base.Segments = []Segment{{Kind: "static", Label: "station_id", Text: strings.Join(parts, " ")}}
 	return base
+}
+
+func frequencyMHzSpeech(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, "megahertz") || strings.HasSuffix(lower, "mhz") {
+		return value
+	}
+	return value + " megahertz"
 }
 
 func replacementStationStatement(feed feedXML) string {
@@ -351,7 +369,7 @@ func (r renderer) dateTimeProduct(base Product, feed feedXML) Product {
 
 func (r renderer) currentConditionsProduct(base Product, feed feedXML) (Product, error) {
 	var snapshot observationSnapshot
-	inputPath, ok := r.loadLiveObservationSnapshot(feed, &snapshot)
+	inputPath, ok := r.loadLiveObservationSnapshot(feed, base.Language, &snapshot)
 	if !ok {
 		return Product{}, fmt.Errorf("current weather observations are unavailable for feed %s", feed.ID)
 	}
@@ -415,7 +433,7 @@ func (r renderer) currentConditionsProduct(base Product, feed feedXML) (Product,
 
 func (r renderer) observationReportProduct(base Product, feed feedXML) (Product, error) {
 	var snapshot observationSnapshot
-	inputPath, ok := r.loadLiveObservationReportSnapshot(feed, base.PackageID, &snapshot)
+	inputPath, ok := r.loadLiveObservationReportSnapshot(feed, base.PackageID, base.Language, &snapshot)
 	if !ok {
 		return Product{}, fmt.Errorf("%s observations are unavailable for feed %s", strings.ToLower(titleForPackage(base.PackageID)), feed.ID)
 	}
@@ -444,7 +462,7 @@ func (r renderer) observationReportProduct(base Product, feed feedXML) (Product,
 
 func (r renderer) marineForecastProduct(base Product, feed feedXML) (Product, error) {
 	var snapshot marineForecastSnapshot
-	inputPath, ok := r.loadLiveMarineForecastSnapshot(feed, &snapshot)
+	inputPath, ok := r.loadLiveMarineForecastSnapshot(feed, base.Language, &snapshot)
 	if !ok {
 		return Product{}, fmt.Errorf("marine forecast is unavailable for feed %s", feed.ID)
 	}
@@ -521,7 +539,7 @@ func (r renderer) renderObservationWindBlock(base Product, values map[string]str
 
 func (r renderer) forecastProduct(base Product, feed feedXML) (Product, error) {
 	var snapshot forecastSnapshot
-	inputPath, ok := r.loadLiveForecastSnapshot(feed, &snapshot)
+	inputPath, ok := r.loadLiveForecastSnapshot(feed, base.Language, &snapshot)
 	if !ok {
 		return Product{}, fmt.Errorf("forecast information is unavailable for feed %s (%s)", feed.ID, forecastCoverageDebug(feed))
 	}
@@ -689,7 +707,7 @@ func forecastCoverageDebug(feed feedXML) string {
 
 func (r renderer) airQualityProduct(base Product, feed feedXML) (Product, error) {
 	var snapshot airQualitySnapshot
-	inputPath, ok := r.loadLiveAirQualitySnapshot(feed, &snapshot)
+	inputPath, ok := r.loadLiveAirQualitySnapshot(feed, base.Language, &snapshot)
 	if !ok {
 		return Product{}, fmt.Errorf("air quality information is unavailable for feed %s", feed.ID)
 	}
@@ -789,7 +807,7 @@ func (r renderer) airQualityRiskNarrative(lang string, aqhi string, risk string)
 
 func (r renderer) climateProduct(base Product, feed feedXML) (Product, error) {
 	var snapshot climateSnapshot
-	inputPath, ok := r.loadLiveClimateSnapshot(feed, &snapshot)
+	inputPath, ok := r.loadLiveClimateSnapshot(feed, base.Language, &snapshot)
 	if !ok {
 		return Product{}, fmt.Errorf("climate summary information is unavailable for feed %s", feed.ID)
 	}
@@ -1416,7 +1434,7 @@ func readableSpecialtyToken(value string) string {
 
 func (r renderer) userBulletinProduct(base Product, feed feedXML) (Product, error) {
 	var snapshot bulletinSnapshot
-	inputPath, ok := r.loadLiveBulletinSnapshot(feed, &snapshot)
+	inputPath, ok := r.loadLiveBulletinSnapshot(feed, base.Language, &snapshot)
 	if !ok {
 		return Product{}, fmt.Errorf("no active user bulletins are available for feed %s", feed.ID)
 	}

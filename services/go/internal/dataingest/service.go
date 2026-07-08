@@ -1983,8 +1983,8 @@ func fetchCollectionFeatures(ctx context.Context, client *http.Client, collectio
 }
 
 func specialtyPayload(collection string, title string, timestamp string, items []map[string]any) map[string]any {
-	if len(items) == 0 {
-		return nil
+	if items == nil {
+		items = []map[string]any{}
 	}
 	return map[string]any{
 		"source":     "eccc",

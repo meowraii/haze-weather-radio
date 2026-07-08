@@ -91,7 +91,7 @@ func (c *bridgeClient) Publish(message map[string]any) error {
 	return json.NewEncoder(c.conn).Encode(message)
 }
 
-func (c *bridgeClient) RenderProduct(ctx context.Context, requestID string, feedID string, packageID string) (renderedProduct, error) {
+func (c *bridgeClient) RenderProduct(ctx context.Context, requestID string, feedID string, packageID string, language string) (renderedProduct, error) {
 	ch := make(chan productResult, 1)
 	c.mu.Lock()
 	c.pendingProducts[requestID] = ch
@@ -110,6 +110,7 @@ func (c *bridgeClient) RenderProduct(ctx context.Context, requestID string, feed
 			"feed_id":    feedID,
 			"package_id": packageID,
 			"pkg_id":     packageID,
+			"language":   language,
 		},
 	}); err != nil {
 		return renderedProduct{}, err

@@ -243,6 +243,8 @@ type feedPlanner struct {
 	startupPrimerPending bool
 	pendingAfterCurrent  string
 	cursor               int
+	routineLanguageCount int
+	routineAltLangIndex  int
 	nextRoutineRetryAt   time.Time
 	lastPendingReplayAt  time.Time
 	queue                []playlistItem
@@ -430,6 +432,54 @@ func (p *feedPlanner) nextRoutinePackage() string {
 	return ""
 }
 
+func (p *feedPlanner) productLanguageForBuild(source string) string {
+	if !strings.EqualFold(source, "routine") {
+		return feedLanguage(p.feed)
+	}
+	return p.nextRoutineLanguage()
+}
+
+func (p *feedPlanner) nextRoutineLanguage() string {
+	languages := feedLanguages(p.feed)
+	if len(languages) == 0 {
+		return "en-US"
+	}
+	if len(languages) == 1 {
+		return languages[0].Code
+	}
+	p.routineLanguageCount++
+	count := p.routineLanguageCount
+	due := make([]feedLangXML, 0, len(languages)-1)
+	for _, lang := range languages[1:] {
+		period := languageInterval(lang.Interval) + 1
+		if count%period == 0 {
+			due = append(due, lang)
+		}
+	}
+	if len(due) == 0 {
+		return languages[0].Code
+	}
+	selected := due[p.routineAltLangIndex%len(due)].Code
+	p.routineAltLangIndex++
+	return selected
+}
+
+func languageInterval(raw string) int {
+	interval, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || interval < 1 {
+		return 1
+	}
+	return interval
+}
+
+func productQueuePrefix(pkgID string, language string) string {
+	language = normalizeLangKey(language)
+	if language == "" {
+		return pkgID
+	}
+	return pkgID + "-" + language
+}
+
 func (p *feedPlanner) nextFixedEvent(now time.Time, timelineEnd time.Time) (fixedEvent, bool) {
 	loc := feedLocation(p.feed)
 	from := now.In(loc).Add(-time.Second)
@@ -504,8 +554,9 @@ func (p *feedPlanner) buildFixed(ctx context.Context, event fixedEvent, timeline
 }
 
 func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source string, targetRaw string, timelineEnd time.Time, now time.Time) (playlistItem, error) {
-	queueID := queueID(pkgID)
-	product, err := p.renderProductForBuild(ctx, queueID, pkgID, source, now)
+	language := p.productLanguageForBuild(source)
+	queueID := queueID(productQueuePrefix(pkgID, language))
+	product, err := p.renderProductForBuild(ctx, queueID, pkgID, source, language, now)
 	if err != nil {
 		return playlistItem{}, err
 	}
@@ -519,7 +570,7 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 		return cached, nil
 	}
 	outputPath := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID), queueID+".wav")
-	synthCtx, cancel := context.WithTimeout(ctx, p.synthesisTimeoutForBuild(pkgID, source))
+	synthCtx, cancel := context.WithTimeout(ctx, p.synthesisTimeoutForBuild(pkgID, source, product.Language))
 	defer cancel()
 	wavPath, err := p.bridge.Synthesize(synthCtx, synthJob{
 		ID:         queueID,
@@ -564,12 +615,12 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 	}, nil
 }
 
-func (p *feedPlanner) synthesisTimeoutForBuild(pkgID string, source string) time.Duration {
+func (p *feedPlanner) synthesisTimeoutForBuild(pkgID string, source string, language string) time.Duration {
 	if strings.EqualFold(source, "startup") {
 		return 8 * time.Second
 	}
 	if p.cachedProductAudioEligible(pkgID) {
-		if _, _, ok := p.latestCachedProductAudio(pkgID, cachedRoutineFallbackMaxAge); ok {
+		if _, _, ok := p.latestCachedProductAudio(pkgID, language, cachedRoutineFallbackMaxAge); ok {
 			return 12 * time.Second
 		}
 	}
@@ -594,7 +645,7 @@ func (p *feedPlanner) cachedProductItem(pkgID string, product renderedProduct, s
 	if !p.cachedProductAudioEligible(pkgID) {
 		return playlistItem{}, false
 	}
-	path, info, ok := p.latestCachedProductAudio(pkgID, maxAge)
+	path, info, ok := p.latestCachedProductAudio(pkgID, product.Language, maxAge)
 	if !ok {
 		return playlistItem{}, false
 	}
@@ -602,7 +653,7 @@ func (p *feedPlanner) cachedProductItem(pkgID string, product renderedProduct, s
 	start := predictedStart(now, timelineEnd, target)
 	finish := start.Add(p.itemScheduleDuration(info.DurationMS))
 	return playlistItem{
-		QueueID:           queueID(pkgID),
+		QueueID:           queueID(productQueuePrefix(pkgID, product.Language)),
 		FeedID:            p.feed.ID,
 		Kind:              "product",
 		PackageID:         pkgID,
@@ -627,13 +678,34 @@ func (p *feedPlanner) cachedProductAudioEligible(pkgID string) bool {
 	}
 }
 
-func (p *feedPlanner) latestCachedProductAudio(pkgID string, maxAge time.Duration) (string, audioInfo, bool) {
+func (p *feedPlanner) latestCachedProductAudio(pkgID string, language string, maxAge time.Duration) (string, audioInfo, bool) {
 	dir := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID))
-	prefix := safeID(pkgID) + "-"
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", audioInfo{}, false
 	}
+	prefixes := []string{safeID(productQueuePrefix(pkgID, language)) + "-"}
+	if normalizeLangKey(language) == normalizeLangKey(feedLanguage(p.feed)) {
+		legacy := safeID(pkgID) + "-"
+		if legacy != prefixes[0] {
+			prefixes = append(prefixes, legacy)
+		}
+	}
+	for _, prefix := range prefixes {
+		bestPath := latestCachedProductAudioPath(dir, entries, prefix, maxAge)
+		if bestPath == "" {
+			continue
+		}
+		info, err := wavInfo(bestPath)
+		if err != nil {
+			continue
+		}
+		return bestPath, info, true
+	}
+	return "", audioInfo{}, false
+}
+
+func latestCachedProductAudioPath(dir string, entries []os.DirEntry, prefix string, maxAge time.Duration) string {
 	var bestPath string
 	var bestMod time.Time
 	for _, entry := range entries {
@@ -657,25 +729,18 @@ func (p *feedPlanner) latestCachedProductAudio(pkgID string, maxAge time.Duratio
 			bestMod = mod
 		}
 	}
-	if bestPath == "" {
-		return "", audioInfo{}, false
-	}
-	info, err := wavInfo(bestPath)
-	if err != nil {
-		return "", audioInfo{}, false
-	}
-	return bestPath, info, true
+	return bestPath
 }
 
-func (p *feedPlanner) renderProductForBuild(ctx context.Context, queueID string, pkgID string, source string, now time.Time) (renderedProduct, error) {
+func (p *feedPlanner) renderProductForBuild(ctx context.Context, queueID string, pkgID string, source string, language string, now time.Time) (renderedProduct, error) {
 	if source == "startup" && (pkgID == "station_id" || pkgID == "date_time") {
-		return p.staticProduct(pkgID, now)
+		return p.staticProduct(pkgID, language, now)
 	}
 	renderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	product, err := p.bridge.RenderProduct(renderCtx, queueID, p.feed.ID, pkgID)
+	product, err := p.bridge.RenderProduct(renderCtx, queueID, p.feed.ID, pkgID, language)
 	if err != nil {
-		fallback, fallbackErr := p.staticProduct(pkgID, now)
+		fallback, fallbackErr := p.staticProduct(pkgID, language, now)
 		if fallbackErr != nil {
 			return renderedProduct{}, err
 		}
@@ -825,7 +890,8 @@ func metadataText(metadata map[string]string, key string) string {
 	return ""
 }
 
-func (p *feedPlanner) staticProduct(pkgID string, now time.Time) (renderedProduct, error) {
+func (p *feedPlanner) staticProduct(pkgID string, language string, now time.Time) (renderedProduct, error) {
+	language = fallbackText(language, feedLanguage(p.feed))
 	switch strings.ToLower(strings.TrimSpace(pkgID)) {
 	case "station_id":
 		onAirName := spokenText(p.cfg.Root.Operator.OnAirName)
@@ -854,7 +920,7 @@ func (p *feedPlanner) staticProduct(pkgID string, now time.Time) (renderedProduc
 			Title:     "Station Identification",
 			Text:      strings.Join(parts, " "),
 			ReaderID:  "00",
-			Language:  feedLanguage(p.feed),
+			Language:  language,
 		}, nil
 	case "date_time":
 		local := now
@@ -866,9 +932,9 @@ func (p *feedPlanner) staticProduct(pkgID string, now time.Time) (renderedProduc
 			FeedID:    p.feed.ID,
 			PackageID: pkgID,
 			Title:     "Date and Time",
-			Text:      dateTimeAnnouncement(local, feedLanguage(p.feed)),
+			Text:      dateTimeAnnouncement(local, language),
 			ReaderID:  "00",
-			Language:  feedLanguage(p.feed),
+			Language:  language,
 		}, nil
 	default:
 		return renderedProduct{}, fmt.Errorf("no static fallback for %s", pkgID)
@@ -1773,7 +1839,7 @@ func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, o
 	language := feedLanguage(p.feed)
 	if strings.TrimSpace(alertText) == "" {
 		renderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		product, err := p.bridge.RenderProduct(renderCtx, queueID, p.feed.ID, "alerts")
+		product, err := p.bridge.RenderProduct(renderCtx, queueID, p.feed.ID, "alerts", language)
 		cancel()
 		if err != nil {
 			return err

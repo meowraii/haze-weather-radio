@@ -318,6 +318,20 @@ func TestFeedSpecialtySubtypesUsesECCCCitypagePrefix(t *testing.T) {
 	}
 }
 
+func TestSpecialtyPayloadPreservesEmptyItems(t *testing.T) {
+	payload := specialtyPayload("thunderstorm_outlook", "Thunderstorm Outlook", "2026-07-07T12:00:00Z", nil)
+	if payload == nil {
+		t.Fatal("empty specialty payload should still be stored to clear stale data")
+	}
+	items, ok := payload["items"].([]map[string]any)
+	if !ok {
+		t.Fatalf("items type = %T", payload["items"])
+	}
+	if len(items) != 0 {
+		t.Fatalf("items length = %d", len(items))
+	}
+}
+
 func TestThunderstormOutlookGeometryOnlyAcceptsContainingPolygons(t *testing.T) {
 	const saskatoonLon = -106.6700
 	const saskatoonLat = 52.1332

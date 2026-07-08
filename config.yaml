@@ -246,6 +246,7 @@ playout:
   playlist_order:
     - alerts
     - current_conditions
+    - aviation_reports
     - air_quality
     - forecast
     - climate_summary

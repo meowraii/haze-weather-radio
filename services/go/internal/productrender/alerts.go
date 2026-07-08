@@ -636,7 +636,7 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 				UpdatedAt: now,
 				Alert:     alert,
 				RawXML:    alert.RawXML,
-			}, *info, feed, s.cfg.BaseDir, s.cfg.ForecastNames, now)
+			}, *info, feed, feedLanguage(feed), s.cfg.BaseDir, s.cfg.ForecastNames, now)
 			headline = alerttext.NormalizeHeadline(firstNonBlank(info.Headline, info.Event, "Weather Alert"))
 			eventName = firstNonBlank(info.Event, alertSubject(*info), "CAP")
 			severity = info.Severity
@@ -2455,11 +2455,11 @@ func (r renderer) alertsProduct(base Product, feed feedXML) (Product, error) {
 		if !routineCAPAlertAllowed(entry.Alert) || !alertMatchesFeed(entry.Alert, feed, r.cfg.BaseDir) {
 			continue
 		}
-		info := chooseAlertInfo(entry.Alert, feedLanguage(feed))
+		info := chooseAlertInfo(entry.Alert, base.Language)
 		if info == nil {
 			continue
 		}
-		text := renderCAPAlertSentence(entry, *info, feed, r.cfg.BaseDir, r.cfg.ForecastNames, now)
+		text := renderCAPAlertSentence(entry, *info, feed, base.Language, r.cfg.BaseDir, r.cfg.ForecastNames, now)
 		if text == "" {
 			continue
 		}
@@ -2475,12 +2475,12 @@ func (r renderer) alertsProduct(base Product, feed feedXML) (Product, error) {
 	return base, nil
 }
 
-func renderCAPAlertSentence(entry capRegistryEntry, info capmodel.AlertInfo, feed feedXML, baseDir string, forecastNames map[string]forecastRegionName, now time.Time) string {
+func renderCAPAlertSentence(entry capRegistryEntry, info capmodel.AlertInfo, feed feedXML, lang string, baseDir string, forecastNames map[string]forecastRegionName, now time.Time) string {
 	alert := entry.Alert
 	sender := fallbackText(info.SenderName, alertSenderName(alert))
 	subject := alertSubject(info)
 	source := detectCAPSource(alert)
-	areas := alertAreas(info, feed, baseDir, forecastNames)
+	areas := alertAreas(info, feed, lang, baseDir, forecastNames)
 	if areas == "" {
 		areas = fallbackText(alertParam(info, "layer:EC-MSC-SMC:1.0:Alert_Coverage"), "the listening area")
 	}
@@ -2578,7 +2578,7 @@ func stripAlertHeadlineState(headline string) string {
 	return value
 }
 
-func alertAreas(info capmodel.AlertInfo, feed feedXML, baseDir string, forecastNames map[string]forecastRegionName) string {
+func alertAreas(info capmodel.AlertInfo, feed feedXML, lang string, baseDir string, forecastNames map[string]forecastRegionName) string {
 	coverage := feedCoverageModel(baseDir, feed, forecastNames)
 	db := loadAlertGeoDB(baseDir)
 	if useBroadAlertRegions(info) {
@@ -2601,7 +2601,7 @@ func alertAreas(info capmodel.AlertInfo, feed feedXML, baseDir string, forecastN
 				continue
 			}
 		}
-		desc := alertAreaNameFromGeocodes(db, area, feedLanguage(feed))
+		desc := alertAreaNameFromGeocodes(db, area, lang)
 		if desc == "" {
 			continue
 		}

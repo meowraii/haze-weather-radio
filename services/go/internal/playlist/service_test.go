@@ -73,6 +73,36 @@ func TestEnabledFeedsIncludesAlertOnlyStandbyFeeds(t *testing.T) {
 	}
 }
 
+func TestRoutineLanguageSchedulerUsesConfiguredIntervals(t *testing.T) {
+	feed := feedXML{ID: "cwxr-bi"}
+	feed.Languages.Langs = []feedLangXML{{Code: "en-US"}, {Code: "fr-CA", Interval: "1"}}
+	planner := &feedPlanner{feed: feed}
+
+	got := []string{
+		planner.nextRoutineLanguage(),
+		planner.nextRoutineLanguage(),
+		planner.nextRoutineLanguage(),
+		planner.nextRoutineLanguage(),
+	}
+
+	if strings.Join(got, ",") != "en-US,fr-CA,en-US,fr-CA" {
+		t.Fatalf("language rotation = %q", strings.Join(got, ","))
+	}
+}
+
+func TestRoutineLanguageSchedulerKeepsSingleLanguageFeedsPrimary(t *testing.T) {
+	feed := feedXML{ID: "cwxr-en"}
+	feed.Languages.Langs = []feedLangXML{{Code: "en-US"}}
+	planner := &feedPlanner{feed: feed}
+
+	if got := planner.nextRoutineLanguage(); got != "en-US" {
+		t.Fatalf("language = %q, want en-US", got)
+	}
+	if planner.routineLanguageCount != 0 {
+		t.Fatalf("single language feed advanced bilingual counter")
+	}
+}
+
 func TestAlertOnlyStandbyFeedDoesNotRunRoutineTick(t *testing.T) {
 	dir := t.TempDir()
 	feed := feedXML{ID: "CAP-IT-ALL"}
@@ -511,7 +541,7 @@ func TestStaticProductFallbacks(t *testing.T) {
 		"pronunciation": "all hazards, canada radio met",
 	}}
 
-	stationID, err := planner.staticProduct("station_id", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	stationID, err := planner.staticProduct("station_id", "", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +558,7 @@ func TestStaticProductFallbacks(t *testing.T) {
 		}
 	}
 
-	dateTime, err := planner.staticProduct("date_time", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	dateTime, err := planner.staticProduct("date_time", "", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}

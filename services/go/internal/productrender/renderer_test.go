@@ -1123,7 +1123,7 @@ func TestUserBulletinXMLAudioBecomesProductMetadata(t *testing.T) {
 	}
 	r := renderer{cfg: loadedConfig{BaseDir: dir}}
 
-	product, err := r.userBulletinProduct(productBase(loadedConfig{}, feedXML{ID: "sk-0001"}, "user_bulletin", false), feedXML{ID: "sk-0001"})
+	product, err := r.userBulletinProduct(productBase(loadedConfig{}, feedXML{ID: "sk-0001"}, "user_bulletin", "", false), feedXML{ID: "sk-0001"})
 
 	if err != nil {
 		t.Fatal(err)

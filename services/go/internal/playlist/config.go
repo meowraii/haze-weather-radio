@@ -86,9 +86,7 @@ type feedXML struct {
 		SAME    string `xml:"same,attr"`
 	} `xml:"playout"`
 	Languages struct {
-		Langs []struct {
-			Code string `xml:"code,attr"`
-		} `xml:"lang"`
+		Langs []feedLangXML `xml:"lang"`
 	} `xml:"languages"`
 	Locations struct {
 		Coverage struct {
@@ -105,6 +103,11 @@ type coverageRegionXML struct {
 	Subregions []struct {
 		ID string `xml:"id,attr"`
 	} `xml:"subregion"`
+}
+
+type feedLangXML struct {
+	Code     string `xml:"code,attr"`
+	Interval string `xml:"interval,attr"`
 }
 
 type transmitterXML struct {
@@ -351,12 +354,33 @@ func replacementTransmitter(feed feedXML) (transmitterXML, bool) {
 }
 
 func feedLanguage(feed feedXML) string {
-	for _, lang := range feed.Languages.Langs {
-		if code := strings.TrimSpace(lang.Code); code != "" {
-			return code
-		}
+	languages := feedLanguages(feed)
+	if len(languages) > 0 {
+		return languages[0].Code
 	}
 	return "en-US"
+}
+
+func feedLanguages(feed feedXML) []feedLangXML {
+	out := make([]feedLangXML, 0, len(feed.Languages.Langs))
+	seen := map[string]struct{}{}
+	for _, lang := range feed.Languages.Langs {
+		code := strings.TrimSpace(lang.Code)
+		if code == "" {
+			continue
+		}
+		key := normalizeLangKey(code)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, feedLangXML{Code: code, Interval: strings.TrimSpace(lang.Interval)})
+	}
+	return out
+}
+
+func normalizeLangKey(lang string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(lang), "_", "-"))
 }
 
 func feedLocation(feed feedXML) *time.Location {

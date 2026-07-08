@@ -38,6 +38,7 @@ type renderRequest struct {
 	RequestID    string
 	FeedID       string
 	PackageID    string
+	Language     string
 	Force        bool
 	FeedOverride *feedXML
 	Telephone    bool

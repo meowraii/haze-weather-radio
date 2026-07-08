@@ -57,6 +57,9 @@ func TestLoadCombinedProductsBuildsProfilesAndText(t *testing.T) {
 	if packages["forecast"].ReaderID != "01" {
 		t.Fatalf("forecast reader = %q, want 01", packages["forecast"].ReaderID)
 	}
+	if packages["forecast"].ReaderByLang["fr-ca"] != "02" {
+		t.Fatalf("forecast fr reader = %q, want 02", packages["forecast"].ReaderByLang["fr-ca"])
+	}
 	if packages["current_conditions"].ReaderID != "03" {
 		t.Fatalf("current_conditions reader = %q, want 03", packages["current_conditions"].ReaderID)
 	}
@@ -95,5 +98,86 @@ func TestLoadCombinedProductsBuildsProfilesAndText(t *testing.T) {
 	}
 	if got := productText["current_conditions"]["primary.text.2"]["en"]; got != "The temperature was {ctemp} degrees." {
 		t.Fatalf("primary text 2 = %q", got)
+	}
+}
+
+func TestFeedRenderLanguageRequiresConfiguredBilingualFeed(t *testing.T) {
+	englishOnly := feedXML{ID: "mono"}
+	englishOnly.Languages.Langs = []feedLangXML{{Code: "en-US"}}
+
+	if got := feedRenderLanguage(englishOnly, "fr-CA"); got != "en-US" {
+		t.Fatalf("single language feed rendered %q, want en-US", got)
+	}
+
+	bilingual := feedXML{ID: "bi"}
+	bilingual.Languages.Langs = []feedLangXML{{Code: "en-US"}, {Code: "fr-CA", Interval: "1"}}
+
+	if got := feedRenderLanguage(bilingual, "fr"); got != "fr-CA" {
+		t.Fatalf("bilingual feed rendered %q, want fr-CA", got)
+	}
+	if got := feedRenderLanguage(bilingual, "es"); got != "en-US" {
+		t.Fatalf("unconfigured requested language rendered %q, want en-US", got)
+	}
+}
+
+func TestRendererUsesRequestedBilingualProductLanguage(t *testing.T) {
+	feed := feedXML{ID: "cwxr-test", EnabledRaw: "true"}
+	feed.Languages.Langs = []feedLangXML{{Code: "en-US"}, {Code: "fr-CA", Interval: "1"}}
+
+	cfg := loadedConfig{
+		Feeds: []feedXML{feed},
+		Packages: map[string]packageProfile{
+			"station_id": {Enabled: true, ReaderID: "00", ReaderByLang: map[string]string{"fr-ca": "02"}},
+		},
+		ProductText: map[string]map[string]map[string]string{
+			"station_id": {
+				"text.1": {
+					"en":    "You are listening to {on_air_name}.",
+					"fr-ca": "Vous écoutez {on_air_name}.",
+				},
+			},
+		},
+	}
+	cfg.Root.Operator.OnAirName = "Haze"
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: feed.ID, PackageID: "station_id", Language: "fr-CA"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if product.Language != "fr-CA" {
+		t.Fatalf("language = %q, want fr-CA", product.Language)
+	}
+	if product.ReaderID != "02" {
+		t.Fatalf("reader = %q, want 02", product.ReaderID)
+	}
+	if product.Text != "Vous écoutez Haze." {
+		t.Fatalf("text = %q", product.Text)
+	}
+}
+
+func TestPackageLanguageAllowListCanForcePrimaryLanguage(t *testing.T) {
+	feed := feedXML{ID: "cwxr-test", EnabledRaw: "true"}
+	feed.Languages.Langs = []feedLangXML{{Code: "en-US"}, {Code: "fr-CA", Interval: "1"}}
+
+	cfg := loadedConfig{
+		Feeds: []feedXML{feed},
+		Packages: map[string]packageProfile{
+			"alerts": {Enabled: true, ReaderID: "00", Languages: []string{"en"}},
+		},
+		ProductText: map[string]map[string]map[string]string{},
+	}
+
+	product := productBase(cfg, feed, "alerts", "fr-CA", false)
+	if product.Language != "en" {
+		t.Fatalf("language = %q, want en", product.Language)
+	}
+}
+
+func TestFrequencyMHzSpeechIncludesUnit(t *testing.T) {
+	if got := frequencyMHzSpeech("162.550"); got != "162.550 megahertz" {
+		t.Fatalf("frequency text = %q", got)
+	}
+	if got := frequencyMHzSpeech("162.550 megahertz"); got != "162.550 megahertz" {
+		t.Fatalf("frequency text with unit = %q", got)
 	}
 }

@@ -132,6 +132,7 @@ func (s *Service) handleEvent(event map[string]any) {
 		RequestID: firstText(event, data, "request_id", "subject", "id"),
 		FeedID:    firstText(event, data, "feed_id"),
 		PackageID: firstText(event, data, "pkg_id", "package_id"),
+		Language:  firstText(event, data, "language"),
 		Force:     boolAt(data, "force", boolAt(event, "force", false)),
 	}
 	if request.RequestID == "" {

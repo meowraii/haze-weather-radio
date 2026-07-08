@@ -176,12 +176,11 @@ type liveSpecialtyProductFile struct {
 	Items      []map[string]any `json:"items"`
 }
 
-func (r renderer) loadLiveObservationSnapshot(feed feedXML, snapshot *observationSnapshot) (string, bool) {
-	return r.loadObservationSnapshotFromLocations(feed.Locations.ObservationLocations.Locations, feedLanguage(feed), snapshot)
+func (r renderer) loadLiveObservationSnapshot(feed feedXML, lang string, snapshot *observationSnapshot) (string, bool) {
+	return r.loadObservationSnapshotFromLocations(feed.Locations.ObservationLocations.Locations, lang, snapshot)
 }
 
-func (r renderer) loadLiveObservationReportSnapshot(feed feedXML, pkgID string, snapshot *observationSnapshot) (string, bool) {
-	lang := feedLanguage(feed)
+func (r renderer) loadLiveObservationReportSnapshot(feed feedXML, pkgID string, lang string, snapshot *observationSnapshot) (string, bool) {
 	locations := feed.Locations.ObservationLocations.Locations
 	switch strings.ToLower(strings.TrimSpace(pkgID)) {
 	case "aviation_reports":
@@ -259,8 +258,7 @@ func observationFromLiveFile(loc locationXML, lang string, raw liveObservationFi
 	}
 }
 
-func (r renderer) loadLiveForecastSnapshot(feed feedXML, snapshot *forecastSnapshot) (string, bool) {
-	lang := feedLanguage(feed)
+func (r renderer) loadLiveForecastSnapshot(feed feedXML, lang string, snapshot *forecastSnapshot) (string, bool) {
 	var paths []string
 	var regions []forecastRegion
 	var issuedAt string
@@ -328,8 +326,7 @@ func (r renderer) forecastRegionDisplayName(region coverageRegionXML, rawName an
 	return pauseForecastRegionName(fallbackText(region.Name, region.ID), langShort)
 }
 
-func (r renderer) loadLiveAirQualitySnapshot(feed feedXML, snapshot *airQualitySnapshot) (string, bool) {
-	lang := feedLanguage(feed)
+func (r renderer) loadLiveAirQualitySnapshot(feed feedXML, lang string, snapshot *airQualitySnapshot) (string, bool) {
 	for _, loc := range feed.Locations.AirQualityLocations.Locations {
 		var raw liveAirQualityFile
 		input, ok := r.loadStoreProductPayload("air_quality", loc.Source, loc.ID, &raw)
@@ -378,8 +375,7 @@ func (r renderer) loadLiveAirQualitySnapshot(feed feedXML, snapshot *airQualityS
 	return "", false
 }
 
-func (r renderer) loadLiveClimateSnapshot(feed feedXML, snapshot *climateSnapshot) (string, bool) {
-	lang := feedLanguage(feed)
+func (r renderer) loadLiveClimateSnapshot(feed feedXML, lang string, snapshot *climateSnapshot) (string, bool) {
 	for _, loc := range feed.Locations.ClimateLocations.Locations {
 		var raw liveClimateFile
 		input, ok := r.loadStoreProductPayload("climate_summary", loc.Source, loc.ID, &raw)
@@ -404,8 +400,7 @@ func (r renderer) loadLiveClimateSnapshot(feed feedXML, snapshot *climateSnapsho
 	return "", false
 }
 
-func (r renderer) loadLiveMarineForecastSnapshot(feed feedXML, snapshot *marineForecastSnapshot) (string, bool) {
-	lang := feedLanguage(feed)
+func (r renderer) loadLiveMarineForecastSnapshot(feed feedXML, lang string, snapshot *marineForecastSnapshot) (string, bool) {
 	for _, loc := range feedMarineForecastLocations(feed) {
 		var raw liveMarineForecastFile
 		input, ok := r.loadStoreProductPayload("marine_forecast", loc.Source, loc.ID, &raw)
@@ -485,8 +480,8 @@ func cleanMarineForecastText(value string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
-func (r renderer) loadLiveBulletinSnapshot(feed feedXML, snapshot *bulletinSnapshot) (string, bool) {
-	if input, ok := r.loadXMLBulletinSnapshot(feed, snapshot); ok {
+func (r renderer) loadLiveBulletinSnapshot(feed feedXML, lang string, snapshot *bulletinSnapshot) (string, bool) {
+	if input, ok := r.loadXMLBulletinSnapshot(feed, lang, snapshot); ok {
 		return input, true
 	}
 	path := resolvePath(r.cfg.BaseDir, filepath.Join("managed", "userbulletins.json"))
@@ -500,7 +495,6 @@ func (r renderer) loadLiveBulletinSnapshot(feed feedXML, snapshot *bulletinSnaps
 		return "", false
 	}
 	now := time.Now()
-	lang := feedLanguage(feed)
 	lines := []string{}
 	for _, bulletin := range raw {
 		if !bulletin.Enabled || !bulletinActive(bulletin.DateStart, bulletin.DateEnd, now) {
@@ -566,7 +560,7 @@ type userBulletinAudioXML struct {
 	URL  string `xml:"url,attr"`
 }
 
-func (r renderer) loadXMLBulletinSnapshot(feed feedXML, snapshot *bulletinSnapshot) (string, bool) {
+func (r renderer) loadXMLBulletinSnapshot(feed feedXML, lang string, snapshot *bulletinSnapshot) (string, bool) {
 	path := resolvePath(r.cfg.BaseDir, filepath.Join("managed", "configs", "userBulletins.xml"))
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -577,7 +571,6 @@ func (r renderer) loadXMLBulletinSnapshot(feed feedXML, snapshot *bulletinSnapsh
 		return "", false
 	}
 	now := time.Now()
-	lang := feedLanguage(feed)
 	lines := []string{}
 	title := "User Bulletin"
 	for _, bulletin := range parsed.Bulletins {
