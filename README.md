@@ -29,6 +29,40 @@ The production bundle is host-only and ships the `haze` executable plus bundled 
 
 On first launch, if the executable directory already contains meaningful files, `haze` asks whether to keep runtime files there, create a `haze-runtime` subfolder, or choose a custom directory. Services and unattended installs should pass `--workdir C:\path\to\runtime` to skip the prompt.
 
+# Linux Build (Debian 13)
+The Linux bundle is built from source with Rust, Go 1.25, GStreamer, FFmpeg, and ALSA development headers. Install the native build dependencies on a clean Debian 13 host with:
+
+```bash
+sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  ca-certificates curl git jq build-essential clang cmake pkg-config python3 \
+  ffmpeg libasound2-dev libopus-dev libssl-dev libudev-dev \
+  libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+  libswresample-dev libswscale-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-tools gstreamer1.0-libav gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+```
+
+Install the Rust toolchain and the Go version required by `services/go/go.mod`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+curl -fsSLO https://go.dev/dl/go1.25.0.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.25.0.linux-amd64.tar.gz
+rm go1.25.0.linux-amd64.tar.gz
+printf '\nexport PATH=/usr/local/go/bin:$HOME/.cargo/bin:$PATH\n' >> ~/.profile
+source ~/.cargo/env
+export PATH=/usr/local/go/bin:$PATH
+```
+
+Clone and build the portable Linux bundle:
+
+```bash
+git clone https://github.com/meowraii/haze-weather-radio.git ~/haze-weather-radio
+cd ~/haze-weather-radio
+bash scripts/build-haze.sh --profile release
+```
+
 # Media Backend
 Haze has a shared `haze-media` crate for PCM shape, WAV decode, normalization, and the FFmpeg/libav backend boundary. Portable builds use the built-in PCM backend by default so they can still compile without FFmpeg development libraries:
 
@@ -69,8 +103,3 @@ The transmitter-side receiver stays separate as `hazeReceiver.py`; it pairs with
 
 # Host Processing
 The `haze` host includes a first-pass SAME header/AFSK/tone generation component under `crates/haze/src/same_core.rs`. Deterministic signal generation belongs in the host as the remaining playout and scheduling pieces are migrated.
-
-# Planned Features
-- Make the web interface not look vibecoded by Claude. **too damn lazy. if you hate vibecoded frontends, feel free to open a PR. though i did get banned from Claude if that makes you feel better.**
-- Be better than Weatheradio Canada.
-- **Support for additional CAP feeds such as those from the US NWS (NWS-CAP ATOM, IPAWSOPEN, etc.), and international sources. (NWS-CAP has been implemented, but not thoroughly tested yet. Because I am Canadian.)**

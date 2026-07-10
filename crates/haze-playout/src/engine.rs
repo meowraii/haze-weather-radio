@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::future::Future;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -18,6 +19,7 @@ use crate::bridge::{self, BridgeClient, ProductRenderRequest, RenderedProduct, S
 use crate::config::{display_text, resolve_path, FeedConfig, LoadedConfig};
 use crate::sinks::{sinks_for_feed, Sink};
 use haze_media::{decode_wav, normalize_pcm, silence_chunk, Pcm};
+use memmap2::{Mmap, MmapOptions};
 
 const SOURCE_ID: &str = "haze-playout";
 const ALERT_QUEUE_DIR: &str = "runtime/queues/alerts";
@@ -61,7 +63,7 @@ struct AudioItem {
     id: String,
     package_id: String,
     title: String,
-    pcm: Arc<[u8]>,
+    pcm: SharedPcm,
     metadata: AudioItemMetadata,
     resume_offset: usize,
     gap_after: Duration,
@@ -116,11 +118,54 @@ enum SharedAudioKey {
 #[derive(Debug)]
 enum SharedAudioEntry {
     Ready {
-        pcm: Arc<[u8]>,
+        pcm: SharedPcm,
         bytes: usize,
         last_used: Instant,
     },
-    Loading(Vec<oneshot::Sender<Result<Arc<[u8]>, String>>>),
+    Loading(Vec<oneshot::Sender<Result<SharedPcm, String>>>),
+}
+
+#[derive(Debug)]
+struct MappedPcm {
+    mmap: Mmap,
+    offset: usize,
+    len: usize,
+}
+
+#[derive(Debug, Clone)]
+enum SharedPcm {
+    Owned(Arc<[u8]>),
+    Mapped(Arc<MappedPcm>),
+}
+
+impl SharedPcm {
+    fn owned(data: Vec<u8>) -> Self {
+        Self::Owned(Arc::from(data.into_boxed_slice()))
+    }
+
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Owned(data) => data.len(),
+            Self::Mapped(_) => 0,
+        }
+    }
+}
+
+impl AsRef<[u8]> for SharedPcm {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Owned(data) => data,
+            Self::Mapped(data) => &data.mmap[data.offset..data.offset + data.len],
+        }
+    }
+}
+
+impl Deref for SharedPcm {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -132,6 +177,11 @@ struct AudioCache {
 struct PcmPublish {
     data: Vec<u8>,
     duration_ms: u32,
+}
+
+struct PcmPublisher {
+    tx: mpsc::Sender<PcmPublish>,
+    recycled: mpsc::Receiver<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -716,14 +766,14 @@ struct FeedRunner {
 impl FeedRunner {
     async fn run(mut self) {
         self.sinks = sinks_for_feed(&self.cfg, &self.feed);
-        let pcm_tx = spawn_pcm_publisher(
+        let pcm_publisher = spawn_pcm_publisher(
             self.media_client.clone(),
             self.feed.id.clone(),
             self.cfg.root.playout.sample_rate,
             self.cfg.root.playout.channels,
         );
         update_runtime(&self.cfg, &self.feed.id, "Idle").await;
-        self.pump(pcm_tx).await;
+        self.pump(pcm_publisher).await;
         for sink in &mut self.sinks {
             if let Err(err) = sink.close() {
                 tracing::warn!(
@@ -735,7 +785,7 @@ impl FeedRunner {
         }
     }
 
-    async fn pump(&mut self, pcm_tx: mpsc::Sender<PcmPublish>) {
+    async fn pump(&mut self, mut pcm_publisher: PcmPublisher) {
         let sample_rate = self.cfg.root.playout.sample_rate;
         let channels = self.cfg.root.playout.channels;
         let chunk = silence_chunk(sample_rate, channels, PCM_CHUNK_MS);
@@ -995,13 +1045,21 @@ impl FeedRunner {
                             let data = std::mem::take(&mut publish_buffer);
                             let duration_ms = publish_duration_ms;
                             publish_duration_ms = 0;
-                            publish_buffer = Vec::with_capacity(chunk.len() * publish_chunk_count);
-                            match pcm_tx.try_send(PcmPublish {
+                            match pcm_publisher.tx.try_send(PcmPublish {
                                 data,
                                 duration_ms,
                             }) {
-                                Ok(()) => {}
-                                Err(TrySendError::Full(_)) => {
+                                Ok(()) => {
+                                    publish_buffer = pcm_publisher
+                                        .recycled
+                                        .try_recv()
+                                        .unwrap_or_else(|_| {
+                                            Vec::with_capacity(chunk.len() * publish_chunk_count)
+                                        });
+                                }
+                                Err(TrySendError::Full(mut unsent)) => {
+                                    unsent.data.clear();
+                                    publish_buffer = unsent.data;
                                     dropped_pcm_publishes = dropped_pcm_publishes.saturating_add(1);
                                     if dropped_pcm_publishes == 1 || dropped_pcm_publishes.is_multiple_of(50) {
                                         tracing::warn!(
@@ -1011,7 +1069,9 @@ impl FeedRunner {
                                         );
                                     }
                                 }
-                                Err(TrySendError::Closed(_)) => {
+                                Err(TrySendError::Closed(mut unsent)) => {
+                                    unsent.data.clear();
+                                    publish_buffer = unsent.data;
                                     tracing::warn!(
                                         feed_id = self.feed.id,
                                         "media publisher stopped before PCM could be forwarded"
@@ -1598,16 +1658,19 @@ fn spawn_pcm_publisher(
     feed_id: String,
     sample_rate: u32,
     channels: u16,
-) -> mpsc::Sender<PcmPublish> {
+) -> PcmPublisher {
     let (tx, mut rx) = mpsc::channel::<PcmPublish>(pcm_publish_queue_capacity());
+    let (recycle_tx, recycled) = mpsc::channel::<Vec<u8>>(pcm_publish_queue_capacity() + 2);
     tokio::spawn(async move {
-        while let Some(chunk) = rx.recv().await {
+        while let Some(mut chunk) = rx.recv().await {
             let _ = client
                 .publish(pcm_publish_event(&feed_id, sample_rate, channels, &chunk))
                 .await;
+            chunk.data.clear();
+            let _ = recycle_tx.try_send(chunk.data);
         }
     });
-    tx
+    PcmPublisher { tx, recycled }
 }
 
 fn pcm_publish_event(feed_id: &str, sample_rate: u32, channels: u16, chunk: &PcmPublish) -> Value {
@@ -1627,7 +1690,7 @@ fn pcm_publish_event(feed_id: &str, sample_rate: u32, channels: u16, chunk: &Pcm
 }
 
 impl AudioCache {
-    async fn read_wav_pcm(&self, path: &Path, cfg: &LoadedConfig) -> Result<Arc<[u8]>> {
+    async fn read_wav_pcm(&self, path: &Path, cfg: &LoadedConfig) -> Result<SharedPcm> {
         let (modified_ns, len) = audio_file_stamp(path).await;
         let key = SharedAudioKey::Wav {
             path: path.to_path_buf(),
@@ -1639,8 +1702,9 @@ impl AudioCache {
         let path = path.to_path_buf();
         let sample_rate = cfg.root.playout.sample_rate;
         let channels = cfg.root.playout.channels;
+        let allow_file_backed = runtime_audio_path(&path, &cfg.base_dir);
         self.get_or_load(key, move || async move {
-            decode_wav_file_to_shared_pcm(path, sample_rate, channels).await
+            decode_wav_file_to_shared_pcm(path, sample_rate, channels, allow_file_backed).await
         })
         .await
     }
@@ -1651,7 +1715,7 @@ impl AudioCache {
         source_rate: u32,
         source_channels: u16,
         cfg: &LoadedConfig,
-    ) -> Result<Arc<[u8]>> {
+    ) -> Result<SharedPcm> {
         let (modified_ns, len) = audio_file_stamp(path).await;
         let key = SharedAudioKey::RawPcm {
             path: path.to_path_buf(),
@@ -1665,7 +1729,21 @@ impl AudioCache {
         let path = path.to_path_buf();
         let sample_rate = cfg.root.playout.sample_rate;
         let channels = cfg.root.playout.channels;
+        let allow_file_backed = runtime_audio_path(&path, &cfg.base_dir);
         self.get_or_load(key, move || async move {
+            if allow_file_backed
+                && source_rate == sample_rate
+                && source_channels.max(1) == channels.max(1)
+            {
+                let mapped_path = path.clone();
+                if let Ok(Ok(mapped)) = tokio::task::spawn_blocking(move || {
+                    map_raw_pcm_file(&mapped_path, channels.max(1))
+                })
+                .await
+                {
+                    return Ok(mapped);
+                }
+            }
             let raw = tokio::fs::read(&path)
                 .await
                 .with_context(|| format!("failed to read audio {}", path.display()))?;
@@ -1687,7 +1765,7 @@ impl AudioCache {
         client: &BridgeClient,
         job: SynthJob,
         cfg: &LoadedConfig,
-    ) -> Result<Arc<[u8]>> {
+    ) -> Result<SharedPcm> {
         let key = SharedAudioKey::Synth {
             text: job.text.clone(),
             reader_id: job.reader_id.clone(),
@@ -1700,15 +1778,16 @@ impl AudioCache {
         let channels = cfg.root.playout.channels;
         self.get_or_load(key, move || async move {
             let wav_path = client.synthesize(job).await?;
-            decode_wav_file_to_shared_pcm(PathBuf::from(wav_path), sample_rate, channels).await
+            decode_wav_file_to_shared_pcm(PathBuf::from(wav_path), sample_rate, channels, true)
+                .await
         })
         .await
     }
 
-    async fn get_or_load<Load, Fut>(&self, key: SharedAudioKey, load: Load) -> Result<Arc<[u8]>>
+    async fn get_or_load<Load, Fut>(&self, key: SharedAudioKey, load: Load) -> Result<SharedPcm>
     where
         Load: FnOnce() -> Fut,
-        Fut: Future<Output = Result<Arc<[u8]>>>,
+        Fut: Future<Output = Result<SharedPcm>>,
     {
         let now = Instant::now();
         let waiter = {
@@ -1717,7 +1796,7 @@ impl AudioCache {
             match entries.get_mut(&key) {
                 Some(SharedAudioEntry::Ready { pcm, last_used, .. }) => {
                     *last_used = now;
-                    return Ok(Arc::clone(pcm));
+                    return Ok(pcm.clone());
                 }
                 Some(SharedAudioEntry::Loading(waiters)) => {
                     let (tx, rx) = oneshot::channel();
@@ -1741,7 +1820,7 @@ impl AudioCache {
 
         let loaded = load().await;
         let notification = match &loaded {
-            Ok(pcm) => Ok(Arc::clone(pcm)),
+            Ok(pcm) => Ok(pcm.clone()),
             Err(err) => Err(err.to_string()),
         };
         let waiters = {
@@ -1752,8 +1831,8 @@ impl AudioCache {
                         entries.insert(
                             key.clone(),
                             SharedAudioEntry::Ready {
-                                pcm: Arc::clone(pcm),
-                                bytes: pcm.len(),
+                                pcm: pcm.clone(),
+                                bytes: pcm.heap_bytes(),
                                 last_used: Instant::now(),
                             },
                         );
@@ -1870,7 +1949,18 @@ async fn decode_wav_file_to_shared_pcm(
     path: PathBuf,
     sample_rate: u32,
     channels: u16,
-) -> Result<Arc<[u8]>> {
+    allow_file_backed: bool,
+) -> Result<SharedPcm> {
+    if allow_file_backed {
+        let mapped_path = path.clone();
+        if let Ok(Ok(Some(mapped))) = tokio::task::spawn_blocking(move || {
+            map_pcm16_wav_file(&mapped_path, sample_rate, channels.max(1))
+        })
+        .await
+        {
+            return Ok(mapped);
+        }
+    }
     let raw = tokio::fs::read(&path)
         .await
         .with_context(|| format!("failed to read audio {}", path.display()))?;
@@ -1880,8 +1970,113 @@ async fn decode_wav_file_to_shared_pcm(
     shared_pcm(normalize_pcm(pcm, sample_rate, channels))
 }
 
-fn shared_pcm(pcm: Pcm) -> Result<Arc<[u8]>> {
-    Ok(Arc::from(pcm.data.into_boxed_slice()))
+fn shared_pcm(pcm: Pcm) -> Result<SharedPcm> {
+    Ok(SharedPcm::owned(pcm.data))
+}
+
+fn runtime_audio_path(path: &Path, base_dir: &Path) -> bool {
+    let audio_root = base_dir.join("runtime/audio");
+    if path.starts_with(&audio_root) {
+        return true;
+    }
+    if audio_root.is_relative() {
+        return std::env::current_dir()
+            .map(|current_dir| path.starts_with(current_dir.join(audio_root)))
+            .unwrap_or(false);
+    }
+    false
+}
+
+fn map_raw_pcm_file(path: &Path, channels: u16) -> Result<SharedPcm> {
+    let mmap = map_read_only(path)?;
+    let frame_bytes = usize::from(channels.max(1)) * 2;
+    if mmap.is_empty() || mmap.len() % frame_bytes != 0 {
+        anyhow::bail!("raw PCM file does not contain complete audio frames");
+    }
+    let len = mmap.len();
+    Ok(SharedPcm::Mapped(Arc::new(MappedPcm {
+        mmap,
+        offset: 0,
+        len,
+    })))
+}
+
+fn map_pcm16_wav_file(
+    path: &Path,
+    expected_sample_rate: u32,
+    expected_channels: u16,
+) -> Result<Option<SharedPcm>> {
+    let mmap = map_read_only(path)?;
+    if mmap.len() < 12 || &mmap[0..4] != b"RIFF" || &mmap[8..12] != b"WAVE" {
+        return Ok(None);
+    }
+
+    let mut offset = 12usize;
+    let mut format = None;
+    let mut data = None;
+    while offset.saturating_add(8) <= mmap.len() {
+        let chunk_id = &mmap[offset..offset + 4];
+        let chunk_len = u32::from_le_bytes([
+            mmap[offset + 4],
+            mmap[offset + 5],
+            mmap[offset + 6],
+            mmap[offset + 7],
+        ]) as usize;
+        let chunk_start = offset + 8;
+        let Some(chunk_end) = chunk_start.checked_add(chunk_len) else {
+            return Ok(None);
+        };
+        if chunk_end > mmap.len() {
+            return Ok(None);
+        }
+        if chunk_id == b"fmt " && chunk_len >= 16 {
+            format = Some((
+                u16::from_le_bytes([mmap[chunk_start], mmap[chunk_start + 1]]),
+                u16::from_le_bytes([mmap[chunk_start + 2], mmap[chunk_start + 3]]),
+                u32::from_le_bytes([
+                    mmap[chunk_start + 4],
+                    mmap[chunk_start + 5],
+                    mmap[chunk_start + 6],
+                    mmap[chunk_start + 7],
+                ]),
+                u16::from_le_bytes([mmap[chunk_start + 14], mmap[chunk_start + 15]]),
+            ));
+        } else if chunk_id == b"data" && chunk_len > 0 {
+            data = Some((chunk_start, chunk_len));
+        }
+        offset = chunk_end.saturating_add(chunk_len & 1);
+    }
+
+    let Some((audio_format, channels, sample_rate, bits_per_sample)) = format else {
+        return Ok(None);
+    };
+    let Some((data_offset, data_len)) = data else {
+        return Ok(None);
+    };
+    let frame_bytes = usize::from(channels.max(1)) * 2;
+    if audio_format != 1
+        || bits_per_sample != 16
+        || sample_rate != expected_sample_rate
+        || channels != expected_channels
+        || data_len % frame_bytes != 0
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(SharedPcm::Mapped(Arc::new(MappedPcm {
+        mmap,
+        offset: data_offset,
+        len: data_len,
+    }))))
+}
+
+fn map_read_only(path: &Path) -> Result<Mmap> {
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to open audio {}", path.display()))?;
+    // Runtime audio files are atomically published and never mutated in place.
+    let mmap = unsafe { MmapOptions::new().map(&file) }
+        .with_context(|| format!("failed to map audio {}", path.display()))?;
+    Ok(mmap)
 }
 
 async fn package_builder(
@@ -2080,12 +2275,12 @@ async fn audio_item_from_mixed_rendered_product(
     let language = fallback_text(&product.language, &feed.language());
     let job_id = queue_id(&format!("{}-{package_id}", feed.id));
     let mut text_parts = Vec::<String>::new();
-    let mut chunks = Vec::<Arc<[u8]>>::new();
+    let mut chunks = Vec::<SharedPcm>::new();
     let mut source_paths = Vec::<String>::new();
 
     async fn flush_text_parts(
         text_parts: &mut Vec<String>,
-        chunks: &mut Vec<Arc<[u8]>>,
+        chunks: &mut Vec<SharedPcm>,
         cfg: &LoadedConfig,
         client: &BridgeClient,
         audio_cache: &AudioCache,
@@ -2183,9 +2378,9 @@ async fn audio_item_from_mixed_rendered_product(
         .fold(0usize, |total, chunk| total.saturating_add(chunk.len()));
     let mut mixed = Vec::with_capacity(total_len);
     for chunk in chunks {
-        mixed.extend_from_slice(&chunk);
+        mixed.extend_from_slice(chunk.as_ref());
     }
-    let pcm: Arc<[u8]> = Arc::from(mixed.into_boxed_slice());
+    let pcm = SharedPcm::owned(mixed);
     let duration_ms = pcm_duration_ms(
         pcm.len(),
         cfg.root.playout.sample_rate,
@@ -3076,7 +3271,7 @@ mod tests {
             id: "alert-1".to_string(),
             package_id: "same_alert".to_string(),
             title: "Severe Thunderstorm Warning".to_string(),
-            pcm: Arc::from(vec![0; 48_000].into_boxed_slice()),
+            pcm: SharedPcm::owned(vec![0; 48_000]),
             metadata: AudioItemMetadata {
                 audio_path: "runtime/audio/alerts/alert.raw".to_string(),
                 duration_ms: 500,
@@ -3164,7 +3359,7 @@ mod tests {
             id: "routine-1".to_string(),
             package_id: "forecast".to_string(),
             title: "Forecast".to_string(),
-            pcm: Arc::from(vec![1; 16].into_boxed_slice()),
+            pcm: SharedPcm::owned(vec![1; 16]),
             metadata: AudioItemMetadata::default(),
             resume_offset: 0,
             gap_after: Duration::from_secs(1),
@@ -3188,7 +3383,7 @@ mod tests {
             id: "routine-1".to_string(),
             package_id: "forecast".to_string(),
             title: "Forecast".to_string(),
-            pcm: Arc::from(vec![1; 16].into_boxed_slice()),
+            pcm: SharedPcm::owned(vec![1; 16]),
             metadata: AudioItemMetadata::default(),
             resume_offset: 0,
             gap_after: Duration::from_secs(1),
@@ -3299,7 +3494,7 @@ mod tests {
             id: id.to_string(),
             package_id: "forecast".to_string(),
             title: title.to_string(),
-            pcm: Arc::from(vec![1; 16].into_boxed_slice()),
+            pcm: SharedPcm::owned(vec![1; 16]),
             metadata: AudioItemMetadata::default(),
             resume_offset: 0,
             gap_after: Duration::from_secs(1),
@@ -3337,7 +3532,7 @@ mod tests {
                         move || async move {
                             calls.fetch_add(1, Ordering::SeqCst);
                             tokio::time::sleep(Duration::from_millis(25)).await;
-                            Ok(Arc::from(vec![7u8; 4].into_boxed_slice()))
+                            Ok(SharedPcm::owned(vec![7u8; 4]))
                         },
                     )
                     .await
@@ -3352,7 +3547,7 @@ mod tests {
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         for result in &results[1..] {
-            assert!(Arc::ptr_eq(&results[0], result));
+            assert_eq!(results[0].as_ref().as_ptr(), result.as_ref().as_ptr());
         }
     }
 
@@ -3365,7 +3560,7 @@ mod tests {
         entries.insert(
             stale_key.clone(),
             SharedAudioEntry::Ready {
-                pcm: Arc::from(vec![1u8; 4].into_boxed_slice()),
+                pcm: SharedPcm::owned(vec![1u8; 4]),
                 bytes: 4,
                 last_used: now
                     .checked_sub(AUDIO_CACHE_MAX_IDLE + Duration::from_secs(1))
@@ -3375,7 +3570,7 @@ mod tests {
         entries.insert(
             fresh_key.clone(),
             SharedAudioEntry::Ready {
-                pcm: Arc::from(vec![2u8; 4].into_boxed_slice()),
+                pcm: SharedPcm::owned(vec![2u8; 4]),
                 bytes: 4,
                 last_used: now,
             },
@@ -3395,7 +3590,7 @@ mod tests {
         entries.insert(
             key.clone(),
             SharedAudioEntry::Ready {
-                pcm: Arc::from(vec![1u8; 4].into_boxed_slice()),
+                pcm: SharedPcm::owned(vec![1u8; 4]),
                 bytes: 4,
                 last_used: now
                     .checked_sub(AUDIO_CACHE_MAX_IDLE + Duration::from_secs(1))
@@ -3416,6 +3611,57 @@ mod tests {
             sample_rate: 48_000,
             channels: 1,
         }
+    }
+
+    #[test]
+    fn matching_pcm16_wav_uses_file_backed_audio() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("queued.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).expect("create WAV");
+        writer.write_sample::<i16>(1234).expect("write sample");
+        writer.write_sample::<i16>(-1234).expect("write sample");
+        writer.finalize().expect("finalize WAV");
+
+        let pcm = map_pcm16_wav_file(&path, 48_000, 1)
+            .expect("map WAV")
+            .expect("matching PCM WAV");
+
+        assert!(matches!(pcm, SharedPcm::Mapped(_)));
+        assert_eq!(pcm.heap_bytes(), 0);
+        assert_eq!(pcm.as_ref(), &[0xd2, 0x04, 0x2e, 0xfb]);
+    }
+
+    #[test]
+    fn relative_workdir_recognizes_absolute_runtime_audio_path() {
+        let absolute = std::env::current_dir()
+            .expect("current directory")
+            .join("runtime/audio/playlist/feed/item.wav");
+
+        assert!(runtime_audio_path(&absolute, Path::new(".")));
+    }
+
+    #[test]
+    fn mismatched_wav_format_falls_back_to_decoder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("queued.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let writer = hound::WavWriter::create(&path, spec).expect("create WAV");
+        writer.finalize().expect("finalize WAV");
+
+        assert!(map_pcm16_wav_file(&path, 48_000, 1)
+            .expect("inspect WAV")
+            .is_none());
     }
 
     #[test]

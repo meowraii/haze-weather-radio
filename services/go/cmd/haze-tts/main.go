@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +32,8 @@ const (
 	synthesisHighQueueSize   = 64
 	synthesisNormalQueueSize = 64
 	synthesisLowQueueSize    = 16
+	synthesisCacheMaxEntries = 256
+	synthesisCacheMaxIdle    = 30 * time.Minute
 )
 
 var errSystemShutdown = errors.New("system shutdown requested")
@@ -169,18 +174,32 @@ type serviceConfig struct {
 }
 
 type serviceState struct {
-	cfg          serviceConfig
-	providers    map[string]tts.Provider
-	readers      []tts.Reader
-	readersErr   error
-	dictionaries map[string]dictionaryResult
-	mu           sync.Mutex
-	publishMu    sync.Mutex
+	cfg            serviceConfig
+	providers      map[string]tts.Provider
+	readers        []tts.Reader
+	readersErr     error
+	dictionaries   map[string]dictionaryResult
+	synthesisCache map[[sha256.Size]byte]synthesisCacheEntry
+	mu             sync.Mutex
+	publishMu      sync.Mutex
 }
 
 type dictionaryResult struct {
 	Dictionary tts.Dictionary
 	Err        error
+}
+
+type synthesisCacheEntry struct {
+	OutputPath string
+	Format     tts.AudioFormat
+	SampleRate int
+	Channels   int
+	Bytes      int64
+	ProviderID string
+	ReaderID   string
+	VoiceID    string
+	Language   string
+	LastUsed   time.Time
 }
 
 func runService(ctx context.Context, cfg serviceConfig) error {
@@ -436,11 +455,12 @@ func newServiceState(ctx context.Context, cfg serviceConfig) (*serviceState, err
 		readers = nil
 	}
 	state := &serviceState{
-		cfg:          cfg,
-		providers:    providers,
-		readers:      readers,
-		readersErr:   err,
-		dictionaries: map[string]dictionaryResult{},
+		cfg:            cfg,
+		providers:      providers,
+		readers:        readers,
+		readersErr:     err,
+		dictionaries:   map[string]dictionaryResult{},
+		synthesisCache: map[[sha256.Size]byte]synthesisCacheEntry{},
 	}
 	return state, nil
 }
@@ -483,6 +503,81 @@ func (s *serviceState) dictionary(language string) (tts.Dictionary, error) {
 	s.dictionaries[key] = dictionaryResult{Dictionary: dictionary, Err: err}
 	s.mu.Unlock()
 	return dictionary, err
+}
+
+func (s *serviceState) cachedSynthesis(key [sha256.Size]byte) (synthesisCacheEntry, bool) {
+	s.mu.Lock()
+	entry, ok := s.synthesisCache[key]
+	if !ok || time.Since(entry.LastUsed) > synthesisCacheMaxIdle {
+		if ok {
+			delete(s.synthesisCache, key)
+		}
+		s.mu.Unlock()
+		return synthesisCacheEntry{}, false
+	}
+	s.mu.Unlock()
+
+	info, err := os.Stat(entry.OutputPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != entry.Bytes {
+		s.mu.Lock()
+		if current, exists := s.synthesisCache[key]; exists && current.OutputPath == entry.OutputPath {
+			delete(s.synthesisCache, key)
+		}
+		s.mu.Unlock()
+		return synthesisCacheEntry{}, false
+	}
+
+	entry.LastUsed = time.Now()
+	s.mu.Lock()
+	if s.synthesisCache == nil {
+		s.synthesisCache = make(map[[sha256.Size]byte]synthesisCacheEntry)
+	}
+	s.synthesisCache[key] = entry
+	s.mu.Unlock()
+	return entry, true
+}
+
+func (s *serviceState) storeSynthesis(key [sha256.Size]byte, entry synthesisCacheEntry) {
+	entry.LastUsed = time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.synthesisCache == nil {
+		s.synthesisCache = make(map[[sha256.Size]byte]synthesisCacheEntry)
+	}
+	s.synthesisCache[key] = entry
+	for len(s.synthesisCache) > synthesisCacheMaxEntries {
+		var oldestKey [sha256.Size]byte
+		oldestAt := time.Now()
+		for candidateKey, candidate := range s.synthesisCache {
+			if candidate.LastUsed.Before(oldestAt) {
+				oldestKey = candidateKey
+				oldestAt = candidate.LastUsed
+			}
+		}
+		delete(s.synthesisCache, oldestKey)
+	}
+}
+
+func synthesisKey(providerID string, readerID string, targetSampleRate int, targetChannels int, req tts.Request) [sha256.Size]byte {
+	hash := sha256.New()
+	writePart := func(value string) {
+		_, _ = io.WriteString(hash, value)
+		_, _ = hash.Write([]byte{0})
+	}
+	writePart(strings.ToLower(strings.TrimSpace(providerID)))
+	writePart(strings.TrimSpace(readerID))
+	writePart(req.Text)
+	writePart(req.VoiceID)
+	writePart(tts.NormalizeLanguage(req.Language))
+	writePart(string(req.OutputFormat))
+	writePart(strconv.Itoa(req.Rate))
+	writePart(strconv.Itoa(req.Volume))
+	writePart(strconv.FormatFloat(req.SentenceSilence, 'g', -1, 64))
+	writePart(strconv.Itoa(targetSampleRate))
+	writePart(strconv.Itoa(targetChannels))
+	var key [sha256.Size]byte
+	copy(key[:], hash.Sum(nil))
+	return key
 }
 
 func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState, message map[string]any) {
@@ -536,8 +631,7 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 		return
 	}
 	outputFormat := normalizeOutputFormat(firstText(message, data, "output_format", "format"))
-
-	audio, provider, err := synthesizeWithProvider(jobCtx, state.providers, providerID, tts.Request{
+	request := tts.Request{
 		Text:            tts.NormalizeText(text, dictionary, timezone),
 		VoiceID:         voiceID,
 		Language:        language,
@@ -545,16 +639,9 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 		Volume:          intValue(message, data, "volume", 100),
 		Rate:            intValue(message, data, "rate", 0),
 		SentenceSilence: floatValue(message, data, "sentence_silence", 0),
-	})
-	if err != nil {
-		state.publishTTSError(conn, jobID, err.Error())
-		return
 	}
-	if audio.Format != tts.FormatWAV && audio.Format != tts.FormatPCM16LE {
-		state.publishTTSError(conn, jobID, fmt.Sprintf("unsupported audio format %q", audio.Format))
-		return
-	}
-
+	targetSampleRate := intValue(message, data, "target_sample_rate", 0)
+	targetChannels := intValue(message, data, "target_channels", 0)
 	outputPath := firstText(message, data, "output_path", "out")
 	if outputPath == "" {
 		outputPath = filepath.Join(cfg.OutDir, sanitizeFileName(jobID)+".wav")
@@ -563,10 +650,57 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
+	cacheKey := synthesisKey(providerID, reader.ID, targetSampleRate, targetChannels, request)
+	if cached, ok := state.cachedSynthesis(cacheKey); ok {
+		if err := materializeCachedAudio(cached.OutputPath, outputPath); err == nil {
+			cached.OutputPath = outputPath
+			state.storeSynthesis(cacheKey, cached)
+			_ = state.publishServiceEvent(conn, "tts.synthesized", jobID, map[string]any{
+				"job_id":      jobID,
+				"output_path": outputPath,
+				"bytes":       cached.Bytes,
+				"format":      cached.Format,
+				"sample_rate": cached.SampleRate,
+				"channels":    cached.Channels,
+				"provider":    cached.ProviderID,
+				"reader_id":   cached.ReaderID,
+				"voice_id":    cached.VoiceID,
+				"language":    cached.Language,
+				"cache_hit":   true,
+			})
+			return
+		}
+	}
+
+	audio, provider, err := synthesizeWithProvider(jobCtx, state.providers, providerID, request)
+	if err != nil {
+		state.publishTTSError(conn, jobID, err.Error())
+		return
+	}
+	if audio.Format != tts.FormatWAV && audio.Format != tts.FormatPCM16LE {
+		state.publishTTSError(conn, jobID, fmt.Sprintf("unsupported audio format %q", audio.Format))
+		return
+	}
+	audio, err = tts.NormalizeAudio(audio, targetSampleRate, targetChannels)
+	if err != nil {
+		state.publishTTSError(conn, jobID, err.Error())
+		return
+	}
 	if err := writeFileAtomic(outputPath, audio.Data, 0o644); err != nil {
 		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
+	state.storeSynthesis(cacheKey, synthesisCacheEntry{
+		OutputPath: outputPath,
+		Format:     audio.Format,
+		SampleRate: audio.SampleRate,
+		Channels:   audio.Channels,
+		Bytes:      int64(len(audio.Data)),
+		ProviderID: provider.ID(),
+		ReaderID:   reader.ID,
+		VoiceID:    voiceID,
+		Language:   language,
+	})
 	_ = state.publishServiceEvent(conn, "tts.synthesized", jobID, map[string]any{
 		"job_id":      jobID,
 		"output_path": outputPath,
@@ -578,6 +712,7 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 		"reader_id":   reader.ID,
 		"voice_id":    voiceID,
 		"language":    language,
+		"cache_hit":   false,
 	})
 }
 
@@ -625,6 +760,44 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func materializeCachedAudio(source string, target string) error {
+	if filepath.Clean(source) == filepath.Clean(target) {
+		return nil
+	}
+	tmp := fmt.Sprintf("%s.%d.tmp", target, time.Now().UnixNano())
+	if err := os.Link(source, tmp); err == nil {
+		if err := os.Rename(tmp, target); err == nil {
+			return nil
+		}
+		_ = os.Remove(tmp)
+	}
+
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}

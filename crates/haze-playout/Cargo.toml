@@ -19,6 +19,7 @@ cpal = "0.16"
 dunce = "1.0"
 haze-media = { path = "../haze-media" }
 hound = "3.5"
+memmap2 = "0.9"
 quick-xml = { version = "0.38", features = ["serialize"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

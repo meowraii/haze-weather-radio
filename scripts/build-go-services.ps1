@@ -5,6 +5,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Assert-NativeSuccess {
+    param([string] $Description)
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Description failed with exit code $LASTEXITCODE"
+    }
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Resolve-Path (Join-Path $ScriptDir "..")
 
@@ -207,8 +214,11 @@ try {
     }
     $WebLdflags = "-X github.com/meowraii/haze-weather-radio/services/go/internal/webgateway.BuildGitCommit=$GitCommit"
     go build @BuildWebArgs -ldflags $WebLdflags -o (Join-Path $BinFull "haze-web.exe") ./cmd/haze-web
+    Assert-NativeSuccess "haze-web build"
     go build -o (Join-Path $BinFull "haze-data-ingest.exe") ./cmd/haze-data-ingest
+    Assert-NativeSuccess "haze-data-ingest build"
     go build -o (Join-Path $BinFull "haze-tts.exe") ./cmd/haze-tts
+    Assert-NativeSuccess "haze-tts build"
     if ($RunningOnWindows) {
         $SavedGoOS = $env:GOOS
         $SavedGoArch = $env:GOARCH
@@ -218,6 +228,7 @@ try {
             $env:GOARCH = "386"
             $env:CGO_ENABLED = "0"
             go build -o (Join-Path $BinFull "haze-sapi5-shim.exe") ./cmd/haze-sapi5-shim
+            Assert-NativeSuccess "haze-sapi5-shim build"
         } finally {
             $env:GOOS = $SavedGoOS
             $env:GOARCH = $SavedGoArch
@@ -225,9 +236,13 @@ try {
         }
     }
     go build -o (Join-Path $BinFull "haze-product-render.exe") ./cmd/haze-product-render
+    Assert-NativeSuccess "haze-product-render build"
     go build -o (Join-Path $BinFull "haze-playlist.exe") ./cmd/haze-playlist
+    Assert-NativeSuccess "haze-playlist build"
     go build -o (Join-Path $BinFull "haze-webhook.exe") ./cmd/haze-webhook
+    Assert-NativeSuccess "haze-webhook build"
     go build -o (Join-Path $BinFull "haze-ivr.exe") ./cmd/haze-ivr
+    Assert-NativeSuccess "haze-ivr build"
     Copy-SherpaOnnxRuntimeLibraries -DestinationDir $BinFull
     if ($BuildWebArgs.Count -gt 0) {
         foreach ($DllName in @("libopus-0.dll", "libopusfile-0.dll", "libogg-0.dll", "libwinpthread-1.dll")) {

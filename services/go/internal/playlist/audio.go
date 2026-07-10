@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,43 +22,67 @@ type audioInfo struct {
 }
 
 func wavInfo(path string) (audioInfo, error) {
-	raw, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return audioInfo{}, err
 	}
-	if len(raw) < 44 || string(raw[:4]) != "RIFF" || string(raw[8:12]) != "WAVE" {
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return audioInfo{}, err
+	}
+	var header [12]byte
+	if _, err := io.ReadFull(file, header[:]); err != nil || string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
 		return audioInfo{}, fmt.Errorf("not a RIFF/WAVE file")
 	}
-	offset := 12
+	remaining := stat.Size() - int64(len(header))
 	var sampleRate int
 	var channels int
 	var bitsPerSample int
-	var dataBytes int
-	for offset+8 <= len(raw) {
-		id := string(raw[offset : offset+4])
-		size := int(binary.LittleEndian.Uint32(raw[offset+4 : offset+8]))
-		offset += 8
-		if size < 0 || offset+size > len(raw) {
+	var dataBytes int64
+	for remaining >= 8 {
+		var chunkHeader [8]byte
+		if _, err := io.ReadFull(file, chunkHeader[:]); err != nil {
+			return audioInfo{}, err
+		}
+		remaining -= int64(len(chunkHeader))
+		size := int64(binary.LittleEndian.Uint32(chunkHeader[4:8]))
+		paddedSize := size + size%2
+		if paddedSize > remaining {
 			return audioInfo{}, fmt.Errorf("invalid WAV chunk size")
 		}
-		chunk := raw[offset : offset+size]
-		switch id {
+		switch string(chunkHeader[0:4]) {
 		case "fmt ":
-			if len(chunk) < 16 {
+			if size < 16 {
 				return audioInfo{}, fmt.Errorf("invalid WAV fmt chunk")
 			}
-			channels = int(binary.LittleEndian.Uint16(chunk[2:4]))
-			sampleRate = int(binary.LittleEndian.Uint32(chunk[4:8]))
-			bitsPerSample = int(binary.LittleEndian.Uint16(chunk[14:16]))
+			var format [16]byte
+			if _, err := io.ReadFull(file, format[:]); err != nil {
+				return audioInfo{}, err
+			}
+			channels = int(binary.LittleEndian.Uint16(format[2:4]))
+			sampleRate = int(binary.LittleEndian.Uint32(format[4:8]))
+			bitsPerSample = int(binary.LittleEndian.Uint16(format[14:16]))
+			if _, err := file.Seek(paddedSize-16, io.SeekCurrent); err != nil {
+				return audioInfo{}, err
+			}
 		case "data":
-			dataBytes = len(chunk)
+			dataBytes = size
+			if sampleRate > 0 && channels > 0 && bitsPerSample > 0 {
+				remaining = 0
+				continue
+			}
+			if _, err := file.Seek(paddedSize, io.SeekCurrent); err != nil {
+				return audioInfo{}, err
+			}
+		default:
+			if _, err := file.Seek(paddedSize, io.SeekCurrent); err != nil {
+				return audioInfo{}, err
+			}
 		}
-		offset += size
-		if offset%2 == 1 {
-			offset++
-		}
+		remaining -= paddedSize
 	}
-	if sampleRate <= 0 || channels <= 0 || bitsPerSample <= 0 {
+	if sampleRate <= 0 || channels <= 0 || bitsPerSample <= 0 || dataBytes <= 0 {
 		return audioInfo{}, fmt.Errorf("WAV format is incomplete")
 	}
 	bytesPerSecond := int64(sampleRate * channels * bitsPerSample / 8)
@@ -67,13 +92,13 @@ func wavInfo(path string) (audioInfo, error) {
 	return audioInfo{
 		SampleRate: sampleRate,
 		Channels:   channels,
-		DurationMS: int64(dataBytes) * 1000 / bytesPerSecond,
-		Bytes:      int64(dataBytes),
+		DurationMS: dataBytes * 1000 / bytesPerSecond,
+		Bytes:      dataBytes,
 	}, nil
 }
 
 func pcmInfo(path string, sampleRate int, channels int) (audioInfo, error) {
-	raw, err := os.ReadFile(path)
+	stat, err := os.Stat(path)
 	if err != nil {
 		return audioInfo{}, err
 	}
@@ -90,8 +115,8 @@ func pcmInfo(path string, sampleRate int, channels int) (audioInfo, error) {
 	return audioInfo{
 		SampleRate: sampleRate,
 		Channels:   channels,
-		DurationMS: int64(len(raw)) * 1000 / bytesPerSecond,
-		Bytes:      int64(len(raw)),
+		DurationMS: stat.Size() * 1000 / bytesPerSecond,
+		Bytes:      stat.Size(),
 	}, nil
 }
 
@@ -165,77 +190,133 @@ func wavPCM16(raw []byte) ([]byte, audioInfo, error) {
 }
 
 func writePCM16WAV(path string, pcm []byte, sampleRate int, channels int) error {
+	stream, err := newPCM16WAVStream(path, sampleRate, channels)
+	if err != nil {
+		return err
+	}
+	defer stream.Abort()
+	if err := stream.Append(pcm); err != nil {
+		return err
+	}
+	return stream.Commit()
+}
+
+type pcm16WAVStream struct {
+	path       string
+	tmp        string
+	file       *os.File
+	sampleRate int
+	channels   int
+	dataBytes  uint64
+}
+
+func newPCM16WAVStream(path string, sampleRate int, channels int) (*pcm16WAVStream, error) {
 	if sampleRate <= 0 {
 		sampleRate = 48000
 	}
 	if channels <= 0 {
 		channels = 1
 	}
-	if len(pcm)%2 != 0 {
-		return fmt.Errorf("PCM payload must contain complete s16le samples")
-	}
-	dataSize := uint32(len(pcm))
-	riffSize := uint32(36) + dataSize
-	byteRate := uint32(sampleRate * channels * 2)
-	blockAlign := uint16(channels * 2)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	tmp := path + ".tmp"
 	file, err := os.Create(tmp)
 	if err != nil {
+		return nil, err
+	}
+	stream := &pcm16WAVStream{
+		path:       path,
+		tmp:        tmp,
+		file:       file,
+		sampleRate: sampleRate,
+		channels:   channels,
+	}
+	if err := stream.writeHeader(0); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+		return nil, err
+	}
+	return stream, nil
+}
+
+func (s *pcm16WAVStream) Append(pcm []byte) error {
+	if s.file == nil {
+		return fmt.Errorf("PCM WAV stream is closed")
+	}
+	frameBytes := s.channels * 2
+	if len(pcm)%frameBytes != 0 {
+		return fmt.Errorf("PCM payload must contain complete s16le frames")
+	}
+	if uint64(len(pcm)) > uint64(math.MaxUint32)-s.dataBytes {
+		return fmt.Errorf("PCM WAV payload exceeds RIFF size limit")
+	}
+	written, err := s.file.Write(pcm)
+	s.dataBytes += uint64(written)
+	if err != nil {
 		return err
 	}
-	writeErr := func() error {
-		if _, err := file.Write([]byte("RIFF")); err != nil {
-			return err
-		}
-		if err := binary.Write(file, binary.LittleEndian, riffSize); err != nil {
-			return err
-		}
-		if _, err := file.Write([]byte("WAVEfmt ")); err != nil {
-			return err
-		}
-		if err := binary.Write(file, binary.LittleEndian, uint32(16)); err != nil {
-			return err
-		}
-		if err := binary.Write(file, binary.LittleEndian, uint16(1)); err != nil {
-			return err
-		}
-		if err := binary.Write(file, binary.LittleEndian, uint16(channels)); err != nil {
-			return err
-		}
-		if err := binary.Write(file, binary.LittleEndian, uint32(sampleRate)); err != nil {
-			return err
-		}
-		if err := binary.Write(file, binary.LittleEndian, byteRate); err != nil {
-			return err
-		}
-		if err := binary.Write(file, binary.LittleEndian, blockAlign); err != nil {
-			return err
-		}
-		if err := binary.Write(file, binary.LittleEndian, uint16(16)); err != nil {
-			return err
-		}
-		if _, err := file.Write([]byte("data")); err != nil {
-			return err
-		}
-		if err := binary.Write(file, binary.LittleEndian, dataSize); err != nil {
-			return err
-		}
-		_, err := file.Write(pcm)
+	if written != len(pcm) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func (s *pcm16WAVStream) Commit() error {
+	if s.file == nil {
+		return fmt.Errorf("PCM WAV stream is closed")
+	}
+	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
 		return err
-	}()
-	closeErr := file.Close()
-	if writeErr != nil {
-		_ = os.Remove(tmp)
-		return writeErr
 	}
-	if closeErr != nil {
-		_ = os.Remove(tmp)
-		return closeErr
+	if err := s.writeHeader(uint32(s.dataBytes)); err != nil {
+		return err
 	}
-	return os.Rename(tmp, path)
+	if err := s.file.Close(); err != nil {
+		s.file = nil
+		return err
+	}
+	s.file = nil
+	if err := os.Rename(s.tmp, s.path); err != nil {
+		_ = os.Remove(s.tmp)
+		return err
+	}
+	return nil
+}
+
+func (s *pcm16WAVStream) Abort() {
+	if s.file != nil {
+		_ = s.file.Close()
+		s.file = nil
+	}
+	_ = os.Remove(s.tmp)
+}
+
+func (s *pcm16WAVStream) writeHeader(dataSize uint32) error {
+	riffSize := uint32(36) + dataSize
+	byteRate := uint32(s.sampleRate * s.channels * 2)
+	blockAlign := uint16(s.channels * 2)
+	if _, err := s.file.Write([]byte("RIFF")); err != nil {
+		return err
+	}
+	for _, value := range []any{
+		riffSize,
+		[]byte("WAVEfmt "),
+		uint32(16),
+		uint16(1),
+		uint16(s.channels),
+		uint32(s.sampleRate),
+		byteRate,
+		blockAlign,
+		uint16(16),
+		[]byte("data"),
+		dataSize,
+	} {
+		if err := binary.Write(s.file, binary.LittleEndian, value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func downloadFile(ctx context.Context, sourceURL string, outputPath string, maxBytes int64) error {

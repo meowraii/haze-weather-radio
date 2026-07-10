@@ -39,6 +39,12 @@ func (p *fakeProvider) requestAt(index int) tts.Request {
 	return p.requests[index]
 }
 
+func (p *fakeProvider) requestCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.requests)
+}
+
 func TestHandleSynthesisJobDefaultsToWAV(t *testing.T) {
 	provider := &fakeProvider{id: "piper", audio: tts.Audio{Format: tts.FormatWAV, Data: []byte("wav")}}
 	state := &serviceState{
@@ -121,6 +127,58 @@ func TestHandleSynthesisJobPublishesPCMMetadata(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(outputPath); err != nil || len(raw) != 4 {
 		t.Fatalf("output bytes = %d err=%v", len(raw), err)
+	}
+}
+
+func TestHandleSynthesisJobReusesIdenticalCompletedAudio(t *testing.T) {
+	provider := &fakeProvider{id: "piper", audio: tts.Audio{
+		Format:     tts.FormatWAV,
+		SampleRate: 22050,
+		Channels:   1,
+		Data:       []byte("cached wav"),
+	}}
+	state := &serviceState{
+		cfg:          serviceConfig{Timeout: time.Second},
+		providers:    map[string]tts.Provider{"piper": provider},
+		dictionaries: map[string]dictionaryResult{},
+	}
+	dir := t.TempDir()
+
+	run := func(jobID string, outputPath string) map[string]any {
+		conn, peer := net.Pipe()
+		defer conn.Close()
+		defer peer.Close()
+		go handleSynthesisJob(context.Background(), conn, state, map[string]any{
+			"type": "tts.synthesize",
+			"data": map[string]any{
+				"job_id":      jobID,
+				"provider":    "piper",
+				"text":        "unchanged forecast",
+				"voice_id":    "voice-a",
+				"language":    "en-CA",
+				"output_path": outputPath,
+			},
+		})
+		var event map[string]any
+		if err := json.NewDecoder(peer).Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		return event["data"].(map[string]any)
+	}
+
+	firstPath := filepath.Join(dir, "first.wav")
+	secondPath := filepath.Join(dir, "second.wav")
+	first := run("job-1", firstPath)
+	second := run("job-2", secondPath)
+
+	if provider.requestCount() != 1 {
+		t.Fatalf("provider requests = %d, want 1", provider.requestCount())
+	}
+	if first["cache_hit"] != false || second["cache_hit"] != true {
+		t.Fatalf("cache metadata first=%v second=%v", first["cache_hit"], second["cache_hit"])
+	}
+	if raw, err := os.ReadFile(secondPath); err != nil || string(raw) != "cached wav" {
+		t.Fatalf("cached output = %q err=%v", raw, err)
 	}
 }
 

@@ -589,12 +589,14 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 	synthCtx, cancel := context.WithTimeout(ctx, p.synthesisTimeoutForBuild(pkgID, source, product.Language))
 	defer cancel()
 	wavPath, err := p.bridge.Synthesize(synthCtx, synthJob{
-		ID:         queueID,
-		Text:       product.Text,
-		ReaderID:   product.ReaderID,
-		Language:   fallbackText(product.Language, feedLanguage(p.feed)),
-		Timezone:   feedTimezone(p.feed),
-		OutputPath: outputPath,
+		ID:               queueID,
+		Text:             product.Text,
+		ReaderID:         product.ReaderID,
+		Language:         fallbackText(product.Language, feedLanguage(p.feed)),
+		Timezone:         feedTimezone(p.feed),
+		OutputPath:       outputPath,
+		TargetSampleRate: p.cfg.Root.Playout.SampleRate,
+		TargetChannels:   p.cfg.Root.Playout.Channels,
 	})
 	if err != nil {
 		if cached, ok := p.cachedProductItem(pkgID, product, source, targetRaw, timelineEnd, now, p.cacheFallbackMaxAge(source)); ok {
@@ -714,6 +716,9 @@ func (p *feedPlanner) latestCachedProductAudio(pkgID string, language string, ma
 		}
 		info, err := wavInfo(bestPath)
 		if err != nil {
+			continue
+		}
+		if info.SampleRate != p.cfg.Root.Playout.SampleRate || info.Channels != p.cfg.Root.Playout.Channels {
 			continue
 		}
 		return bestPath, info, true
@@ -859,7 +864,12 @@ func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product ren
 	if channels <= 0 {
 		channels = 1
 	}
-	combined := []byte{}
+	stream, err := newPCM16WAVStream(outputPath, sampleRate, channels)
+	if err != nil {
+		return playlistItem{}, true, err
+	}
+	defer stream.Abort()
+	hasAudio := false
 	for index, segment := range product.Segments {
 		if audioPath := strings.TrimSpace(segment.AudioPath); audioPath != "" {
 			scratch := filepath.Join(outputDir, fmt.Sprintf("%s-audio-%02d.wav", queueID, index))
@@ -867,7 +877,10 @@ func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product ren
 			if err != nil {
 				return playlistItem{}, true, err
 			}
-			combined = append(combined, pcm...)
+			if err := stream.Append(pcm); err != nil {
+				return playlistItem{}, true, err
+			}
+			hasAudio = true
 		}
 		if text := strings.TrimSpace(segment.Text); text != "" {
 			scratch := filepath.Join(outputDir, fmt.Sprintf("%s-text-%02d.wav", queueID, index))
@@ -875,13 +888,16 @@ func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product ren
 			if err != nil {
 				return playlistItem{}, true, err
 			}
-			combined = append(combined, pcm...)
+			if err := stream.Append(pcm); err != nil {
+				return playlistItem{}, true, err
+			}
+			hasAudio = true
 		}
 	}
-	if len(combined) == 0 {
+	if !hasAudio {
 		return playlistItem{}, true, fmt.Errorf("product %s rendered no playable segments", pkgID)
 	}
-	if err := writePCM16WAV(outputPath, combined, sampleRate, channels); err != nil {
+	if err := stream.Commit(); err != nil {
 		return playlistItem{}, true, err
 	}
 	info, err := wavInfo(outputPath)
@@ -921,12 +937,14 @@ func (p *feedPlanner) synthesizeSegmentPCM(ctx context.Context, queueID string, 
 	synthCtx, cancel := context.WithTimeout(ctx, p.synthesisTimeoutForBuild(product.PackageID, source, product.Language))
 	defer cancel()
 	wavPath, err := p.bridge.Synthesize(synthCtx, synthJob{
-		ID:         fmt.Sprintf("%s-seg-%02d", queueID, index),
-		Text:       text,
-		ReaderID:   product.ReaderID,
-		Language:   fallbackText(product.Language, feedLanguage(p.feed)),
-		Timezone:   feedTimezone(p.feed),
-		OutputPath: outputPath,
+		ID:               fmt.Sprintf("%s-seg-%02d", queueID, index),
+		Text:             text,
+		ReaderID:         product.ReaderID,
+		Language:         fallbackText(product.Language, feedLanguage(p.feed)),
+		Timezone:         feedTimezone(p.feed),
+		OutputPath:       outputPath,
+		TargetSampleRate: sampleRate,
+		TargetChannels:   channels,
 	})
 	if err != nil {
 		return nil, err
@@ -2002,12 +2020,14 @@ func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, o
 	synthCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	wavPath, err := p.bridge.Synthesize(synthCtx, synthJob{
-		ID:         queueID,
-		Text:       alertText,
-		ReaderID:   readerID,
-		Language:   language,
-		Timezone:   feedTimezone(p.feed),
-		OutputPath: wavPath,
+		ID:               queueID,
+		Text:             alertText,
+		ReaderID:         readerID,
+		Language:         language,
+		Timezone:         feedTimezone(p.feed),
+		OutputPath:       wavPath,
+		TargetSampleRate: sampleRate,
+		TargetChannels:   channels,
 	})
 	if err != nil {
 		return err
@@ -2080,11 +2100,13 @@ func (p *feedPlanner) buildTextItem(ctx context.Context, title string, text stri
 	queueID := queueID("operator_text")
 	outputPath := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID), queueID+".wav")
 	wavPath, err := p.bridge.Synthesize(ctx, synthJob{
-		ID:         queueID,
-		Text:       text,
-		Language:   feedLanguage(p.feed),
-		Timezone:   feedTimezone(p.feed),
-		OutputPath: outputPath,
+		ID:               queueID,
+		Text:             text,
+		Language:         feedLanguage(p.feed),
+		Timezone:         feedTimezone(p.feed),
+		OutputPath:       outputPath,
+		TargetSampleRate: p.cfg.Root.Playout.SampleRate,
+		TargetChannels:   p.cfg.Root.Playout.Channels,
 	})
 	if err != nil {
 		return playlistItem{}, err

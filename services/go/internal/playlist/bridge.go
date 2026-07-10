@@ -52,12 +52,14 @@ type renderedSegment struct {
 }
 
 type synthJob struct {
-	ID         string
-	Text       string
-	ReaderID   string
-	Language   string
-	Timezone   string
-	OutputPath string
+	ID               string
+	Text             string
+	ReaderID         string
+	Language         string
+	Timezone         string
+	OutputPath       string
+	TargetSampleRate int
+	TargetChannels   int
 }
 
 func connectBridge(ctx context.Context, addr string) (*bridgeClient, error) {
@@ -154,13 +156,15 @@ func (c *bridgeClient) Synthesize(ctx context.Context, job synthJob) (string, er
 		"source":  serviceID,
 		"subject": job.ID,
 		"data": map[string]any{
-			"job_id":      job.ID,
-			"text":        job.Text,
-			"reader_id":   job.ReaderID,
-			"language":    job.Language,
-			"timezone":    job.Timezone,
-			"output_path": job.OutputPath,
-			"priority":    "high",
+			"job_id":             job.ID,
+			"text":               job.Text,
+			"reader_id":          job.ReaderID,
+			"language":           job.Language,
+			"timezone":           job.Timezone,
+			"output_path":        job.OutputPath,
+			"target_sample_rate": job.TargetSampleRate,
+			"target_channels":    job.TargetChannels,
+			"priority":           "high",
 		},
 	}); err != nil {
 		return "", err

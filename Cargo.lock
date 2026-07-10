@@ -2057,6 +2057,7 @@ dependencies = [
  "dunce",
  "haze-media",
  "hound",
+ "memmap2",
  "quick-xml",
  "serde",
  "serde_json",
