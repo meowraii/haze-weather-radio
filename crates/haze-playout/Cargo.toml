@@ -34,6 +34,7 @@ windows-sys = { version = "0.61", features = ["Win32_Media"] }
 
 [features]
 default = []
+ffmpeg-runtime = ["haze-media/ffmpeg-runtime"]
 ffmpeg-rsmpeg = ["haze-media/ffmpeg-rsmpeg"]
 
 [dev-dependencies]

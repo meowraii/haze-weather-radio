@@ -72,6 +72,7 @@ fn init_tracing() {
     tracing::info!(
         backend = media.name,
         available = media.available,
+        fallback = media.fallback,
         version = media.version.as_deref().unwrap_or("n/a"),
         "media backend ready"
     );

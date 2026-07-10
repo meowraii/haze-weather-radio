@@ -1,0 +1,21 @@
+[Unit]
+Description=Haze Weather Radio
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=rai
+Group=rai
+WorkingDirectory=/srv/haze-weather-radio
+EnvironmentFile=-/srv/haze-weather-radio/runtime/.env
+Environment=RUST_BACKTRACE=1
+ExecStart=/srv/haze-weather-radio/haze --config /srv/haze-weather-radio/config.yaml --workdir /srv/haze-weather-radio/runtime
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+LimitNOFILE=65536
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

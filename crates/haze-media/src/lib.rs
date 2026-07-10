@@ -5,6 +5,9 @@
 
 mod pcm;
 
+#[cfg(feature = "ffmpeg-runtime")]
+mod ffmpeg_runtime;
+
 pub use pcm::{
     decode_wav, normalize_pcm, pcm16_samples, push_i16, read_i16, remix_pcm16, resample_pcm16,
     silence_chunk, AudioFormat, Pcm,
@@ -13,11 +16,7 @@ pub use pcm::{
 /// Reports which media backend is compiled into this build.
 #[must_use]
 pub fn backend_status() -> BackendStatus {
-    BackendStatus {
-        name: backend::name(),
-        available: backend::available(),
-        version: backend::version(),
-    }
+    backend::status()
 }
 
 /// Runtime information for the compiled media backend.
@@ -26,41 +25,31 @@ pub struct BackendStatus {
     pub name: &'static str,
     pub available: bool,
     pub version: Option<String>,
+    /// True when Haze is using its built-in PCM implementation for all or part
+    /// of the media path because an optional native component could not load.
+    pub fallback: bool,
 }
 
-#[cfg(feature = "ffmpeg-rsmpeg")]
+#[cfg(feature = "ffmpeg-runtime")]
 mod backend {
-    pub(crate) fn name() -> &'static str {
-        "rsmpeg/libav"
-    }
+    use super::BackendStatus;
 
-    pub(crate) fn available() -> bool {
-        true
-    }
-
-    pub(crate) fn version() -> Option<String> {
-        let ffmpeg = rsmpeg::avutil::version_info().to_string_lossy();
-        Some(format!(
-            "ffmpeg {ffmpeg}, avcodec {}, avformat {}, avutil {}",
-            rsmpeg::avcodec::version(),
-            rsmpeg::avformat::version(),
-            rsmpeg::avutil::version()
-        ))
+    pub(crate) fn status() -> BackendStatus {
+        super::ffmpeg_runtime::status()
     }
 }
 
-#[cfg(not(feature = "ffmpeg-rsmpeg"))]
+#[cfg(not(feature = "ffmpeg-runtime"))]
 mod backend {
-    pub(crate) fn name() -> &'static str {
-        "builtin-pcm"
-    }
+    use super::BackendStatus;
 
-    pub(crate) fn available() -> bool {
-        true
-    }
-
-    pub(crate) fn version() -> Option<String> {
-        None
+    pub(crate) fn status() -> BackendStatus {
+        BackendStatus {
+            name: "builtin-pcm",
+            available: true,
+            version: None,
+            fallback: false,
+        }
     }
 }
 

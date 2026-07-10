@@ -149,7 +149,7 @@ pub fn remix_pcm16(data: &[u8], in_channels: u16, out_channels: u16) -> Vec<u8> 
 
 /// Resamples interleaved PCM16 using deterministic linear interpolation.
 ///
-/// This is the built-in fallback. The rsmpeg backend will replace this for
+/// This is the built-in fallback. Native codec backends can replace this for
 /// production codec paths as that migration lands.
 #[must_use]
 pub fn resample_pcm16(data: &[u8], in_rate: u32, out_rate: u32, channels: u16) -> Vec<u8> {

@@ -2,8 +2,8 @@ param(
     [ValidateSet("debug", "release")]
     [string] $Profile = "release",
     [string] $OutputDir = "",
-    [ValidateSet("builtin", "rsmpeg")]
-    [string] $MediaBackend = "rsmpeg",
+    [ValidateSet("auto", "builtin", "ffmpeg", "rsmpeg")]
+    [string] $MediaBackend = "auto",
     [switch] $IncludeEnv,
     [switch] $SkipGoServices,
     [switch] $SkipCargoBuild
@@ -14,6 +14,10 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Resolve-Path (Join-Path $ScriptDir "..")
+
+if ($MediaBackend -eq "rsmpeg") {
+    Write-Warning "The rsmpeg backend name is deprecated. Using the version-independent FFmpeg runtime loader."
+}
 
 function Get-PortableOSName {
     if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
@@ -143,91 +147,6 @@ function Initialize-Clang64BuildEnvironment {
     $env:PKG_CONFIG = Join-Path $Clang64Bin "pkg-config.exe"
     $env:PKG_CONFIG_PATH = "$(Join-Path $Clang64Lib "pkgconfig");$(Join-Path $Clang64Root "share\pkgconfig")"
     $env:PKG_CONFIG_ALLOW_CROSS = "1"
-}
-
-function New-FFmpegIncludeOverlay {
-    param(
-        [Parameter(Mandatory = $true)][string] $SourceInclude,
-        [Parameter(Mandatory = $true)][string] $Name
-    )
-
-    if (-not (Test-Path -LiteralPath $SourceInclude -PathType Container)) {
-        throw "FFmpeg include directory not found: $SourceInclude"
-    }
-
-    $OverlayDir = Join-Path $Root "target/ffmpeg-include-overlay/$Name"
-    if (Test-Path -LiteralPath $OverlayDir) {
-        Remove-Item -LiteralPath $OverlayDir -Recurse -Force
-    }
-    New-Item -ItemType Directory -Force -Path $OverlayDir | Out-Null
-    Copy-Item -Path (Join-Path $SourceInclude "*") -Destination $OverlayDir -Recurse -Force
-
-    $AvcodecOverlay = Join-Path $OverlayDir "libavcodec"
-    New-Item -ItemType Directory -Force -Path $AvcodecOverlay | Out-Null
-    $Avfft = Join-Path $AvcodecOverlay "avfft.h"
-    if (-not (Test-Path -LiteralPath $Avfft -PathType Leaf)) {
-        @"
-#ifndef HAZE_COMPAT_LIBAVCODEC_AVFFT_H
-#define HAZE_COMPAT_LIBAVCODEC_AVFFT_H
-#include <libavcodec/avcodec.h>
-#endif
-"@ | Set-Content -LiteralPath $Avfft -Encoding ASCII
-    }
-
-    return $OverlayDir
-}
-
-function Get-RustyFfmpegBindingPath {
-    $CargoHome = if ([string]::IsNullOrWhiteSpace($env:CARGO_HOME)) {
-        Join-Path $env:USERPROFILE ".cargo"
-    } else {
-        $env:CARGO_HOME
-    }
-    $RegistrySrc = Join-Path $CargoHome "registry\src"
-    if (-not (Test-Path -LiteralPath $RegistrySrc -PathType Container)) {
-        return ""
-    }
-
-    $Candidate = Get-ChildItem -LiteralPath $RegistrySrc -Recurse -Filter "binding.rs" -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match "rusty_ffmpeg-0\.16\.7\+ffmpeg\.8[\\/]+src[\\/]+binding\.rs$" } |
-        Select-Object -First 1
-    if ($null -eq $Candidate) {
-        return ""
-    }
-    return $Candidate.FullName
-}
-
-function Initialize-Clang64RsmpegBuildEnvironment {
-    Initialize-Clang64BuildEnvironment
-
-    $MsysRoot = Get-MsysRoot
-    $Clang64Root = Join-Path $MsysRoot "clang64"
-    $Clang64Bin = Join-Path $Clang64Root "bin"
-    $Clang64Include = Join-Path $Clang64Root "include"
-    $Clang64Lib = Join-Path $Clang64Root "lib"
-    foreach ($RequiredPath in @(
-        (Join-Path $Clang64Include "libavcodec\avcodec.h"),
-        (Join-Path $Clang64Lib "libavcodec.dll.a"),
-        (Join-Path $Clang64Bin "avcodec-62.dll"),
-        (Join-Path $Clang64Bin "avformat-62.dll"),
-        (Join-Path $Clang64Bin "avutil-60.dll")
-    )) {
-        if (-not (Test-Path -LiteralPath $RequiredPath)) {
-            throw "required MSYS2 CLANG64 FFmpeg file not found: $RequiredPath"
-        }
-    }
-
-    $OverlayDir = New-FFmpegIncludeOverlay -SourceInclude $Clang64Include -Name "clang64"
-    $BindingPath = Get-RustyFfmpegBindingPath
-    if ([string]::IsNullOrWhiteSpace($BindingPath)) {
-        throw "rusty_ffmpeg FFmpeg 8 binding.rs was not found in the Cargo registry. Run `cargo fetch` and retry."
-    }
-
-    $env:FFMPEG_INCLUDE_DIR = $OverlayDir
-    $env:FFMPEG_LIBS_DIR = $Clang64Lib
-    $env:FFMPEG_DLL_PATH = $Clang64Bin
-    $env:FFMPEG_LINK_MODE = "dynamic"
-    $env:FFMPEG_BINDING_PATH = $BindingPath
 }
 
 function Assert-Clang64GStreamerBuildEnvironment {
@@ -479,11 +398,7 @@ try {
     if ($RunningOnWindows) {
         $CargoTargetArgs += "--target"
         $CargoTargetArgs += "x86_64-pc-windows-gnullvm"
-        if ($MediaBackend -eq "rsmpeg") {
-            Initialize-Clang64RsmpegBuildEnvironment
-        } else {
-            Initialize-Clang64BuildEnvironment
-        }
+        Initialize-Clang64BuildEnvironment
         Assert-Clang64GStreamerBuildEnvironment
     }
 
@@ -492,11 +407,11 @@ try {
         if ($Profile -eq "release") {
             $CargoProfileArgs += "--release"
         }
-        if ($MediaBackend -eq "rsmpeg") {
+        if ($MediaBackend -ne "builtin") {
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cap
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-easnet
-            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-playout --features ffmpeg-rsmpeg
+            cargo build @CargoProfileArgs @CargoTargetArgs -p haze-playout --features ffmpeg-runtime
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-media --features gstreamer-backend
             cargo build @CargoProfileArgs @CargoTargetArgs -p haze-cgen --features "gpu-wgpu"
         } else {
@@ -560,20 +475,13 @@ try {
         "haze-playout-rs.exe",
         "haze-media.exe",
         "haze-cgen.exe",
-        "avcodec-62.dll",
-        "avdevice-62.dll",
-        "avfilter-11.dll",
-        "avformat-62.dll",
-        "avutil-60.dll",
         "libopus-0.dll",
         "libopusfile-0.dll",
         "libogg-0.dll",
         "libunwind.dll",
         "opus.dll",
         "sherpa-onnx-c-api.dll",
-        "sherpa-onnx-cxx-api.dll",
-        "swresample-6.dll",
-        "swscale-9.dll"
+        "sherpa-onnx-cxx-api.dll"
     )
     $LegacyBundleBinFiles = @(
         "haze-cap-ingest-rs.exe"

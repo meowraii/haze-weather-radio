@@ -3,7 +3,7 @@ set -euo pipefail
 
 profile="release"
 output_dir=""
-media_backend="rsmpeg"
+media_backend="auto"
 include_env=0
 skip_go_services=0
 skip_cargo_build=0
@@ -15,7 +15,7 @@ Usage: scripts/build-haze.sh [options]
 Options:
   --profile debug|release   Cargo profile to build (default: release)
   --output-dir DIR          Bundle output directory under dist/ (default: dist/Haze_UAP-<OS>-<ARCH>-Portable)
-  --media-backend NAME      Media backend: builtin|rsmpeg (default: rsmpeg)
+  --media-backend NAME      Media backend: auto|builtin|ffmpeg (default: auto)
   --include-env             Copy .env into the bundle
   --skip-go-services        Do not build or copy managed Go service binaries
   --skip-cargo-build        Reuse an existing target artifact
@@ -65,9 +65,12 @@ if [[ "$profile" != "debug" && "$profile" != "release" ]]; then
   echo "profile must be debug or release" >&2
   exit 2
 fi
-if [[ "$media_backend" != "builtin" && "$media_backend" != "rsmpeg" ]]; then
-  echo "media backend must be builtin or rsmpeg" >&2
+if [[ "$media_backend" != "auto" && "$media_backend" != "builtin" && "$media_backend" != "ffmpeg" && "$media_backend" != "rsmpeg" ]]; then
+  echo "media backend must be auto, builtin, or ffmpeg" >&2
   exit 2
+fi
+if [[ "$media_backend" == "rsmpeg" ]]; then
+  echo "Warning: rsmpeg is deprecated; using the version-independent FFmpeg runtime loader." >&2
 fi
 
 require_gstreamer_build_environment() {
@@ -276,11 +279,11 @@ if [[ "$skip_cargo_build" -eq 0 ]]; then
   if [[ "$profile" == "release" ]]; then
     cargo_profile_args=(--release)
   fi
-  if [[ "$media_backend" == "rsmpeg" ]]; then
+  if [[ "$media_backend" != "builtin" ]]; then
     cargo build "${cargo_profile_args[@]}" -p haze
     cargo build "${cargo_profile_args[@]}" -p haze-cap
     cargo build "${cargo_profile_args[@]}" -p haze-easnet
-    cargo build "${cargo_profile_args[@]}" -p haze-playout --features ffmpeg-rsmpeg
+    cargo build "${cargo_profile_args[@]}" -p haze-playout --features ffmpeg-runtime
     cargo build "${cargo_profile_args[@]}" -p haze-media --features gstreamer-backend
     cargo build "${cargo_profile_args[@]}" -p haze-cgen --features "gpu-wgpu"
   else

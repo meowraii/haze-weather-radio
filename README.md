@@ -35,9 +35,7 @@ The Linux bundle is built from source with Rust, Go 1.25, GStreamer, FFmpeg, and
 ```bash
 sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   ca-certificates curl git jq build-essential clang cmake pkg-config python3 \
-  ffmpeg libasound2-dev libopus-dev libssl-dev libudev-dev \
-  libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
-  libswresample-dev libswscale-dev \
+  ffmpeg libasound2-dev libopus-dev libopusfile-dev libssl-dev libudev-dev \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-tools gstreamer1.0-libav gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
@@ -60,33 +58,40 @@ Clone and build the portable Linux bundle:
 ```bash
 git clone https://github.com/meowraii/haze-weather-radio.git ~/haze-weather-radio
 cd ~/haze-weather-radio
-bash scripts/build-haze.sh --profile release
+bash scripts/build-haze.sh --profile release --media-backend auto
+```
+
+The `auto` backend does not compile against FFmpeg headers or a version-specific ABI. It discovers FFmpeg shared libraries at runtime, so Debian 13's FFmpeg 7 works with the same Haze binary as FFmpeg 6, FFmpeg 8, and later releases. If a library or stable version symbol is unavailable, Haze keeps the built-in PCM path active.
+
+For a CWXR deployment, replace the bundled feed and output configuration before building:
+
+```bash
+cp bundle/managed/configs/cwxr-feeds.xml bundle/managed/configs/feeds.xml
+cp bundle/managed/configs/cwxr-output.xml bundle/managed/configs/output.xml
+bash scripts/build-haze.sh --profile release --media-backend auto
 ```
 
 # Media Backend
-Haze has a shared `haze-media` crate for PCM shape, WAV decode, normalization, and the FFmpeg/libav backend boundary. Portable builds use the built-in PCM backend by default so they can still compile without FFmpeg development libraries:
+Haze has a shared `haze-media` crate for PCM shape, WAV decode, normalization, and the FFmpeg/libav backend boundary. The default `auto` build includes a version-independent runtime loader and always retains the built-in PCM fallback:
+
+```powershell
+scripts/build-haze.ps1 -MediaBackend auto
+```
+
+The loader probes `avutil`, `avcodec`, `avformat`, `avfilter`, `swresample`, and `swscale` independently. Missing optional libraries do not break the build. Set `HAZE_FFMPEG_LIB_DIR` when the FFmpeg shared libraries are outside the executable directory or normal system search paths:
+
+```powershell
+$env:HAZE_FFMPEG_LIB_DIR = "C:\path\to\ffmpeg\bin"
+scripts/build-haze.ps1 -MediaBackend ffmpeg
+```
+
+Use `builtin` to omit native FFmpeg discovery entirely:
 
 ```powershell
 scripts/build-haze.ps1 -MediaBackend builtin
 ```
 
-The lower-level FFmpeg path is exposed through `rsmpeg` and can be selected once FFmpeg headers and libraries are available:
-
-```powershell
-$env:FFMPEG_LIBS_DIR = "C:\path\to\ffmpeg\lib"
-$env:FFMPEG_INCLUDE_DIR = "C:\path\to\ffmpeg\include"
-scripts/build-haze.ps1 -MediaBackend rsmpeg
-```
-
-For the local Windows MSVC build, vcpkg is the preferred FFmpeg provider:
-
-```powershell
-$env:VCPKG_ROOT = "C:\vcpkg"
-$env:VCPKGRS_DYNAMIC = "1"
-scripts/build-haze.ps1 -MediaBackend rsmpeg-vcpkg
-```
-
-This is intended to replace external `ffmpeg` subprocess encoder paths with one unified in-process media layer over time.
+The old `rsmpeg` backend name remains accepted as a deprecated alias for `ffmpeg`, so existing build commands continue to work. Future in-process codec work should stay behind this runtime capability boundary and use the built-in path when an optional FFmpeg feature is absent.
 
 # Managed Services
 First-pass managed services live under `services/go`, with native Rust services under `crates/`:

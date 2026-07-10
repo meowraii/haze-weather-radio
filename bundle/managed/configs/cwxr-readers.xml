@@ -1,23 +1,23 @@
 <Readers>
-    <reader id="00" provider="sapi5">
+    <reader id="00" provider="speakyapi">
         <gender>male</gender>
         <language>en-US</language>
-        <voice_id>VE_American_English_Tom_22khz</voice_id>
+        <voice_id>Vocalizer Tom - Claro</voice_id>
     </reader>
-    <reader id="01" provider="sapi5">
+    <reader id="01" provider="speakyapi">
         <gender>female</gender>
         <language>en-US</language>
-        <voice_id>VE_American_English_Ava_22khz</voice_id>
+        <voice_id>VE_American_English_Ava_22kHz</voice_id>
     </reader>
-    <reader id="02" provider="sapi5">
+    <reader id="02" provider="speakyapi">
         <gender>male</gender>
         <language>fr-CA</language>
-        <voice_id>VE_Canadian_French_Nicolas_22khz</voice_id>
+        <voice_id>VE_Canadian_French_Nicolas_22kHz</voice_id>
     </reader>
-    <reader id="03" provider="sapi5">
+    <reader id="03" provider="speakyapi">
         <gender>female</gender>
         <language>fr-CA</language>
-        <voice_id>VE_Canadian_French_Chantal_22khz</voice_id>
+        <voice_id>VE_Canadian_French_Chantal_22kHz</voice_id>
     </reader>
     <reader id="HAHAFUNNYTIKTOKVOICE" provider="kokoro">
         <gender>male</gender>

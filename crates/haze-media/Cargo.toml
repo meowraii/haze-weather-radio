@@ -12,7 +12,10 @@ path = "src/main.rs"
 
 [features]
 default = []
-ffmpeg-rsmpeg = ["dep:rsmpeg", "rsmpeg/link_system_ffmpeg"]
+ffmpeg-runtime = ["dep:libloading"]
+# Kept as a source-compatible alias for older build commands. The runtime
+# loader replaces the version-pinned rsmpeg status backend.
+ffmpeg-rsmpeg = ["ffmpeg-runtime"]
 gstreamer-backend = [
     "dep:gstreamer",
     "dep:gstreamer-app",
@@ -26,7 +29,7 @@ clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 quick-xml = { version = "0.38", features = ["serialize"] }
 hound = "3.5"
-rsmpeg = { version = "0.18.0", default-features = false, features = ["ffmpeg8"], optional = true }
+libloading = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
