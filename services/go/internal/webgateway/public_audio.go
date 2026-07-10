@@ -21,7 +21,7 @@ const (
 	httpWAVChannels         = 1
 	httpWAVBitsPerSample    = 16
 	httpWAVFrameSamples     = httpWAVSampleRate / 50
-	httpWAVMaxQueuedMS      = 2600
+	httpWAVMaxQueuedMS      = 240
 	httpWAVMaxQueuedSamples = httpWAVSampleRate * httpWAVMaxQueuedMS / 1000
 	httpAudioMaxFeedID      = 128
 	httpAudioMaxCodecID     = 64
@@ -100,7 +100,7 @@ func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	defer release()
-	if s.proxyMediaServiceAudio(writer, request, feedID, format.ID) {
+	if mediaServiceNativeCodec && s.proxyMediaServiceAudio(writer, request, feedID, format.ID) {
 		return
 	}
 	if mediaServiceConfigured && mediaServiceNativeCodec {
@@ -122,6 +122,7 @@ func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Reque
 	}
 
 	writeHTTPAudioHeaders(writer, format)
+	flushHTTPAudioResponse(writer)
 	var err error
 	if format.FFmpegFormat == "" {
 		err = s.media.StreamWAV(request.Context(), feedID, writer)
@@ -160,12 +161,12 @@ func (s *Server) proxyMediaServiceAudio(writer http.ResponseWriter, request *htt
 	}
 	response, err := http.DefaultClient.Do(proxyRequest)
 	if err != nil {
-		log.Printf("haze-media HTTP audio unavailable, using legacy path: %v", err)
+		log.Printf("haze-media HTTP audio unavailable: %v", err)
 		return false
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		log.Printf("haze-media HTTP audio returned %s, using legacy path", response.Status)
+		log.Printf("haze-media HTTP audio returned %s", response.Status)
 		return false
 	}
 	for key, values := range response.Header {
@@ -178,11 +179,18 @@ func (s *Server) proxyMediaServiceAudio(writer http.ResponseWriter, request *htt
 	}
 	writer.Header().Set("X-Haze-Media-Backend", "haze-media")
 	writer.WriteHeader(response.StatusCode)
+	flushHTTPAudioResponse(writer)
 	copyErr := copyRealtimeHTTPAudio(writer, response.Body)
 	if copyErr != nil && !errors.Is(copyErr, context.Canceled) {
 		log.Printf("haze-media HTTP audio proxy ended: %v", copyErr)
 	}
 	return true
+}
+
+func flushHTTPAudioResponse(writer http.ResponseWriter) {
+	if flusher, ok := writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func copyRealtimeHTTPAudio(writer http.ResponseWriter, reader io.Reader) error {

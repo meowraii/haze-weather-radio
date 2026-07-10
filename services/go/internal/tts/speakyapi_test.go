@@ -60,6 +60,29 @@ func TestSpeakyAPIProviderSynthesizePostsExpectedPayload(t *testing.T) {
 	}
 }
 
+func TestSpeakyAPIProviderSynthesizePreparesSAPIPronunciations(t *testing.T) {
+	const wav = "RIFF\x24\x00\x00\x00WAVEfmt "
+	var got map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(wav))
+	}))
+	defer server.Close()
+
+	provider := NewSpeakyAPIProvider(server.URL)
+	_, err := provider.Synthesize(context.Background(), Request{
+		Text: "Winds increase near windows and windspeed sensors.",
+	})
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	if got["text"] != "windz increase near windows and windspeed sensors." {
+		t.Fatalf("request text = %q", got["text"])
+	}
+}
+
 func TestSpeakyAPIProviderRejectsNonWAV(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("not wav"))

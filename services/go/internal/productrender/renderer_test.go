@@ -306,7 +306,8 @@ func TestMarineForecastProductRendersRealtimePayload(t *testing.T) {
     "regularForecast": {
       "issuedDatetimeLocal": "2026-07-07T10:30:00-04:00",
       "locations": [
-        {"name": "Lake Ontario East", "weatherCondition": {"periodOfCoverage": {"en": "Today Tonight and Wednesday."}, "wind": {"en": "Wind east 10 knots veering to southeast 10 this evening."}}}
+        {"name": "Lake Ontario East", "weatherCondition": {"periodOfCoverage": {"en": "Today Tonight and Wednesday."}, "wind": {"en": "Wind east 10 knots veering to southeast 10 this evening."}}},
+        {"weatherCondition": {"periodOfCoverage": {"en": "Thursday."}, "wind": {"en": "Wind light."}}}
       ]
     },
     "waveForecast": {
@@ -321,7 +322,9 @@ func TestMarineForecastProductRendersRealtimePayload(t *testing.T) {
         ]}}
       ]
     },
-    "warnings": {"locations": []}
+    "warnings": {"locations": [
+      {"name": {"en": "Eastern Lake Ontario", "fr": "Est du lac Ontario"}, "weatherCondition": {"textSummary": {"en": "Strong wind warning in effect."}}}
+    ]}
   }
 }`)
 
@@ -331,7 +334,9 @@ func TestMarineForecastProductRendersRealtimePayload(t *testing.T) {
 	}
 	for _, wanted := range []string{
 		"The Environment Canada marine forecast for Lake Ontario, issued at 8 30 AM Central Standard Time.",
+		"Marine warning for Eastern Lake Ontario. Strong wind warning in effect.",
 		"For Lake Ontario East. Today Tonight and Wednesday. Wind east 10 knots veering to southeast 10 this evening.",
+		"For Lake Ontario. Thursday. Wind light.",
 		"Waves for Lake Ontario East. Today Tonight and Wednesday. Waves 0.5 metres or less.",
 		"The extended marine outlook.",
 		"For Thursday. Wind light becoming southwest 15 knots in the afternoon.",

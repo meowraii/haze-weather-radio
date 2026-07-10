@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 
@@ -21,17 +20,6 @@ import (
 const sapiCreateForWrite = 3
 const sapi5ShimDisabledEnv = "HAZE_SAPI5_SHIM_DISABLED"
 const sapi5ShimPathEnv = "HAZE_SAPI5_SHIM_PATH"
-
-var sapi5PronunciationReplacements = []struct {
-	pattern     *regexp.Regexp
-	replacement string
-}{
-	{regexp.MustCompile(`(?i)\bwinds\b`), "windz"},
-	{regexp.MustCompile(`(?i)\bkilometers\b`), "killometers"},
-	{regexp.MustCompile(`(?i)\bkilometer\b`), "killometer"},
-	{regexp.MustCompile(`(?i)\bkilometres\b`), "killometers"},
-	{regexp.MustCompile(`(?i)\bkilometre\b`), "killometer"},
-}
 
 // SAPI5Provider uses installed Windows SAPI5 voices.
 type SAPI5Provider struct{}
@@ -57,7 +45,7 @@ func (p *SAPI5Provider) ListVoices(ctx context.Context) ([]Voice, error) {
 }
 
 func (p *SAPI5Provider) Synthesize(ctx context.Context, req Request) (Audio, error) {
-	req.Text = prepareSAPI5Text(req.Text)
+	req.Text = prepareSAPIText(req.Text)
 	audio, nativeErr := p.synthesizeNative(ctx, req)
 	if nativeErr == nil || sapi5ShimDisabled() {
 		return audio, nativeErr
@@ -69,13 +57,6 @@ func (p *SAPI5Provider) Synthesize(ctx context.Context, req Request) (Audio, err
 		return shimAudio, nil
 	}
 	return audio, nativeErr
-}
-
-func prepareSAPI5Text(text string) string {
-	for _, entry := range sapi5PronunciationReplacements {
-		text = entry.pattern.ReplaceAllString(text, entry.replacement)
-	}
-	return text
 }
 
 func (p *SAPI5Provider) listVoicesNative(ctx context.Context) ([]Voice, error) {

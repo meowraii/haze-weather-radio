@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -8,16 +7,18 @@ use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rtrb::{Producer, RingBuffer};
 
 use crate::config::{resolve_path, FeedConfig, LoadedConfig, OutputNodeConfig};
 use haze_media::{pcm16_samples, read_i16};
 
 const ENCODER_WORKER_QUEUE_CAPACITY: usize = 16;
+const AUDIO_DEVICE_MAX_BUFFER_MS: usize = 120;
+const AUDIO_DEVICE_MAX_PENDING_MS: usize = 60;
 
 pub(crate) trait Sink: Send {
     fn name(&self) -> &str;
@@ -539,9 +540,10 @@ impl Sink for WavFileSink {
 
 struct AudioDeviceSink {
     name: String,
-    buffer: Arc<Mutex<VecDeque<u8>>>,
+    producer: Producer<i16>,
     _stream: cpal::Stream,
-    max_buffer: usize,
+    samples_per_second: usize,
+    dropped_samples: u64,
 }
 
 impl AudioDeviceSink {
@@ -568,20 +570,26 @@ impl AudioDeviceSink {
             sample_rate: cpal::SampleRate(sample_rate),
             buffer_size: cpal::BufferSize::Default,
         };
-        let buffer = Arc::new(Mutex::new(VecDeque::new()));
-        let callback_buffer = Arc::clone(&buffer);
+        let samples_per_second = device_samples_per_second(sample_rate, channels);
+        let (producer, mut consumer) =
+            RingBuffer::<i16>::new(device_queue_capacity_samples(sample_rate, channels));
+        let max_pending_samples =
+            samples_for_duration(samples_per_second, AUDIO_DEVICE_MAX_PENDING_MS);
         let stream = device.build_output_stream(
             &config,
             move |output: &mut [i16], _| {
-                if let Ok(mut pending) = callback_buffer.lock() {
-                    for sample in output {
-                        let low = pending.pop_front().unwrap_or(0);
-                        let high = pending.pop_front().unwrap_or(0);
-                        *sample = i16::from_le_bytes([low, high]);
+                let stale_samples = device_stale_samples_to_drop(
+                    consumer.slots(),
+                    output.len(),
+                    max_pending_samples,
+                );
+                for _ in 0..stale_samples {
+                    if consumer.pop().is_err() {
+                        break;
                     }
-                } else {
-                    output.fill(0);
                 }
+                let (_, remaining) = consumer.pop_partial_slice(output);
+                remaining.fill(0);
             },
             move |err| tracing::warn!("audio device sink error: {err}"),
             None,
@@ -590,9 +598,10 @@ impl AudioDeviceSink {
         tracing::info!("playout audio device sink started");
         Ok(Self {
             name,
-            buffer,
+            producer,
             _stream: stream,
-            max_buffer: sample_rate as usize * channels as usize * 2 / 2,
+            samples_per_second,
+            dropped_samples: 0,
         })
     }
 }
@@ -603,20 +612,60 @@ impl Sink for AudioDeviceSink {
     }
 
     fn write(&mut self, pcm: &[u8]) -> Result<()> {
-        let mut buffer = self
-            .buffer
-            .lock()
-            .map_err(|_| anyhow::anyhow!("audio device buffer is poisoned"))?;
-        buffer.extend(pcm);
-        let overflow = buffer.len().saturating_sub(self.max_buffer);
-        if overflow > 0 {
-            let drop = overflow + overflow % 2;
-            for _ in 0..drop.min(buffer.len()) {
-                let _ = buffer.pop_front();
+        let available = self.producer.slots();
+        let sample_count = pcm.len() / 2;
+        let pushed = available.min(sample_count);
+        for bytes in pcm.chunks_exact(2).take(pushed) {
+            if self.producer.push(read_i16(bytes)).is_err() {
+                break;
+            }
+        }
+        let dropped = sample_count.saturating_sub(pushed);
+        if dropped > 0 {
+            let previous = self.dropped_samples;
+            self.dropped_samples = self.dropped_samples.saturating_add(dropped as u64);
+            if previous == 0
+                || previous / (self.samples_per_second as u64)
+                    < self.dropped_samples / (self.samples_per_second as u64)
+            {
+                tracing::warn!(
+                    sink = self.name,
+                    dropped_ms = dropped.saturating_mul(1000) / self.samples_per_second,
+                    total_dropped_ms =
+                        self.dropped_samples.saturating_mul(1000) / self.samples_per_second as u64,
+                    "audio device queue is full; dropping stale playout audio"
+                );
             }
         }
         Ok(())
     }
+}
+
+fn device_samples_per_second(sample_rate: u32, channels: u16) -> usize {
+    usize::try_from(sample_rate)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(usize::from(channels.max(1)))
+        .max(1)
+}
+
+fn samples_for_duration(samples_per_second: usize, duration_ms: usize) -> usize {
+    samples_per_second.saturating_mul(duration_ms) / 1000
+}
+
+fn device_queue_capacity_samples(sample_rate: u32, channels: u16) -> usize {
+    samples_for_duration(
+        device_samples_per_second(sample_rate, channels),
+        AUDIO_DEVICE_MAX_BUFFER_MS,
+    )
+    .max(1)
+}
+
+fn device_stale_samples_to_drop(
+    pending_samples: usize,
+    output_samples: usize,
+    max_pending_samples: usize,
+) -> usize {
+    pending_samples.saturating_sub(max_pending_samples.saturating_add(output_samples))
 }
 
 fn socket_addr(node: &OutputNodeConfig, default_port: u16) -> Result<SocketAddr> {
@@ -822,6 +871,10 @@ fn randomish_ssrc() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::hint::black_box;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     #[test]
     fn mulaw_silence_is_ff() {
@@ -844,5 +897,82 @@ mod tests {
             ..OutputNodeConfig::default()
         };
         assert!(!is_raw_pcm(&node.format, &normalize_codec(&node.acodec)));
+    }
+
+    #[test]
+    fn audio_device_queue_is_bounded_to_120ms() {
+        assert_eq!(device_queue_capacity_samples(48_000, 1), 5_760);
+        assert_eq!(device_queue_capacity_samples(48_000, 2), 11_520);
+    }
+
+    #[test]
+    fn audio_device_callback_drops_stale_backlog_before_filling_output() {
+        assert_eq!(device_stale_samples_to_drop(3_840, 960, 2_880), 0);
+        assert_eq!(device_stale_samples_to_drop(7_680, 960, 2_880), 3_840);
+    }
+
+    #[test]
+    fn audio_device_callback_keeps_recent_samples_after_a_stall() {
+        let (mut producer, mut consumer) = RingBuffer::new(8);
+        for sample in 1..=6 {
+            producer.push(sample).expect("ring buffer space");
+        }
+
+        let stale = device_stale_samples_to_drop(consumer.slots(), 2, 2);
+        for _ in 0..stale {
+            consumer.pop().expect("stale sample");
+        }
+        let mut output = [0; 2];
+        let (_, remaining) = consumer.pop_partial_slice(&mut output);
+        remaining.fill(0);
+
+        assert_eq!(output, [3, 4]);
+        assert_eq!(consumer.slots(), 2);
+    }
+
+    #[test]
+    #[ignore = "microbenchmark, run with --ignored"]
+    fn bench_mutex_device_callback_queue() {
+        let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(96_000)));
+        let producer = Arc::clone(&buffer);
+        let chunk = vec![0x5a; 1_920];
+        let start = Instant::now();
+
+        for _ in 0..500 {
+            producer.lock().expect("producer lock").extend(&chunk);
+            let mut pending = buffer.lock().expect("callback lock");
+            for _ in 0..960 {
+                black_box(pending.pop_front().unwrap_or(0));
+                black_box(pending.pop_front().unwrap_or(0));
+            }
+        }
+
+        eprintln!(
+            "mutex device callback queue: {} us for 500 x 20 ms blocks",
+            start.elapsed().as_micros()
+        );
+    }
+
+    #[test]
+    #[ignore = "microbenchmark, run with --ignored"]
+    fn bench_spsc_device_callback_queue() {
+        let (mut producer, mut consumer) = RingBuffer::<i16>::new(96_000);
+        let chunk = vec![0x5a; 1_920];
+        let mut output = vec![0i16; 960];
+        let start = Instant::now();
+
+        for _ in 0..500 {
+            for bytes in chunk.chunks_exact(2).take(producer.slots()) {
+                producer.push(read_i16(bytes)).expect("ring buffer space");
+            }
+            let (_, remaining) = consumer.pop_partial_slice(&mut output);
+            remaining.fill(0);
+            black_box(&output);
+        }
+
+        eprintln!(
+            "SPSC device callback queue: {} us for 500 x 20 ms blocks",
+            start.elapsed().as_micros()
+        );
     }
 }

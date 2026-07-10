@@ -76,6 +76,7 @@ func (p *SpeakyAPIProvider) Synthesize(ctx context.Context, req Request) (Audio,
 	if strings.TrimSpace(req.Text) == "" {
 		return Audio{}, fmt.Errorf("empty synthesis text")
 	}
+	req.Text = prepareSAPIText(req.Text)
 	base, err := p.endpoint("/tts")
 	if err != nil {
 		return Audio{}, err

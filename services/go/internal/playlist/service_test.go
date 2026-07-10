@@ -393,9 +393,65 @@ func TestBuildSegmentedProductItemIncludesAudioOpener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := append(append([]byte{}, openerPCM...), ttsPCM...)
+	want := append(append(append([]byte{}, openerPCM...), silencePCM(48000, 1, 400*time.Millisecond)...), ttsPCM...)
 	if !bytes.Equal(pcm, want) {
 		t.Fatalf("combined PCM = %#v, want %#v", pcm, want)
+	}
+}
+
+func TestBuildSegmentedProductItemPacesTextOnlySegments(t *testing.T) {
+	dir := t.TempDir()
+	ttsPCM := []byte{9, 0, 8, 0, 7, 0, 6, 0}
+	clientConn, serverConn := net.Pipe()
+	bridge := &bridgeClient{
+		conn:            clientConn,
+		events:          make(chan map[string]any, 16),
+		pendingProducts: map[string]chan productResult{},
+		pendingSynth:    map[string]chan synthResult{},
+	}
+	go bridge.readLoop()
+	defer bridge.Close()
+	go serveSegmentSynthBridge(t, serverConn, ttsPCM)
+	planner := &feedPlanner{
+		cfg: loadedConfig{
+			BaseDir:   dir,
+			OutputDir: filepath.Join(dir, "runtime", "audio", "playlist"),
+			Root: rootConfig{
+				Playout: playoutConfig{SampleRate: 48000, Channels: 1},
+			},
+		},
+		bridge: bridge,
+		feed:   feedXML{ID: "cwxr-on01", Timezone: "America/Toronto"},
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+
+	item, ok, err := planner.buildSegmentedProductItem(context.Background(), renderedProduct{
+		PackageID: "current_conditions",
+		Title:     "Current Conditions",
+		ReaderID:  "00",
+		Language:  "en-CA",
+		Segments: []renderedSegment{
+			{Kind: "opener", Label: "opener", Text: "The current weather conditions."},
+			{Kind: "package", Label: "temperature", Text: "The temperature was 20 degrees."},
+		},
+	}, "current_conditions", "routine", "", now, now, "text-segment-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("text-only segmented product was not recognized")
+	}
+	raw, err := os.ReadFile(item.AudioPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcm, _, err := wavPCM16(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append(append([]byte{}, ttsPCM...), silencePCM(48000, 1, 400*time.Millisecond)...), ttsPCM...)
+	if !bytes.Equal(pcm, want) {
+		t.Fatalf("combined text PCM length = %d, want %d", len(pcm), len(want))
 	}
 }
 

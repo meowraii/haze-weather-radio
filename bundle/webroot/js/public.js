@@ -63,8 +63,13 @@ const feedPlayers = new Map();
 const feedPreferences = new Map();
 const feedCodecFallbacks = new Map();
 const feedReconnectBackoffs = new Map();
+const httpReconnectTimers = new Map();
+const httpReconnectAttempts = new Map();
 const publicFeedRuntimeByID = new Map();
 let publicFeedRuntimeTimer = null;
+const HTTP_RECONNECT_BASE_MS = 500;
+const HTTP_RECONNECT_MAX_MS = 8000;
+const HTTP_STALL_RECONNECT_MS = 7000;
 window.hazeFeedPlayers = feedPlayers;
 
 function recordWebRTCEvent(feedId, event, details = {}) {
@@ -305,7 +310,6 @@ function publicRuntimeRemainingMs(runtime, now = Date.now()) {
 function formatPublicRuntimeRemaining(ms) {
     if (!Number.isFinite(ms)) return '';
     const seconds = Math.max(0, Math.ceil(ms / 1000));
-    if (seconds <= 0) return 'next soon';
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const remainder = seconds % 60;
@@ -325,34 +329,44 @@ function publicRuntimeRemainingText(runtime) {
 
 function listenerCountLabel(count) {
     const value = Math.max(0, Number(count) || 0);
-    return `${value} ${value === 1 ? 'listener' : 'listeners'}`;
+    return String(value);
 }
 
 function peakListenerLabel(count) {
     const value = Math.max(0, Number(count) || 0);
-    return `peak ${value}`;
+    return String(value);
 }
 
 function peakListenerTitle(listeners) {
+    const label = 'Peak concurrent listeners';
     const peakAt = listeners?.peak_at || listeners?.peakAt || '';
-    if (!peakAt) return 'No listener peak recorded yet';
+    if (!peakAt) return label;
     const date = new Date(peakAt);
-    if (Number.isNaN(date.getTime())) return `Peak at ${peakAt}`;
-    return `Peak at ${date.toLocaleString()}`;
+    if (Number.isNaN(date.getTime())) return `${label}\nRecorded ${peakAt}`;
+    return `${label}\nRecorded ${date.toLocaleString()}`;
 }
 
 function setPublicFeedListeners(feedId, listeners) {
     feedId = String(feedId || '');
     if (!feedId) return;
     const current = findFeedElement('feed-listener-current', feedId);
+    const currentMetric = findFeedElement('feed-listener-current-metric', feedId);
     const peak = findFeedElement('feed-listener-peak', feedId);
+    const peakMetric = findFeedElement('feed-listener-peak-metric', feedId);
     const payload = listeners && typeof listeners === 'object' ? listeners : {};
     if (current) {
         setTextIfChanged(current, listenerCountLabel(payload.current));
     }
+    if (currentMetric) {
+        currentMetric.title = 'Concurrent listeners';
+        currentMetric.setAttribute('aria-label', `Concurrent listeners: ${listenerCountLabel(payload.current)}`);
+    }
     if (peak) {
         setTextIfChanged(peak, peakListenerLabel(payload.peak));
-        peak.title = peakListenerTitle(payload);
+    }
+    if (peakMetric) {
+        peakMetric.title = peakListenerTitle(payload);
+        peakMetric.setAttribute('aria-label', `Peak concurrent listeners: ${peakListenerLabel(payload.peak)}`);
     }
 }
 
@@ -371,8 +385,10 @@ function updatePublicFeedRuntimeLine(feedId) {
     setTextIfChanged(titleElement, title);
     const remainingElement = findFeedElement('feed-remaining', feedId);
     if (remainingElement) {
-        const remaining = publicRuntimeRemainingText(runtime);
+        const remainingMs = publicRuntimeRemainingMs(runtime);
+        const remaining = remainingMs == null ? '' : formatPublicRuntimeRemaining(remainingMs);
         remainingElement.hidden = !remaining;
+        remainingElement.classList.toggle('is-expired', remainingMs != null && remainingMs <= 0);
         setTextIfChanged(remainingElement, remaining);
     }
 }
@@ -662,15 +678,21 @@ function cardMarkup(feed) {
                         <p class="public-feed-now" data-feed-now="${escapeHtml(feedId)}">
                             <span class="public-feed-now-title" data-feed-now-title="${escapeHtml(feedId)}">${escapeHtml(nowPlaying)}</span>
                             <span class="public-feed-remaining" data-feed-remaining="${escapeHtml(feedId)}" ${remaining ? '' : 'hidden'}>${escapeHtml(remaining)}</span>
-                            <span class="public-feed-listeners" data-feed-listeners="${escapeHtml(feedId)}">
-                                <span data-feed-listener-current="${escapeHtml(feedId)}">${escapeHtml(listenerCountLabel(listeners.current))}</span>
-                                <span class="public-feed-listener-peak" data-feed-listener-peak="${escapeHtml(feedId)}" title="${escapeHtml(peakListenerTitle(listeners))}">${escapeHtml(peakListenerLabel(listeners.peak))}</span>
-                            </span>
                         </p>
                     </div>
                 </div>
             </div>
             <div class="public-feed-controls">
+                <div class="public-feed-listeners" data-feed-listeners="${escapeHtml(feedId)}">
+                    <span class="public-feed-listener-metric" data-feed-listener-current-metric="${escapeHtml(feedId)}" title="Concurrent listeners" aria-label="Concurrent listeners: ${escapeHtml(listenerCountLabel(listeners.current))}">
+                        <i data-lucide="headphones" width="16" height="16"></i>
+                        <strong data-feed-listener-current="${escapeHtml(feedId)}">${escapeHtml(listenerCountLabel(listeners.current))}</strong>
+                    </span>
+                    <span class="public-feed-listener-metric public-feed-listener-peak" data-feed-listener-peak-metric="${escapeHtml(feedId)}" title="${escapeHtml(peakListenerTitle(listeners))}" aria-label="Peak concurrent listeners: ${escapeHtml(peakListenerLabel(listeners.peak))}">
+                        <i data-lucide="chart-no-axes-combined" width="16" height="16"></i>
+                        <strong data-feed-listener-peak="${escapeHtml(feedId)}">${escapeHtml(peakListenerLabel(listeners.peak))}</strong>
+                    </span>
+                </div>
                 <div class="public-feed-buttonrow public-feed-webrtc-row">
                     <button class="btn-action public-player-btn" type="button" data-feed-play="${escapeHtml(feedId)}" data-feed-playable="${canPlay ? '1' : '0'}" ${canPlay ? '' : 'disabled'} ${webRTCSelected ? '' : 'hidden'}>
                         <i data-lucide="play" width="14" height="14"></i>
@@ -840,11 +862,57 @@ function updateFeedHTTPAudio(feedId) {
 function pauseFeedHTTPAudio(feedId, { clear = false } = {}) {
     const audio = findFeedElement('feed-audio', feedId);
     if (!audio) return;
+    audio.dataset.hazeHttpWanted = '0';
+    clearHTTPAudioReconnect(feedId, true);
     audio.pause();
     if (clear) {
         audio.removeAttribute('src');
         audio.load();
     }
+}
+
+function clearHTTPAudioReconnect(feedId, resetAttempts = false) {
+    feedId = String(feedId || '');
+    const timer = httpReconnectTimers.get(feedId);
+    if (timer) {
+        window.clearTimeout(timer);
+        httpReconnectTimers.delete(feedId);
+    }
+    if (resetAttempts) {
+        httpReconnectAttempts.delete(feedId);
+    }
+}
+
+function scheduleHTTPAudioReconnect(feedId, audio, { stalled = false } = {}) {
+    feedId = String(feedId || '');
+    if (!feedId
+        || !audio
+        || audio.dataset.hazeHttpWanted !== '1'
+        || selectedFeedMode(feedId) !== 'http'
+        || httpReconnectTimers.has(feedId)) {
+        return;
+    }
+    const attempt = Math.max(0, Number(httpReconnectAttempts.get(feedId) || 0));
+    const delay = stalled
+        ? HTTP_STALL_RECONNECT_MS
+        : Math.min(HTTP_RECONNECT_MAX_MS, HTTP_RECONNECT_BASE_MS * (2 ** attempt));
+    const timer = window.setTimeout(async () => {
+        httpReconnectTimers.delete(feedId);
+        if (audio.dataset.hazeHttpWanted !== '1' || selectedFeedMode(feedId) !== 'http') {
+            return;
+        }
+        httpReconnectAttempts.set(feedId, attempt + 1);
+        audio.dataset.hazeHttpRestarting = '1';
+        setPlayerStatus(feedId, 'Reconnecting HTTP audio');
+        try {
+            audio.load();
+            await audio.play();
+        } catch {
+            audio.dataset.hazeHttpRestarting = '0';
+            scheduleHTTPAudioReconnect(feedId, audio);
+        }
+    }, delay);
+    httpReconnectTimers.set(feedId, timer);
 }
 
 function httpStreamURL(feedId, absolute = false, codec = null) {
@@ -1114,19 +1182,37 @@ function attachFeedControls() {
         if (audio.dataset.hazeBound === '1') return;
         audio.dataset.hazeBound = '1';
         audio.addEventListener('play', () => {
+            audio.dataset.hazeHttpWanted = '1';
             setPlayerStatus(audio.dataset.feedAudio, 'Starting HTTP audio');
         });
         audio.addEventListener('playing', () => {
+            audio.dataset.hazeHttpWanted = '1';
+            audio.dataset.hazeHttpRestarting = '0';
+            clearHTTPAudioReconnect(audio.dataset.feedAudio, true);
             setPlayerStatus(audio.dataset.feedAudio, 'Playing over HTTP');
         });
         audio.addEventListener('waiting', () => {
             setPlayerStatus(audio.dataset.feedAudio, 'Browser buffering audio');
+            scheduleHTTPAudioReconnect(audio.dataset.feedAudio, audio, { stalled: true });
+        });
+        audio.addEventListener('stalled', () => {
+            setPlayerStatus(audio.dataset.feedAudio, 'HTTP audio stalled');
+            scheduleHTTPAudioReconnect(audio.dataset.feedAudio, audio, { stalled: true });
         });
         audio.addEventListener('pause', () => {
+            if (audio.dataset.hazeHttpRestarting !== '1' && !audio.ended && !audio.error) {
+                audio.dataset.hazeHttpWanted = '0';
+                clearHTTPAudioReconnect(audio.dataset.feedAudio, true);
+            }
             setPlayerStatus(audio.dataset.feedAudio, 'Paused');
+        });
+        audio.addEventListener('ended', () => {
+            setPlayerStatus(audio.dataset.feedAudio, 'Reconnecting HTTP audio');
+            scheduleHTTPAudioReconnect(audio.dataset.feedAudio, audio);
         });
         audio.addEventListener('error', () => {
             setPlayerStatus(audio.dataset.feedAudio, 'HTTP audio error');
+            scheduleHTTPAudioReconnect(audio.dataset.feedAudio, audio);
         });
     });
 }

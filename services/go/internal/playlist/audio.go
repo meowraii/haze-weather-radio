@@ -170,7 +170,9 @@ func wavPCM16(raw []byte) ([]byte, audioInfo, error) {
 			sampleRate = int(binary.LittleEndian.Uint32(chunk[4:8]))
 			bitsPerSample = int(binary.LittleEndian.Uint16(chunk[14:16]))
 		case "data":
-			data = append([]byte(nil), chunk...)
+			// raw remains owned by the caller for the lifetime of the returned PCM.
+			// Keeping this slice avoids copying the entire audio payload on each parse.
+			data = chunk
 		}
 		offset += size
 		if offset%2 == 1 {

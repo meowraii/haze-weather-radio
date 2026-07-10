@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
@@ -576,6 +577,11 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 	if item, ok, err := p.buildProductAudioItem(ctx, product, pkgID, source, targetRaw, timelineEnd, now, queueID); ok || err != nil {
 		return item, err
 	}
+	if !productContainsAudioSegment(product) {
+		if cached, ok := p.startupCachedProductItem(pkgID, product, source, targetRaw, timelineEnd, now); ok {
+			return cached, nil
+		}
+	}
 	if item, ok, err := p.buildSegmentedProductItem(ctx, product, pkgID, source, targetRaw, timelineEnd, now, queueID); ok || err != nil {
 		return item, err
 	}
@@ -851,7 +857,8 @@ func (p *feedPlanner) buildProductAudioItem(ctx context.Context, product rendere
 }
 
 func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product renderedProduct, pkgID string, source string, targetRaw string, timelineEnd time.Time, now time.Time, queueID string) (playlistItem, bool, error) {
-	if !productHasAudioSegments(product) {
+	segments := playableProductSegments(product)
+	if !productShouldUseSegments(segments) {
 		return playlistItem{}, false, nil
 	}
 	outputPath := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID), queueID+".wav")
@@ -870,7 +877,8 @@ func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product ren
 	}
 	defer stream.Abort()
 	hasAudio := false
-	for index, segment := range product.Segments {
+	pausePCM := map[time.Duration][]byte{}
+	for index, segment := range segments {
 		if audioPath := strings.TrimSpace(segment.AudioPath); audioPath != "" {
 			scratch := filepath.Join(outputDir, fmt.Sprintf("%s-audio-%02d.wav", queueID, index))
 			pcm, err := p.routineAudioSegmentPCM(ctx, audioPath, scratch, sampleRate, channels)
@@ -892,6 +900,17 @@ func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product ren
 				return playlistItem{}, true, err
 			}
 			hasAudio = true
+		}
+		if index < len(segments)-1 {
+			pause := productSegmentPause(segment)
+			pcm := pausePCM[pause]
+			if pcm == nil {
+				pcm = silencePCM(sampleRate, channels, pause)
+				pausePCM[pause] = pcm
+			}
+			if err := stream.Append(pcm); err != nil {
+				return playlistItem{}, true, err
+			}
 		}
 	}
 	if !hasAudio {
@@ -924,13 +943,44 @@ func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product ren
 	}, true, nil
 }
 
-func productHasAudioSegments(product renderedProduct) bool {
+func playableProductSegments(product renderedProduct) []renderedSegment {
+	segments := make([]renderedSegment, 0, len(product.Segments))
+	for _, segment := range product.Segments {
+		if strings.TrimSpace(segment.AudioPath) == "" && strings.TrimSpace(segment.Text) == "" {
+			continue
+		}
+		segments = append(segments, segment)
+	}
+	return segments
+}
+
+func productShouldUseSegments(segments []renderedSegment) bool {
+	if len(segments) > 1 {
+		return true
+	}
+	return len(segments) == 1 && strings.TrimSpace(segments[0].AudioPath) != ""
+}
+
+func productContainsAudioSegment(product renderedProduct) bool {
 	for _, segment := range product.Segments {
 		if strings.TrimSpace(segment.AudioPath) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+func productSegmentPause(segment renderedSegment) time.Duration {
+	switch strings.ToLower(strings.TrimSpace(segment.Kind)) {
+	case "audio", "opener":
+		return 400 * time.Millisecond
+	case "warning":
+		return 350 * time.Millisecond
+	case "closure":
+		return 300 * time.Millisecond
+	default:
+		return 240 * time.Millisecond
+	}
 }
 
 func (p *feedPlanner) synthesizeSegmentPCM(ctx context.Context, queueID string, index int, text string, product renderedProduct, source string, outputPath string, sampleRate int, channels int) ([]byte, error) {
@@ -2047,11 +2097,16 @@ func combineAttentionAlertAudio(outputPath string, tone []byte, voicePath string
 }
 
 func combineAlertAudio(outputPath string, lead []byte, voicePath string, tail []byte, sampleRate int, channels int) error {
-	voice, err := os.ReadFile(voicePath)
+	voice, err := os.Open(voicePath)
 	if err != nil {
 		return err
 	}
-	if len(voice) == 0 {
+	defer voice.Close()
+	voiceInfo, err := voice.Stat()
+	if err != nil {
+		return err
+	}
+	if voiceInfo.Size() == 0 {
 		return fmt.Errorf("alert voice audio is empty")
 	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
@@ -2071,7 +2126,7 @@ func combineAlertAudio(outputPath string, lead []byte, voicePath string, tail []
 				return err
 			}
 		}
-		if _, err := file.Write(voice); err != nil {
+		if _, err := io.Copy(file, voice); err != nil {
 			return err
 		}
 		if len(tail) > 0 {

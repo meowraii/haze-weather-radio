@@ -21,7 +21,7 @@ type ListenerTracker struct {
 }
 
 type listenerFeedState struct {
-	active map[string]time.Time
+	active map[string]int
 	peak   int
 	peakAt time.Time
 }
@@ -47,16 +47,17 @@ func (t *ListenerTracker) TryAcquire(feedID string, clientID string) (func(), Fe
 	defer t.mu.Unlock()
 	state := t.feeds[feedID]
 	if state == nil {
-		state = &listenerFeedState{active: map[string]time.Time{}}
+		state = &listenerFeedState{active: map[string]int{}}
 		t.feeds[feedID] = state
 	}
-	if _, exists := state.active[clientID]; exists {
-		return nil, listenerStatsLocked(state), false
-	}
-	state.active[clientID] = now
-	if current := len(state.active); current > state.peak {
-		state.peak = current
-		state.peakAt = now
+	if connections := state.active[clientID]; connections > 0 {
+		state.active[clientID] = connections + 1
+	} else {
+		state.active[clientID] = 1
+		if current := len(state.active); current > state.peak {
+			state.peak = current
+			state.peakAt = now
+		}
 	}
 	var once sync.Once
 	release := func() {
@@ -67,7 +68,12 @@ func (t *ListenerTracker) TryAcquire(feedID string, clientID string) (func(), Fe
 			if current == nil {
 				return
 			}
-			delete(current.active, clientID)
+			connections := current.active[clientID]
+			if connections <= 1 {
+				delete(current.active, clientID)
+				return
+			}
+			current.active[clientID] = connections - 1
 		})
 	}
 	return release, listenerStatsLocked(state), true
@@ -91,7 +97,7 @@ func (t *ListenerTracker) SnapshotWithExternal(external map[string][]string) map
 			continue
 		}
 		if t.feeds[feedID] == nil {
-			t.feeds[feedID] = &listenerFeedState{active: map[string]time.Time{}}
+			t.feeds[feedID] = &listenerFeedState{active: map[string]int{}}
 		}
 	}
 	for feedID, state := range t.feeds {

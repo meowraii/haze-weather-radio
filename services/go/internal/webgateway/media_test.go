@@ -724,8 +724,8 @@ func TestMediaHubUsesIndependentFeedIngressQueues(t *testing.T) {
 }
 
 func TestAppendWAVSamplesDropsStaleHTTPBacklog(t *testing.T) {
-	if httpWAVMaxQueuedSamples != httpWAVSampleRate*26/10 {
-		t.Fatalf("http WAV max queued samples = %d, want 2.6 seconds", httpWAVMaxQueuedSamples)
+	if httpWAVMaxQueuedSamples != httpWAVSampleRate*24/100 {
+		t.Fatalf("http WAV max queued samples = %d, want 240 milliseconds", httpWAVMaxQueuedSamples)
 	}
 
 	sampleCount := httpWAVMaxQueuedSamples + 20

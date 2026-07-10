@@ -32,7 +32,6 @@ const PRIORITY_AUDIO_QUEUE_CAPACITY: usize = 16;
 const PACKAGE_REQUEST_QUEUE_CAPACITY: usize = 8;
 const DEFERRED_ROUTINE_QUEUE_CAPACITY: usize = 2;
 const COMPLETED_ROUTINE_HISTORY_CAPACITY: usize = 128;
-const REALTIME_MAX_CATCHUP_CHUNKS: usize = 2;
 const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
 const AUDIO_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 const AUDIO_CACHE_MAX_READY_ENTRIES: usize = 96;
@@ -933,7 +932,8 @@ impl FeedRunner {
                         }
                     }
 
-                    for _ in 0..chunks_due {
+                    debug_assert_eq!(chunks_due, 1);
+                    {
                         let now = Utc::now();
                         while let Ok(item) = self.priority_rx.try_recv() {
                             if !remember_priority_item(&mut active_priority_ids, &item.id) {
@@ -1527,14 +1527,6 @@ fn realtime_lag_warn_backlog() -> Duration {
 fn realtime_chunks_due(media_remainder: &mut Duration, elapsed: Duration) -> (usize, Duration) {
     let chunk_interval = Duration::from_millis(u64::from(PCM_CHUNK_MS));
     let available = media_remainder.saturating_add(elapsed);
-    let due = (available.as_nanos() / chunk_interval.as_nanos()).max(1);
-    let due = usize::try_from(due).unwrap_or(usize::MAX);
-    if due <= REALTIME_MAX_CATCHUP_CHUNKS {
-        let consumed = chunk_interval.saturating_mul(u32::try_from(due).unwrap_or(u32::MAX));
-        *media_remainder = available.saturating_sub(consumed);
-        return (due, Duration::ZERO);
-    }
-
     *media_remainder = Duration::ZERO;
     (1, available.saturating_sub(chunk_interval))
 }
@@ -3848,7 +3840,7 @@ mod tests {
     }
 
     #[test]
-    fn realtime_tick_recovers_small_repeated_jitter_without_starving_media() {
+    fn realtime_tick_drops_repeated_jitter_without_bursting_media() {
         let mut remainder = Duration::ZERO;
 
         let (first_chunks, first_dropped) =
@@ -3857,9 +3849,9 @@ mod tests {
             realtime_chunks_due(&mut remainder, Duration::from_millis(30));
 
         assert_eq!(first_chunks, 1);
-        assert_eq!(first_dropped, Duration::ZERO);
-        assert_eq!(second_chunks, 2);
-        assert_eq!(second_dropped, Duration::ZERO);
+        assert_eq!(first_dropped, Duration::from_millis(10));
+        assert_eq!(second_chunks, 1);
+        assert_eq!(second_dropped, Duration::from_millis(10));
         assert_eq!(remainder, Duration::ZERO);
     }
 

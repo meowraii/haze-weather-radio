@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1968,6 +1969,60 @@ func TestPublicFeedAudioGETDoesNotSilentlyFallbackForNativeMediaServiceCodec(t *
 	}
 	if strings.Contains(response.Body.String(), "RIFF") {
 		t.Fatal("native media service failure should not fall back to legacy WAV stream")
+	}
+}
+
+func TestPublicFeedAudioUsesMediaServiceOnlyForNativeCodecs(t *testing.T) {
+	dir := t.TempDir()
+	writePublicFixture(t, dir, "public")
+	configPath := filepath.Join(dir, "config.yaml")
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	mediaBackend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		if request.URL.Path != "/api/v1/feed/audio" {
+			http.NotFound(writer, request)
+			return
+		}
+		if got := request.URL.Query().Get("codec"); got != "pcm16" {
+			http.Error(writer, "unsupported media codec", http.StatusUnsupportedMediaType)
+			return
+		}
+		writer.Header().Set("Content-Type", "audio/wav")
+		_, _ = writer.Write([]byte("native-pcm"))
+	}))
+	defer mediaBackend.Close()
+	config.Services.Rust.Media.Enabled = true
+	config.Services.Rust.Media.Listen = mediaBackend.URL
+	server := NewServerWithConfigPath(config, configPath, ".")
+	server.media = newMemoryMediaHub()
+
+	nativeResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(nativeResponse, httptest.NewRequest(http.MethodGet, "/api/public/v1/feed/audio?feed=sk-0001&codec=pcm16", nil))
+	if nativeResponse.Code != http.StatusOK {
+		t.Fatalf("native codec status = %d", nativeResponse.Code)
+	}
+	if nativeResponse.Body.String() != "native-pcm" {
+		t.Fatalf("native codec body = %q", nativeResponse.Body.String())
+	}
+	if got := nativeResponse.Header().Get("X-Haze-Media-Backend"); got != "haze-media" {
+		t.Fatalf("native codec backend = %q", got)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("native media requests = %d, want 1", got)
+	}
+
+	t.Setenv("FFMPEG", filepath.Join(t.TempDir(), "missing-ffmpeg"))
+	flacResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(flacResponse, httptest.NewRequest(http.MethodGet, "/api/public/v1/feed/audio?feed=sk-0001&codec=flac", nil))
+	if flacResponse.Code != http.StatusServiceUnavailable {
+		t.Fatalf("FLAC fallback status = %d, want %d", flacResponse.Code, http.StatusServiceUnavailable)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("unsupported native media requests = %d, want 1", got)
 	}
 }
 

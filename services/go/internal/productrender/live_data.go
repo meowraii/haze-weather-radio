@@ -150,7 +150,7 @@ type liveMarineForecastFile struct {
 }
 
 type liveMarineForecastLocation struct {
-	Name             string `json:"name"`
+	Name             any `json:"name"`
 	WeatherCondition struct {
 		PeriodOfCoverage any `json:"periodOfCoverage"`
 		Wind             any `json:"wind"`
@@ -409,10 +409,10 @@ func (r renderer) loadLiveMarineForecastSnapshot(feed feedXML, lang string, snap
 			continue
 		}
 		area := firstNonBlank(loc.NameOverride, localizedString(raw.Properties.Area.Value, lang), localizedString(raw.Properties.Area.SubRegion, lang), loc.ID)
-		regular := marineForecastLocations(raw.Properties.RegularForecast.Locations, lang, "wind")
-		waves := marineForecastLocations(raw.Properties.WaveForecast.Locations, lang, "wave")
+		regular := marineForecastLocations(raw.Properties.RegularForecast.Locations, lang, "wind", area)
+		waves := marineForecastLocations(raw.Properties.WaveForecast.Locations, lang, "wave", area)
 		extended := marineExtendedForecastPeriods(raw.Properties.ExtendedForecast.Locations, lang)
-		warnings := marineForecastLocations(raw.Properties.Warnings.Locations, lang, "warning")
+		warnings := marineForecastLocations(raw.Properties.Warnings.Locations, lang, "warning", area)
 		if len(regular) == 0 && len(waves) == 0 && len(extended) == 0 && len(warnings) == 0 {
 			continue
 		}
@@ -437,7 +437,7 @@ func feedMarineForecastLocations(feed feedXML) []locationXML {
 	return out
 }
 
-func marineForecastLocations(locations []liveMarineForecastLocation, lang string, field string) []marineForecastLocation {
+func marineForecastLocations(locations []liveMarineForecastLocation, lang string, field string, area string) []marineForecastLocation {
 	out := make([]marineForecastLocation, 0, len(locations))
 	for _, loc := range locations {
 		text := ""
@@ -454,7 +454,7 @@ func marineForecastLocations(locations []liveMarineForecastLocation, lang string
 			continue
 		}
 		out = append(out, marineForecastLocation{
-			Name:   fallbackText(loc.Name, "marine area"),
+			Name:   firstNonBlank(localizedString(loc.Name, lang), area, "marine area"),
 			Period: cleanMarineForecastText(localizedString(loc.WeatherCondition.PeriodOfCoverage, lang)),
 			Text:   text,
 		})
