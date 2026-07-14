@@ -115,6 +115,69 @@ services:
       enabled: true
       mode: sip-edge # sip-edge or provider-webhook
       prompts_file: "managed/configs/ivr.xml"
+      extensions:
+        - extension: "haze"
+          name:
+            text: "Canada"
+            pronunciation: "Canada"
+          name_position: "before"
+          province: "CA"
+          enabled: true
+        - extension: "100"
+          name: "Nova Scotia"
+          province: "NS"
+          enabled: false
+        - extension: "170"
+          name: "New Brunswick"
+          province: "NB"
+          enabled: false
+        - extension: "180"
+          name: "Prince Edward Island"
+          province: "PE"
+          enabled: false
+        - extension: "200"
+          name: "Newfoundland and Labrador"
+          province: "NL"
+          enabled: false
+        - extension: "300"
+          name: "Quebec"
+          province: "QC"
+          enabled: false
+        - extension: "400"
+          name: "Ontario"
+          province: "ON"
+          enabled: false
+        - extension: "500"
+          name: "Manitoba"
+          province: "MB"
+          enabled: true
+        - extension: "600"
+          name:
+            text: "Saskatchewan"
+            pronunciation: "Saskatchewan"
+          name_position: "before"
+          province: "SK"
+          enabled: true
+        - extension: "700"
+          name: "Alberta"
+          province: "AB"
+          enabled: true
+        - extension: "800"
+          name: "British Columbia"
+          province: "BC"
+          enabled: false
+        - extension: "900"
+          name: "Yukon"
+          province: "YT"
+          enabled: false
+        - extension: "950"
+          name: "Northwest Territories"
+          province: "NT"
+          enabled: false
+        - extension: "980"
+          name: "Nunavut"
+          province: "NU"
+          enabled: false
       http:
         enabled: true
         addr: "127.0.0.1:8096"
@@ -133,17 +196,17 @@ services:
           password_env: HAZE_IVR_SIP_PASSWORD
         registration:
           enabled: false
-          server: "vancouver1.voip.ms:42867"
-          domain: "vancouver1.voip.ms"
-          register_uri: "sip:vancouver1.voip.ms"
-          username: "529289_TeleWeather"
-          auth_username: "529289_TeleWeather"
+          server: ""
+          domain: ""
+          register_uri: ""
+          username: ""
+          auth_username: ""
           password_env: HAZE_IVR_SIP_REGISTER_PASSWORD
-          from_user: "529289_TeleWeather"
-          contact_user: "529289_TeleWeather"
-          contact_host: "public"
-          via_host: "public"
-          user_agent: "MicroSIP/3.21.3"
+          from_user: ""
+          contact_user: ""
+          contact_host: ""
+          via_host: ""
+          user_agent: ""
           supported_path: false
           expires: 120
           retry_seconds: 30
@@ -263,8 +326,8 @@ operator:
     pronunciation: "all hazards, canada radio met"
   ]
   telephone_name: [
-    text: "Canada TeleWeather",
-    pronunciation: "canada tele weather"
+    text: "TeleWeather",
+    pronunciation: "tele weather"
   ]
   operator_name: [
     text: "@meowraii",

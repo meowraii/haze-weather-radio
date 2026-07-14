@@ -14,12 +14,20 @@ import (
 	"time"
 )
 
+const (
+	bridgeEventBuffer         = 8192
+	bridgeCriticalEventBuffer = 256
+)
+
 type bridgeClient struct {
 	conn            net.Conn
 	events          chan map[string]any
+	criticalEvents  chan map[string]any
 	pendingProducts map[string]chan productResult
 	pendingSynth    map[string]chan synthResult
 	mu              sync.Mutex
+	stop            chan struct{}
+	stopOnce        sync.Once
 }
 
 type productResult struct {
@@ -60,6 +68,7 @@ type synthJob struct {
 	OutputPath       string
 	TargetSampleRate int
 	TargetChannels   int
+	Priority         string
 }
 
 func connectBridge(ctx context.Context, addr string) (*bridgeClient, error) {
@@ -73,16 +82,26 @@ func connectBridge(ctx context.Context, addr string) (*bridgeClient, error) {
 	}
 	client := &bridgeClient{
 		conn:            conn,
-		events:          make(chan map[string]any, 8192),
+		events:          make(chan map[string]any, bridgeEventBuffer),
+		criticalEvents:  make(chan map[string]any, bridgeCriticalEventBuffer),
 		pendingProducts: map[string]chan productResult{},
 		pendingSynth:    map[string]chan synthResult{},
+		stop:            make(chan struct{}),
 	}
 	go client.readLoop()
 	return client, nil
 }
 
 func (c *bridgeClient) Close() error {
-	if c == nil || c.conn == nil {
+	if c == nil {
+		return nil
+	}
+	c.stopOnce.Do(func() {
+		if c.stop != nil {
+			close(c.stop)
+		}
+	})
+	if c.conn == nil {
 		return nil
 	}
 	return c.conn.Close()
@@ -90,6 +109,10 @@ func (c *bridgeClient) Close() error {
 
 func (c *bridgeClient) Events() <-chan map[string]any {
 	return c.events
+}
+
+func (c *bridgeClient) CriticalEvents() <-chan map[string]any {
+	return c.criticalEvents
 }
 
 func (c *bridgeClient) Publish(message map[string]any) error {
@@ -151,6 +174,7 @@ func (c *bridgeClient) Synthesize(ctx context.Context, job synthJob) (string, er
 			return "", err
 		}
 	}
+	priority := normalizeSynthesisPriority(job.Priority)
 	if err := c.Publish(map[string]any{
 		"type":    "tts.synthesize",
 		"source":  serviceID,
@@ -164,7 +188,7 @@ func (c *bridgeClient) Synthesize(ctx context.Context, job synthJob) (string, er
 			"output_path":        job.OutputPath,
 			"target_sample_rate": job.TargetSampleRate,
 			"target_channels":    job.TargetChannels,
-			"priority":           "high",
+			"priority":           priority,
 		},
 	}); err != nil {
 		return "", err
@@ -177,8 +201,26 @@ func (c *bridgeClient) Synthesize(ctx context.Context, job synthJob) (string, er
 	}
 }
 
+func normalizeSynthesisPriority(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "high", "realtime", "urgent", "radio", "playout":
+		return "high"
+	case "low", "batch", "background":
+		return "low"
+	default:
+		return "normal"
+	}
+}
+
 func (c *bridgeClient) readLoop() {
-	defer close(c.events)
+	defer func() {
+		if c.events != nil {
+			close(c.events)
+		}
+		if c.criticalEvents != nil {
+			close(c.criticalEvents)
+		}
+	}()
 	scanner := bufio.NewScanner(c.conn)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -208,6 +250,10 @@ func (c *bridgeClient) readLoop() {
 }
 
 func (c *bridgeClient) enqueueEvent(message map[string]any) {
+	if playlistCriticalEvent(stringAt(message, "type")) {
+		c.enqueueCriticalEvent(message)
+		return
+	}
 	select {
 	case c.events <- message:
 		return
@@ -226,6 +272,35 @@ func (c *bridgeClient) enqueueEvent(message map[string]any) {
 	case c.events <- message:
 	default:
 		log.Printf("playlist bridge event buffer full; dropped %s", msgType)
+	}
+}
+
+func (c *bridgeClient) enqueueCriticalEvent(message map[string]any) {
+	if c.criticalEvents != nil {
+		select {
+		case c.criticalEvents <- message:
+		case <-c.stop:
+			log.Printf("playlist bridge critical event dropped during shutdown: %s", stringAt(message, "type"))
+		}
+		return
+	}
+	if c.events == nil {
+		log.Printf("playlist bridge critical event dropped because no event buffer exists: %s", stringAt(message, "type"))
+		return
+	}
+	select {
+	case c.events <- message:
+	case <-c.stop:
+		log.Printf("playlist bridge critical event dropped during shutdown: %s", stringAt(message, "type"))
+	}
+}
+
+func playlistCriticalEvent(msgType string) bool {
+	switch strings.TrimSpace(msgType) {
+	case "cap.alert.broadcast.requested", "cap.alert.cancelled":
+		return true
+	default:
+		return false
 	}
 }
 

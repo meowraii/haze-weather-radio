@@ -53,23 +53,44 @@ type rootConfig struct {
 
 // Config controls the scalable telephone IVR edge.
 type Config struct {
-	Enabled             *bool         `yaml:"enabled"`
-	Mode                string        `yaml:"mode"`
-	HTTP                httpConfig    `yaml:"http"`
-	SIP                 sipConfig     `yaml:"sip"`
-	RTP                 rtpConfig     `yaml:"rtp"`
-	Cache               cacheConfig   `yaml:"cache"`
-	PromptsFile         string        `yaml:"prompts_file"`
-	DefaultLanguage     string        `yaml:"default_language"`
-	DefaultReaderID     string        `yaml:"default_reader_id"`
-	DefaultPackages     []string      `yaml:"default_packages"`
-	BroadcastPackages   []string      `yaml:"broadcast_packages"`
-	MaxCallSeconds      int           `yaml:"max_call_seconds"`
-	DigitTimeoutSeconds int           `yaml:"digit_timeout_seconds"`
-	RenderTimeout       time.Duration `yaml:"-"`
-	RenderTimeoutRaw    string        `yaml:"render_timeout"`
-	MaxConcurrentCalls  int           `yaml:"max_concurrent_calls"`
-	MaxRenderInflight   int           `yaml:"max_render_inflight"`
+	Enabled             *bool             `yaml:"enabled"`
+	Mode                string            `yaml:"mode"`
+	Extensions          []extensionConfig `yaml:"extensions"`
+	HTTP                httpConfig        `yaml:"http"`
+	SIP                 sipConfig         `yaml:"sip"`
+	RTP                 rtpConfig         `yaml:"rtp"`
+	Cache               cacheConfig       `yaml:"cache"`
+	PromptsFile         string            `yaml:"prompts_file"`
+	DefaultLanguage     string            `yaml:"default_language"`
+	DefaultReaderID     string            `yaml:"default_reader_id"`
+	DefaultPackages     []string          `yaml:"default_packages"`
+	BroadcastPackages   []string          `yaml:"broadcast_packages"`
+	MaxCallSeconds      int               `yaml:"max_call_seconds"`
+	DigitTimeoutSeconds int               `yaml:"digit_timeout_seconds"`
+	RenderTimeout       time.Duration     `yaml:"-"`
+	RenderTimeoutRaw    string            `yaml:"render_timeout"`
+	MaxConcurrentCalls  int               `yaml:"max_concurrent_calls"`
+	MaxRenderInflight   int               `yaml:"max_render_inflight"`
+}
+
+type extensionConfig struct {
+	Extension    string `yaml:"extension"`
+	Name         any    `yaml:"name"`
+	NamePosition string `yaml:"name_position"`
+	Province     string `yaml:"province"`
+	Enabled      *bool  `yaml:"enabled"`
+}
+
+func (line extensionConfig) enabled() bool {
+	return line.Enabled == nil || *line.Enabled
+}
+
+func (line extensionConfig) directProvince() string {
+	province := normalizeProvinceCode(line.Province)
+	if province == "CA" {
+		return ""
+	}
+	return province
 }
 
 type httpConfig struct {
@@ -171,6 +192,7 @@ type loadedConfig struct {
 	PromptsPath       string
 	Feeds             []feedXML
 	ForecastLocations map[string]locationRecord
+	HelloWeather      map[string]locationRecord
 	CLCs              map[string]locationRecord
 	Geocodes          map[string]locationRecord
 	NWS               map[string]locationRecord
@@ -269,6 +291,9 @@ func loadConfig(path string, overrides Options) (loadedConfig, error) {
 	baseDir := filepath.Dir(filepath.Clean(path))
 	cfg := root.Services.Go.IVR
 	normalizeIVRConfig(&cfg)
+	if err := validateIVRExtensions(cfg.Extensions); err != nil {
+		return loadedConfig{}, err
+	}
 	if overrides.HTTPAddr != "" {
 		cfg.HTTP.Addr = overrides.HTTPAddr
 	}
@@ -295,6 +320,7 @@ func loadConfig(path string, overrides Options) (loadedConfig, error) {
 		PromptsPath:       promptsPath,
 		Feeds:             feeds,
 		ForecastLocations: loadForecastLocationsForBase(baseDir),
+		HelloWeather:      loadHelloWeatherForBase(baseDir),
 		CLCs:              loadCLCsForBase(baseDir),
 		Geocodes:          loadGeocodesForBase(baseDir),
 		NWS:               loadNWSForBase(baseDir),
@@ -306,6 +332,7 @@ func normalizeIVRConfig(cfg *Config) {
 	if cfg.Mode == "" {
 		cfg.Mode = "sip-edge"
 	}
+	normalizeIVRExtensions(cfg)
 	if cfg.HTTP.Addr == "" {
 		cfg.HTTP.Addr = "127.0.0.1:8096"
 	}
@@ -378,6 +405,114 @@ func normalizeIVRConfig(cfg *Config) {
 	if cfg.MaxRenderInflight == 0 {
 		cfg.MaxRenderInflight = 8
 	}
+}
+
+func normalizeIVRExtensions(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if len(cfg.Extensions) == 0 {
+		cfg.Extensions = []extensionConfig{defaultCanadaExtension()}
+	}
+	hasCanada := false
+	for index := range cfg.Extensions {
+		line := &cfg.Extensions[index]
+		line.Extension = normalizeExtensionID(line.Extension)
+		line.Province = normalizeProvinceCode(line.Province)
+		if line.Province == "CA" {
+			hasCanada = true
+		}
+		line.NamePosition = strings.ToLower(strings.TrimSpace(line.NamePosition))
+		if line.NamePosition == "" {
+			line.NamePosition = "before"
+		}
+		if displayText(line.Name) == "" {
+			line.Name = provinceDisplayName(line.Province)
+		}
+	}
+	if !hasCanada {
+		cfg.Extensions = append([]extensionConfig{defaultCanadaExtension()}, cfg.Extensions...)
+	}
+}
+
+func defaultCanadaExtension() extensionConfig {
+	enabled := true
+	return extensionConfig{
+		Extension:    "haze",
+		Name:         "Canada",
+		NamePosition: "before",
+		Province:     "CA",
+		Enabled:      &enabled,
+	}
+}
+
+func validateIVRExtensions(lines []extensionConfig) error {
+	seen := make(map[string]struct{}, len(lines))
+	for index, line := range lines {
+		if line.Extension == "" {
+			return fmt.Errorf("ivr extension %d has an empty extension", index+1)
+		}
+		if _, exists := seen[line.Extension]; exists {
+			return fmt.Errorf("ivr extension %q is configured more than once", line.Extension)
+		}
+		seen[line.Extension] = struct{}{}
+		if !validProvinceCode(line.Province) {
+			return fmt.Errorf("ivr extension %q has unsupported province %q", line.Extension, line.Province)
+		}
+		if line.NamePosition != "before" && line.NamePosition != "after" {
+			return fmt.Errorf("ivr extension %q has unsupported name_position %q", line.Extension, line.NamePosition)
+		}
+	}
+	return nil
+}
+
+func normalizeExtensionID(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeProvinceCode(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "Canada") {
+		return "CA"
+	}
+	return provinceCode(value)
+}
+
+func validProvinceCode(value string) bool {
+	switch normalizeProvinceCode(value) {
+	case "CA", "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT":
+		return true
+	default:
+		return false
+	}
+}
+
+func provinceDisplayName(value string) string {
+	code := normalizeProvinceCode(value)
+	if code == "CA" {
+		return "Canada"
+	}
+	for _, province := range helloWeatherProvinces() {
+		if province.Code == code {
+			return province.Name
+		}
+	}
+	return code
+}
+
+func (cfg Config) extensionLine(extension string) (extensionConfig, bool) {
+	extension = normalizeExtensionID(extension)
+	for _, line := range cfg.Extensions {
+		if line.Extension == extension {
+			return line, true
+		}
+	}
+	for _, line := range cfg.Extensions {
+		if line.Province == "CA" {
+			return line, false
+		}
+	}
+	return defaultCanadaExtension(), false
 }
 
 func (cfg sipConfig) listenBindings() []sipListenBinding {
@@ -587,6 +722,58 @@ func loadForecastLocationsForBase(baseDir string) map[string]locationRecord {
 		}
 	}
 	return loadForecastLocations(resolvePath(baseDir, "managed/csv/FORECAST_LOCATIONS.csv"))
+}
+
+func loadHelloWeatherForBase(baseDir string) map[string]locationRecord {
+	if snap, ok := locationdb.Load(baseDir); ok {
+		out := map[string]locationRecord{}
+		for _, place := range snap.PlacesBySource("hello_weather") {
+			out[place.Code] = locationRecord{
+				Code:      place.Code,
+				Source:    "hello_weather",
+				Name:      place.Name,
+				Province:  place.Region,
+				Latitude:  floatText(place.Lat),
+				Longitude: floatText(place.Lon),
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return loadHelloWeatherCSV(resolvePath(baseDir, "managed/csv/HELLO_WEATHER_LOCATIONS.csv"))
+}
+
+func loadHelloWeatherCSV(path string) map[string]locationRecord {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return map[string]locationRecord{}
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	header, err := reader.Read()
+	if err != nil {
+		return map[string]locationRecord{}
+	}
+	codeIndex := csvIndex(header, "CODE")
+	nameIndex := csvIndex(header, "NAME")
+	provinceIndex := csvIndex(header, "PROVINCE")
+	out := map[string]locationRecord{}
+	for {
+		row, err := reader.Read()
+		if err != nil {
+			break
+		}
+		code := valueAt(row, codeIndex)
+		name := valueAt(row, nameIndex)
+		province := normalizeProvinceCode(valueAt(row, provinceIndex))
+		if len(code) != 5 || name == "" || !validProvinceCode(province) || province == "CA" {
+			continue
+		}
+		out[code] = locationRecord{Code: code, Source: "hello_weather", Name: name, Province: province}
+	}
+	return out
 }
 
 func loadCLCsForBase(baseDir string) map[string]locationRecord {

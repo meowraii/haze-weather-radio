@@ -87,6 +87,7 @@ type sipMediaOffer struct {
 
 type sipCall struct {
 	service       *Service
+	line          extensionConfig
 	ctx           context.Context
 	cancel        context.CancelFunc
 	callID        string
@@ -274,6 +275,14 @@ func (s *Service) runSIPListener(ctx context.Context, binding sipListenBinding, 
 }
 
 func (s *Service) acceptSIPInvite(ctx context.Context, request sipRequest, remote *net.UDPAddr, conn *net.UDPConn, local net.Addr) (*sipCall, string) {
+	line, matched := s.sipRequestLine(request)
+	if !line.enabled() {
+		status := "404 Not Found"
+		if matched {
+			status = "480 Temporarily Unavailable"
+		}
+		return nil, sipReply(status, request.Headers, "Warning: 399 haze \"IVR line is disabled\"\r\n")
+	}
 	offer, err := parseSDPOffer(request.Body, remote)
 	if err != nil {
 		log.Printf("IVR SIP rejected INVITE from %s: %v", remote, err)
@@ -293,6 +302,7 @@ func (s *Service) acceptSIPInvite(ctx context.Context, request sipRequest, remot
 	audioCodec, audioPayload := s.selectSIPAudioCodec(offer)
 	call := &sipCall{
 		service:       s,
+		line:          line,
 		ctx:           callCtx,
 		cancel:        cancel,
 		callID:        sipHeader(request.Headers, "call-id"),
@@ -732,12 +742,20 @@ func (c *sipCall) sendBYE() {
 
 func (c *sipCall) menuLoop() {
 	language := c.service.cfg.IVR.DefaultLanguage
+	directProvince := c.line.directProvince()
+	c.playPrompt("entry", "greeting", c.service.extensionGreetingValues(c.line))
 	for c.ctx.Err() == nil {
 		entry, _ := c.service.cfg.Prompts.Menu("entry")
 		lineKey := c.service.menuMainLine("entry", "")
 		if configuredLanguage, single := c.service.singleConfiguredLanguage(); single {
 			language = configuredLanguage
-			location, ok := c.collectLocationWithPrompt(language, "entry", lineKey, c.service.promptValues(nil), entry.Timeout)
+			var location ResolvedLocation
+			var ok bool
+			if directProvince != "" {
+				location, ok = c.collectLocationNumber(language, directProvince)
+			} else {
+				location, ok = c.collectLocationWithPrompt(language, "entry", lineKey, c.service.promptValues(nil), entry.Timeout)
+			}
 			if !ok {
 				return
 			}
@@ -761,7 +779,12 @@ func (c *sipCall) menuLoop() {
 				continue
 			}
 			language = fallbackText(option.Language, language)
-			location, ok := c.collectLocation(language)
+			var location ResolvedLocation
+			if directProvince != "" {
+				location, ok = c.collectLocationNumber(language, directProvince)
+			} else {
+				location, ok = c.collectLocation(language)
+			}
 			if !ok {
 				return
 			}
@@ -864,7 +887,7 @@ func (c *sipCall) collectLocationNumber(language string, province string) (Resol
 			c.playPrompt("location_number", "search_unavailable", nil)
 			continue
 		}
-		code, codeOK := helloWeatherCodeFromProvinceCity(province, number)
+		code, codeOK := c.service.resolver.helloWeatherCodeForProvinceNumber(province, number)
 		if !codeOK {
 			c.playPrompt("error", "invalid_code", nil)
 			continue
@@ -882,16 +905,8 @@ func (c *sipCall) collectLocationNumber(language string, province string) (Resol
 
 func (c *sipCall) locationMenu(location ResolvedLocation) {
 	menu, _ := c.service.cfg.Prompts.Menu("location_menu")
-	autoAlertMenu := true
 	for c.ctx.Err() == nil {
 		alerts := c.service.activeIVRAlerts(c.ctx, location)
-		if autoAlertMenu {
-			autoAlertMenu = false
-			if len(alerts) > 0 {
-				c.alertMenu(location)
-				continue
-			}
-		}
 		var digit string
 		var ok bool
 		if len(alerts) > 0 {
@@ -964,7 +979,13 @@ func (c *sipCall) alertMenu(location ResolvedLocation) {
 			c.playPrompt("error", "invalid_code", nil)
 			continue
 		}
-		c.playTextPrompt("alert_readout_"+firstNonBlank(alert.ID, digit), c.service.alertReadoutText(location, alert))
+		if interrupt, ok := c.playTextPromptAudioWithInterrupt(
+			"alert_readout_"+firstNonBlank(alert.ID, digit),
+			c.service.alertReadoutText(location, alert),
+			digitInterruptPound,
+		); ok && interrupt == "#" {
+			return
+		}
 	}
 }
 
@@ -1056,15 +1077,20 @@ func (c *sipCall) playPromptAudio(menuID string, lineKey string, values map[stri
 }
 
 func (c *sipCall) playTextPromptAudio(lineKey string, text string, interruptible bool) (string, bool) {
+	interruptMode := digitInterruptNone
+	if interruptible {
+		interruptMode = digitInterruptAny
+	}
+	return c.playTextPromptAudioWithInterrupt(lineKey, text, interruptMode)
+}
+
+func (c *sipCall) playTextPromptAudioWithInterrupt(lineKey string, text string, interruptMode digitInterruptMode) (string, bool) {
 	audio, err := c.service.textPromptAudio(c.ctx, lineKey, text)
 	if err != nil {
 		log.Printf("IVR SIP dynamic prompt %s failed: %v", lineKey, err)
 		return "", false
 	}
-	if interruptible {
-		return c.playAudioFile(c.cachedAudioPath(audio), digitInterruptAny)
-	}
-	return c.playAudioFile(c.cachedAudioPath(audio), digitInterruptNone)
+	return c.playAudioFile(c.cachedAudioPath(audio), interruptMode)
 }
 
 func (c *sipCall) playProduct(location ResolvedLocation, packages []string) bool {
@@ -1120,6 +1146,10 @@ func (c *sipCall) playAudioFile(path string, interruptMode digitInterruptMode) (
 	}
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
+	var digitEvents <-chan string
+	if interruptMode != digitInterruptNone {
+		digitEvents = c.digits
+	}
 	for offset := 0; offset < len(raw) && c.ctx.Err() == nil; offset += sipPacketSamples {
 		if digit, ok := c.pendingInterruptDigit(interruptMode); ok {
 			return digit, true
@@ -1134,7 +1164,7 @@ func (c *sipCall) playAudioFile(path string, interruptMode digitInterruptMode) (
 		select {
 		case <-c.ctx.Done():
 			return "", false
-		case digit := <-c.digits:
+		case digit := <-digitEvents:
 			if interruptMode.matches(digit) {
 				return digit, true
 			}
@@ -1280,6 +1310,9 @@ func (c *sipCall) pushDigit(digit string) {
 }
 
 func (c *sipCall) pendingInterruptDigit(interruptMode digitInterruptMode) (string, bool) {
+	if interruptMode == digitInterruptNone {
+		return "", false
+	}
 	select {
 	case digit := <-c.digits:
 		return digit, interruptMode.matches(digit)
@@ -1458,18 +1491,18 @@ func (c *sipCall) collectLocationNumberInput(timeout time.Duration, province str
 		case "#":
 			return true, false, builder.Len() > 0
 		default:
-			if len(digit) == 1 && digit[0] >= '0' && digit[0] <= '9' && builder.Len() < 2 {
+			if len(digit) == 1 && digit[0] >= '0' && digit[0] <= '9' && builder.Len() < 5 {
 				builder.WriteString(digit)
 			}
 		}
-		if code, ok := helloWeatherCodeFromProvinceCity(province, builder.String()); ok && c.locationCodeCurrentlyValid(code) {
+		if code, ok := c.service.resolver.helloWeatherCodeForProvinceNumber(province, builder.String()); ok && c.locationCodeCurrentlyValid(code) {
 			stopSubmitTimer()
 			submitTimer = time.NewTimer(600 * time.Millisecond)
 			submit = submitTimer.C
 		} else {
 			stopSubmitTimer()
 		}
-		if builder.Len() >= 2 {
+		if builder.Len() >= 5 {
 			return true, false, true
 		}
 		return false, false, false
@@ -1723,6 +1756,57 @@ func sipContactURI(value string) string {
 		value = value[:semi]
 	}
 	return strings.Trim(value, "<> ")
+}
+
+func (s *Service) sipRequestLine(request sipRequest) (extensionConfig, bool) {
+	candidates := []string{
+		request.URI,
+		sipHeader(request.Headers, "to"),
+		sipHeader(request.Headers, "p-called-party-id"),
+		sipHeader(request.Headers, "x-haze-extension"),
+		sipHeader(request.Headers, "diversion"),
+	}
+	var canadaLine extensionConfig
+	canadaMatched := false
+	for _, candidate := range candidates {
+		extension := sipURIUser(candidate)
+		if extension == "" {
+			continue
+		}
+		line, matched := s.cfg.IVR.extensionLine(extension)
+		if !matched {
+			continue
+		}
+		if line.directProvince() != "" {
+			return line, true
+		}
+		if !canadaMatched {
+			canadaLine = line
+			canadaMatched = true
+		}
+	}
+	if canadaMatched {
+		return canadaLine, true
+	}
+	return s.cfg.IVR.extensionLine("")
+}
+
+func sipURIUser(value string) string {
+	value = strings.TrimSpace(sipContactURI(value))
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	for _, scheme := range []string{"sip:", "sips:", "tel:"} {
+		if strings.HasPrefix(lower, scheme) {
+			value = value[len(scheme):]
+			break
+		}
+	}
+	if separator := strings.IndexAny(value, "@;?"); separator >= 0 {
+		value = value[:separator]
+	}
+	return normalizeExtensionID(value)
 }
 
 func sipResponseExpires(response sipResponse, fallback int) int {
@@ -2254,10 +2338,6 @@ func rtpDTMFDigit(packet []byte, payloadType int) (string, string) {
 		return "", ""
 	}
 	event := int(packet[offset])
-	end := packet[offset+1]&0x80 != 0
-	if !end {
-		return "", ""
-	}
 	timestamp := binary.BigEndian.Uint32(packet[4:8])
 	digit := normalizeDTMFDigit(strconv.Itoa(event))
 	if digit == "" {

@@ -14,7 +14,7 @@ import (
 	"github.com/meowraii/haze-weather-radio/services/go/internal/datastore"
 )
 
-func TestLocationMenuAutoOpensAlertMenuWhenAlertsAreActive(t *testing.T) {
+func TestLocationMenuKeepsProductOptionsVisibleWhenAlertsAreActive(t *testing.T) {
 	service, closeStore := ivrAlertTestService(t)
 	defer closeStore()
 	storeIVRTestCAP(t, service.store, "urn:test:ivr:tor", "sk-0001", "Tornado Warning", "Tornado Warning", "Extreme", "Immediate", "Observed", "high")
@@ -24,20 +24,11 @@ func TestLocationMenuAutoOpensAlertMenuWhenAlertsAreActive(t *testing.T) {
 	service.writeLocationMenu(response, request, ivrTestLocation())
 
 	body := response.Body.String()
-	if !strings.Contains(body, "/ivr/v1/alert_audio") || !strings.Contains(body, "kind=menu") || !strings.Contains(body, "state=alert_option") {
-		t.Fatalf("location menu did not immediately open alert submenu: %s", body)
+	if !strings.Contains(body, "/ivr/v1/alert_audio") || !strings.Contains(body, "kind=location_menu") || !strings.Contains(body, "state=location_option") {
+		t.Fatalf("location menu did not include the alert-aware normal menu: %s", body)
 	}
-	if strings.Contains(body, "line=main") {
-		t.Fatalf("initial alert submenu should not use the ordinary reached-location prompt: %s", body)
-	}
-
-	request = formRequest("http://ivr.test/ivr/v1/twiml?state=alert_option&feed_id=sk-0001&lang=en-CA", url.Values{"Digits": {"#"}})
-	response = httptest.NewRecorder()
-	service.handleAlertOptionTwiML(response, request)
-
-	body = response.Body.String()
-	if !strings.Contains(body, "state=location_option") || !strings.Contains(body, "kind=location_menu") {
-		t.Fatalf("pound should return from alerts to alert-aware location menu: %s", body)
+	if strings.Contains(body, "kind=menu") || strings.Contains(body, "state=alert_option") {
+		t.Fatalf("location menu opened the alert submenu without a star press: %s", body)
 	}
 
 	request = formRequest("http://ivr.test/ivr/v1/twiml?state=location_option&feed_id=sk-0001&lang=en-CA", url.Values{"Digits": {"*"}})
@@ -46,7 +37,16 @@ func TestLocationMenuAutoOpensAlertMenuWhenAlertsAreActive(t *testing.T) {
 
 	body = response.Body.String()
 	if !strings.Contains(body, "state=alert_option") || !strings.Contains(body, "kind=menu") {
-		t.Fatalf("star did not enter alert submenu while alerts are active: %s", body)
+		t.Fatalf("star did not enter the alert submenu: %s", body)
+	}
+
+	request = formRequest("http://ivr.test/ivr/v1/twiml?state=alert_option&feed_id=sk-0001&lang=en-CA", url.Values{"Digits": {"#"}})
+	response = httptest.NewRecorder()
+	service.handleAlertOptionTwiML(response, request)
+
+	body = response.Body.String()
+	if !strings.Contains(body, "state=location_option") || !strings.Contains(body, "kind=location_menu") {
+		t.Fatalf("pound did not return from alerts to the normal location menu: %s", body)
 	}
 }
 
@@ -61,6 +61,28 @@ func TestLocationMenuStarIsUnavailableWithoutActiveAlerts(t *testing.T) {
 	body := response.Body.String()
 	if strings.Contains(body, "state=alert_option") || strings.Contains(body, "/ivr/v1/alert_audio") {
 		t.Fatalf("star should not expose alert submenu when no alerts are active: %s", body)
+	}
+}
+
+func TestAlertReadoutCanBeInterruptedWithPound(t *testing.T) {
+	service, closeStore := ivrAlertTestService(t)
+	defer closeStore()
+	storeIVRTestCAP(t, service.store, "urn:test:ivr:interrupt", "sk-0001", "Tornado Warning", "Tornado Warning", "Extreme", "Immediate", "Observed", "high")
+
+	request := formRequest("http://ivr.test/ivr/v1/twiml?state=alert_option&feed_id=sk-0001&lang=en-CA", url.Values{"Digits": {"1"}})
+	response := httptest.NewRecorder()
+	service.handleAlertOptionTwiML(response, request)
+	body := response.Body.String()
+	if !strings.Contains(body, "<Gather") || !strings.Contains(body, `numDigits="1"`) || !strings.Contains(body, "state=alert_readout_option") {
+		t.Fatalf("alert readout is not interruptible: %s", body)
+	}
+
+	request = formRequest("http://ivr.test/ivr/v1/twiml?state=alert_readout_option&feed_id=sk-0001&lang=en-CA", url.Values{"Digits": {"#"}})
+	response = httptest.NewRecorder()
+	service.handleAlertReadoutOptionTwiML(response, request)
+	body = response.Body.String()
+	if !strings.Contains(body, "state=location_option") || strings.Contains(body, "state=alert_option") {
+		t.Fatalf("pound did not exit the alert readout: %s", body)
 	}
 }
 
@@ -150,6 +172,77 @@ func TestIVRAlertReadoutCollapsesVeryLargeAreaLists(t *testing.T) {
 	}
 	if strings.Count(text, "Very Long Broad Watch Area") > 1 {
 		t.Fatalf("large area list leaked into IVR readout:\n%s", text)
+	}
+}
+
+func TestIVRAlertReadoutCollapsesCompleteForecastRegions(t *testing.T) {
+	service := ivrForecastCollapseTestService()
+	info := ivrForecastCollapseTestInfo("Severe Thunderstorm Watch")
+	got := service.ivrForecastRegionAreaText(ivrTestLocation(), info)
+	want := "areas in and around Outlook, Watrous, Hanley, Imperial, and Dinsmore"
+	if got != want {
+		t.Fatalf("collapsed forecast region = %q, want %q", got, want)
+	}
+}
+
+func TestIVRAlertReadoutKeepsIncompleteForecastRegions(t *testing.T) {
+	service := ivrForecastCollapseTestService()
+	info := ivrForecastCollapseTestInfo("Severe Thunderstorm Watch")
+	info.Areas = info.Areas[:1]
+	if got := service.ivrForecastRegionAreaText(ivrTestLocation(), info); got != "" {
+		t.Fatalf("partial forecast region collapsed to %q", got)
+	}
+}
+
+func TestIVRConvectiveWarningsBypassForecastRegionCollapse(t *testing.T) {
+	service := ivrForecastCollapseTestService()
+	for _, event := range []string{"Severe Thunderstorm Warning", "Tornado Warning"} {
+		info := ivrForecastCollapseTestInfo(event)
+		text := service.alertReadoutText(ivrTestLocation(), ivrActiveAlert{
+			ID:    event,
+			Title: event,
+			Alert: capmodel.Alert{Identifier: event, Sender: "cap-pac@canada.ca", Sent: "2026-07-12T12:00:00-06:00", MessageType: "Alert", Infos: []capmodel.AlertInfo{info}},
+			Info:  info,
+		})
+		if strings.Contains(text, "areas in and around Outlook") {
+			t.Fatalf("%s used forecast-region collapse:\n%s", event, text)
+		}
+		if !strings.Contains(text, "R.M. of Fertile Valley") || !strings.Contains(text, "R.M. of Rudy") {
+			t.Fatalf("%s did not preserve raw alert locations:\n%s", event, text)
+		}
+	}
+}
+
+func ivrForecastCollapseTestService() *Service {
+	feed := feedXML{ID: "sk-0001", EnabledRaw: "true", Timezone: "America/Regina"}
+	feed.Locations.Coverage.Regions = []coverageRegionXML{{
+		ID:     "065500",
+		Source: "eccc",
+		Name:   "Outlook - Watrous - Hanley - Imperial - Dinsmore",
+		Subregions: []coverageSubregionXML{
+			{ID: "065514"},
+			{ID: "065522"},
+		},
+	}}
+	return &Service{cfg: loadedConfig{Feeds: []feedXML{feed}, Prompts: defaultPromptConfig()}}
+}
+
+func ivrForecastCollapseTestInfo(event string) capmodel.AlertInfo {
+	return capmodel.AlertInfo{
+		Language:    "en-CA",
+		Event:       event,
+		Headline:    event + " - in effect",
+		Severity:    "Moderate",
+		Urgency:     "Immediate",
+		Certainty:   "Likely",
+		SenderName:  "Environment Canada",
+		Description: "Hazardous weather is occurring.",
+		Instruction: "Take appropriate precautions.",
+		Expires:     "2099-07-12T23:00:00-06:00",
+		Areas: []capmodel.AlertArea{
+			{Description: "R.M. of Fertile Valley including Conquest Macrorie and Bounty", Geocodes: []capmodel.NameValue{{Name: "CLC", Value: "065514"}}},
+			{Description: "R.M. of Rudy including Outlook and Glenside", Geocodes: []capmodel.NameValue{{Name: "CLC", Value: "065522"}}},
+		},
 	}
 }
 

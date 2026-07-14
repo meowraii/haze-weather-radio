@@ -55,7 +55,10 @@ type providerNameResult struct {
 const helloWeatherCodesURL = "https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html"
 
 var (
-	helloWeatherLinePattern = regexp.MustCompile(`(?i)^(.*?)\s+1-833-[0-9-]+\s*\([^)]*\)\s*Code:\s*([0-9]{5})`)
+	helloWeatherLinePattern = regexp.MustCompile(`(?i)^(.*?)\s+1-833-[0-9-]+\s*\([^)]*\)\s*Code:\s*([0-9](?:\s*[0-9]){4})`)
+	htmlHeadingPattern      = regexp.MustCompile(`(?is)<(?:h2|summary)\b[^>]*>(.*?)</(?:h2|summary)>`)
+	htmlRowPattern          = regexp.MustCompile(`(?is)<tr\b[^>]*>(.*?)</tr>`)
+	htmlCellPattern         = regexp.MustCompile(`(?is)<td\b[^>]*>(.*?)</td>`)
 	htmlTagPattern          = regexp.MustCompile(`(?s)<[^>]+>`)
 	htmlScriptStylePattern  = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>`)
 	resolverHTTPClient      = &http.Client{
@@ -250,17 +253,14 @@ func (r *Resolver) helloWeather(code string) (locationRecord, bool) {
 
 func (r *Resolver) helloWeatherDirectory() map[string]locationRecord {
 	r.helloWeatherMu.Lock()
+	defer r.helloWeatherMu.Unlock()
 	if r.helloWeatherLoaded {
-		out := r.helloWeatherCodes
-		r.helloWeatherMu.Unlock()
-		return out
+		return r.helloWeatherCodes
 	}
-	r.helloWeatherLoaded = true
 	lookup := r.lookupHelloWeather
-	r.helloWeatherMu.Unlock()
 
-	var codes map[string]locationRecord
-	if lookup != nil {
+	codes := cloneLocationRecords(r.cfg.HelloWeather)
+	if len(codes) == 0 && lookup != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		codes = lookup(ctx)
 		cancel()
@@ -268,13 +268,28 @@ func (r *Resolver) helloWeatherDirectory() map[string]locationRecord {
 	if codes == nil {
 		codes = map[string]locationRecord{}
 	}
-	r.helloWeatherMu.Lock()
 	r.helloWeatherCodes = codes
-	r.helloWeatherMu.Unlock()
+	r.helloWeatherLoaded = true
 	return codes
 }
 
+func cloneLocationRecords(records map[string]locationRecord) map[string]locationRecord {
+	out := make(map[string]locationRecord, len(records))
+	for code, record := range records {
+		out[code] = record
+	}
+	return out
+}
+
 func (r *Resolver) enrichHelloWeatherRecord(record locationRecord) locationRecord {
+	if strings.TrimSpace(record.Forecast) == "" {
+		if derived, ok := deriveHelloWeatherRecord(record.Code); ok {
+			record.Forecast = derived.Forecast
+			if strings.TrimSpace(record.Province) == "" {
+				record.Province = derived.Province
+			}
+		}
+	}
 	key := geocodeNameKey(record.Province, record.Name)
 	if key == "" {
 		return record
@@ -626,12 +641,88 @@ func helloWeatherCodeFromProvinceCity(province string, city string) (string, boo
 	return "0" + province + "0" + city, true
 }
 
+func (r *Resolver) helloWeatherCodeForProvinceNumber(province string, number string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	provinceCodes := helloWeatherProvinceCodes(province)
+	if len(provinceCodes) == 0 {
+		return "", false
+	}
+	number = digitsOnly(number)
+	if number == "" {
+		return "", false
+	}
+	allowed := make(map[string]struct{}, len(provinceCodes))
+	for _, code := range provinceCodes {
+		allowed[code] = struct{}{}
+	}
+	directory := r.helloWeatherDirectory()
+	if len(number) == 5 {
+		if record, ok := directory[number]; ok {
+			_, provinceOK := allowed[provinceCode(record.Province)]
+			return number, provinceOK
+		}
+		return "", false
+	}
+	wanted := strings.TrimLeft(number, "0")
+	if wanted == "" {
+		return "", false
+	}
+	matches := make([]string, 0, 1)
+	for code, record := range directory {
+		if len(code) != 5 {
+			continue
+		}
+		if _, ok := allowed[provinceCode(record.Province)]; !ok {
+			continue
+		}
+		if strings.TrimLeft(code[2:], "0") == wanted {
+			matches = append(matches, code)
+		}
+	}
+	if len(matches) == 0 {
+		return "", false
+	}
+	sort.Strings(matches)
+	return matches[0], true
+}
+
+func helloWeatherProvinceCodes(selector string) []string {
+	selector = strings.TrimSpace(selector)
+	switch selector {
+	case "1":
+		return []string{"NS", "NB", "PE"}
+	case "2":
+		return []string{"NL"}
+	case "3":
+		return []string{"QC"}
+	case "4":
+		return []string{"ON"}
+	case "5":
+		return []string{"MB"}
+	case "6":
+		return []string{"SK"}
+	case "7":
+		return []string{"AB"}
+	case "8":
+		return []string{"BC"}
+	case "9":
+		return []string{"YT", "NT", "NU"}
+	}
+	code := normalizeProvinceCode(selector)
+	if validProvinceCode(code) && code != "CA" {
+		return []string{code}
+	}
+	return nil
+}
+
 func deriveHelloWeatherRecord(code string) (locationRecord, bool) {
 	code = strings.TrimSpace(code)
 	if len(code) != 5 || code[0] != '0' {
 		return locationRecord{}, false
 	}
-	meta, ok := helloWeatherProvinceDigit(code[1:2])
+	meta, ok := helloWeatherProvinceForCode(code)
 	if !ok {
 		return locationRecord{}, false
 	}
@@ -653,51 +744,65 @@ func deriveHelloWeatherRecord(code string) (locationRecord, bool) {
 	}, true
 }
 
+func helloWeatherProvinceForCode(code string) (struct {
+	Province       string
+	ProviderPrefix string
+}, bool) {
+	code = strings.TrimSpace(code)
+	if len(code) != 5 || code[0] != '0' {
+		return struct {
+			Province       string
+			ProviderPrefix string
+		}{}, false
+	}
+	switch code[:3] {
+	case "010", "011":
+		return helloWeatherProvinceMeta("NS", "ns"), true
+	case "015", "017":
+		return helloWeatherProvinceMeta("NB", "nb"), true
+	case "018":
+		return helloWeatherProvinceMeta("PE", "pe"), true
+	case "091":
+		return helloWeatherProvinceMeta("YT", "yt"), true
+	case "095":
+		return helloWeatherProvinceMeta("NT", "nt"), true
+	case "098":
+		return helloWeatherProvinceMeta("NU", "nu"), true
+	}
+	return helloWeatherProvinceDigit(code[1:2])
+}
+
+func helloWeatherProvinceMeta(province string, providerPrefix string) struct {
+	Province       string
+	ProviderPrefix string
+} {
+	return struct {
+		Province       string
+		ProviderPrefix string
+	}{Province: province, ProviderPrefix: providerPrefix}
+}
+
 func helloWeatherProvinceDigit(digit string) (struct {
 	Province       string
 	ProviderPrefix string
 }, bool) {
 	switch strings.TrimSpace(digit) {
 	case "1":
-		return struct {
-			Province       string
-			ProviderPrefix string
-		}{Province: "NS", ProviderPrefix: "ns"}, true
+		return helloWeatherProvinceMeta("NS", "ns"), true
 	case "2":
-		return struct {
-			Province       string
-			ProviderPrefix string
-		}{Province: "NL", ProviderPrefix: "nl"}, true
+		return helloWeatherProvinceMeta("NL", "nl"), true
 	case "3":
-		return struct {
-			Province       string
-			ProviderPrefix string
-		}{Province: "QC", ProviderPrefix: "qc"}, true
+		return helloWeatherProvinceMeta("QC", "qc"), true
 	case "4":
-		return struct {
-			Province       string
-			ProviderPrefix string
-		}{Province: "ON", ProviderPrefix: "on"}, true
+		return helloWeatherProvinceMeta("ON", "on"), true
 	case "5":
-		return struct {
-			Province       string
-			ProviderPrefix string
-		}{Province: "MB", ProviderPrefix: "mb"}, true
+		return helloWeatherProvinceMeta("MB", "mb"), true
 	case "6":
-		return struct {
-			Province       string
-			ProviderPrefix string
-		}{Province: "SK", ProviderPrefix: "sk"}, true
+		return helloWeatherProvinceMeta("SK", "sk"), true
 	case "7":
-		return struct {
-			Province       string
-			ProviderPrefix string
-		}{Province: "AB", ProviderPrefix: "ab"}, true
+		return helloWeatherProvinceMeta("AB", "ab"), true
 	case "8":
-		return struct {
-			Province       string
-			ProviderPrefix string
-		}{Province: "BC", ProviderPrefix: "bc"}, true
+		return helloWeatherProvinceMeta("BC", "bc"), true
 	default:
 		return struct {
 			Province       string
@@ -714,7 +819,7 @@ func isProvinceDigit(code string) bool {
 func provinceDigitDisplayName(province string) string {
 	switch strings.TrimSpace(province) {
 	case "1":
-		return "Nova Scotia"
+		return "the Atlantic provinces"
 	case "2":
 		return "Newfoundland and Labrador"
 	case "3":
@@ -731,9 +836,11 @@ func provinceDigitDisplayName(province string) string {
 		return "British Columbia"
 	case "9":
 		return "the territories"
-	default:
-		return "your province or territory"
 	}
+	if code := normalizeProvinceCode(province); validProvinceCode(code) && code != "CA" {
+		return provinceDisplayName(code)
+	}
+	return "your province or territory"
 }
 
 func t9(value string) string {
@@ -843,6 +950,38 @@ func fetchHelloWeatherCodes(ctx context.Context) map[string]locationRecord {
 
 func parseHelloWeatherCodes(page string) map[string]locationRecord {
 	out := map[string]locationRecord{}
+	headings := htmlHeadingPattern.FindAllStringSubmatchIndex(page, -1)
+	for index, heading := range headings {
+		headingText := cleanHTMLText(page[heading[2]:heading[3]])
+		province, ok := provinceCodeFromHeading(headingText)
+		if !ok {
+			continue
+		}
+		sectionEnd := len(page)
+		if index+1 < len(headings) {
+			sectionEnd = headings[index+1][0]
+		}
+		for _, row := range htmlRowPattern.FindAllStringSubmatch(page[heading[1]:sectionEnd], -1) {
+			cells := htmlCellPattern.FindAllStringSubmatch(row[1], -1)
+			if len(cells) < 2 {
+				continue
+			}
+			name := cleanHTMLText(cells[0][1])
+			match := helloWeatherLinePattern.FindStringSubmatch(name + " " + cleanHTMLText(cells[1][1]))
+			if len(match) != 3 {
+				continue
+			}
+			code := digitsOnly(match[2])
+			if name == "" || len(code) != 5 {
+				continue
+			}
+			if _, exists := out[code]; !exists {
+				out[code] = locationRecord{Code: code, Source: "hello_weather", Name: name, Province: province}
+			}
+		}
+	}
+
+	// Keep a text-only fallback for fixtures and simplified mirrors of the page.
 	province := ""
 	for _, line := range htmlTextLines(page) {
 		if code, ok := provinceCodeFromHeading(line); ok {
@@ -854,7 +993,7 @@ func parseHelloWeatherCodes(page string) map[string]locationRecord {
 			continue
 		}
 		name := strings.TrimSpace(match[1])
-		code := strings.TrimSpace(match[2])
+		code := digitsOnly(match[2])
 		if name == "" || code == "" {
 			continue
 		}
@@ -869,6 +1008,20 @@ func parseHelloWeatherCodes(page string) map[string]locationRecord {
 		}
 	}
 	return out
+}
+
+func cleanHTMLText(value string) string {
+	return collapseSpace(html.UnescapeString(htmlTagPattern.ReplaceAllString(value, " ")))
+}
+
+func digitsOnly(value string) string {
+	var builder strings.Builder
+	for _, char := range value {
+		if char >= '0' && char <= '9' {
+			builder.WriteRune(char)
+		}
+	}
+	return builder.String()
 }
 
 func htmlTextLines(page string) []string {

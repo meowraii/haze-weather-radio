@@ -11,6 +11,7 @@ import (
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alerttext"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/capmodel"
+	"github.com/meowraii/haze-weather-radio/services/go/internal/locationdb"
 )
 
 const maxIVRAlertMenuOptions = 9
@@ -260,7 +261,7 @@ func (s *Service) locationMenuAlertText(location ResolvedLocation, alertCount in
 	if options == "" {
 		options = "1 for regional observations, 2 for your 7 day outlook, 3 for air quality indices, 4 for the climate summary, 5 for the thunderstorm outlook, or 6 for specialty products."
 	}
-	return fmt.Sprintf("%s has %s in effect. Please press the asterisk key, or %s", spokenLocationName(location), ivrAlertCountPhrase(alertCount), options)
+	return fmt.Sprintf("%s has %s in effect. Press star for the alert menu, or %s", spokenLocationName(location), ivrAlertCountPhrase(alertCount), options)
 }
 
 func (s *Service) locationMenuAlertLine(location ResolvedLocation) string {
@@ -334,8 +335,12 @@ func (s *Service) alertReadoutText(location ResolvedLocation, alert ivrActiveAle
 	info := alert.Info
 	areas := ivrAlertAreaNames(info)
 	areaText := alerttext.JoinParts(areas)
-	if len(areas) > 6 || len(areaText) > 360 {
-		areaText = spokenLocationName(location) + " area"
+	if !alerttext.BypassForecastRegionCollapse(info) {
+		if collapsed := s.ivrForecastRegionAreaText(location, info); collapsed != "" {
+			areaText = collapsed
+		} else if len(areas) > 6 || len(areaText) > 360 {
+			areaText = spokenLocationName(location) + " area"
+		}
 	}
 	text := alerttext.BuildCAPAlertText(alerttext.CAPMessageRequest{
 		Alert:     alert.Alert,
@@ -351,6 +356,148 @@ func (s *Service) alertReadoutText(location ResolvedLocation, alert ivrActiveAle
 		return firstNonBlank(info.Description, info.Headline, alert.Title, "Alert details are not available.")
 	}
 	return text
+}
+
+func (s *Service) ivrForecastRegionAreaText(location ResolvedLocation, info capmodel.AlertInfo) string {
+	feedID := strings.TrimSpace(location.FeedID)
+	if feedID == "" {
+		return ""
+	}
+	var feed *feedXML
+	for index := range s.cfg.Feeds {
+		if strings.EqualFold(s.cfg.Feeds[index].ID, feedID) {
+			feed = &s.cfg.Feeds[index]
+			break
+		}
+	}
+	if feed == nil || len(feed.Locations.Coverage.Regions) == 0 {
+		return ""
+	}
+	alertCodes := ivrAlertCoverageCodes(info)
+	if len(alertCodes) == 0 {
+		return ""
+	}
+
+	snapshot, snapshotOK := locationdb.Load(s.cfg.BaseDir)
+	var clcPlaces []locationdb.Place
+	if snapshotOK {
+		clcPlaces = snapshot.PlacesBySource("clc")
+	}
+	coveredCodes := map[string]struct{}{}
+	regionNames := make([]string, 0, len(feed.Locations.Coverage.Regions))
+	for _, region := range feed.Locations.Coverage.Regions {
+		regionID := ivrCanonicalAlertCode(region.ID)
+		if regionID == "" {
+			continue
+		}
+		required := map[string]struct{}{}
+		for _, subregion := range region.Subregions {
+			if code := ivrCanonicalAlertCode(subregion.ID); code != "" {
+				required[code] = struct{}{}
+			}
+		}
+		if strings.EqualFold(region.Source, "eccc") && len(regionID) >= 4 && strings.HasSuffix(regionID, "00") {
+			prefix := regionID[:4]
+			for _, place := range clcPlaces {
+				code := ivrCanonicalAlertCode(place.Code)
+				if code != regionID && strings.HasPrefix(code, prefix) {
+					required[code] = struct{}{}
+				}
+			}
+		}
+		_, complete := alertCodes[regionID]
+		if !complete && len(required) > 0 {
+			complete = true
+			for code := range required {
+				if _, ok := alertCodes[code]; !ok {
+					complete = false
+					break
+				}
+			}
+		}
+		if !complete {
+			continue
+		}
+		name := strings.TrimSpace(region.Name)
+		if name == "" && snapshotOK {
+			if place, ok := snapshot.Place("forecast", regionID); ok {
+				name = strings.TrimSpace(place.Name)
+			}
+		}
+		if name == "" {
+			continue
+		}
+		regionNames = append(regionNames, name)
+		coveredCodes[regionID] = struct{}{}
+		for code := range required {
+			coveredCodes[code] = struct{}{}
+		}
+	}
+	if len(regionNames) == 0 {
+		return ""
+	}
+
+	leftovers := make([]string, 0, len(info.Areas))
+	seen := map[string]struct{}{}
+	for _, area := range info.Areas {
+		covered := false
+		for _, geocode := range area.Geocodes {
+			if _, ok := coveredCodes[ivrCanonicalAlertCode(geocode.Value)]; ok {
+				covered = true
+				break
+			}
+		}
+		if covered {
+			continue
+		}
+		desc := alerttext.CleanFragment(area.Description)
+		if desc == "" {
+			continue
+		}
+		key := strings.ToLower(desc)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		leftovers = append(leftovers, desc)
+	}
+	collapsed := alerttext.ForecastRegionAreaPhrase(regionNames)
+	if len(leftovers) > 0 {
+		collapsed += "; and " + alerttext.JoinParts(leftovers)
+	}
+	return collapsed
+}
+
+func ivrAlertCoverageCodes(info capmodel.AlertInfo) map[string]struct{} {
+	codes := map[string]struct{}{}
+	add := func(raw string) {
+		for _, part := range strings.FieldsFunc(raw, func(ch rune) bool {
+			return ch == ',' || ch == ';' || ch == '|' || ch == '\n' || ch == '\r' || ch == '\t'
+		}) {
+			if code := ivrCanonicalAlertCode(part); code != "" {
+				codes[code] = struct{}{}
+			}
+		}
+	}
+	for _, area := range info.Areas {
+		for _, geocode := range area.Geocodes {
+			add(geocode.Value)
+		}
+	}
+	for _, param := range info.Parameters {
+		name := strings.ToLower(strings.TrimSpace(param.Name))
+		if strings.Contains(name, "status") || strings.Contains(name, "coverage") {
+			continue
+		}
+		if strings.Contains(name, "newly_active_areas") || strings.Contains(name, "clc") || strings.Contains(name, "location") {
+			add(param.Value)
+		}
+	}
+	return codes
+}
+
+func ivrCanonicalAlertCode(raw string) string {
+	return strings.ToUpper(strings.TrimSpace(raw))
 }
 
 func ivrAlertAreaNames(info capmodel.AlertInfo) []string {

@@ -29,7 +29,11 @@ const LIVE_BREAKIN_MAX_BUFFER_MS: u32 = 750;
 const PCM_PUBLISH_QUEUE_CAPACITY: usize = 8;
 const ROUTINE_AUDIO_QUEUE_CAPACITY: usize = 16;
 const PRIORITY_AUDIO_QUEUE_CAPACITY: usize = 16;
+const PRIORITY_PREPARE_QUEUE_CAPACITY: usize = 16;
+const PRIORITY_PENDING_QUEUE_CAPACITY: usize = PRIORITY_AUDIO_QUEUE_CAPACITY;
+const BREAKIN_COMMAND_QUEUE_CAPACITY: usize = 128;
 const PACKAGE_REQUEST_QUEUE_CAPACITY: usize = 8;
+const CONTROL_QUEUE_CAPACITY: usize = 16;
 const DEFERRED_ROUTINE_QUEUE_CAPACITY: usize = 2;
 const COMPLETED_ROUTINE_HISTORY_CAPACITY: usize = 128;
 const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
@@ -57,6 +61,12 @@ struct PlayoutControl {
     action: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct AfterCurrentAction {
+    action: String,
+    target_item_id: String,
+}
+
 #[derive(Debug, Clone)]
 struct AudioItem {
     id: String,
@@ -64,7 +74,6 @@ struct AudioItem {
     title: String,
     pcm: SharedPcm,
     metadata: AudioItemMetadata,
-    resume_offset: usize,
     gap_after: Duration,
     not_before: Option<DateTime<Utc>>,
     queued_at: String,
@@ -226,7 +235,7 @@ enum ItemSource {
 struct FeedHandle {
     feed: FeedConfig,
     audio_tx: mpsc::Sender<AudioItem>,
-    priority_tx: mpsc::Sender<AudioItem>,
+    priority_prepare_tx: mpsc::Sender<Value>,
     breakin_tx: mpsc::Sender<BreakInCommand>,
     request_tx: mpsc::Sender<PackageRequest>,
     control_tx: mpsc::Sender<PlayoutControl>,
@@ -462,26 +471,13 @@ async fn dispatch_event(
         "cap.alert.audio.ready" => {
             let targets = feed_targets_from_event(&event);
             for handle in matching_feed_handles(handles, &targets) {
-                let cfg = Arc::clone(cfg);
-                let audio_cache = Arc::clone(audio_cache);
                 let data = bridge::data(&event).clone();
-                let feed = handle.feed.clone();
-                let priority_tx = handle.priority_tx.clone();
-                tokio::spawn(async move {
-                    match audio_item_from_priority_ready(&cfg, &audio_cache, &feed, data).await {
-                        Ok(item) => {
-                            if priority_tx.send(item).await.is_err() {
-                                tracing::warn!(
-                                    feed_id = feed.id,
-                                    "priority queue closed before alert audio could be queued"
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            tracing::warn!(feed_id = feed.id, "priority alert rejected: {err}")
-                        }
-                    }
-                });
+                if handle.priority_prepare_tx.send(data).await.is_err() {
+                    tracing::warn!(
+                        feed_id = handle.feed.id,
+                        "priority preparation queue closed before alert audio could be queued"
+                    );
+                }
             }
         }
         "playlist.control" => {
@@ -687,9 +683,11 @@ impl FeedHandle {
     ) -> Self {
         let (audio_tx, audio_rx) = mpsc::channel(ROUTINE_AUDIO_QUEUE_CAPACITY);
         let (priority_tx, priority_rx) = mpsc::channel(PRIORITY_AUDIO_QUEUE_CAPACITY);
-        let (breakin_tx, breakin_rx) = mpsc::channel(128);
+        let (priority_prepare_tx, priority_prepare_rx) =
+            mpsc::channel(PRIORITY_PREPARE_QUEUE_CAPACITY);
+        let (breakin_tx, breakin_rx) = mpsc::channel(BREAKIN_COMMAND_QUEUE_CAPACITY);
         let (request_tx, request_rx) = mpsc::channel(PACKAGE_REQUEST_QUEUE_CAPACITY);
-        let (control_tx, control_rx) = mpsc::channel(16);
+        let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
 
         tokio::spawn(package_builder(
             Arc::clone(&cfg),
@@ -698,6 +696,13 @@ impl FeedHandle {
             Arc::clone(&audio_cache),
             request_rx,
             audio_tx.clone(),
+        ));
+        tokio::spawn(priority_builder(
+            Arc::clone(&cfg),
+            feed.clone(),
+            Arc::clone(&audio_cache),
+            priority_prepare_rx,
+            priority_tx.clone(),
         ));
 
         if feed.same_enabled() {
@@ -731,7 +736,7 @@ impl FeedHandle {
                 breakin_rx,
                 control_rx,
                 sinks: Vec::new(),
-                after_current_action: String::new(),
+                after_current_action: None,
                 paused: false,
             }
             .run(),
@@ -740,7 +745,7 @@ impl FeedHandle {
         Self {
             feed,
             audio_tx,
-            priority_tx,
+            priority_prepare_tx,
             breakin_tx,
             request_tx,
             control_tx,
@@ -758,7 +763,7 @@ struct FeedRunner {
     breakin_rx: mpsc::Receiver<BreakInCommand>,
     control_rx: mpsc::Receiver<PlayoutControl>,
     sinks: Vec<Box<dyn Sink>>,
-    after_current_action: String,
+    after_current_action: Option<AfterCurrentAction>,
     paused: bool,
 }
 
@@ -801,6 +806,8 @@ impl FeedRunner {
         let mut current: Option<AudioItem> = None;
         let mut pending: Option<AudioItem> = None;
         let mut priority_pending = VecDeque::<AudioItem>::new();
+        let mut interrupted_priority: Option<AudioItem> = None;
+        let mut interrupted_routine: Option<AudioItem> = None;
         let mut active_priority_ids = HashSet::<String>::new();
         let mut active_routine_ids = HashSet::<String>::new();
         let mut completed_routine_ids = HashSet::<String>::new();
@@ -814,12 +821,17 @@ impl FeedRunner {
         loop {
             tokio::select! {
                 Some(control) = self.control_rx.recv() => {
-                    self.apply_control(&control.action, current.is_some());
-                    if clears_deferred_routine(&control.action) {
-                        deferred_routine.clear();
-                        active_routine_ids.clear();
-                        completed_routine_ids.clear();
-                        completed_routine_order.clear();
+                    let clears_deferred = clears_deferred_routine(&control.action);
+                    self.apply_control(&control.action, current.as_ref());
+                    if clears_deferred {
+                        self.after_current_action = None;
+                        clear_deferred_routine_state(
+                            &mut interrupted_routine,
+                            &mut deferred_routine,
+                            &mut active_routine_ids,
+                            &mut completed_routine_ids,
+                            &mut completed_routine_order,
+                        );
                     }
                 }
                 Some(command) = self.breakin_rx.recv() => {
@@ -836,30 +848,43 @@ impl FeedRunner {
                             }
                             if let Some(item) = current.take() {
                                 if item.is_alert() {
-                                    active_priority_ids.remove(&item.id);
                                     spawn_interrupt_item(
                                         self.client.clone(),
                                         self.feed.id.clone(),
                                         item.clone(),
                                     );
-                                    spawn_finish_item(
+                                    debug_assert!(interrupted_priority.is_none());
+                                    interrupted_priority = Some(item);
+                                } else {
+                                    spawn_interrupt_item(
                                         self.client.clone(),
                                         self.feed.id.clone(),
-                                        item,
+                                        item.clone(),
                                     );
-                                } else {
-                                    defer_routine_front(
+                                    remember_interrupted_routine(
+                                        &mut interrupted_routine,
                                         &mut deferred_routine,
+                                        &mut active_routine_ids,
                                         &self.feed.id,
-                                        interrupted_routine_item(item, position),
+                                        item,
                                     );
                                 }
                             }
                             if let Some(item) = pending.take() {
                                 if item.is_alert() {
-                                    priority_pending.push_front(item);
+                                    enqueue_priority_front(
+                                        &mut priority_pending,
+                                        &mut active_priority_ids,
+                                        &self.feed.id,
+                                        item,
+                                    );
                                 } else {
-                                    defer_routine_back(&mut deferred_routine, &self.feed.id, item);
+                                    defer_routine_back(
+                                        &mut deferred_routine,
+                                        &mut active_routine_ids,
+                                        &self.feed.id,
+                                        item,
+                                    );
                                 }
                             }
                             position = 0;
@@ -918,36 +943,42 @@ impl FeedRunner {
                     last_media_tick = tick_now;
                     let (chunks_due, dropped_backlog) =
                         realtime_chunks_due(&mut media_remainder, elapsed);
-                    if dropped_backlog > Duration::ZERO {
-                        if dropped_backlog >= realtime_lag_warn_backlog()
-                            && last_lag_log.elapsed() >= Duration::from_secs(10)
-                        {
-                            tracing::warn!(
-                                feed_id = self.feed.id,
-                                elapsed_ms = elapsed.as_millis(),
-                                backlog_ms = dropped_backlog.as_millis(),
-                                "playout tick lagged; dropping missed realtime audio instead of bursting stale chunks"
-                            );
-                            last_lag_log = Instant::now();
-                        }
+                    if dropped_backlog > Duration::ZERO
+                        && dropped_backlog >= realtime_lag_warn_backlog()
+                        && last_lag_log.elapsed() >= Duration::from_secs(10)
+                    {
+                        tracing::warn!(
+                            feed_id = self.feed.id,
+                            elapsed_ms = elapsed.as_millis(),
+                            backlog_ms = dropped_backlog.as_millis(),
+                            "playout tick lagged; dropping missed realtime audio instead of bursting stale chunks"
+                        );
+                        last_lag_log = Instant::now();
                     }
 
                     debug_assert_eq!(chunks_due, 1);
                     {
                         let now = Utc::now();
-                        while let Ok(item) = self.priority_rx.try_recv() {
-                            if !remember_priority_item(&mut active_priority_ids, &item.id) {
-                                tracing::warn!(
-                                    feed_id = self.feed.id,
-                                    queue_id = item.id,
-                                    "skipping duplicate active priority alert"
-                                );
-                                continue;
-                            }
-                            spawn_accept_item(self.client.clone(), self.feed.id.clone(), item.clone());
-                            priority_pending.push_back(item);
+                        if let Some(done) = take_finished_breakin(&mut live_breakin) {
+                            spawn_complete_live_breakin(
+                                self.client.clone(),
+                                Arc::clone(&self.cfg),
+                                self.feed.id.clone(),
+                                done,
+                                false,
+                            );
                         }
-                        if live_breakin.is_none() && !priority_pending.is_empty()
+                        for item in drain_priority_receiver(
+                            &mut self.priority_rx,
+                            &mut priority_pending,
+                            &mut active_priority_ids,
+                            &self.feed.id,
+                        ) {
+                            spawn_accept_item(self.client.clone(), self.feed.id.clone(), item.clone());
+                        }
+                        let priority_ready =
+                            interrupted_priority.is_some() || !priority_pending.is_empty();
+                        if live_breakin.is_none() && priority_ready
                             && current.as_ref().is_some_and(|item| !item.is_alert())
                         {
                             if let Some(item) = current.take() {
@@ -956,50 +987,65 @@ impl FeedRunner {
                                     self.feed.id.clone(),
                                     item.clone(),
                                 );
-                                defer_routine_front(
+                                remember_interrupted_routine(
+                                    &mut interrupted_routine,
                                     &mut deferred_routine,
+                                    &mut active_routine_ids,
                                     &self.feed.id,
-                                    interrupted_routine_item(item, position),
+                                    item,
                                 );
                             }
-                            if let Some(item) = pending.take() {
-                                if !item.is_alert() {
-                                    defer_routine_back(&mut deferred_routine, &self.feed.id, item);
-                                } else {
-                                    priority_pending.push_front(item);
-                                }
-                            }
-                            gap_until = Instant::now();
                         }
-                        if live_breakin.is_none() && !priority_pending.is_empty()
+                        if live_breakin.is_none() && priority_ready
                             && pending.as_ref().is_some_and(|item| !item.is_alert())
                         {
-                            if let Some(item) = pending.take() {
-                                defer_routine_back(&mut deferred_routine, &self.feed.id, item);
-                            }
-                            gap_until = Instant::now();
-                        }
-                        if live_breakin.is_none() && current.is_none() && pending.is_none() && !self.paused {
-                            if let Some(item) = priority_pending.pop_front() {
-                                pending = Some(item);
-                            } else if let Some(item) = deferred_routine.pop_front() {
-                                pending = Some(item);
-                            } else if let Some(item) = next_unique_routine_item(
-                                &mut self.audio_rx,
+                            defer_pending_routine(
+                                &mut pending,
+                                &mut deferred_routine,
                                 &mut active_routine_ids,
-                                &completed_routine_ids,
                                 &self.feed.id,
-                            ) {
-                                spawn_accept_item(self.client.clone(), self.feed.id.clone(), item.clone());
-                                pending = Some(item);
+                            );
+                        }
+                        gap_until = priority_gap_deadline(
+                            gap_until,
+                            live_breakin.is_none() && priority_ready,
+                            tick_now,
+                        );
+                        if live_breakin.is_none() && current.is_none() && pending.is_none() {
+                            pending = take_next_buffered_item(
+                                &mut interrupted_priority,
+                                &mut priority_pending,
+                                &mut interrupted_routine,
+                                &mut deferred_routine,
+                                self.paused,
+                            );
+                            if pending.as_ref().is_some_and(AudioItem::is_alert) {
+                                gap_until = tick_now;
+                            } else if pending.is_none() && !self.paused {
+                                if let Some(item) = next_unique_routine_item(
+                                    &mut self.audio_rx,
+                                    &mut active_routine_ids,
+                                    &completed_routine_ids,
+                                    &self.feed.id,
+                                ) {
+                                    spawn_accept_item(self.client.clone(), self.feed.id.clone(), item.clone());
+                                    pending = Some(item);
+                                }
                             }
                         }
-                        if live_breakin.is_none() && current.is_none() && !self.paused && Instant::now() >= gap_until {
+                        let pending_can_start = pending
+                            .as_ref()
+                            .is_some_and(|item| item_can_start(item, self.paused));
+                        if live_breakin.is_none()
+                            && current.is_none()
+                            && pending_can_start
+                            && tick_now >= gap_until
+                        {
                             if let Some(item) = pending.as_ref() {
                                 if item.not_before.is_none_or(|not_before| now >= not_before) {
                                     current = pending.take();
                                     if let Some(item) = current.as_ref() {
-                                        position = item.resume_offset.min(item.pcm.len());
+                                        position = 0;
                                         spawn_start_item(
                                             self.client.clone(),
                                             Arc::clone(&self.cfg),
@@ -1019,14 +1065,7 @@ impl FeedRunner {
                                 breakin_drained = true;
                             }
                         } else if let Some(item) = current.as_ref() {
-                            let end = position.saturating_add(chunk.len());
-                            if end <= item.pcm.len() {
-                                out.copy_from_slice(&item.pcm[position..end]);
-                            } else if position < item.pcm.len() {
-                                let remaining = item.pcm.len() - position;
-                                out[..remaining].copy_from_slice(&item.pcm[position..]);
-                            }
-                            position = end;
+                            copy_item_pcm(item, &mut position, &mut out);
                         }
                         let completed_breakin = if breakin_drained {
                             live_breakin.take()
@@ -1091,6 +1130,7 @@ impl FeedRunner {
 
                         if live_breakin.is_none() && current.as_ref().is_some_and(|item| position >= item.pcm.len()) {
                             if let Some(item) = current.take() {
+                                let completed_item_id = item.id.clone();
                                 if item.is_alert() {
                                     active_priority_ids.remove(&item.id);
                                 } else {
@@ -1103,15 +1143,27 @@ impl FeedRunner {
                                 }
                                 let gap_after = item.gap_after;
                                 spawn_finish_item(self.client.clone(), self.feed.id.clone(), item);
-                                gap_until = Instant::now() + gap_after;
+                                gap_until = tick_now + gap_after;
                                 spawn_update_runtime(
                                     Arc::clone(&self.cfg),
                                     self.feed.id.clone(),
                                     "Idle".to_string(),
                                 );
-                                if !self.after_current_action.is_empty() {
-                                    let action = std::mem::take(&mut self.after_current_action);
-                                    self.apply_control(&action, false);
+                                if let Some(action) = take_after_current_action(
+                                    &mut self.after_current_action,
+                                    &completed_item_id,
+                                ) {
+                                    let clears_deferred = clears_deferred_routine(&action);
+                                    self.apply_control(&action, None);
+                                    if clears_deferred {
+                                        clear_deferred_routine_state(
+                                            &mut interrupted_routine,
+                                            &mut deferred_routine,
+                                            &mut active_routine_ids,
+                                            &mut completed_routine_ids,
+                                            &mut completed_routine_order,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1122,7 +1174,7 @@ impl FeedRunner {
         }
     }
 
-    fn apply_control(&mut self, action: &str, has_current: bool) {
+    fn apply_control(&mut self, action: &str, current: Option<&AudioItem>) {
         match action {
             "pause" => self.paused = true,
             "resume" => self.paused = false,
@@ -1140,10 +1192,13 @@ impl FeedRunner {
                 self.drain_audio_queue();
             }
             "pause_after_current" | "flush_restart_after_current" | "flush_stop_after_current" => {
-                if has_current {
-                    self.after_current_action = action.to_string();
+                if let Some(current) = current {
+                    self.after_current_action = Some(AfterCurrentAction {
+                        action: action.to_string(),
+                        target_item_id: current.id.clone(),
+                    });
                 } else {
-                    self.apply_control(action.trim_end_matches("_after_current"), false);
+                    self.apply_control(action.trim_end_matches("_after_current"), None);
                 }
             }
             _ => {}
@@ -1161,26 +1216,166 @@ impl AudioItem {
     }
 }
 
-fn interrupted_routine_item(mut item: AudioItem, position: usize) -> AudioItem {
-    item.resume_offset = position.min(item.pcm.len());
-    item
+fn item_can_start(item: &AudioItem, paused: bool) -> bool {
+    item.is_alert() || !paused
 }
 
-fn defer_routine_front(queue: &mut VecDeque<AudioItem>, feed_id: &str, item: AudioItem) {
-    trim_deferred_routine_for_insert(queue, feed_id);
+fn take_after_current_action(
+    deferred: &mut Option<AfterCurrentAction>,
+    completed_item_id: &str,
+) -> Option<String> {
+    if deferred
+        .as_ref()
+        .is_some_and(|action| action.target_item_id == completed_item_id)
+    {
+        deferred.take().map(|action| action.action)
+    } else {
+        None
+    }
+}
+
+fn priority_gap_deadline(gap_until: Instant, priority_ready: bool, now: Instant) -> Instant {
+    if priority_ready {
+        now
+    } else {
+        gap_until
+    }
+}
+
+fn take_next_buffered_item(
+    interrupted_priority: &mut Option<AudioItem>,
+    priority_pending: &mut VecDeque<AudioItem>,
+    interrupted_routine: &mut Option<AudioItem>,
+    deferred_routine: &mut VecDeque<AudioItem>,
+    paused: bool,
+) -> Option<AudioItem> {
+    interrupted_priority
+        .take()
+        .or_else(|| priority_pending.pop_front())
+        .or_else(|| {
+            (!paused)
+                .then(|| {
+                    interrupted_routine
+                        .take()
+                        .or_else(|| deferred_routine.pop_front())
+                })
+                .flatten()
+        })
+}
+
+fn drain_priority_receiver(
+    priority_rx: &mut mpsc::Receiver<AudioItem>,
+    priority_pending: &mut VecDeque<AudioItem>,
+    active_priority_ids: &mut HashSet<String>,
+    feed_id: &str,
+) -> Vec<AudioItem> {
+    let mut accepted = Vec::new();
+    while priority_pending.len() < PRIORITY_PENDING_QUEUE_CAPACITY {
+        let Ok(item) = priority_rx.try_recv() else {
+            break;
+        };
+        if !remember_priority_item(active_priority_ids, &item.id) {
+            tracing::warn!(
+                feed_id,
+                queue_id = item.id,
+                "skipping duplicate active priority alert"
+            );
+            continue;
+        }
+        accepted.push(item.clone());
+        priority_pending.push_back(item);
+    }
+    accepted
+}
+
+fn remember_interrupted_routine(
+    interrupted_routine: &mut Option<AudioItem>,
+    deferred_routine: &mut VecDeque<AudioItem>,
+    active_routine_ids: &mut HashSet<String>,
+    feed_id: &str,
+    item: AudioItem,
+) {
+    if let Some(previous) = interrupted_routine.replace(item) {
+        defer_routine_front(deferred_routine, active_routine_ids, feed_id, previous);
+    }
+}
+
+fn defer_pending_routine(
+    pending: &mut Option<AudioItem>,
+    deferred_routine: &mut VecDeque<AudioItem>,
+    active_routine_ids: &mut HashSet<String>,
+    feed_id: &str,
+) -> bool {
+    let Some(item) = pending.take() else {
+        return false;
+    };
+    if item.is_alert() {
+        *pending = Some(item);
+        return false;
+    }
+    defer_routine_back(deferred_routine, active_routine_ids, feed_id, item);
+    true
+}
+
+fn enqueue_priority_front(
+    queue: &mut VecDeque<AudioItem>,
+    active_priority_ids: &mut HashSet<String>,
+    feed_id: &str,
+    item: AudioItem,
+) {
+    if queue.len() >= PRIORITY_PENDING_QUEUE_CAPACITY {
+        if let Some(dropped) = queue.pop_back() {
+            active_priority_ids.remove(&dropped.id);
+            tracing::warn!(
+                feed_id,
+                queue_id = dropped.id,
+                "priority queue is full; dropping newest queued priority while restoring FIFO"
+            );
+        }
+    }
     queue.push_front(item);
 }
 
-fn defer_routine_back(queue: &mut VecDeque<AudioItem>, feed_id: &str, item: AudioItem) {
-    trim_deferred_routine_for_insert(queue, feed_id);
+fn copy_item_pcm(item: &AudioItem, position: &mut usize, out: &mut [u8]) -> usize {
+    let start = (*position).min(item.pcm.len());
+    let take = out.len().min(item.pcm.len().saturating_sub(start));
+    if take > 0 {
+        out[..take].copy_from_slice(&item.pcm[start..start + take]);
+        *position = start + take;
+    }
+    take
+}
+
+fn defer_routine_front(
+    queue: &mut VecDeque<AudioItem>,
+    active_routine_ids: &mut HashSet<String>,
+    feed_id: &str,
+    item: AudioItem,
+) {
+    trim_deferred_routine_for_insert(queue, active_routine_ids, feed_id);
+    queue.push_front(item);
+}
+
+fn defer_routine_back(
+    queue: &mut VecDeque<AudioItem>,
+    active_routine_ids: &mut HashSet<String>,
+    feed_id: &str,
+    item: AudioItem,
+) {
+    trim_deferred_routine_for_insert(queue, active_routine_ids, feed_id);
     queue.push_back(item);
 }
 
-fn trim_deferred_routine_for_insert(queue: &mut VecDeque<AudioItem>, feed_id: &str) {
+fn trim_deferred_routine_for_insert(
+    queue: &mut VecDeque<AudioItem>,
+    active_routine_ids: &mut HashSet<String>,
+    feed_id: &str,
+) {
     while queue.len() >= DEFERRED_ROUTINE_QUEUE_CAPACITY {
         let Some(dropped) = queue.pop_back() else {
             break;
         };
+        active_routine_ids.remove(&dropped.id);
         tracing::warn!(
             feed_id,
             queue_id = dropped.id,
@@ -1470,6 +1665,17 @@ async fn complete_live_breakin(
         .await;
 }
 
+fn take_finished_breakin(live_breakin: &mut Option<LiveBreakIn>) -> Option<LiveBreakIn> {
+    if live_breakin
+        .as_ref()
+        .is_some_and(|live| live.finishing && live.buffer.is_empty())
+    {
+        live_breakin.take()
+    } else {
+        None
+    }
+}
+
 fn drain_live_breakin_buffer(live: &mut LiveBreakIn, out: &mut [u8]) {
     let take = out.len().min(live.buffer.len());
     if take == 0 {
@@ -1561,10 +1767,31 @@ fn live_breakin_drop_bytes(buffer_len: usize, sample_rate: u32, channels: u16) -
 }
 
 fn clears_deferred_routine(action: &str) -> bool {
+    let normalized = action.trim().to_ascii_lowercase();
+    let action = normalized
+        .strip_suffix("_after_current")
+        .unwrap_or(&normalized);
     matches!(
-        action.trim().to_ascii_lowercase().as_str(),
+        action,
         "restart" | "flush" | "flush_pending" | "flush_restart" | "flush_stop"
     )
+}
+
+fn clear_deferred_routine_state(
+    interrupted_routine: &mut Option<AudioItem>,
+    deferred_routine: &mut VecDeque<AudioItem>,
+    active_routine_ids: &mut HashSet<String>,
+    completed_routine_ids: &mut HashSet<String>,
+    completed_routine_order: &mut VecDeque<String>,
+) {
+    if let Some(item) = interrupted_routine.take() {
+        active_routine_ids.remove(&item.id);
+    }
+    for item in deferred_routine.drain(..) {
+        active_routine_ids.remove(&item.id);
+    }
+    completed_routine_ids.clear();
+    completed_routine_order.clear();
 }
 
 async fn update_runtime(cfg: &LoadedConfig, feed_id: &str, now_playing: &str) {
@@ -1586,10 +1813,8 @@ async fn update_runtime_for_item(cfg: &LoadedConfig, feed_id: &str, item: &Audio
 }
 
 fn remaining_item_duration_ms(cfg: &LoadedConfig, item: &AudioItem) -> u64 {
-    let resume_offset = item.resume_offset.min(item.pcm.len());
-    let remaining_bytes = item.pcm.len().saturating_sub(resume_offset);
     let remaining_ms = pcm_duration_ms(
-        remaining_bytes,
+        item.pcm.len(),
         cfg.root.playout.sample_rate,
         cfg.root.playout.channels,
     );
@@ -2135,6 +2360,29 @@ fn try_reserve_routine_slot(
     }
 }
 
+async fn priority_builder(
+    cfg: Arc<LoadedConfig>,
+    feed: FeedConfig,
+    audio_cache: Arc<AudioCache>,
+    mut requests: mpsc::Receiver<Value>,
+    priority_tx: mpsc::Sender<AudioItem>,
+) {
+    while let Some(data) = requests.recv().await {
+        match audio_item_from_priority_ready(&cfg, &audio_cache, &feed, data).await {
+            Ok(item) => {
+                if priority_tx.send(item).await.is_err() {
+                    tracing::warn!(
+                        feed_id = feed.id,
+                        "priority queue closed before alert audio could be queued"
+                    );
+                    break;
+                }
+            }
+            Err(err) => tracing::warn!(feed_id = feed.id, "priority alert rejected: {err}"),
+        }
+    }
+}
+
 async fn build_package(
     cfg: &LoadedConfig,
     client: &BridgeClient,
@@ -2188,7 +2436,6 @@ async fn build_package(
         title,
         pcm,
         metadata: AudioItemMetadata::default(),
-        resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
@@ -2235,7 +2482,6 @@ async fn audio_item_from_rendered_product(
             duration_ms,
             ..Default::default()
         },
-        resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
@@ -2388,7 +2634,6 @@ async fn audio_item_from_mixed_rendered_product(
             duration_ms,
             ..Default::default()
         },
-        resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
@@ -2640,7 +2885,6 @@ async fn audio_item_from_ready(
             duration_ms,
             ..Default::default()
         },
-        resume_offset: 0,
         gap_after: package_gap(cfg),
         not_before: parse_time(bridge::first_text(
             &Value::Null,
@@ -2663,6 +2907,9 @@ async fn audio_item_from_priority_ready(
     feed: &FeedConfig,
     data: Value,
 ) -> Result<AudioItem> {
+    if priority_request_is_cancelled(&data) {
+        anyhow::bail!("priority alert is cancelled or superseded");
+    }
     let audio_path = bridge::first_text(&Value::Null, &data, &["audio_path"]);
     if audio_path.is_empty() {
         anyhow::bail!("audio_path is required");
@@ -2722,7 +2969,6 @@ async fn audio_item_from_priority_ready(
             feed_ids: value_string_array(&data, "feed_ids"),
             broadcast_immediate: bool_at(&data, "broadcast_immediate"),
         },
-        resume_offset: 0,
         gap_after: Duration::from_millis(0),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
@@ -2735,6 +2981,26 @@ async fn audio_item_from_priority_ready(
             event,
         },
     })
+}
+
+fn priority_request_is_cancelled(data: &Value) -> bool {
+    let message_type = bridge::first_text(&Value::Null, data, &["message_type", "msg_type"]);
+    if message_type.eq_ignore_ascii_case("cancel") {
+        return true;
+    }
+
+    let status = bridge::first_text(&Value::Null, data, &["status"]).to_ascii_lowercase();
+    if matches!(
+        status.as_str(),
+        "cancelled" | "canceled" | "superseded" | "failed"
+    ) {
+        return true;
+    }
+
+    let header = bridge::first_text(&Value::Null, data, &["header", "title"]).to_ascii_lowercase();
+    ["ended", "cancelled", "canceled"]
+        .iter()
+        .any(|marker| header.contains(marker))
 }
 
 async fn alert_scanner(
@@ -2951,7 +3217,6 @@ async fn audio_item_from_alert(
             feed_ids: item.feed_ids.clone(),
             broadcast_immediate: item.broadcast_immediate,
         },
-        resume_offset: 0,
         gap_after: Duration::from_millis(0),
         not_before: None,
         queued_at: Utc::now().to_rfc3339(),
@@ -3275,7 +3540,6 @@ mod tests {
                 feed_ids: vec!["sk-0001".to_string(), "CAP-IT-ALL".to_string()],
                 broadcast_immediate: true,
             },
-            resume_offset: 0,
             gap_after: Duration::from_millis(500),
             not_before: None,
             queued_at: String::new(),
@@ -3346,68 +3610,446 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_routine_item_preserves_resume_offset() {
-        let item = AudioItem {
-            id: "routine-1".to_string(),
-            package_id: "forecast".to_string(),
-            title: "Forecast".to_string(),
-            pcm: SharedPcm::owned(vec![1; 16]),
-            metadata: AudioItemMetadata::default(),
-            resume_offset: 0,
-            gap_after: Duration::from_secs(1),
-            not_before: None,
-            queued_at: String::new(),
-            target_start: String::new(),
-            predicted_start: String::new(),
-            predicted_finish: String::new(),
-            source: ItemSource::Generated,
-        };
+    fn interrupted_routine_replays_from_sample_zero_after_all_priorities() {
+        let routine_pcm = pcm16(&[10, 11, 12, 13]);
+        let routine = test_audio_item_with_pcm("routine-1", "Forecast", routine_pcm.clone());
+        let mut rendered = vec![0u8; 4];
+        let mut position = 0;
+        assert_eq!(copy_item_pcm(&routine, &mut position, &mut rendered), 4);
 
-        let resumed = interrupted_routine_item(item, 10);
+        let mut interrupted_priority = None;
+        let mut priority_pending = VecDeque::from([
+            test_priority_item("priority-1", &[20, 21]),
+            test_priority_item("priority-2", &[30, 31]),
+        ]);
+        let mut interrupted_routine = None;
+        let mut deferred_routine = VecDeque::new();
+        let mut active_routine_ids = HashSet::from([routine.id.clone()]);
+        remember_interrupted_routine(
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            &mut active_routine_ids,
+            "sk-0001",
+            routine,
+        );
 
-        assert_eq!(resumed.resume_offset, 10);
-        assert_eq!(resumed.title, "Forecast");
+        let mut starts = Vec::new();
+        while let Some(item) = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            false,
+        ) {
+            starts.push(item.id.clone());
+            let mut item_position = 0;
+            let mut item_pcm = vec![0u8; item.pcm.len()];
+            assert_eq!(
+                copy_item_pcm(&item, &mut item_position, &mut item_pcm),
+                item.pcm.len()
+            );
+            rendered.extend(item_pcm);
+        }
+
+        let mut expected = pcm16(&[10, 11]);
+        expected.extend(pcm16(&[20, 21]));
+        expected.extend(pcm16(&[30, 31]));
+        expected.extend(routine_pcm);
+        assert_eq!(starts, ["priority-1", "priority-2", "routine-1"]);
+        assert_eq!(rendered, expected);
     }
 
     #[test]
-    fn interrupted_routine_item_clamps_resume_offset_to_audio_len() {
-        let item = AudioItem {
-            id: "routine-1".to_string(),
-            package_id: "forecast".to_string(),
-            title: "Forecast".to_string(),
-            pcm: SharedPcm::owned(vec![1; 16]),
-            metadata: AudioItemMetadata::default(),
-            resume_offset: 0,
-            gap_after: Duration::from_secs(1),
-            not_before: None,
-            queued_at: String::new(),
-            target_start: String::new(),
-            predicted_start: String::new(),
-            predicted_finish: String::new(),
-            source: ItemSource::Generated,
-        };
+    fn repeated_priority_interruptions_restart_the_routine_again() {
+        let routine = test_audio_item_with_pcm("routine-1", "Forecast", pcm16(&[1, 2, 3, 4]));
+        let mut interrupted_priority = None;
+        let mut priority_pending = VecDeque::new();
+        let mut interrupted_routine = None;
+        let mut deferred_routine = VecDeque::new();
+        let mut active_routine_ids = HashSet::from([routine.id.clone()]);
+        remember_interrupted_routine(
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            &mut active_routine_ids,
+            "sk-0001",
+            routine,
+        );
 
-        let resumed = interrupted_routine_item(item, 99);
+        let replay = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            false,
+        )
+        .expect("first replay");
+        let mut replay_position = 0;
+        let mut prefix = [0u8; 4];
+        assert_eq!(copy_item_pcm(&replay, &mut replay_position, &mut prefix), 4);
 
-        assert_eq!(resumed.resume_offset, 16);
+        remember_interrupted_routine(
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            &mut active_routine_ids,
+            "sk-0001",
+            replay,
+        );
+        priority_pending.push_back(test_priority_item("priority-2", &[8, 9]));
+
+        let priority = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            false,
+        )
+        .expect("second priority");
+        let replay = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            false,
+        )
+        .expect("second replay");
+        let mut replay_position = 0;
+        let mut replayed_pcm = vec![0u8; replay.pcm.len()];
+        copy_item_pcm(&replay, &mut replay_position, &mut replayed_pcm);
+
+        assert_eq!(priority.id, "priority-2");
+        assert_eq!(replayed_pcm, pcm16(&[1, 2, 3, 4]));
+        assert!(deferred_routine.is_empty());
     }
 
     #[test]
-    fn deferred_routine_queue_drops_oldest_stale_audio() {
+    fn interrupted_priority_replays_before_queued_priorities_and_routine() {
+        let mut interrupted_priority = Some(test_priority_item("priority-active", &[1]));
+        let mut priority_pending = VecDeque::from([
+            test_priority_item("priority-queued-1", &[2]),
+            test_priority_item("priority-queued-2", &[3]),
+        ]);
+        let mut interrupted_routine = Some(test_audio_item("routine-interrupted", "Forecast"));
+        let mut deferred_routine = VecDeque::from([test_audio_item("routine-pending", "Air")]);
+        let mut order = Vec::new();
+
+        while let Some(item) = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            false,
+        ) {
+            order.push(item.id);
+        }
+
+        assert_eq!(
+            order,
+            [
+                "priority-active",
+                "priority-queued-1",
+                "priority-queued-2",
+                "routine-interrupted",
+                "routine-pending",
+            ]
+        );
+    }
+
+    #[test]
+    fn paused_routine_playout_still_allows_priority() {
+        let priority = test_priority_item("priority-1", &[1]);
+        let routine = test_audio_item("routine-1", "Forecast");
+        let mut interrupted_priority = None;
+        let mut priority_pending = VecDeque::from([priority.clone()]);
+        let mut interrupted_routine = Some(routine.clone());
+        let mut deferred_routine = VecDeque::new();
+
+        let selected = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            true,
+        )
+        .expect("priority while paused");
+
+        assert_eq!(selected.id, "priority-1");
+        assert!(item_can_start(&priority, true));
+        assert!(!item_can_start(&routine, true));
+        assert!(take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            true,
+        )
+        .is_none());
+        assert_eq!(
+            interrupted_routine.as_ref().map(|item| item.id.as_str()),
+            Some("routine-1")
+        );
+    }
+
+    #[test]
+    fn pending_routine_yields_to_priority_without_becoming_interrupted() {
+        let not_before = Utc::now() + ChronoDuration::minutes(1);
+        let mut routine = test_audio_item("routine-pending", "Forecast");
+        routine.not_before = Some(not_before);
+        let mut pending = Some(routine);
+        let mut deferred_routine = VecDeque::new();
+        let mut active_routine_ids = HashSet::from(["routine-pending".to_string()]);
+
+        assert!(defer_pending_routine(
+            &mut pending,
+            &mut deferred_routine,
+            &mut active_routine_ids,
+            "sk-0001",
+        ));
+
+        let priority = test_priority_item("priority-1", &[1]);
+        let mut interrupted_priority = None;
+        let mut priority_pending = VecDeque::from([priority]);
+        let mut interrupted_routine = None;
+        let first = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            false,
+        )
+        .expect("priority");
+        let second = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            false,
+        )
+        .expect("deferred routine");
+
+        assert!(pending.is_none());
+        assert_eq!(first.id, "priority-1");
+        assert_eq!(second.id, "routine-pending");
+        assert_eq!(second.not_before, Some(not_before));
+        assert!(active_routine_ids.contains("routine-pending"));
+    }
+
+    #[test]
+    fn priority_bypasses_only_the_existing_routine_gap() {
+        let now = Instant::now();
+        let routine_gap = now + Duration::from_secs(1);
+
+        assert_eq!(priority_gap_deadline(routine_gap, true, now), now);
+        assert_eq!(priority_gap_deadline(routine_gap, false, now), routine_gap);
+    }
+
+    #[test]
+    fn after_current_action_stays_attached_to_interrupted_routine() {
+        let mut deferred = Some(AfterCurrentAction {
+            action: "pause_after_current".to_string(),
+            target_item_id: "routine-1".to_string(),
+        });
+
+        assert_eq!(take_after_current_action(&mut deferred, "priority-1"), None);
+        assert!(deferred.is_some());
+        assert_eq!(
+            take_after_current_action(&mut deferred, "routine-1"),
+            Some("pause_after_current".to_string())
+        );
+        assert!(deferred.is_none());
+    }
+
+    #[test]
+    fn after_current_flush_actions_clear_deferred_routine_state() {
+        assert!(clears_deferred_routine("flush_restart_after_current"));
+        assert!(clears_deferred_routine("flush_stop_after_current"));
+        assert!(!clears_deferred_routine("pause_after_current"));
+
+        let mut interrupted = Some(test_audio_item("routine-interrupted", "Forecast"));
+        let mut deferred = VecDeque::from([test_audio_item("routine-pending", "Air")]);
+        let mut active = HashSet::from([
+            "routine-interrupted".to_string(),
+            "routine-pending".to_string(),
+        ]);
+        let mut completed = HashSet::from(["routine-old".to_string()]);
+        let mut completed_order = VecDeque::from(["routine-old".to_string()]);
+
+        clear_deferred_routine_state(
+            &mut interrupted,
+            &mut deferred,
+            &mut active,
+            &mut completed,
+            &mut completed_order,
+        );
+
+        assert!(interrupted.is_none());
+        assert!(deferred.is_empty());
+        assert!(active.is_empty());
+        assert!(completed.is_empty());
+        assert!(completed_order.is_empty());
+    }
+
+    #[test]
+    fn breakin_completion_does_not_complete_or_consume_interrupted_routine() {
+        let routine = test_audio_item_with_pcm("routine-1", "Forecast", pcm16(&[1, 2, 3]));
+        let routine_pcm = routine.pcm.clone();
+        let mut interrupted_routine = Some(routine);
+        let mut live_breakin = Some(LiveBreakIn {
+            id: "breakin-1".to_string(),
+            title: "Operator Break-in".to_string(),
+            buffer: VecDeque::new(),
+            finishing: true,
+        });
+
+        let completed_breakin = take_finished_breakin(&mut live_breakin).expect("break-in done");
+        assert_eq!(completed_breakin.id, "breakin-1");
+
+        let mut after_current = Some(AfterCurrentAction {
+            action: "pause_after_current".to_string(),
+            target_item_id: "routine-1".to_string(),
+        });
+        assert_eq!(
+            take_after_current_action(&mut after_current, &completed_breakin.id),
+            None
+        );
+        assert!(interrupted_routine.is_some());
+
+        let mut interrupted_priority = None;
+        let mut priority_pending = VecDeque::new();
+        let mut deferred_routine = VecDeque::new();
+        let replay = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred_routine,
+            false,
+        )
+        .expect("interrupted routine replay");
+        assert_eq!(replay.id, "routine-1");
+        assert_eq!(replay.pcm.as_ref(), routine_pcm.as_ref());
+        assert_eq!(
+            take_after_current_action(&mut after_current, &replay.id),
+            Some("pause_after_current".to_string())
+        );
+    }
+
+    #[test]
+    fn priority_pending_queue_stops_draining_at_capacity() {
+        let mut priority_pending = VecDeque::new();
+        let mut active_priority_ids = HashSet::new();
+        for index in 0..(PRIORITY_PENDING_QUEUE_CAPACITY - 1) {
+            let item = test_priority_item(&format!("active-{index}"), &[1]);
+            active_priority_ids.insert(item.id.clone());
+            priority_pending.push_back(item);
+        }
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(test_priority_item("queued-1", &[2]))
+            .expect("queue first priority");
+        tx.try_send(test_priority_item("queued-2", &[3]))
+            .expect("queue second priority");
+
+        let accepted = drain_priority_receiver(
+            &mut rx,
+            &mut priority_pending,
+            &mut active_priority_ids,
+            "sk-0001",
+        );
+
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].id, "queued-1");
+        assert_eq!(priority_pending.len(), PRIORITY_PENDING_QUEUE_CAPACITY);
+        assert_eq!(
+            rx.try_recv().expect("backpressured priority").id,
+            "queued-2"
+        );
+    }
+
+    #[test]
+    fn restoring_priority_to_front_keeps_pending_queue_bounded() {
+        let mut priority_pending = VecDeque::new();
+        let mut active_priority_ids = HashSet::new();
+        for index in 0..PRIORITY_PENDING_QUEUE_CAPACITY {
+            let item = test_priority_item(&format!("priority-{index}"), &[1]);
+            active_priority_ids.insert(item.id.clone());
+            priority_pending.push_back(item);
+        }
+
+        let restored = test_priority_item("priority-restored", &[2]);
+        active_priority_ids.insert(restored.id.clone());
+        enqueue_priority_front(
+            &mut priority_pending,
+            &mut active_priority_ids,
+            "sk-0001",
+            restored,
+        );
+
+        assert_eq!(priority_pending.len(), PRIORITY_PENDING_QUEUE_CAPACITY);
+        assert_eq!(
+            priority_pending.front().map(|item| item.id.as_str()),
+            Some("priority-restored")
+        );
+        assert!(!active_priority_ids.contains("priority-15"));
+        assert!(active_priority_ids.contains("priority-restored"));
+    }
+
+    #[test]
+    fn playout_input_queues_have_explicit_bounds() {
+        const {
+            assert!(ROUTINE_AUDIO_QUEUE_CAPACITY > 0);
+            assert!(PRIORITY_AUDIO_QUEUE_CAPACITY > 0);
+            assert!(PRIORITY_PREPARE_QUEUE_CAPACITY > 0);
+            assert!(PRIORITY_PENDING_QUEUE_CAPACITY > 0);
+            assert!(BREAKIN_COMMAND_QUEUE_CAPACITY > 0);
+            assert!(PACKAGE_REQUEST_QUEUE_CAPACITY > 0);
+            assert!(CONTROL_QUEUE_CAPACITY > 0);
+        }
+    }
+
+    #[test]
+    fn duplicate_priority_does_not_consume_a_pending_slot() {
+        let mut priority_pending = VecDeque::new();
+        let mut active_priority_ids = HashSet::from(["duplicate".to_string()]);
+        let (tx, mut rx) = mpsc::channel(2);
+        tx.try_send(test_priority_item("duplicate", &[1]))
+            .expect("queue duplicate");
+        tx.try_send(test_priority_item("unique", &[2]))
+            .expect("queue unique priority");
+
+        let accepted = drain_priority_receiver(
+            &mut rx,
+            &mut priority_pending,
+            &mut active_priority_ids,
+            "sk-0001",
+        );
+
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].id, "unique");
+        assert_eq!(priority_pending.len(), 1);
+        assert_eq!(priority_pending[0].id, "unique");
+    }
+
+    #[test]
+    fn deferred_routine_queue_drops_tail_and_releases_active_id() {
         let mut deferred = VecDeque::new();
+        let mut active = HashSet::new();
 
+        active.insert("routine-1".to_string());
         defer_routine_back(
             &mut deferred,
+            &mut active,
             "sk-0001",
             test_audio_item("routine-1", "One"),
         );
+        active.insert("routine-2".to_string());
         defer_routine_back(
             &mut deferred,
+            &mut active,
             "sk-0001",
             test_audio_item("routine-2", "Two"),
         );
+        active.insert("routine-3".to_string());
         defer_routine_back(
             &mut deferred,
+            &mut active,
             "sk-0001",
             test_audio_item("routine-3", "Three"),
         );
@@ -3415,6 +4057,9 @@ mod tests {
         assert_eq!(deferred.len(), DEFERRED_ROUTINE_QUEUE_CAPACITY);
         assert_eq!(deferred[0].id, "routine-1");
         assert_eq!(deferred[1].id, "routine-3");
+        assert!(active.contains("routine-1"));
+        assert!(!active.contains("routine-2"));
+        assert!(active.contains("routine-3"));
     }
 
     #[test]
@@ -3482,13 +4127,16 @@ mod tests {
     }
 
     fn test_audio_item(id: &str, title: &str) -> AudioItem {
+        test_audio_item_with_pcm(id, title, vec![1; 16])
+    }
+
+    fn test_audio_item_with_pcm(id: &str, title: &str, pcm: Vec<u8>) -> AudioItem {
         AudioItem {
             id: id.to_string(),
             package_id: "forecast".to_string(),
             title: title.to_string(),
-            pcm: SharedPcm::owned(vec![1; 16]),
+            pcm: SharedPcm::owned(pcm),
             metadata: AudioItemMetadata::default(),
-            resume_offset: 0,
             gap_after: Duration::from_secs(1),
             not_before: None,
             queued_at: String::new(),
@@ -3497,6 +4145,34 @@ mod tests {
             predicted_finish: String::new(),
             source: ItemSource::Playlist,
         }
+    }
+
+    fn test_priority_item(id: &str, samples: &[i16]) -> AudioItem {
+        AudioItem {
+            id: id.to_string(),
+            package_id: "same_alert".to_string(),
+            title: id.to_string(),
+            pcm: SharedPcm::owned(pcm16(samples)),
+            metadata: AudioItemMetadata::default(),
+            gap_after: Duration::ZERO,
+            not_before: None,
+            queued_at: String::new(),
+            target_start: String::new(),
+            predicted_start: String::new(),
+            predicted_finish: String::new(),
+            source: ItemSource::Alert {
+                manifest_path: PathBuf::from(format!("runtime/queues/alerts/{id}.json")),
+                header: id.to_string(),
+                event: "SVR".to_string(),
+            },
+        }
+    }
+
+    fn pcm16(samples: &[i16]) -> Vec<u8> {
+        samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect()
     }
 
     #[tokio::test]
@@ -3788,6 +4464,23 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_priority_ready_payloads_are_rejected_before_playout() {
+        assert!(priority_request_is_cancelled(&json!({
+            "message_type": "Cancel"
+        })));
+        assert!(priority_request_is_cancelled(&json!({
+            "status": "superseded"
+        })));
+        assert!(priority_request_is_cancelled(&json!({
+            "header": "Severe Thunderstorm Warning ended"
+        })));
+        assert!(!priority_request_is_cancelled(&json!({
+            "status": "queued",
+            "header": "Severe Thunderstorm Warning"
+        })));
+    }
+
+    #[test]
     fn live_breakin_trim_drops_oldest_audio_on_frame_boundaries() {
         let channels = 1;
         let max = max_live_breakin_buffer_for(48_000, channels);
@@ -3802,7 +4495,7 @@ mod tests {
 
         assert!(live.buffer.len() <= max);
         assert_eq!(live.buffer.len() % live_breakin_frame_bytes(channels), 0);
-        assert_eq!(live.buffer.front().copied(), Some(8 % 251));
+        assert_eq!(live.buffer.front().copied(), Some(8));
     }
 
     #[test]
@@ -3819,6 +4512,21 @@ mod tests {
 
         assert_eq!(out, [1, 2, 3, 0, 0, 0]);
         assert!(live.buffer.is_empty());
+    }
+
+    #[test]
+    fn finished_empty_breakin_is_removed_before_rendering_silence() {
+        let mut live = Some(LiveBreakIn {
+            id: "breakin".to_string(),
+            title: "Break-in".to_string(),
+            buffer: VecDeque::new(),
+            finishing: true,
+        });
+
+        let finished = take_finished_breakin(&mut live).expect("finished break-in");
+
+        assert_eq!(finished.id, "breakin");
+        assert!(live.is_none());
     }
 
     #[test]

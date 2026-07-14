@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
@@ -27,6 +28,7 @@ const startupPrimerDelay = 2 * time.Second
 const pendingReplayInterval = 2 * time.Second
 const cachedRoutineFallbackMaxAge = 15 * time.Minute
 const cachedStartupFallbackMaxAge = 30 * time.Minute
+const productSegmentWorkerLimit = 4
 
 var errSystemShutdown = errors.New("system shutdown requested")
 
@@ -76,10 +78,15 @@ func Run(ctx context.Context, options Options) error {
 }
 
 type Service struct {
-	cfg     loadedConfig
-	bridge  *bridgeClient
-	options Options
-	feeds   map[string]*feedPlanner
+	cfg                  loadedConfig
+	bridge               *bridgeClient
+	options              Options
+	feeds                map[string]*feedPlanner
+	preparations         *preparationCoordinator
+	preparationStates    map[string]*feedPreparationState
+	priorityPending      []priorityPreparationJob
+	nextPreparationToken uint64
+	maxPriorityPending   int
 }
 
 func newService(cfg loadedConfig, bridge *bridgeClient, options Options) *Service {
@@ -87,10 +94,26 @@ func newService(cfg loadedConfig, bridge *bridgeClient, options Options) *Servic
 	for _, feed := range cfg.enabledFeeds() {
 		feeds[feed.ID] = newFeedPlanner(cfg, bridge, feed)
 	}
-	return &Service{cfg: cfg, bridge: bridge, options: options, feeds: feeds}
+	return &Service{
+		cfg:                cfg,
+		bridge:             bridge,
+		options:            options,
+		feeds:              feeds,
+		preparations:       newPreparationCoordinator(0, 0),
+		preparationStates:  make(map[string]*feedPreparationState, len(feeds)),
+		maxPriorityPending: priorityPreparationBacklog,
+	}
 }
 
 func (s *Service) runConnected(ctx context.Context) error {
+	connectedCtx, cancel := context.WithCancel(ctx)
+	defer func() {
+		cancel()
+		if s.preparations != nil {
+			s.preparations.wait()
+			s.discardUncommittedPreparations()
+		}
+	}()
 	_ = s.bridge.Publish(map[string]any{
 		"type":   "service.ready",
 		"source": serviceID,
@@ -101,24 +124,64 @@ func (s *Service) runConnected(ctx context.Context) error {
 	})
 	ticker := time.NewTicker(s.options.Tick)
 	defer ticker.Stop()
-	for {
+	var preparationResults <-chan preparationResult
+	if s.preparations != nil {
+		preparationResults = s.preparations.results
+	}
+	events := s.bridge.Events()
+	criticalEvents := s.bridge.CriticalEvents()
+	for events != nil || criticalEvents != nil {
+		// Give CAP broadcast and cancellation traffic a chance to run before
+		// ordinary bridge traffic when both lanes are ready.
+		if criticalEvents != nil {
+			select {
+			case event, ok := <-criticalEvents:
+				if !ok {
+					criticalEvents = nil
+					continue
+				}
+				if stringAt(event, "type") == "system.shutdown" {
+					return errSystemShutdown
+				}
+				s.handleEvent(connectedCtx, event)
+				continue
+			default:
+			}
+		}
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case event, ok := <-s.bridge.Events():
+		case <-connectedCtx.Done():
+			return connectedCtx.Err()
+		case event, ok := <-events:
 			if !ok {
-				return fmt.Errorf("bridge event stream closed")
+				events = nil
+				if criticalEvents == nil {
+					return fmt.Errorf("bridge event stream closed")
+				}
+				continue
 			}
 			if stringAt(event, "type") == "system.shutdown" {
 				return errSystemShutdown
 			}
-			s.handleEvent(ctx, event)
-		case now := <-ticker.C:
-			for _, feed := range s.feeds {
-				feed.tick(ctx, now, s.options.Lookahead)
+			s.handleEvent(connectedCtx, event)
+		case event, ok := <-criticalEvents:
+			if !ok {
+				criticalEvents = nil
+				if events == nil {
+					return fmt.Errorf("bridge event stream closed")
+				}
+				continue
 			}
+			if stringAt(event, "type") == "system.shutdown" {
+				return errSystemShutdown
+			}
+			s.handleEvent(connectedCtx, event)
+		case result := <-preparationResults:
+			s.handlePreparationResult(connectedCtx, result)
+		case now := <-ticker.C:
+			s.tickFeeds(connectedCtx, now, "")
 		}
 	}
+	return fmt.Errorf("bridge event stream closed")
 }
 
 func (s *Service) handleEvent(ctx context.Context, event map[string]any) {
@@ -128,27 +191,41 @@ func (s *Service) handleEvent(ctx context.Context, event map[string]any) {
 		feedID := firstText(event, data, "feed_id")
 		action := firstText(event, data, "action")
 		for _, planner := range s.matchFeeds(feedID) {
+			s.invalidateRoutinePreparation(planner)
 			planner.applyControl(action)
 		}
 	case "playlist.insert":
 		data := mapAt(event, "data")
 		feedID := firstText(event, data, "feed_id")
 		for _, planner := range s.matchFeeds(feedID) {
-			planner.insert(ctx, data)
+			s.invalidateRoutinePreparation(planner)
+			if s.preparations == nil {
+				planner.insert(ctx, data)
+				continue
+			}
+			planner.prepareInsertPosition(data)
+			s.startRoutineInsert(ctx, planner, data)
 		}
 	case "cap.alert.broadcast.requested":
-		data := mapAt(event, "data")
+		data := eventDataWithIdentity(event)
 		for _, planner := range s.matchFeedsFromEvent(event) {
-			planner.queuePriorityAlert(ctx, data)
+			if s.preparations == nil {
+				planner.queuePriorityAlert(ctx, data)
+				continue
+			}
+			s.enqueuePriorityPreparation(ctx, planner, data)
 		}
 	case "cap.alert.cancelled":
-		data := mapAt(event, "data")
+		data := eventDataWithIdentity(event)
 		for _, planner := range s.matchFeedsFromEvent(event) {
+			s.cancelPriorityPreparations(planner, data)
+			s.invalidateRoutinePreparation(planner)
 			planner.cancelPriorityAlerts(data)
 			planner.invalidateRoutineAlerts(true)
 		}
 	case "cap.alert.registry.updated":
 		for _, planner := range s.matchFeedsFromEvent(event) {
+			s.invalidateRoutinePreparation(planner)
 			planner.invalidateRoutineAlerts(false)
 		}
 	case "playout.started":
@@ -180,6 +257,7 @@ func (s *Service) handleEvent(ctx context.Context, event map[string]any) {
 		}
 	case "alert.playout.started":
 		for _, planner := range s.matchFeedsFromEvent(event) {
+			s.invalidateRoutinePreparation(planner)
 			planner.markPriorityStarted()
 		}
 	case "alert.playout.completed":
@@ -194,6 +272,30 @@ func (s *Service) handleEvent(ctx context.Context, event map[string]any) {
 			planner.replayPendingItems()
 		}
 	}
+}
+
+func eventDataWithIdentity(event map[string]any) map[string]any {
+	data := mapAt(event, "data")
+	copyData := make(map[string]any, len(data)+2)
+	for key, value := range data {
+		copyData[key] = value
+	}
+	if firstText(nil, copyData, "alert_id", "id", "subject") == "" {
+		if subject := firstText(event, nil, "alert_id", "id", "subject"); subject != "" {
+			copyData["alert_id"] = subject
+		}
+	}
+	if firstText(nil, copyData, "feed_id") == "" {
+		if feedID := firstText(event, nil, "feed_id"); feedID != "" {
+			copyData["feed_id"] = feedID
+		}
+	}
+	if _, ok := copyData["alert_ids"]; !ok {
+		if alertIDs, ok := event["alert_ids"]; ok {
+			copyData["alert_ids"] = alertIDs
+		}
+	}
+	return copyData
 }
 
 func (s *Service) matchFeeds(feedID string) []*feedPlanner {
@@ -237,6 +339,8 @@ type feedPlanner struct {
 	cfg                  loadedConfig
 	bridge               *bridgeClient
 	feed                 feedXML
+	sameGenerator        sameGeneratorFunc
+	segmentSynthesizer   func(context.Context, int, string) ([]byte, error)
 	mode                 string
 	modeBeforePriority   string
 	priorityActive       int
@@ -295,6 +399,15 @@ type priorityAlertManifest struct {
 	Priority           string             `json:"priority"`
 	AuthoritativeURL   string             `json:"authoritative_url,omitempty"`
 	LastError          string             `json:"last_error,omitempty"`
+}
+
+type priorityAlertPreparation struct {
+	Manifest       priorityAlertManifest
+	Data           map[string]any
+	AlertText      string
+	SAMEHeader     string
+	AudioPath      string
+	FinalAudioPath string
 }
 
 type fixedEvent struct {
@@ -603,6 +716,7 @@ func (p *feedPlanner) buildProduct(ctx context.Context, pkgID string, source str
 		OutputPath:       outputPath,
 		TargetSampleRate: p.cfg.Root.Playout.SampleRate,
 		TargetChannels:   p.cfg.Root.Playout.Channels,
+		Priority:         "normal",
 	})
 	if err != nil {
 		if cached, ok := p.cachedProductItem(pkgID, product, source, targetRaw, timelineEnd, now, p.cacheFallbackMaxAge(source)); ok {
@@ -777,10 +891,21 @@ func (p *feedPlanner) renderProductForBuild(ctx context.Context, queueID string,
 }
 
 func (p *feedPlanner) queueStartupPrimer(ctx context.Context, now time.Time) {
+	for _, item := range p.prepareStartupPrimer(ctx, now) {
+		p.queue = append(p.queue, item)
+		if err := p.publishReady(item); err != nil {
+			p.lastError = err.Error()
+			return
+		}
+	}
+}
+
+func (p *feedPlanner) prepareStartupPrimer(ctx context.Context, now time.Time) []playlistItem {
 	timelineEnd := p.timelineEnd(now)
+	items := make([]playlistItem, 0, 3)
 	for index, pkgID := range []string{"station_id", "date_time", "current_conditions"} {
 		if ctx.Err() != nil || p.mode != "running" || p.priorityActive > 0 {
-			return
+			return items
 		}
 		targetRaw := ""
 		if index == 0 && !p.startupPrimerAt.IsZero() {
@@ -793,19 +918,16 @@ func (p *feedPlanner) queueStartupPrimer(ctx context.Context, now time.Time) {
 			}
 			continue
 		}
-		p.queue = append(p.queue, item)
+		items = append(items, item)
 		if pkgID == "current_conditions" {
 			p.advanceRoutineCursorPast(pkgID)
-		}
-		if err := p.publishReady(item); err != nil {
-			p.lastError = err.Error()
-			return
 		}
 		if finish := parseTime(item.PredictedFinishAt); !finish.IsZero() {
 			timelineEnd = finish
 		}
 		now = time.Now()
 	}
+	return items
 }
 
 func (p *feedPlanner) buildProductAudioItem(ctx context.Context, product renderedProduct, pkgID string, source string, targetRaw string, timelineEnd time.Time, now time.Time, queueID string) (playlistItem, bool, error) {
@@ -878,38 +1000,34 @@ func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product ren
 	defer stream.Abort()
 	hasAudio := false
 	pausePCM := map[time.Duration][]byte{}
-	for index, segment := range segments {
-		if audioPath := strings.TrimSpace(segment.AudioPath); audioPath != "" {
-			scratch := filepath.Join(outputDir, fmt.Sprintf("%s-audio-%02d.wav", queueID, index))
-			pcm, err := p.routineAudioSegmentPCM(ctx, audioPath, scratch, sampleRate, channels)
-			if err != nil {
-				return playlistItem{}, true, err
-			}
-			if err := stream.Append(pcm); err != nil {
-				return playlistItem{}, true, err
-			}
-			hasAudio = true
+	for batchStart := 0; batchStart < len(segments); batchStart += productSegmentWorkerLimit {
+		batchEnd := min(batchStart+productSegmentWorkerLimit, len(segments))
+		preparedSegments, err := p.prepareProductSegments(ctx, segments[batchStart:batchEnd], batchStart, product, source, outputDir, queueID, sampleRate, channels)
+		if err != nil {
+			return playlistItem{}, true, err
 		}
-		if text := strings.TrimSpace(segment.Text); text != "" {
-			scratch := filepath.Join(outputDir, fmt.Sprintf("%s-text-%02d.wav", queueID, index))
-			pcm, err := p.synthesizeSegmentPCM(ctx, queueID, index, text, product, source, scratch, sampleRate, channels)
-			if err != nil {
-				return playlistItem{}, true, err
+		for batchIndex, prepared := range preparedSegments {
+			index := batchStart + batchIndex
+			segment := segments[index]
+			for _, pcm := range [][]byte{prepared.audioPCM, prepared.textPCM} {
+				if len(pcm) == 0 {
+					continue
+				}
+				if err := stream.Append(pcm); err != nil {
+					return playlistItem{}, true, err
+				}
+				hasAudio = true
 			}
-			if err := stream.Append(pcm); err != nil {
-				return playlistItem{}, true, err
-			}
-			hasAudio = true
-		}
-		if index < len(segments)-1 {
-			pause := productSegmentPause(segment)
-			pcm := pausePCM[pause]
-			if pcm == nil {
-				pcm = silencePCM(sampleRate, channels, pause)
-				pausePCM[pause] = pcm
-			}
-			if err := stream.Append(pcm); err != nil {
-				return playlistItem{}, true, err
+			if index < len(segments)-1 {
+				pause := productSegmentPause(segment)
+				pcm := pausePCM[pause]
+				if pcm == nil {
+					pcm = silencePCM(sampleRate, channels, pause)
+					pausePCM[pause] = pcm
+				}
+				if err := stream.Append(pcm); err != nil {
+					return playlistItem{}, true, err
+				}
 			}
 		}
 	}
@@ -941,6 +1059,81 @@ func (p *feedPlanner) buildSegmentedProductItem(ctx context.Context, product ren
 		Status:            "queued",
 		Source:            source,
 	}, true, nil
+}
+
+type preparedProductSegment struct {
+	audioPCM []byte
+	textPCM  []byte
+	err      error
+}
+
+func (p *feedPlanner) prepareProductSegments(ctx context.Context, segments []renderedSegment, indexOffset int, product renderedProduct, source string, outputDir string, queueID string, sampleRate int, channels int) ([]preparedProductSegment, error) {
+	type segmentJob struct {
+		index   int
+		segment renderedSegment
+	}
+	type segmentResult struct {
+		index    int
+		prepared preparedProductSegment
+	}
+	workerCount := min(len(segments), productSegmentWorkerLimit)
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan segmentJob, workerCount)
+	results := make(chan segmentResult, len(segments))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for job := range jobs {
+				segmentIndex := indexOffset + job.index
+				prepared := preparedProductSegment{}
+				if err := workCtx.Err(); err != nil {
+					prepared.err = err
+					results <- segmentResult{index: job.index, prepared: prepared}
+					continue
+				}
+				if audioPath := strings.TrimSpace(job.segment.AudioPath); audioPath != "" {
+					scratch := filepath.Join(outputDir, fmt.Sprintf("%s-audio-%02d.wav", queueID, segmentIndex))
+					prepared.audioPCM, prepared.err = p.routineAudioSegmentPCM(workCtx, audioPath, scratch, sampleRate, channels)
+				}
+				if prepared.err == nil {
+					if text := strings.TrimSpace(job.segment.Text); text != "" {
+						scratch := filepath.Join(outputDir, fmt.Sprintf("%s-text-%02d.wav", queueID, segmentIndex))
+						prepared.textPCM, prepared.err = p.prepareTextSegmentPCM(workCtx, queueID, segmentIndex, text, product, source, scratch, sampleRate, channels)
+					}
+				}
+				results <- segmentResult{index: job.index, prepared: prepared}
+			}
+		}()
+	}
+	for index, segment := range segments {
+		jobs <- segmentJob{index: index, segment: segment}
+	}
+	close(jobs)
+	prepared := make([]preparedProductSegment, len(segments))
+	var preparationErr error
+	for range segments {
+		result := <-results
+		prepared[result.index] = result.prepared
+		if result.prepared.err != nil && preparationErr == nil {
+			preparationErr = result.prepared.err
+			cancel()
+		}
+	}
+	workers.Wait()
+	if preparationErr != nil {
+		return nil, preparationErr
+	}
+	return prepared, nil
+}
+
+func (p *feedPlanner) prepareTextSegmentPCM(ctx context.Context, queueID string, index int, text string, product renderedProduct, source string, outputPath string, sampleRate int, channels int) ([]byte, error) {
+	if p.segmentSynthesizer != nil {
+		return p.segmentSynthesizer(ctx, index, text)
+	}
+	return p.synthesizeSegmentPCM(ctx, queueID, index, text, product, source, outputPath, sampleRate, channels)
 }
 
 func playableProductSegments(product renderedProduct) []renderedSegment {
@@ -995,10 +1188,18 @@ func (p *feedPlanner) synthesizeSegmentPCM(ctx context.Context, queueID string, 
 		OutputPath:       outputPath,
 		TargetSampleRate: sampleRate,
 		TargetChannels:   channels,
+		Priority:         "normal",
 	})
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		_ = os.Remove(outputPath)
+		_ = os.Remove(outputPath + ".normalized.wav")
+		if filepath.Clean(wavPath) != filepath.Clean(outputPath) {
+			_ = os.Remove(wavPath)
+		}
+	}()
 	return playbackWAVPCM(ctx, wavPath, outputPath+".normalized.wav", sampleRate, channels)
 }
 
@@ -1007,6 +1208,11 @@ func (p *feedPlanner) routineAudioSegmentPCM(ctx context.Context, rawPath string
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if filepath.Clean(sourcePath) != filepath.Clean(scratchPath) {
+			_ = os.Remove(scratchPath)
+		}
+	}()
 	return playbackWAVPCM(ctx, sourcePath, scratchPath, sampleRate, channels)
 }
 
@@ -1205,10 +1411,30 @@ func (p *feedPlanner) buildChime(event fixedEvent, timelineEnd time.Time, now ti
 }
 
 func (p *feedPlanner) insert(ctx context.Context, data map[string]any) {
-	kind := strings.ToLower(firstText(nil, data, "kind"))
+	p.prepareInsertPosition(data)
+	prepared := p.prepareInsert(ctx, data)
+	applyRoutinePlanningState(p, prepared.planner)
+	if !prepared.ok {
+		p.writeState()
+		return
+	}
+	for _, item := range prepared.items {
+		p.queue = append(p.queue, item)
+		if err := p.publishReady(item); err != nil {
+			p.lastError = err.Error()
+			break
+		}
+	}
+	p.writeState()
+}
+
+func (p *feedPlanner) prepareInsertPosition(data map[string]any) {
 	position := strings.ToLower(firstText(nil, data, "position"))
-	if position == "next" {
-		p.queue = nil
+	if position != "next" {
+		return
+	}
+	p.queue = nil
+	if p.bridge != nil {
 		_ = p.bridge.Publish(map[string]any{
 			"type":    "playlist.control",
 			"source":  serviceID,
@@ -1216,9 +1442,17 @@ func (p *feedPlanner) insert(ctx context.Context, data map[string]any) {
 			"data":    map[string]any{"feed_id": p.feed.ID, "action": "flush_pending"},
 		})
 	}
+}
+
+func (p *feedPlanner) prepareInsert(ctx context.Context, data map[string]any) routinePreparation {
+	kind := strings.ToLower(firstText(nil, data, "kind"))
 	var item playlistItem
 	var err error
 	now := time.Now()
+	if p.bridge == nil && (kind == "product" || kind == "tts") {
+		p.lastError = "event bridge is unavailable"
+		return routinePreparation{planner: p}
+	}
 	switch kind {
 	case "product":
 		item, err = p.buildProduct(ctx, firstText(nil, data, "package_id", "pkg_id"), "operator", "", p.timelineEnd(now), now)
@@ -1227,33 +1461,63 @@ func (p *feedPlanner) insert(ctx context.Context, data map[string]any) {
 	case "audio":
 		item, err = p.buildAudioItem(firstText(nil, data, "title"), firstText(nil, data, "audio_path"), now)
 	case "same":
-		p.lastError = "SAME playlist insertion is staged for the SAME queue integration path"
-		return
+		err = fmt.Errorf("SAME playlist insertion is staged for the SAME queue integration path")
 	default:
-		p.lastError = "unknown insert kind"
-		return
+		err = fmt.Errorf("unknown insert kind")
 	}
 	if err != nil {
 		p.lastError = err.Error()
-		return
+		return routinePreparation{planner: p}
 	}
-	p.queue = append(p.queue, item)
-	_ = p.publishReady(item)
-	p.writeState()
+	return routinePreparation{planner: p, items: []playlistItem{item}, ok: true}
 }
 
 func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]any) {
-	data = alertmodel.MergePacketFields(data)
-	alertID := firstText(nil, data, "alert_id", "id", "subject")
-	if alertID == "" {
-		alertID = fmt.Sprintf("cap-%d", time.Now().UnixNano())
-	}
+	data, alertID := normalizePriorityAlertRequest(data)
 	if priorityAlertRequestStale(data, time.Now().UTC()) {
 		cleanupSupersededAlertQueueParts(p.cfg.BaseDir, p.feed.ID, alertID, "")
 		p.lastError = ""
 		p.writeState()
 		return
 	}
+	prepared, err := p.preparePriorityAlert(ctx, data)
+	if err != nil {
+		p.lastError = err.Error()
+		p.writeState()
+		return
+	}
+	if priorityAlertRequestStale(data, time.Now().UTC()) {
+		cleanupSupersededAlertQueueParts(p.cfg.BaseDir, p.feed.ID, alertID, "")
+		p.discardPriorityAlertPreparation(prepared)
+		p.lastError = ""
+		p.writeState()
+		return
+	}
+	if err := p.commitPriorityAlert(prepared); err != nil {
+		p.lastError = err.Error()
+		p.writeState()
+		return
+	}
+	p.lastError = ""
+	p.writeState()
+}
+
+func normalizePriorityAlertRequest(data map[string]any) (map[string]any, string) {
+	merged := alertmodel.MergePacketFields(data)
+	normalized := make(map[string]any, len(merged)+1)
+	for key, value := range merged {
+		normalized[key] = value
+	}
+	alertID := firstText(nil, normalized, "alert_id", "id", "subject")
+	if alertID == "" {
+		alertID = fmt.Sprintf("cap-%d", time.Now().UnixNano())
+	}
+	normalized["alert_id"] = alertID
+	return normalized, alertID
+}
+
+func (p *feedPlanner) preparePriorityAlert(ctx context.Context, data map[string]any) (prepared priorityAlertPreparation, err error) {
+	data, alertID := normalizePriorityAlertRequest(data)
 	includeSame := includeSameAlert(data)
 	includeAttentionTone := !includeSame && alertAttentionToneEnabled(data)
 	var sameRequest sameGenerateRequest
@@ -1264,36 +1528,12 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 	alertChannels := p.cfg.Root.Playout.Channels
 	if includeSame {
 		var err error
-		var sameHeaderResult map[string]any
-		sameRequest, sameHeaderResult, err = p.generatePrioritySAME(ctx, data, "header")
+		sameRequest, sameHeader, sameEOM, err = p.generatePrioritySAMEPair(ctx, data)
 		if err != nil {
-			p.lastError = "SAME header generation failed: " + err.Error()
-			p.writeState()
-			return
-		}
-		sameHeader, err = sameAudioFromResult(sameHeaderResult, p.cfg.Root.Playout.SampleRate, p.cfg.Root.Playout.Channels)
-		if err != nil {
-			p.lastError = "SAME header generation failed: " + err.Error()
-			p.writeState()
-			return
-		}
-		var sameEOMResult map[string]any
-		_, sameEOMResult, err = p.generatePrioritySAME(ctx, data, "eom")
-		if err != nil {
-			p.lastError = "SAME EOM generation failed: " + err.Error()
-			p.writeState()
-			return
-		}
-		sameEOM, err = sameAudioFromResult(sameEOMResult, sameHeader.SampleRate, sameHeader.Channels)
-		if err != nil {
-			p.lastError = "SAME EOM generation failed: " + err.Error()
-			p.writeState()
-			return
+			return priorityAlertPreparation{}, err
 		}
 		if sameHeader.SampleRate != sameEOM.SampleRate || sameHeader.Channels != sameEOM.Channels {
-			p.lastError = "SAME header and EOM formats do not match"
-			p.writeState()
-			return
+			return priorityAlertPreparation{}, fmt.Errorf("SAME header and EOM formats do not match")
 		}
 		alertSampleRate = sameHeader.SampleRate
 		alertChannels = sameHeader.Channels
@@ -1302,30 +1542,37 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		var toneResult map[string]any
 		_, toneResult, err = p.generatePrioritySAME(ctx, data, "tone")
 		if err != nil {
-			p.lastError = "attention tone generation failed: " + err.Error()
-			p.writeState()
-			return
+			return priorityAlertPreparation{}, fmt.Errorf("attention tone generation failed: %w", err)
 		}
 		attentionTone, err = sameAudioFromResult(toneResult, p.cfg.Root.Playout.SampleRate, p.cfg.Root.Playout.Channels)
 		if err != nil {
-			p.lastError = "attention tone generation failed: " + err.Error()
-			p.writeState()
-			return
+			return priorityAlertPreparation{}, fmt.Errorf("attention tone generation failed: %w", err)
 		}
 		alertSampleRate = attentionTone.SampleRate
 		alertChannels = attentionTone.Channels
 	}
-	queueID := safeID("001_" + p.feed.ID + "_" + alertID + "_cap")
+	workID := queueID("alert-prepare")
+	alertQueueID := safeID("001_" + p.feed.ID + "_" + alertID + "_cap")
 	if includeSame {
-		queueID = safeID("000_" + p.feed.ID + "_" + alertID + "_same")
+		alertQueueID = safeID("000_" + p.feed.ID + "_" + alertID + "_same")
 	}
-	audioRel := filepath.ToSlash(filepath.Join("runtime", "audio", "alerts", queueID+".pcm16le"))
-	audioPath := filepath.Join(p.cfg.BaseDir, filepath.FromSlash(audioRel))
+	audioRel := filepath.ToSlash(filepath.Join("runtime", "audio", "alerts", alertQueueID+".pcm16le"))
+	finalAudioPath := filepath.Join(p.cfg.BaseDir, filepath.FromSlash(audioRel))
+	// Keep partial and cancelled work invisible until the serialized commit.
+	audioPath := finalAudioPath + "." + workID + ".tmp"
+	defer func() {
+		if err != nil {
+			_ = os.Remove(audioPath)
+			_ = os.Remove(audioPath + ".tmp")
+			_ = os.Remove(audioPath + ".voice")
+		}
+	}()
 	voicePath := audioPath
 	if includeSame || includeAttentionTone {
 		voicePath = audioPath + ".voice"
-		defer os.Remove(voicePath)
+		defer func() { _ = os.Remove(voicePath) }()
 	}
+	synthesisID := workID
 	title := fallbackText(firstText(nil, data, "title", "header"), "Weather Alert")
 	eventName := fallbackText(firstText(nil, data, "event"), "CAP")
 	alertText := p.alertTextFromData(data)
@@ -1348,21 +1595,16 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		}
 	}
 	if source != "cap-broadcast-audio" {
-		if err := p.renderAlertTTSAsPCM(ctx, queueID, voicePath, alertText, alertSampleRate, alertChannels, data); err != nil {
+		if err := p.renderAlertTTSAsPCM(ctx, synthesisID, voicePath, alertText, alertSampleRate, alertChannels, data); err != nil {
 			if lastErr != nil {
-				p.lastError = fmt.Sprintf("broadcast audio failed: %v; TTS fallback failed: %v", lastErr, err)
-			} else {
-				p.lastError = fmt.Sprintf("alert TTS fallback failed: %v", err)
+				return priorityAlertPreparation{}, fmt.Errorf("broadcast audio failed: %v; TTS fallback failed: %w", lastErr, err)
 			}
-			p.writeState()
-			return
+			return priorityAlertPreparation{}, fmt.Errorf("alert TTS fallback failed: %w", err)
 		}
 	}
 	if includeSame {
 		if err := combineSAMEAlertAudio(audioPath, sameHeader.Audio, voicePath, sameEOM.Audio, alertSampleRate, alertChannels); err != nil {
-			p.lastError = "SAME alert assembly failed: " + err.Error()
-			p.writeState()
-			return
+			return priorityAlertPreparation{}, fmt.Errorf("SAME alert assembly failed: %w", err)
 		}
 		if source == "cap-broadcast-audio" {
 			source = "cap-same-broadcast-audio"
@@ -1371,9 +1613,7 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 		}
 	} else if includeAttentionTone {
 		if err := combineAttentionAlertAudio(audioPath, attentionTone.Audio, voicePath, alertSampleRate, alertChannels); err != nil {
-			p.lastError = "attention tone alert assembly failed: " + err.Error()
-			p.writeState()
-			return
+			return priorityAlertPreparation{}, fmt.Errorf("attention tone alert assembly failed: %w", err)
 		}
 		if source == "cap-broadcast-audio" {
 			source = "cap-tone-broadcast-audio"
@@ -1383,12 +1623,10 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 	}
 	info, err := pcmInfo(audioPath, alertSampleRate, alertChannels)
 	if err != nil {
-		p.lastError = err.Error()
-		p.writeState()
-		return
+		return priorityAlertPreparation{}, err
 	}
 	manifest := priorityAlertManifest{
-		ID:                 queueID,
+		ID:                 alertQueueID,
 		AlertID:            alertID,
 		Type:               "cap_alert",
 		Status:             "pending",
@@ -1421,18 +1659,53 @@ func (p *feedPlanner) queuePriorityAlert(ctx context.Context, data map[string]an
 	}
 	packet := p.alertPacketForManifest(data, manifest, alertText, sameHeader.Header)
 	manifest.AlertPacket = &packet
-	cleanupSupersededAlertQueueParts(p.cfg.BaseDir, p.feed.ID, alertID, queueID)
-	if err := writePriorityAlertManifest(filepath.Join(p.cfg.BaseDir, "runtime", "queues", "alerts", queueID+".json"), manifest); err != nil {
-		p.lastError = err.Error()
-		p.writeState()
+	return priorityAlertPreparation{
+		Manifest:       manifest,
+		Data:           data,
+		AlertText:      alertText,
+		SAMEHeader:     sameHeader.Header,
+		AudioPath:      audioPath,
+		FinalAudioPath: finalAudioPath,
+	}, nil
+}
+
+func (p *feedPlanner) commitPriorityAlert(prepared priorityAlertPreparation) error {
+	manifest := prepared.Manifest
+	cleanupSupersededAlertQueueParts(p.cfg.BaseDir, p.feed.ID, manifest.AlertID, manifest.ID)
+	if err := installPreparedAlertAudio(prepared.AudioPath, prepared.FinalAudioPath); err != nil {
+		return err
+	}
+	if err := writePriorityAlertManifest(filepath.Join(p.cfg.BaseDir, "runtime", "queues", "alerts", manifest.ID+".json"), manifest); err != nil {
+		_ = os.Remove(prepared.FinalAudioPath)
+		return err
+	}
+	p.publishAlertAudioReady(manifest, prepared.Data, prepared.AlertText, prepared.SAMEHeader)
+	return nil
+}
+
+func (p *feedPlanner) discardPriorityAlertPreparation(prepared priorityAlertPreparation) {
+	if strings.TrimSpace(prepared.AudioPath) == "" {
 		return
 	}
-	p.publishAlertAudioReady(manifest, data, alertText, sameHeader.Header)
-	p.lastError = ""
-	p.writeState()
+	for _, path := range []string{prepared.AudioPath, prepared.AudioPath + ".tmp", prepared.AudioPath + ".voice"} {
+		_ = os.Remove(path)
+	}
+}
+
+func installPreparedAlertAudio(sourcePath string, targetPath string) error {
+	if strings.TrimSpace(sourcePath) == "" || strings.TrimSpace(targetPath) == "" {
+		return fmt.Errorf("prepared alert audio path is missing")
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	return replaceFileAtomically(sourcePath, targetPath)
 }
 
 func (p *feedPlanner) publishAlertAudioReady(manifest priorityAlertManifest, data map[string]any, alertText string, sameHeader string) {
+	if p.bridge == nil {
+		return
+	}
 	packet := p.alertPacketForManifest(data, manifest, alertText, sameHeader)
 	base := map[string]any{
 		"feed_id":              p.feed.ID,
@@ -1537,7 +1810,7 @@ func priorityAlertRequestStale(data map[string]any, now time.Time) bool {
 	if boolAny(firstValue(nil, data, "force_broadcast", "force", "rebroadcast")) {
 		return false
 	}
-	if expires := parseTime(firstText(nil, data, "alert_expires_at", "expires")); !expires.IsZero() && now.After(expires) {
+	if expires := parseTime(firstText(nil, data, "alert_expires_at", "expires")); !expires.IsZero() && !now.Before(expires) {
 		return true
 	}
 	sent := parseTime(firstText(nil, data, "alert_sent_at", "sent"))
@@ -1549,7 +1822,7 @@ func priorityAlertRequestStale(data map[string]any, now time.Time) bool {
 	if event == "SVR" || event == "TOR" || strings.Contains(header, "severe thunderstorm warning") || strings.Contains(header, "tornado warning") {
 		limit = 30 * time.Minute
 	}
-	return now.Sub(sent) > limit
+	return now.Sub(sent) >= limit
 }
 
 func cleanupSupersededAlertQueueParts(baseDir string, feedID string, alertID string, keepID string) {
@@ -2066,7 +2339,7 @@ func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, o
 	if strings.TrimSpace(alertText) == "" {
 		return fmt.Errorf("rendered alert text is empty")
 	}
-	wavPath := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID), queueID+".wav")
+	requestedWAVPath := filepath.Join(p.cfg.OutputDir, safeID(p.feed.ID), queueID+".wav")
 	synthCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	wavPath, err := p.bridge.Synthesize(synthCtx, synthJob{
@@ -2075,12 +2348,18 @@ func (p *feedPlanner) renderAlertTTSAsPCM(ctx context.Context, queueID string, o
 		ReaderID:         readerID,
 		Language:         language,
 		Timezone:         feedTimezone(p.feed),
-		OutputPath:       wavPath,
+		OutputPath:       requestedWAVPath,
 		TargetSampleRate: sampleRate,
 		TargetChannels:   channels,
+		Priority:         "high",
 	})
 	if err != nil {
+		_ = os.Remove(requestedWAVPath)
 		return err
+	}
+	defer func() { _ = os.Remove(requestedWAVPath) }()
+	if filepath.Clean(wavPath) != filepath.Clean(requestedWAVPath) {
+		defer func() { _ = os.Remove(wavPath) }()
 	}
 	if err := wavToPCM16File(wavPath, outputPath, sampleRate, channels); err == nil {
 		return nil
@@ -2122,8 +2401,10 @@ func combineAlertAudio(outputPath string, lead []byte, voicePath string, tail []
 			if _, err := file.Write(lead); err != nil {
 				return err
 			}
-			if _, err := file.Write(silencePCM(sampleRate, channels, time.Second)); err != nil {
-				return err
+			if padding := alertTransitionPadding(lead, sampleRate, channels, time.Second); len(padding) > 0 {
+				if _, err := file.Write(padding); err != nil {
+					return err
+				}
 			}
 		}
 		if _, err := io.Copy(file, voice); err != nil {
@@ -2148,6 +2429,55 @@ func combineAlertAudio(outputPath string, lead []byte, voicePath string, tail []
 	return os.Rename(tmp, outputPath)
 }
 
+func alertTransitionPadding(lead []byte, sampleRate int, channels int, minimum time.Duration) []byte {
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	if channels <= 0 {
+		channels = 1
+	}
+	minimumFrames := int((minimum*time.Duration(sampleRate) + time.Second - 1) / time.Second)
+	remainingFrames := minimumFrames - trailingPCM16SilentFrames(lead, channels)
+	if remainingFrames <= 0 {
+		return nil
+	}
+	return make([]byte, remainingFrames*channels*2)
+}
+
+func trailingPCM16Silence(pcm []byte, sampleRate int, channels int) time.Duration {
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	if channels <= 0 {
+		channels = 1
+	}
+	silentFrames := trailingPCM16SilentFrames(pcm, channels)
+	return time.Duration(silentFrames) * time.Second / time.Duration(sampleRate)
+}
+
+func trailingPCM16SilentFrames(pcm []byte, channels int) int {
+	if channels <= 0 {
+		channels = 1
+	}
+	frameBytes := channels * 2
+	completeBytes := len(pcm) - len(pcm)%frameBytes
+	silentFrames := 0
+	for offset := completeBytes - frameBytes; offset >= 0; offset -= frameBytes {
+		silent := true
+		for _, value := range pcm[offset : offset+frameBytes] {
+			if value != 0 {
+				silent = false
+				break
+			}
+		}
+		if !silent {
+			break
+		}
+		silentFrames++
+	}
+	return silentFrames
+}
+
 func (p *feedPlanner) buildTextItem(ctx context.Context, title string, text string, now time.Time) (playlistItem, error) {
 	if strings.TrimSpace(text) == "" {
 		return playlistItem{}, fmt.Errorf("text is required")
@@ -2162,6 +2492,7 @@ func (p *feedPlanner) buildTextItem(ctx context.Context, title string, text stri
 		OutputPath:       outputPath,
 		TargetSampleRate: p.cfg.Root.Playout.SampleRate,
 		TargetChannels:   p.cfg.Root.Playout.Channels,
+		Priority:         "normal",
 	})
 	if err != nil {
 		return playlistItem{}, err
@@ -2375,6 +2706,9 @@ func (p *feedPlanner) timelineEnd(now time.Time) time.Time {
 }
 
 func (p *feedPlanner) publishReady(item playlistItem) error {
+	if p.bridge == nil {
+		return fmt.Errorf("event bridge is unavailable")
+	}
 	if err := p.bridge.Publish(map[string]any{
 		"type":    "playlist.item.ready",
 		"source":  serviceID,

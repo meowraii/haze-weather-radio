@@ -27,6 +27,8 @@ type sameGenerateRequest struct {
 	Sequence   string
 }
 
+type sameGeneratorFunc func(context.Context, string, sameGenerateRequest) (map[string]any, error)
+
 func includeSameAlert(data map[string]any) bool {
 	value, ok := data["include_same"]
 	if !ok {
@@ -97,11 +99,64 @@ func (p *feedPlanner) generatePrioritySAME(ctx context.Context, data map[string]
 	if len(request.Locations) == 0 {
 		return request, nil, fmt.Errorf("no SAME locations were supplied")
 	}
-	result, err := runSameGenerator(ctx, p.cfg.BaseDir, request)
+	result, err := p.runSameGenerator(ctx, request)
 	if err != nil {
 		return request, nil, err
 	}
 	return request, result, nil
+}
+
+func (p *feedPlanner) runSameGenerator(ctx context.Context, request sameGenerateRequest) (map[string]any, error) {
+	if p.sameGenerator != nil {
+		return p.sameGenerator(ctx, p.cfg.BaseDir, request)
+	}
+	return runSameGenerator(ctx, p.cfg.BaseDir, request)
+}
+
+func (p *feedPlanner) generatePrioritySAMEPair(ctx context.Context, data map[string]any) (sameGenerateRequest, sameAudioPayload, sameAudioPayload, error) {
+	headerRequest := p.buildSAMERequest(data, "header")
+	if len(headerRequest.Locations) == 0 {
+		return headerRequest, sameAudioPayload{}, sameAudioPayload{}, fmt.Errorf("SAME header generation failed: no SAME locations were supplied")
+	}
+	eomRequest := headerRequest
+	eomRequest.Locations = append([]string(nil), headerRequest.Locations...)
+	eomRequest.Sequence = "eom"
+	// Both parts use the same immutable request data and are assembled in a fixed order later.
+	type partResult struct {
+		sequence string
+		result   map[string]any
+		err      error
+	}
+	results := make(chan partResult, 2)
+	generate := func(request sameGenerateRequest) {
+		result, err := p.runSameGenerator(ctx, request)
+		results <- partResult{sequence: request.Sequence, result: result, err: err}
+	}
+	go generate(headerRequest)
+	go generate(eomRequest)
+
+	parts := map[string]partResult{}
+	for range 2 {
+		part := <-results
+		parts[part.sequence] = part
+	}
+	headerPart := parts["header"]
+	if headerPart.err != nil {
+		return headerRequest, sameAudioPayload{}, sameAudioPayload{}, fmt.Errorf("SAME header generation failed: %w", headerPart.err)
+	}
+	header, err := sameAudioFromResult(headerPart.result, p.cfg.Root.Playout.SampleRate, p.cfg.Root.Playout.Channels)
+	if err != nil {
+		return headerRequest, sameAudioPayload{}, sameAudioPayload{}, fmt.Errorf("SAME header generation failed: %w", err)
+	}
+	eomPart := parts["eom"]
+	if eomPart.err != nil {
+		return headerRequest, sameAudioPayload{}, sameAudioPayload{}, fmt.Errorf("SAME EOM generation failed: %w", eomPart.err)
+	}
+	eom, err := sameAudioFromResult(eomPart.result, header.SampleRate, header.Channels)
+	if err != nil {
+		return headerRequest, sameAudioPayload{}, sameAudioPayload{}, fmt.Errorf("SAME EOM generation failed: %w", err)
+	}
+	return headerRequest, header, eom, nil
 }
 
 func (p *feedPlanner) buildSAMERequest(data map[string]any, sequence string) sameGenerateRequest {

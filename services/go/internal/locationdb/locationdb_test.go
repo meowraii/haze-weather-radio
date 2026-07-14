@@ -68,3 +68,39 @@ func TestLoadPathReadsPlacesAndLinks(t *testing.T) {
 		t.Fatalf("links = %#v", snap.Links)
 	}
 }
+
+func TestBundledHelloWeatherDirectoryIsComplete(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "..", "bundle", "managed", "alert_location_map.sqlite")
+	snap, ok := LoadPath(path)
+	if !ok {
+		t.Fatalf("could not load bundled location database at %s", path)
+	}
+	locations := snap.PlacesBySource("hello_weather")
+	if len(locations) != 844 {
+		t.Fatalf("hello_weather location count = %d, want 844", len(locations))
+	}
+	tests := map[string]struct {
+		name     string
+		province string
+	}{
+		"08074": {name: "Vancouver", province: "BC"},
+		"07052": {name: "Calgary", province: "AB"},
+		"06040": {name: "Saskatoon", province: "SK"},
+		"05038": {name: "Winnipeg", province: "MB"},
+		"04143": {name: "Toronto", province: "ON"},
+		"01723": {name: "Saint John", province: "NB"},
+		"09524": {name: "Yellowknife", province: "NT"},
+		"09821": {name: "Iqaluit", province: "NU"},
+	}
+	for code, want := range tests {
+		place, found := snap.Place("hello_weather", code)
+		if !found || place.Name != want.name || place.Region != want.province {
+			t.Fatalf("hello_weather %s = %#v, found=%v", code, place, found)
+		}
+	}
+	shared, _ := snap.Place("hello_weather", "02024")
+	aliases, ok := shared.Attrs["aliases"].([]any)
+	if !ok || len(aliases) == 0 || aliases[0] != "St. John’s" {
+		t.Fatalf("shared code aliases = %#v", shared.Attrs["aliases"])
+	}
+}

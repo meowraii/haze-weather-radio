@@ -32,6 +32,8 @@ type capRegistryEntry struct {
 	UpdatedAt time.Time
 	Alert     capmodel.Alert
 	RawXML    string
+	Locations []string
+	Lineage   []string
 }
 
 type capArchiveRecord struct {
@@ -42,6 +44,8 @@ type capArchiveRecord struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 	Alert     capmodel.Alert `json:"alert"`
 	RawXML    string         `json:"raw_xml,omitempty"`
+	Locations []string       `json:"locations,omitempty"`
+	Lineage   []string       `json:"lineage,omitempty"`
 }
 
 func (s *Service) handleCAPAlert(event map[string]any) {
@@ -55,17 +59,22 @@ func (s *Service) handleCAPAlert(event map[string]any) {
 		return
 	}
 	for _, item := range updated {
+		changeData := map[string]any{
+			"feed_id":            item.FeedID,
+			"alert_id":           alert.Identifier,
+			"path":               item.Path,
+			"renderable":         item.Renderable,
+			"change":             item.Change,
+			"added_locations":    item.AddedLocations,
+			"retained_locations": item.RetainedLocations,
+			"removed_locations":  item.RemovedLocations,
+		}
 		_ = s.bridge.Publish(map[string]any{
 			"type":    "cap.alert.registry.updated",
 			"source":  serviceID,
 			"feed_id": item.FeedID,
 			"subject": alert.Identifier,
-			"data": map[string]any{
-				"feed_id":    item.FeedID,
-				"alert_id":   alert.Identifier,
-				"path":       item.Path,
-				"renderable": item.Renderable,
-			},
+			"data":    changeData,
 		})
 		if item.Cancelled {
 			_ = s.bridge.Publish(map[string]any{
@@ -74,9 +83,10 @@ func (s *Service) handleCAPAlert(event map[string]any) {
 				"feed_id": item.FeedID,
 				"subject": alert.Identifier,
 				"data": map[string]any{
-					"feed_id":   item.FeedID,
-					"alert_id":  alert.Identifier,
-					"alert_ids": item.CancelledIDs,
+					"feed_id":           item.FeedID,
+					"alert_id":          alert.Identifier,
+					"alert_ids":         item.CancelledIDs,
+					"removed_locations": item.RemovedLocations,
 				},
 			})
 		}
@@ -455,6 +465,10 @@ type capRegistryUpdate struct {
 	Broadcast          bool
 	Cancelled          bool
 	CancelledIDs       []string
+	Change             string
+	AddedLocations     []string
+	RetainedLocations  []string
+	RemovedLocations   []string
 	BroadcastImmediate bool
 	AlertText          string
 	Headline           string
@@ -479,7 +493,9 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 		return nil, nil
 	}
 
-	updates := []capRegistryUpdate{}
+	activeByFeed := loadActiveCAPEntriesByFeed(s.cfg.Store, now)
+	operatorSuppressedFeeds := capOperatorSuppressedFeeds(s.cfg.Store, alert, now)
+	updates := make([]capRegistryUpdate, 0, len(s.cfg.Feeds))
 	for _, feed := range s.cfg.Feeds {
 		if strings.TrimSpace(feed.ID) == "" || !xmlBool(feed.EnabledRaw, true) {
 			continue
@@ -510,18 +526,17 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 			storeCAPArchiveRecord(s.cfg.Store, "rejected", record)
 			continue
 		}
-		entries := loadActiveCAPEntries(s.cfg.Store, feed.ID, now)
-		archiveExpiredCAPEntries("", feed.ID, entries, now, s.cfg.Store)
-		entries = pruneCAPEntries(entries, now)
-		priorEntries := append([]capRegistryEntry(nil), entries...)
-		hadAcceptedArchive := capAcceptedArchiveContains(s.cfg.Store, feed.ID, alert.Identifier)
-		hadPriorityQueue := capPriorityQueueContains(s.cfg.BaseDir, feed.ID, alert.Identifier)
-		if hadAcceptedArchive && hadPriorityQueue && !capEntryExists(priorEntries, alert.Identifier) {
-			priorEntries = append(priorEntries, capRegistryEntry{ID: alert.Identifier})
+		entries := append([]capRegistryEntry(nil), activeByFeed[feed.ID]...)
+		for i := range entries {
+			if len(entries[i].Locations) == 0 {
+				entries[i].Locations = capFeedLocationAssignments(entries[i].Alert, feed, s.cfg.BaseDir)
+			}
+			if len(entries[i].Lineage) == 0 {
+				entries[i].Lineage = capAlertLineage(entries[i].Alert)
+			}
 		}
 		if isExplicitCAPEnd(alert) {
-			cancelledIDs := cancelledAlertIDsWithOverrides(priorEntries, alert, s.cfg.BaseDir)
-			deleteCAPReferences(s.cfg.Store, feed.ID, cancelledIDs)
+			remaining, removedLocations, cancelledIDs := applyCAPCancellation(s.cfg.Store, feed, entries, alert, now, s.cfg.BaseDir)
 			storeCAPArchiveRecord(s.cfg.Store, "expired", capArchiveRecord{
 				ID:        alert.Identifier,
 				FeedID:    feed.ID,
@@ -530,25 +545,41 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 				UpdatedAt: now,
 				Alert:     alert,
 				RawXML:    alert.RawXML,
+				Locations: removedLocations,
+				Lineage:   capAlertLineage(alert),
 			})
 			updates = append(updates, capRegistryUpdate{
-				FeedID:       feed.ID,
-				Renderable:   hasRenderableCAPEntries(removeCAPIDs(entries, cancelledIDs), now),
-				Broadcast:    false,
-				Cancelled:    true,
-				CancelledIDs: cancelledIDs,
-				SAME:         capSAMEPayload(alert, feed, s.cfg.BaseDir, now),
+				FeedID:           feed.ID,
+				Renderable:       hasRenderableCAPEntries(remaining, now),
+				Broadcast:        false,
+				Cancelled:        true,
+				CancelledIDs:     cancelledIDs,
+				Change:           capCancellationChange(removedLocations, cancelledIDs),
+				RemovedLocations: removedLocations,
+				SAME:             capSAMEPayload(alert, feed, s.cfg.BaseDir, now),
 			})
 			continue
 		}
-		if capOperatorSuppressedSameVersion(s.cfg.Store, feed.ID, alert, now) {
+
+		targetIDs := capUpdateTargetIDs(entries, alert, s.cfg.BaseDir)
+		previousLocations := capLocationsForIDs(entries, targetIDs)
+		lineage := capAlertLineage(alert)
+		for _, entry := range capEntriesForIDs(entries, targetIDs) {
+			lineage = append(lineage, entry.Lineage...)
+		}
+		lineage = sortedUniqueFolded(lineage)
+		hadAcceptedArchive := capEntryExists(entries, alert.Identifier)
+		if _, suppressed := operatorSuppressedFeeds[feed.ID]; suppressed {
 			if hadAcceptedArchive {
 				deleteCAPReferences(s.cfg.Store, feed.ID, []string{alert.Identifier})
+				remaining := removeCAPIDs(entries, []string{alert.Identifier})
 				updates = append(updates, capRegistryUpdate{
-					FeedID:     feed.ID,
-					Renderable: hasRenderableCAPEntries(removeCAPIDs(entries, []string{alert.Identifier}), now),
-					Broadcast:  false,
-					Cancelled:  false,
+					FeedID:           feed.ID,
+					Renderable:       hasRenderableCAPEntries(remaining, now),
+					Broadcast:        false,
+					Cancelled:        false,
+					Change:           "removed",
+					RemovedLocations: previousLocations,
 				})
 			}
 			continue
@@ -566,7 +597,9 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 			storeCAPArchiveRecord(s.cfg.Store, "rejected", record)
 			continue
 		}
-		if !alertMatchesFeed(alert, feed, s.cfg.BaseDir) {
+
+		currentLocations := capFeedLocationAssignments(alert, feed, s.cfg.BaseDir)
+		if len(currentLocations) == 0 {
 			record := capArchiveRecord{
 				ID:        alert.Identifier,
 				FeedID:    feed.ID,
@@ -577,19 +610,36 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 				RawXML:    alert.RawXML,
 			}
 			storeCAPArchiveRecord(s.cfg.Store, "rejected", record)
+			if len(targetIDs) > 0 {
+				deleteCAPReferences(s.cfg.Store, feed.ID, targetIDs)
+				remaining := removeCAPIDs(entries, targetIDs)
+				updates = append(updates, capRegistryUpdate{
+					FeedID:           feed.ID,
+					Renderable:       hasRenderableCAPEntries(remaining, now),
+					Change:           "removed",
+					RemovedLocations: previousLocations,
+				})
+			}
 			continue
 		}
-		entries = removeCAPReferences(entries, alert.References)
-		deleteCAPReferences(s.cfg.Store, feed.ID, parseCAPReferences(alert.References))
+
+		if capExactCAPDuplicate(entries, targetIDs, alert, currentLocations, s.cfg.BaseDir) {
+			continue
+		}
+
+		deleteCAPReferences(s.cfg.Store, feed.ID, targetIDs)
+		entries = removeCAPIDs(entries, targetIDs)
+		addedLocations, retainedLocations, removedLocations := capLocationDeltaForBase(previousLocations, currentLocations, s.cfg.BaseDir)
 
 		nextEntry := capRegistryEntry{
 			ID:        alert.Identifier,
 			UpdatedAt: capRegistryAnchor(alert, now),
 			Alert:     alert,
 			RawXML:    alert.RawXML,
+			Locations: currentLocations,
+			Lineage:   lineage,
 		}
 		entries = upsertCAPEntry(entries, nextEntry)
-		archiveExpiredCAPEntries("", feed.ID, entries, now, s.cfg.Store)
 		entries = pruneCAPEntries(entries, now)
 		if !isRenderableCAPEntry(nextEntry, now) {
 			storeCAPArchiveRecord(s.cfg.Store, "expired", capArchiveRecord{
@@ -600,15 +650,19 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 				UpdatedAt: now,
 				Alert:     alert,
 				RawXML:    alert.RawXML,
+				Locations: currentLocations,
+				Lineage:   lineage,
 			})
 			deleteCAPReferences(s.cfg.Store, feed.ID, []string{alert.Identifier})
 			updates = append(updates, capRegistryUpdate{
-				FeedID:       feed.ID,
-				Renderable:   hasRenderableCAPEntries(entries, now),
-				Broadcast:    false,
-				Cancelled:    isCAPEnded(alert, now),
-				CancelledIDs: cancelledAlertIDs(alert),
-				SAME:         capSAMEPayload(alert, feed, s.cfg.BaseDir, now),
+				FeedID:           feed.ID,
+				Renderable:       hasRenderableCAPEntries(entries, now),
+				Broadcast:        false,
+				Cancelled:        isCAPEnded(alert, now),
+				CancelledIDs:     cancelledAlertIDs(alert),
+				Change:           "removed",
+				RemovedLocations: append(previousLocations, currentLocations...),
+				SAME:             capSAMEPayload(alert, feed, s.cfg.BaseDir, now),
 			})
 			continue
 		}
@@ -619,6 +673,8 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 			UpdatedAt: nextEntry.UpdatedAt,
 			Alert:     alert,
 			RawXML:    alert.RawXML,
+			Locations: currentLocations,
+			Lineage:   lineage,
 		})
 		info := chooseAlertInfo(alert, feedLanguage(feed))
 		alertText := ""
@@ -652,15 +708,19 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 		}
 		audio := alertBroadcastAudio(alert, feedLanguage(feed))
 		broadcastImmediate := info != nil && isBroadcastImmediateInfo(*info)
-		broadcastPriorEntries := priorEntries
-		if !hadPriorityQueue {
-			broadcastPriorEntries = removeCAPIDs(broadcastPriorEntries, []string{alert.Identifier})
+		broadcast := len(addedLocations) > 0 && capPriorityBroadcastEligible(alert, feed, s.cfg.BaseDir, now)
+		if broadcast && capMessageTypeIsUpdate(alert) && len(targetIDs) == 0 && feedUsesAlertCoverage(feed, alert) && !capUpdateAddsFeedLocations(alert, *info, feed, s.cfg.BaseDir) {
+			broadcast = false
 		}
-		broadcast := capPriorityBroadcastAllowedWithPrior(alert, feed, s.cfg.BaseDir, now, broadcastPriorEntries)
-		if broadcast && !s.claimCAPPriorityBroadcast(feed.ID, alert.Identifier) {
+		if broadcast && !s.claimCAPPriorityBroadcast(feed.ID, alert.Identifier, addedLocations) {
 			broadcast = false
 		}
 		samePayload := capSAMEPayload(alert, feed, s.cfg.BaseDir, now)
+		if broadcast {
+			if locations := sameLocationsForAssignments(*info, feed, s.cfg.BaseDir, addedLocations); len(locations) > 0 {
+				samePayload["same_locations"] = locations
+			}
+		}
 		packet := capAlertPacket(alert, feed, headline, eventName, severity, urgency, certainty, description, instruction, backgroundColor, broadcastImmediate, alertText, audio, samePayload)
 		updates = append(updates, capRegistryUpdate{
 			FeedID:             feed.ID,
@@ -668,6 +728,10 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 			Broadcast:          broadcast,
 			Cancelled:          isCAPEnded(alert, now),
 			CancelledIDs:       cancelledAlertIDs(alert),
+			Change:             capRegistrationChange(len(targetIDs) > 0, addedLocations, removedLocations),
+			AddedLocations:     addedLocations,
+			RetainedLocations:  retainedLocations,
+			RemovedLocations:   removedLocations,
 			BroadcastImmediate: broadcastImmediate,
 			AlertText:          alertText,
 			Headline:           headline,
@@ -724,13 +788,13 @@ func capAlertPacket(alert capmodel.Alert, feed feedXML, headline string, eventNa
 	return packet
 }
 
-func (s *Service) claimCAPPriorityBroadcast(feedID string, alertID string) bool {
+func (s *Service) claimCAPPriorityBroadcast(feedID string, alertID string, locations []string) bool {
 	feedID = strings.TrimSpace(feedID)
 	alertID = strings.TrimSpace(alertID)
 	if feedID == "" || alertID == "" {
 		return true
 	}
-	key := feedID + "\x00" + alertID
+	key := feedID + "\x00" + alertID + "\x00" + strings.Join(sortedUniqueFolded(locations), ",")
 	s.tonedMu.Lock()
 	defer s.tonedMu.Unlock()
 	if s.tonedCAP == nil {
@@ -741,6 +805,602 @@ func (s *Service) claimCAPPriorityBroadcast(feedID string, alertID string) bool 
 	}
 	s.tonedCAP[key] = struct{}{}
 	return true
+}
+
+func capRegistrationChange(hadPrior bool, added []string, removed []string) string {
+	if !hadPrior {
+		return "registered"
+	}
+	if len(added) > 0 && len(removed) == 0 {
+		return "expanded"
+	}
+	if len(added) == 0 && len(removed) > 0 {
+		return "contracted"
+	}
+	return "updated"
+}
+
+func capCancellationChange(removed []string, cancelledIDs []string) string {
+	if len(cancelledIDs) > 0 {
+		return "cancelled"
+	}
+	if len(removed) > 0 {
+		return "partially_cancelled"
+	}
+	return "cancellation_ignored"
+}
+
+func capAlertLineage(alert capmodel.Alert) []string {
+	lineage := append([]string{strings.TrimSpace(alert.Identifier)}, parseCAPReferences(alert.References)...)
+	return sortedUniqueFolded(lineage)
+}
+
+func capUpdateTargetIDs(entries []capRegistryEntry, alert capmodel.Alert, baseDir string) []string {
+	identifier := strings.TrimSpace(alert.Identifier)
+	references := parseCAPReferences(alert.References)
+	targets := make([]string, 0, len(references)+1)
+	for _, entry := range entries {
+		if strings.EqualFold(entryStorageID(entry), identifier) || strings.EqualFold(entry.Alert.Identifier, identifier) {
+			targets = append(targets, entryStorageID(entry))
+			continue
+		}
+		if capEntryLineageIntersects(entry, references) && capAlertLifecycleCompatible(alert, entry.Alert, baseDir) {
+			targets = append(targets, entryStorageID(entry))
+		}
+	}
+	if len(targets) > 0 || !capMessageTypeIsUpdate(alert) {
+		return sortedUniqueFolded(targets)
+	}
+	for _, entry := range entries {
+		if capAlertLifecycleCompatible(alert, entry.Alert, baseDir) &&
+			stringSetOverlaps(capLifecycleLocationSet(alert, baseDir), capLifecycleLocationSet(entry.Alert, baseDir)) {
+			targets = append(targets, entryStorageID(entry))
+		}
+	}
+	return sortedUniqueFolded(targets)
+}
+
+func capAlertLifecycleCompatible(next capmodel.Alert, previous capmodel.Alert, _ string) bool {
+	if detectCAPSource(next) != detectCAPSource(previous) {
+		return false
+	}
+	if next.Sender != "" && previous.Sender != "" && !strings.EqualFold(next.Sender, previous.Sender) {
+		return false
+	}
+	nextEvents := capLifecycleEventSet(next)
+	previousEvents := capLifecycleEventSet(previous)
+	return len(nextEvents) == 0 || len(previousEvents) == 0 || stringSetOverlaps(nextEvents, previousEvents)
+}
+
+func capEntryLineageIntersects(entry capRegistryEntry, identifiers []string) bool {
+	if len(identifiers) == 0 {
+		return false
+	}
+	lineage := append(append([]string{}, entry.Lineage...), entryStorageID(entry), entry.Alert.Identifier)
+	for _, left := range lineage {
+		for _, right := range identifiers {
+			if strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func entryStorageID(entry capRegistryEntry) string {
+	return fallbackText(entry.ID, entry.Alert.Identifier)
+}
+
+func capEntriesForIDs(entries []capRegistryEntry, ids []string) []capRegistryEntry {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]capRegistryEntry, 0, len(ids))
+	for _, entry := range entries {
+		for _, id := range ids {
+			if strings.EqualFold(entryStorageID(entry), strings.TrimSpace(id)) {
+				out = append(out, entry)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func capLocationsForIDs(entries []capRegistryEntry, ids []string) []string {
+	locations := []string{}
+	for _, entry := range capEntriesForIDs(entries, ids) {
+		locations = append(locations, entry.Locations...)
+	}
+	return sortedUniqueCAPLocations(locations)
+}
+
+func capLocationDelta(previous []string, current []string) (added []string, retained []string, removed []string) {
+	previousSet := capLocationSet(previous)
+	currentSet := capLocationSet(current)
+	for _, location := range sortedUniqueCAPLocations(current) {
+		if _, ok := previousSet[canonicalCAPLocation(location)]; ok {
+			retained = append(retained, location)
+		} else {
+			added = append(added, location)
+		}
+	}
+	for _, location := range sortedUniqueCAPLocations(previous) {
+		if _, ok := currentSet[canonicalCAPLocation(location)]; !ok {
+			removed = append(removed, location)
+		}
+	}
+	return added, retained, removed
+}
+
+func capLocationDeltaForBase(previous []string, current []string, baseDir string) (added []string, retained []string, removed []string) {
+	db := loadAlertGeoDB(baseDir)
+	for _, location := range sortedUniqueCAPLocations(current) {
+		matched := false
+		for _, prior := range sortedUniqueCAPLocations(previous) {
+			if capLocationKeysOverlap(db, location, prior) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			retained = append(retained, location)
+		} else {
+			added = append(added, location)
+		}
+	}
+	for _, location := range sortedUniqueCAPLocations(previous) {
+		matched := false
+		for _, currentLocation := range sortedUniqueCAPLocations(current) {
+			if capLocationKeysOverlap(db, location, currentLocation) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			removed = append(removed, location)
+		}
+	}
+	return added, retained, removed
+}
+
+func capLocationSet(locations []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(locations))
+	for _, location := range locations {
+		if key := canonicalCAPLocation(location); key != "" {
+			out[key] = struct{}{}
+		}
+	}
+	return out
+}
+
+func sortedUniqueCAPLocations(locations []string) []string {
+	set := capLocationSet(locations)
+	out := make([]string, 0, len(set))
+	for location := range set {
+		out = append(out, location)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedUniqueFolded(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToUpper(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToUpper(out[i]) < strings.ToUpper(out[j]) })
+	return out
+}
+
+func canonicalCAPLocation(raw string) string {
+	return strings.ToUpper(strings.TrimSpace(raw))
+}
+
+func capLocationAliases(db alertGeoDB, raw string) map[string]struct{} {
+	aliases := map[string]struct{}{}
+	add := func(value string) {
+		if key := canonicalCAPLocation(value); key != "" {
+			aliases[key] = struct{}{}
+		}
+	}
+	add(raw)
+	add(normalizeNWSCode(raw))
+	add(sameLocationCode(raw))
+	for _, value := range sameLocationCodesForAlertCode(db, raw) {
+		add(value)
+	}
+	return aliases
+}
+
+func capLocationKeysOverlap(db alertGeoDB, left string, right string) bool {
+	left = canonicalCAPLocation(left)
+	right = canonicalCAPLocation(right)
+	if left == "" || right == "" {
+		return false
+	}
+	if left == "*" || right == "*" {
+		return true
+	}
+	leftAliases := capLocationAliases(db, left)
+	rightAliases := capLocationAliases(db, right)
+	if len(leftAliases) > len(rightAliases) {
+		leftAliases, rightAliases = rightAliases, leftAliases
+	}
+	for alias := range leftAliases {
+		if _, ok := rightAliases[alias]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func capLocationKeyForArea(area capmodel.AlertArea) string {
+	clc := ""
+	ugc := ""
+	location := ""
+	same := ""
+	fallback := ""
+	for _, geocode := range area.Geocodes {
+		value := canonicalCAPLocation(geocode.Value)
+		if value == "" {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(geocode.Name))
+		switch {
+		case strings.Contains(name, "clc") && clc == "":
+			clc = value
+		case strings.Contains(name, "ugc") && ugc == "":
+			ugc = value
+		case strings.Contains(name, "location") && location == "":
+			location = value
+		case strings.Contains(name, "same") && same == "":
+			same = value
+		case fallback == "":
+			fallback = value
+		}
+	}
+	for _, value := range []string{clc, ugc, location, same, fallback} {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func capLocationParameterCodes(info capmodel.AlertInfo) []string {
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		for _, part := range strings.FieldsFunc(raw, func(ch rune) bool {
+			return ch == ',' || ch == ';' || ch == '|' || ch == '\n' || ch == '\r' || ch == '\t'
+		}) {
+			if value := canonicalCAPLocation(part); value != "" {
+				seen[value] = struct{}{}
+			}
+		}
+	}
+	for _, param := range info.Parameters {
+		name := strings.ToLower(strings.TrimSpace(param.Name))
+		if strings.Contains(name, "status") || strings.Contains(name, "coverage") {
+			continue
+		}
+		if strings.Contains(name, "newly_active_areas") || strings.Contains(name, "clc") || strings.Contains(name, "location") {
+			add(param.Value)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func capAlertInfoLocationKeys(info capmodel.AlertInfo) []string {
+	keys := []string{}
+	for _, area := range info.Areas {
+		if key := capLocationKeyForArea(area); key != "" {
+			keys = appendCAPLocationKey(keys, key)
+		}
+	}
+	for _, key := range capLocationParameterCodes(info) {
+		keys = appendCAPLocationKey(keys, key)
+	}
+	return keys
+}
+
+func capAlertInfoLocationKeysForDB(info capmodel.AlertInfo, db alertGeoDB) []string {
+	keys := []string{}
+	areaKeys := []string{}
+	for _, area := range info.Areas {
+		if key := capLocationKeyForArea(area); key != "" {
+			areaKeys = appendCAPLocationKey(areaKeys, key)
+			keys = appendCAPLocationKey(keys, key)
+		}
+	}
+	for _, key := range capLocationParameterCodes(info) {
+		matchedArea := false
+		for _, areaKey := range areaKeys {
+			if capLocationKeysOverlap(db, key, areaKey) {
+				matchedArea = true
+				break
+			}
+		}
+		if !matchedArea {
+			keys = appendCAPLocationKey(keys, key)
+		}
+	}
+	return keys
+}
+
+func capAlertLocationKeys(alert capmodel.Alert) []string {
+	keys := []string{}
+	for _, info := range capActiveOrAllInfos(alert.Infos) {
+		for _, key := range capAlertInfoLocationKeys(info) {
+			keys = appendCAPLocationKey(keys, key)
+		}
+	}
+	return keys
+}
+
+func capAlertLocationKeysForBase(alert capmodel.Alert, baseDir string) []string {
+	db := loadAlertGeoDB(baseDir)
+	keys := []string{}
+	for _, info := range capActiveOrAllInfos(alert.Infos) {
+		for _, key := range capAlertInfoLocationKeysForDB(info, db) {
+			keys = appendCAPLocationKey(keys, key)
+		}
+	}
+	return keys
+}
+
+func appendCAPLocationKey(values []string, raw string) []string {
+	key := canonicalCAPLocation(raw)
+	if key == "" {
+		return values
+	}
+	for _, value := range values {
+		if strings.EqualFold(value, key) {
+			return values
+		}
+	}
+	return append(values, key)
+}
+
+func capFeedLocationAssignments(alert capmodel.Alert, feed feedXML, baseDir string) []string {
+	return capFeedLocationAssignmentsForCodes(alert, feed, baseDir, nil)
+}
+
+func capFeedLocationAssignmentsForCodes(alert capmodel.Alert, feed feedXML, baseDir string, codes []string) []string {
+	coverage := feedCoverageModel(baseDir, feed, nil)
+	db := loadAlertGeoDB(baseDir)
+	locations := capAlertLocationKeysForBase(alert, baseDir)
+	if len(codes) > 0 {
+		requested := sortedUniqueCAPLocations(codes)
+		if len(locations) == 0 {
+			locations = requested
+		} else {
+			selected := []string{}
+			for _, location := range locations {
+				for _, request := range requested {
+					if capLocationKeysOverlap(db, location, request) {
+						selected = appendCAPLocationKey(selected, location)
+						break
+					}
+				}
+			}
+			if len(selected) > 0 {
+				locations = selected
+			} else {
+				locations = requested
+			}
+		}
+	}
+	locations = sortedUniqueCAPLocations(locations)
+	if !feedUsesAlertCoverage(feed, alert) || len(coverage.Codes) == 0 {
+		if len(locations) == 0 {
+			locations = append(locations, "*")
+		}
+		return sortedUniqueCAPLocations(locations)
+	}
+
+	assignments := []string{}
+	for _, location := range locations {
+		if coverageMatchesAlertCode(db, coverage.Codes, location) {
+			assignments = append(assignments, location)
+		}
+	}
+	return sortedUniqueCAPLocations(assignments)
+}
+
+func alertAllCoverageCodes(alert capmodel.Alert) []string {
+	return capAlertLocationKeys(alert)
+}
+
+func applyCAPCancellation(store datastore.Store, feed feedXML, entries []capRegistryEntry, alert capmodel.Alert, now time.Time, baseDir string) ([]capRegistryEntry, []string, []string) {
+	rawCancellationCodes := alertAllCoverageCodes(alert)
+	cancellationLocations := capFeedLocationAssignmentsForCodes(alert, feed, baseDir, rawCancellationCodes)
+	scoped := len(rawCancellationCodes) > 0
+	references := parseCAPReferences(alert.References)
+	remaining := make([]capRegistryEntry, 0, len(entries))
+	removedLocations := []string{}
+	cancelledIDs := []string{}
+
+	for _, entry := range entries {
+		targeted := strings.EqualFold(entryStorageID(entry), strings.TrimSpace(alert.Identifier)) ||
+			(capEntryLineageIntersects(entry, references) && capAlertLifecycleCompatible(alert, entry.Alert, baseDir)) ||
+			(len(references) == 0 && capAlertCancelsEntry(alert, entry.Alert, baseDir))
+		if !targeted {
+			remaining = append(remaining, entry)
+			continue
+		}
+
+		activeLocations := sortedUniqueCAPLocations(entry.Locations)
+		toRemove := activeLocations
+		if scoped {
+			toRemove = capLocationIntersectionForAlert(baseDir, activeLocations, cancellationLocations, detectCAPSource(alert))
+		}
+		if len(toRemove) == 0 {
+			remaining = append(remaining, entry)
+			continue
+		}
+		left := capLocationDifferenceForBase(baseDir, activeLocations, toRemove)
+		removedLocations = append(removedLocations, toRemove...)
+		if len(left) == 0 {
+			deleteCAPReferences(store, feed.ID, []string{entryStorageID(entry)})
+			cancelledIDs = append(cancelledIDs, entryStorageID(entry))
+			cancelledIDs = append(cancelledIDs, entry.Lineage...)
+			continue
+		}
+		entry.Locations = left
+		storeCAPArchiveRecord(store, "accepted", capArchiveRecord{
+			ID:        entryStorageID(entry),
+			FeedID:    feed.ID,
+			Status:    "accepted",
+			UpdatedAt: entry.UpdatedAt,
+			Alert:     entry.Alert,
+			RawXML:    fallbackText(entry.RawXML, entry.Alert.RawXML),
+			Locations: entry.Locations,
+			Lineage:   entry.Lineage,
+		})
+		remaining = append(remaining, entry)
+	}
+	return remaining, sortedUniqueCAPLocations(removedLocations), sortedUniqueFolded(cancelledIDs)
+}
+
+func capLocationIntersection(left []string, right []string) []string {
+	rightSet := capLocationSet(right)
+	out := []string{}
+	for _, location := range sortedUniqueCAPLocations(left) {
+		if _, ok := rightSet[canonicalCAPLocation(location)]; ok {
+			out = append(out, location)
+		}
+	}
+	return out
+}
+
+func capLocationIntersectionForBase(baseDir string, left []string, right []string) []string {
+	return capLocationIntersectionForAlert(baseDir, left, right, "")
+}
+
+func capLocationIntersectionForAlert(baseDir string, left []string, right []string, source string) []string {
+	db := loadAlertGeoDB(baseDir)
+	out := []string{}
+	for _, location := range sortedUniqueCAPLocations(left) {
+		for _, scoped := range sortedUniqueCAPLocations(right) {
+			if capLocationScopeOverlaps(db, source, location, scoped) {
+				out = append(out, location)
+				break
+			}
+		}
+	}
+	return sortedUniqueCAPLocations(out)
+}
+
+func capLocationScopeOverlaps(db alertGeoDB, source string, left string, right string) bool {
+	if capLocationKeysOverlap(db, left, right) {
+		return true
+	}
+	leftScope := append([]string{left}, expandAlertRegion(db, left, source)...)
+	rightScope := append([]string{right}, expandAlertRegion(db, right, source)...)
+	for _, leftCode := range leftScope {
+		for _, rightCode := range rightScope {
+			if capLocationKeysOverlap(db, leftCode, rightCode) {
+				return true
+			}
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(source), "eccc") {
+		for _, code := range []string{strings.TrimSpace(left), strings.TrimSpace(right)} {
+			if len(code) == 6 && strings.HasSuffix(code, "00") {
+				prefix := code[:4]
+				other := right
+				if strings.EqualFold(code, strings.TrimSpace(right)) {
+					other = left
+				}
+				if strings.HasPrefix(strings.TrimSpace(other), prefix) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func capLocationDifference(left []string, right []string) []string {
+	rightSet := capLocationSet(right)
+	out := []string{}
+	for _, location := range sortedUniqueCAPLocations(left) {
+		if _, ok := rightSet[canonicalCAPLocation(location)]; !ok {
+			out = append(out, location)
+		}
+	}
+	return out
+}
+
+func capLocationDifferenceForBase(baseDir string, left []string, right []string) []string {
+	db := loadAlertGeoDB(baseDir)
+	out := []string{}
+	for _, location := range sortedUniqueCAPLocations(left) {
+		matched := false
+		for _, scoped := range sortedUniqueCAPLocations(right) {
+			if capLocationKeysOverlap(db, location, scoped) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			out = append(out, location)
+		}
+	}
+	return sortedUniqueCAPLocations(out)
+}
+
+func sameLocationsForAssignments(info capmodel.AlertInfo, feed feedXML, baseDir string, assignments []string) []string {
+	if len(assignments) == 0 {
+		return nil
+	}
+	for _, assignment := range assignments {
+		if assignment == "*" {
+			return sameLocationsForCAP(info, feed, baseDir)
+		}
+	}
+	db := loadAlertGeoDB(baseDir)
+	alertLocations := capAlertInfoLocationKeysForDB(info, db)
+	locations := []string{}
+	for _, alertLocation := range alertLocations {
+		matched := false
+		for _, assignment := range assignments {
+			if capLocationKeysOverlap(db, alertLocation, assignment) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			locations = append(locations, sameLocationCodesForAlertCode(db, alertLocation)...)
+		}
+	}
+	if len(locations) == 0 {
+		for _, assignment := range assignments {
+			locations = append(locations, sameLocationCodesForAlertCode(db, assignment)...)
+		}
+	}
+	locations = uniqueStrings(locations)
+	sort.Strings(locations)
+	if len(locations) > 31 {
+		locations = locations[:31]
+	}
+	return locations
 }
 
 func routineCAPAlertAllowed(alert capmodel.Alert) bool {
@@ -773,6 +1433,17 @@ func routineCAPAlertAllowed(alert capmodel.Alert) bool {
 
 func capPriorityBroadcastAllowed(alert capmodel.Alert, feed feedXML, baseDir string, now time.Time) bool {
 	return capPriorityBroadcastAllowedWithPrior(alert, feed, baseDir, now, nil)
+}
+
+func capPriorityBroadcastEligible(alert capmodel.Alert, feed feedXML, baseDir string, now time.Time) bool {
+	if isCAPEnded(alert, now) || !feedAllowsCAPAlert(feed, alert) || !alertMatchesFeed(alert, feed, baseDir) {
+		return false
+	}
+	info := chooseAlertInfo(alert, feedLanguage(feed))
+	if info == nil {
+		return false
+	}
+	return sameAlertFreshForTone(alert, *info, sameEventForCAP(alert, *info, baseDir), now)
 }
 
 func capPriorityBroadcastAllowedWithPrior(alert capmodel.Alert, feed feedXML, baseDir string, now time.Time, priorEntries []capRegistryEntry) bool {
@@ -888,7 +1559,25 @@ func capEntryExists(entries []capRegistryEntry, id string) bool {
 		return false
 	}
 	for _, entry := range entries {
-		if entry.ID == id || entry.Alert.Identifier == id {
+		if strings.EqualFold(entry.ID, id) || strings.EqualFold(entry.Alert.Identifier, id) {
+			return true
+		}
+	}
+	return false
+}
+
+func capExactCAPDuplicate(entries []capRegistryEntry, targetIDs []string, alert capmodel.Alert, locations []string, baseDir string) bool {
+	if len(targetIDs) != 1 || strings.TrimSpace(alert.Identifier) == "" || len(locations) == 0 {
+		return false
+	}
+	for _, entry := range entries {
+		if !strings.EqualFold(entryStorageID(entry), strings.TrimSpace(alert.Identifier)) ||
+			strings.TrimSpace(entry.RawXML) != strings.TrimSpace(alert.RawXML) ||
+			len(entry.Locations) == 0 || len(entry.Lineage) == 0 {
+			continue
+		}
+		added, _, removed := capLocationDeltaForBase(entry.Locations, locations, baseDir)
+		if len(added) == 0 && len(removed) == 0 {
 			return true
 		}
 	}
@@ -1076,20 +1765,32 @@ func normalizeRawCAPAlert(alert capmodel.Alert) capmodel.Alert {
 }
 
 func loadActiveCAPEntries(store datastore.Store, feedID string, now time.Time) []capRegistryEntry {
+	byFeed := loadActiveCAPEntriesByFeed(store, now)
+	if strings.TrimSpace(feedID) != "" {
+		return byFeed[feedID]
+	}
+	entries := []capRegistryEntry{}
+	for _, feedEntries := range byFeed {
+		entries = append(entries, feedEntries...)
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].UpdatedAt.Before(entries[j].UpdatedAt)
+	})
+	return entries
+}
+
+func loadActiveCAPEntriesByFeed(store datastore.Store, now time.Time) map[string][]capRegistryEntry {
+	byFeed := map[string][]capRegistryEntry{}
 	if store == nil {
-		return nil
+		return byFeed
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	rows, err := store.ListCAPArchives(ctx, "accepted", time.Time{})
 	if err != nil {
-		return nil
+		return byFeed
 	}
-	entries := make([]capRegistryEntry, 0, len(rows))
 	for _, row := range rows {
-		if strings.TrimSpace(feedID) != "" && row.FeedID != feedID {
-			continue
-		}
 		alert, ok := storedCAPArchiveAlert(row)
 		if !ok {
 			_ = store.DeleteCAPArchiveBucketItem(ctx, row.AlertID, row.FeedID, "accepted")
@@ -1100,9 +1801,14 @@ func loadActiveCAPEntries(store datastore.Store, feedID string, now time.Time) [
 			UpdatedAt: firstNonZeroTime(row.UpdatedAt, row.StoredAt, now),
 			Alert:     alert,
 			RawXML:    row.RawXML,
+			Locations: metadataStringList(row.Metadata, "active_locations"),
+			Lineage:   metadataStringList(row.Metadata, "alert_lineage"),
+		}
+		if len(entry.Lineage) == 0 {
+			entry.Lineage = capAlertLineage(alert)
 		}
 		if isRenderableCAPEntry(entry, now) {
-			entries = append(entries, entry)
+			byFeed[row.FeedID] = append(byFeed[row.FeedID], entry)
 			continue
 		}
 		storeCAPArchiveRecord(store, "expired", capArchiveRecord{
@@ -1113,13 +1819,45 @@ func loadActiveCAPEntries(store datastore.Store, feedID string, now time.Time) [
 			UpdatedAt: now,
 			Alert:     alert,
 			RawXML:    row.RawXML,
+			Locations: entry.Locations,
+			Lineage:   entry.Lineage,
 		})
 		_ = store.DeleteCAPArchiveBucketItem(ctx, row.AlertID, row.FeedID, "accepted")
 	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].UpdatedAt.Before(entries[j].UpdatedAt)
-	})
-	return entries
+	for feedID := range byFeed {
+		sort.SliceStable(byFeed[feedID], func(i, j int) bool {
+			return byFeed[feedID][i].UpdatedAt.Before(byFeed[feedID][j].UpdatedAt)
+		})
+	}
+	return byFeed
+}
+
+func metadataStringList(metadata map[string]any, key string) []string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []string:
+		return sortedUniqueFolded(typed)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return sortedUniqueFolded(out)
+	case string:
+		return sortedUniqueFolded(strings.FieldsFunc(typed, func(ch rune) bool {
+			return ch == ',' || ch == ';' || ch == '|'
+		}))
+	default:
+		return nil
+	}
 }
 
 func capAcceptedArchiveContains(store datastore.Store, feedID string, alertID string) bool {
@@ -1183,8 +1921,14 @@ func deleteCAPReferences(store datastore.Store, feedID string, ids []string) {
 }
 
 func capOperatorSuppressedSameVersion(store datastore.Store, feedID string, alert capmodel.Alert, now time.Time) bool {
+	_, ok := capOperatorSuppressedFeeds(store, alert, now)[strings.TrimSpace(feedID)]
+	return ok
+}
+
+func capOperatorSuppressedFeeds(store datastore.Store, alert capmodel.Alert, now time.Time) map[string]struct{} {
+	out := map[string]struct{}{}
 	if store == nil || strings.TrimSpace(alert.Identifier) == "" || strings.TrimSpace(alert.RawXML) == "" {
-		return false
+		return out
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -1193,23 +1937,22 @@ func capOperatorSuppressedSameVersion(store datastore.Store, feedID string, aler
 	defer cancel()
 	rows, err := store.ListCAPArchives(ctx, "expired", now.UTC().Add(-30*24*time.Hour))
 	if err != nil {
-		return false
+		return out
 	}
 	alertID := strings.TrimSpace(alert.Identifier)
-	feedID = strings.TrimSpace(feedID)
 	rawXML := strings.TrimSpace(alert.RawXML)
 	for _, row := range rows {
-		if strings.TrimSpace(row.AlertID) != alertID || strings.TrimSpace(row.FeedID) != feedID {
+		if strings.TrimSpace(row.AlertID) != alertID {
 			continue
 		}
 		if !strings.EqualFold(strings.TrimSpace(row.Reason), "expired by operator") {
 			continue
 		}
 		if strings.TrimSpace(row.RawXML) == rawXML {
-			return true
+			out[strings.TrimSpace(row.FeedID)] = struct{}{}
 		}
 	}
-	return false
+	return out
 }
 
 func storeCAPArchiveRecord(store datastore.Store, bucket string, record capArchiveRecord) {
@@ -1233,6 +1976,16 @@ func storeCAPArchiveRecord(store datastore.Store, bucket string, record capArchi
 	if !record.UpdatedAt.IsZero() {
 		updated = record.UpdatedAt.UTC().Format(time.RFC3339Nano)
 	}
+	metadata := map[string]any{
+		"message_type": record.Alert.MessageType,
+		"scope":        record.Alert.Scope,
+	}
+	if len(record.Locations) > 0 {
+		metadata["active_locations"] = sortedUniqueCAPLocations(record.Locations)
+	}
+	if len(record.Lineage) > 0 {
+		metadata["alert_lineage"] = sortedUniqueFolded(record.Lineage)
+	}
 	archiveRecord := datastore.CAPArchiveRecord{
 		AlertID:      fallbackText(record.ID, record.Alert.Identifier),
 		FeedID:       record.FeedID,
@@ -1247,10 +2000,7 @@ func storeCAPArchiveRecord(store datastore.Store, bucket string, record capArchi
 		Event:        event,
 		Headline:     headline,
 		RawXML:       rawXML,
-		Metadata: map[string]any{
-			"message_type": record.Alert.MessageType,
-			"scope":        record.Alert.Scope,
-		},
+		Metadata:     metadata,
 	}
 	if err := storeCAPArchiveRecordWithRetry(store, archiveRecord); err != nil {
 		log.Printf("CAP archive store failed bucket=%s feed_id=%s alert_id=%s status=%s: %v",
@@ -1293,6 +2043,8 @@ func archiveExpiredCAPEntries(_ string, feedID string, entries []capRegistryEntr
 			UpdatedAt: now,
 			Alert:     entry.Alert,
 			RawXML:    fallbackText(entry.RawXML, entry.Alert.RawXML),
+			Locations: entry.Locations,
+			Lineage:   entry.Lineage,
 		}
 		storeCAPArchiveRecord(store, "expired", record)
 	}
@@ -1300,10 +2052,7 @@ func archiveExpiredCAPEntries(_ string, feedID string, entries []capRegistryEntr
 
 func upsertCAPEntry(entries []capRegistryEntry, next capRegistryEntry) []capRegistryEntry {
 	for i := range entries {
-		if entries[i].ID == next.ID || strings.EqualFold(entries[i].Alert.Identifier, next.Alert.Identifier) {
-			if !entries[i].UpdatedAt.IsZero() {
-				next.UpdatedAt = entries[i].UpdatedAt
-			}
+		if strings.EqualFold(entries[i].ID, next.ID) || strings.EqualFold(entries[i].Alert.Identifier, next.Alert.Identifier) {
 			entries[i] = next
 			return entries
 		}
@@ -1322,10 +2071,14 @@ func removeCAPReferences(entries []capRegistryEntry, references string) []capReg
 	}
 	out := entries[:0]
 	for _, entry := range entries {
-		if _, ok := remove[entry.ID]; ok {
-			continue
+		matched := false
+		for id := range remove {
+			if strings.EqualFold(entry.ID, id) || strings.EqualFold(entry.Alert.Identifier, id) {
+				matched = true
+				break
+			}
 		}
-		if _, ok := remove[entry.Alert.Identifier]; ok {
+		if matched {
 			continue
 		}
 		out = append(out, entry)
@@ -1401,13 +2154,7 @@ func capAlertCancelsEntry(next capmodel.Alert, previous capmodel.Alert, baseDir 
 	if !isExplicitCAPEnd(next) {
 		return false
 	}
-	if detectCAPSource(next) != detectCAPSource(previous) {
-		return false
-	}
-	if next.Sender != "" && previous.Sender != "" && !strings.EqualFold(next.Sender, previous.Sender) {
-		return false
-	}
-	if !stringSetOverlaps(capLifecycleEventSet(next), capLifecycleEventSet(previous)) {
+	if !capAlertLifecycleCompatible(next, previous, baseDir) {
 		return false
 	}
 	return stringSetOverlaps(capLifecycleLocationSet(next, baseDir), capLifecycleLocationSet(previous, baseDir))
@@ -1594,10 +2341,14 @@ func removeCAPIDs(entries []capRegistryEntry, ids []string) []capRegistryEntry {
 	}
 	out := entries[:0]
 	for _, entry := range entries {
-		if _, ok := remove[entry.ID]; ok {
-			continue
+		matched := false
+		for id := range remove {
+			if strings.EqualFold(entry.ID, id) || strings.EqualFold(entry.Alert.Identifier, id) {
+				matched = true
+				break
+			}
 		}
-		if _, ok := remove[entry.Alert.Identifier]; ok {
+		if matched {
 			continue
 		}
 		out = append(out, entry)
@@ -2380,35 +3131,7 @@ func alertAreaNameFromGeocodes(db alertGeoDB, area capmodel.AlertArea, lang stri
 }
 
 func alertCoverageCodes(alert capmodel.Alert) []string {
-	seen := map[string]struct{}{}
-	add := func(raw string) {
-		for _, part := range strings.Split(raw, ",") {
-			value := strings.TrimSpace(part)
-			if value == "" {
-				continue
-			}
-			seen[value] = struct{}{}
-		}
-	}
-	for _, info := range capActiveOrAllInfos(alert.Infos) {
-		for _, param := range info.Parameters {
-			name := strings.ToLower(param.Name)
-			if strings.Contains(name, "newly_active_areas") || strings.Contains(name, "clc") || strings.Contains(name, "location") {
-				add(param.Value)
-			}
-		}
-		for _, area := range info.Areas {
-			for _, geocode := range area.Geocodes {
-				add(geocode.Value)
-			}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for value := range seen {
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
+	return capAlertLocationKeys(alert)
 }
 
 func coverageCodeMatches(coverage map[string]struct{}, raw string) bool {
@@ -2455,6 +3178,12 @@ func (r renderer) alertsProduct(base Product, feed feedXML) (Product, error) {
 		if !routineCAPAlertAllowed(entry.Alert) || !alertMatchesFeed(entry.Alert, feed, r.cfg.BaseDir) {
 			continue
 		}
+		if len(entry.Locations) == 0 {
+			entry.Locations = capFeedLocationAssignments(entry.Alert, feed, r.cfg.BaseDir)
+		}
+		if len(entry.Locations) == 0 {
+			continue
+		}
 		info := chooseAlertInfo(entry.Alert, base.Language)
 		if info == nil {
 			continue
@@ -2480,7 +3209,7 @@ func renderCAPAlertSentence(entry capRegistryEntry, info capmodel.AlertInfo, fee
 	sender := fallbackText(info.SenderName, alertSenderName(alert))
 	subject := alertSubject(info)
 	source := detectCAPSource(alert)
-	areas := alertAreas(info, feed, lang, baseDir, forecastNames)
+	areas := alertAreas(info, feed, lang, baseDir, forecastNames, entry.Locations)
 	if areas == "" {
 		areas = fallbackText(alertParam(info, "layer:EC-MSC-SMC:1.0:Alert_Coverage"), "the listening area")
 	}
@@ -2578,17 +3307,33 @@ func stripAlertHeadlineState(headline string) string {
 	return value
 }
 
-func alertAreas(info capmodel.AlertInfo, feed feedXML, lang string, baseDir string, forecastNames map[string]forecastRegionName) string {
+func alertAreas(info capmodel.AlertInfo, feed feedXML, lang string, baseDir string, forecastNames map[string]forecastRegionName, assignments []string) string {
+	if alerttext.BypassForecastRegionCollapse(info) {
+		return fastAlertAreas(info, assignments)
+	}
 	coverage := feedCoverageModel(baseDir, feed, forecastNames)
 	db := loadAlertGeoDB(baseDir)
+	alertLocations := capAlertInfoLocationKeysForDB(info, db)
 	if useBroadAlertRegions(info) {
-		if broad := broadAlertAreaPhrase(info, coverage, db); broad != "" {
+		if broad := broadAlertAreaPhrase(info, coverage, db, assignments); broad != "" {
 			return broad
 		}
 	}
 	areas := []string{}
 	seen := map[string]struct{}{}
+	_, wildcardAssignment := capLocationSet(assignments)["*"]
+	assignmentRestricted := len(assignments) > 0 && !wildcardAssignment
 	for _, area := range info.Areas {
+		areaLocation := capLocationKeyForArea(area)
+		if assignmentRestricted {
+			if areaLocation == "" {
+				if len(alertLocations) > 0 {
+					continue
+				}
+			} else if !capLocationAssignmentsMatch(db, assignments, areaLocation) {
+				continue
+			}
+		}
 		if len(coverage.Codes) > 0 {
 			matched := false
 			for _, geocode := range area.Geocodes {
@@ -2596,6 +3341,9 @@ func alertAreas(info capmodel.AlertInfo, feed feedXML, lang string, baseDir stri
 					matched = true
 					break
 				}
+			}
+			if !matched && areaLocation != "" {
+				matched = coverageMatchesAlertCode(db, coverage.Codes, areaLocation)
 			}
 			if !matched {
 				continue
@@ -2615,6 +3363,90 @@ func alertAreas(info capmodel.AlertInfo, feed feedXML, lang string, baseDir stri
 		return ""
 	}
 	return strings.Join(areas, "; ")
+}
+
+func fastAlertAreas(info capmodel.AlertInfo, assignments []string) string {
+	assignmentSet := capLocationSet(assignments)
+	_, wildcard := assignmentSet["*"]
+	restricted := len(assignments) > 0 && !wildcard
+	all := make([]string, 0, len(info.Areas))
+	matched := make([]string, 0, len(info.Areas))
+	seenAll := map[string]struct{}{}
+	seenMatched := map[string]struct{}{}
+	for _, area := range info.Areas {
+		desc := cleanAreaName(area.Description)
+		if desc == "" {
+			continue
+		}
+		if _, ok := seenAll[desc]; !ok {
+			seenAll[desc] = struct{}{}
+			all = append(all, desc)
+		}
+		if restricted {
+			key := canonicalCAPLocation(capLocationKeyForArea(area))
+			if key == "" {
+				continue
+			}
+			if _, ok := assignmentSet[key]; !ok {
+				continue
+			}
+		}
+		if _, ok := seenMatched[desc]; !ok {
+			seenMatched[desc] = struct{}{}
+			matched = append(matched, desc)
+		}
+	}
+	if restricted && len(matched) == 0 {
+		matched = all
+	}
+	return strings.Join(matched, "; ")
+}
+
+func capLocationAssignmentsMatch(db alertGeoDB, assignments []string, location string) bool {
+	for _, assignment := range assignments {
+		if capLocationKeysOverlap(db, assignment, location) {
+			return true
+		}
+	}
+	return false
+}
+
+func capAssignmentsCoverAllAlertLocations(db alertGeoDB, alertLocations []string, assignments []string) bool {
+	if len(alertLocations) == 0 || len(assignments) == 0 {
+		return false
+	}
+	for _, location := range alertLocations {
+		if !capLocationAssignmentsMatch(db, assignments, location) {
+			return false
+		}
+	}
+	return true
+}
+
+func restrictCoverageToAssignments(coverage coverageModel, assignments []string) coverageModel {
+	if len(assignments) == 0 {
+		return coverage
+	}
+	assignmentSet := capLocationSet(assignments)
+	if _, ok := assignmentSet["*"]; ok {
+		return coverage
+	}
+	restricted := coverageModel{Codes: map[string]struct{}{}}
+	for _, region := range coverage.Regions {
+		if _, ok := assignmentSet[canonicalCAPLocation(region.ID)]; !ok {
+			continue
+		}
+		restricted.Regions = append(restricted.Regions, region)
+		for code := range region.Subregions {
+			addCoverageCode(restricted.Codes, code)
+		}
+	}
+	if len(restricted.Regions) == 0 {
+		for _, assignment := range assignments {
+			addCoverageCode(restricted.Codes, assignment)
+		}
+	}
+	return restricted
 }
 
 func useBroadAlertRegions(info capmodel.AlertInfo) bool {
@@ -2654,7 +3486,7 @@ func useBroadAlertRegions(info capmodel.AlertInfo) bool {
 	return false
 }
 
-func broadAlertAreaPhrase(info capmodel.AlertInfo, coverage coverageModel, db alertGeoDB) string {
+func broadAlertAreaPhrase(info capmodel.AlertInfo, coverage coverageModel, db alertGeoDB, assignments []string) string {
 	if len(coverage.Regions) == 0 {
 		return ""
 	}
@@ -2668,7 +3500,10 @@ func broadAlertAreaPhrase(info capmodel.AlertInfo, coverage coverageModel, db al
 		if !coverageRegionMatchesAlert(region, alertCodes, db) {
 			continue
 		}
-		name := broadRegionDisplayName(region.Name)
+		if !coverageRegionAssignmentsComplete(region, assignments, db) {
+			continue
+		}
+		name := strings.TrimSpace(region.Name)
 		if name == "" {
 			continue
 		}
@@ -2681,28 +3516,37 @@ func broadAlertAreaPhrase(info capmodel.AlertInfo, coverage coverageModel, db al
 	if len(names) == 0 {
 		return ""
 	}
-	return "areas within " + joinBroadRegionNames(names)
+	return alerttext.ForecastRegionAreaPhrase(names)
+}
+
+func coverageRegionAssignmentsComplete(region coverageRegion, assignments []string, db alertGeoDB) bool {
+	if len(assignments) == 0 {
+		return true
+	}
+	if capLocationAssignmentsMatch(db, assignments, region.ID) {
+		return true
+	}
+	if len(region.RequiredSubregions) == 0 {
+		return false
+	}
+	for code := range region.RequiredSubregions {
+		if !capLocationAssignmentsMatch(db, assignments, code) {
+			return false
+		}
+	}
+	return true
 }
 
 func alertInfoCoverageCodes(info capmodel.AlertInfo) map[string]struct{} {
 	codes := map[string]struct{}{}
-	add := func(raw string) {
-		for _, part := range strings.Split(raw, ",") {
-			value := strings.TrimSpace(part)
-			if value != "" {
-				codes[value] = struct{}{}
-			}
-		}
-	}
-	for _, param := range info.Parameters {
-		name := strings.ToLower(param.Name)
-		if strings.Contains(name, "newly_active_areas") || strings.Contains(name, "clc") || strings.Contains(name, "location") {
-			add(param.Value)
-		}
+	for _, code := range capLocationParameterCodes(info) {
+		codes[code] = struct{}{}
 	}
 	for _, area := range info.Areas {
 		for _, geocode := range area.Geocodes {
-			add(geocode.Value)
+			if code := canonicalCAPLocation(geocode.Value); code != "" {
+				codes[code] = struct{}{}
+			}
 		}
 	}
 	return codes

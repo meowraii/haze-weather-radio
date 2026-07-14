@@ -545,7 +545,7 @@ function toDatasetKey(name) {
 
 function publicWebRTCAudioElement(feedId) {
     feedId = String(feedId || '');
-    let audio = Array.from(document.querySelectorAll('[data-feed-audio-sink]'))
+    let audio = findFeedElement('feed-audio', feedId) || Array.from(document.querySelectorAll('[data-feed-audio-sink]'))
         .find((element) => element.dataset.feedAudioSink === feedId) || null;
     if (!audio) {
         audio = document.createElement('audio');
@@ -556,6 +556,7 @@ function publicWebRTCAudioElement(feedId) {
         audio.className = 'public-audio-sink';
         document.body.appendChild(audio);
     }
+    audio.dataset.feedAudioSink = feedId;
     if (audio.dataset.hazeSinkBound !== '1') {
         audio.dataset.hazeSinkBound = '1';
         audio.addEventListener('pause', () => {
@@ -567,7 +568,7 @@ function publicWebRTCAudioElement(feedId) {
                 ended: audio.ended,
                 packets_recent: hasRecentWebRTCPackets(player),
             });
-            if (player?.mode === 'webrtc' && hasRecentWebRTCPackets(player)) {
+            if (player?.mode === 'webrtc' && audio.dataset.hazeUserPaused !== '1' && hasRecentWebRTCPackets(player)) {
                 ensureWebRTCAudioPlaying(feedId, player, audio);
             }
         });
@@ -659,12 +660,8 @@ function cardMarkup(feed) {
     const feedState = !feed.enabled
         ? 'disabled'
         : (canPlay ? 'ready' : (summaryState?.media_available ? 'unavailable' : 'waiting'));
-    const status = canPlay
-        ? (canWebRTC ? 'Ready' : (summaryState?.media_available ? 'Ready' : 'Waiting for playout audio'))
-        : (feed.enabled ? 'Streaming unavailable' : 'Feed disabled');
     const httpURL = canHTTP ? httpStreamURL(feedId, false, prefs.mode === 'http' ? prefs.codec : DEFAULT_HTTP_CODEC) : '';
     const httpSelected = prefs.mode === 'http';
-    const webRTCSelected = prefs.mode === 'webrtc';
 
     return `
         <article class="feed-card public-feed-card" data-feed-card="${escapeHtml(feedId)}" data-feed-state="${escapeHtml(feedState)}" data-feed-mode-selected="${escapeHtml(prefs.mode)}" role="link" tabindex="0" aria-label="Open ${escapeHtml(siteNames)} feed">
@@ -693,23 +690,8 @@ function cardMarkup(feed) {
                         <strong data-feed-listener-peak="${escapeHtml(feedId)}">${escapeHtml(peakListenerLabel(listeners.peak))}</strong>
                     </span>
                 </div>
-                <div class="public-feed-buttonrow public-feed-webrtc-row">
-                    <button class="btn-action public-player-btn" type="button" data-feed-play="${escapeHtml(feedId)}" data-feed-playable="${canPlay ? '1' : '0'}" ${canPlay ? '' : 'disabled'} ${webRTCSelected ? '' : 'hidden'}>
-                        <i data-lucide="play" width="14" height="14"></i>
-                        <span>Play</span>
-                    </button>
-                    <button class="btn-action public-player-btn" type="button" data-feed-stop="${escapeHtml(feedId)}" disabled ${webRTCSelected ? '' : 'hidden'}>
-                        <i data-lucide="square" width="14" height="14"></i>
-                        <span>Stop</span>
-                    </button>
-                    <label class="public-volume" aria-label="Feed volume" data-feed-volume-control="${escapeHtml(feedId)}" ${webRTCSelected ? '' : 'hidden'}>
-                        <i data-lucide="volume-2" width="14" height="14"></i>
-                        <input type="range" min="0" max="1" step="0.01" value="1" data-feed-volume="${escapeHtml(feedId)}">
-                    </label>
-                    <span class="public-player-status" data-feed-status="${escapeHtml(feedId)}">${escapeHtml(status)}</span>
-                </div>
                 <div class="public-feed-audio-row">
-                    <audio class="public-feed-audio" data-feed-audio="${escapeHtml(feedId)}" data-feed-http-enabled="${canHTTP ? '1' : '0'}" src="${escapeHtml(httpURL)}" controls playsinline preload="none" ${httpSelected && canHTTP ? '' : 'hidden'}></audio>
+                    <audio class="public-feed-audio" data-feed-audio="${escapeHtml(feedId)}" data-feed-http-enabled="${canHTTP ? '1' : '0'}" ${httpSelected && canHTTP ? `src="${escapeHtml(httpURL)}"` : ''} controls playsinline preload="none" ${canPlay ? '' : 'hidden'}></audio>
                     <button class="btn-action public-player-btn public-feed-copy-btn" type="button" data-feed-share="${escapeHtml(feedId)}" title="Copy HTTP stream link" ${canHTTP ? '' : 'disabled'}>
                         <i data-lucide="copy" width="15" height="15"></i>
                         <span>Copy</span>
@@ -822,18 +804,19 @@ function updateFeedModePresentation(feedId, { resetStatus = true } = {}) {
     const isHTTP = prefs.mode === 'http';
     const audio = findFeedElement('feed-audio', feedId);
     const hasHTTP = audio?.dataset.feedHttpEnabled === '1';
-    const play = findFeedElement('feed-play', feedId);
-    const stop = findFeedElement('feed-stop', feedId);
-    const volume = findFeedElement('feed-volume-control', feedId);
-    if (play) play.hidden = isHTTP;
-    if (stop) stop.hidden = isHTTP;
-    if (volume) volume.hidden = isHTTP;
     if (audio) {
-        audio.hidden = !isHTTP || !hasHTTP;
+        audio.controls = true;
+        audio.hidden = isHTTP ? !hasHTTP : !summaryState?.webrtc_enabled;
         if (isHTTP && hasHTTP) {
             updateFeedHTTPAudio(feedId);
         } else {
-            pauseFeedHTTPAudio(feedId);
+            audio.dataset.hazeHttpWanted = '0';
+            clearHTTPAudioReconnect(feedId, true);
+            if (audio.hasAttribute('src')) {
+                audio.pause();
+                audio.removeAttribute('src');
+                audio.load();
+            }
         }
     }
     if (resetStatus) {
@@ -1181,25 +1164,60 @@ function attachFeedControls() {
     feedsGrid.querySelectorAll('[data-feed-audio]').forEach((audio) => {
         if (audio.dataset.hazeBound === '1') return;
         audio.dataset.hazeBound = '1';
+        const startNativeWebRTC = () => {
+            const feedId = audio.dataset.feedAudio;
+            if (normalizedFeedPreferences(feedId).mode !== 'webrtc') return;
+            if (feedPlayers.has(feedId) || audio.dataset.hazeWebRTCStarting === '1') return;
+            audio.dataset.hazeWebRTCStarting = '1';
+            audio.dataset.hazeUserPaused = '0';
+            startFeedWebRTC(feedId).finally(() => {
+                audio.dataset.hazeWebRTCStarting = '0';
+            });
+        };
+        audio.addEventListener('click', startNativeWebRTC);
         audio.addEventListener('play', () => {
+            const feedId = audio.dataset.feedAudio;
+            if (normalizedFeedPreferences(feedId).mode === 'webrtc') {
+                audio.dataset.hazeUserPaused = '0';
+                const player = feedPlayers.get(feedId);
+                if (player?.trackAttached) {
+                    resumeFeedAudio(feedId, player);
+                } else {
+                    startNativeWebRTC();
+                }
+                return;
+            }
             audio.dataset.hazeHttpWanted = '1';
-            setPlayerStatus(audio.dataset.feedAudio, 'Starting HTTP audio');
+            setPlayerStatus(feedId, 'Starting HTTP audio');
         });
         audio.addEventListener('playing', () => {
+            if (normalizedFeedPreferences(audio.dataset.feedAudio).mode !== 'http') return;
             audio.dataset.hazeHttpWanted = '1';
             audio.dataset.hazeHttpRestarting = '0';
             clearHTTPAudioReconnect(audio.dataset.feedAudio, true);
             setPlayerStatus(audio.dataset.feedAudio, 'Playing over HTTP');
         });
         audio.addEventListener('waiting', () => {
+            if (normalizedFeedPreferences(audio.dataset.feedAudio).mode !== 'http') return;
             setPlayerStatus(audio.dataset.feedAudio, 'Browser buffering audio');
             scheduleHTTPAudioReconnect(audio.dataset.feedAudio, audio, { stalled: true });
         });
         audio.addEventListener('stalled', () => {
+            if (normalizedFeedPreferences(audio.dataset.feedAudio).mode !== 'http') return;
             setPlayerStatus(audio.dataset.feedAudio, 'HTTP audio stalled');
             scheduleHTTPAudioReconnect(audio.dataset.feedAudio, audio, { stalled: true });
         });
         audio.addEventListener('pause', () => {
+            const feedId = audio.dataset.feedAudio;
+            if (normalizedFeedPreferences(feedId).mode === 'webrtc') {
+                const player = feedPlayers.get(feedId);
+                if (player && !player.stopping) {
+                    audio.dataset.hazeUserPaused = '1';
+                    audio.dataset.hazePlayerState = 'paused';
+                    setPlayerStatus(feedId, 'Paused');
+                }
+                return;
+            }
             if (audio.dataset.hazeHttpRestarting !== '1' && !audio.ended && !audio.error) {
                 audio.dataset.hazeHttpWanted = '0';
                 clearHTTPAudioReconnect(audio.dataset.feedAudio, true);
@@ -1207,10 +1225,12 @@ function attachFeedControls() {
             setPlayerStatus(audio.dataset.feedAudio, 'Paused');
         });
         audio.addEventListener('ended', () => {
+            if (normalizedFeedPreferences(audio.dataset.feedAudio).mode !== 'http') return;
             setPlayerStatus(audio.dataset.feedAudio, 'Reconnecting HTTP audio');
             scheduleHTTPAudioReconnect(audio.dataset.feedAudio, audio);
         });
         audio.addEventListener('error', () => {
+            if (normalizedFeedPreferences(audio.dataset.feedAudio).mode !== 'http') return;
             setPlayerStatus(audio.dataset.feedAudio, 'HTTP audio error');
             scheduleHTTPAudioReconnect(audio.dataset.feedAudio, audio);
         });
@@ -1268,6 +1288,7 @@ function setHealthyWebRTCStatus(feedId, player, audio = player?.audio) {
 
 function ensureWebRTCAudioPlaying(feedId, player, audio = player?.audio) {
     if (!isActivePlayer(feedId, player) || player?.mode !== 'webrtc' || !audio) return;
+    if (audio.dataset.hazeUserPaused === '1') return;
     keepWebRTCAudioLive(feedId, player, audio);
     if (!audio.paused || audio.dataset.hazePlayerState === 'play-blocked' || audio.dataset.hazePlayerState === 'needs-play') return;
     recordWebRTCEvent(feedId, 'audio_resume_attempt', {
@@ -1302,6 +1323,7 @@ function ensureWebRTCAudioPlaying(feedId, player, audio = player?.audio) {
 
 function keepWebRTCAudioLive(feedId, player, audio = player?.audio) {
     if (!isActivePlayer(feedId, player) || player?.mode !== 'webrtc' || !audio) return;
+    if (audio.dataset.hazeUserPaused === '1') return;
     let repaired = false;
     if (audio.muted) {
         audio.muted = false;
@@ -2104,9 +2126,10 @@ async function startFeedWebRTC(feedId) {
 
     audio.volume = Number(volume?.value ?? 1);
     audio.autoplay = true;
-    audio.controls = false;
+    audio.controls = true;
     audio.muted = false;
     audio.playsInline = true;
+    audio.dataset.hazeUserPaused = '0';
     audio.dataset.hazePlayerState = 'connecting';
     audio.dataset.hazeTrackAttached = '0';
     audio.onplaying = () => {
@@ -2205,7 +2228,7 @@ async function startFeedWebRTC(feedId) {
         currentAudio.play()
             .then(() => {
                 if (isActivePlayer(feedId, player) && !currentAudio.paused) {
-                    currentAudio.controls = false;
+                    currentAudio.controls = true;
                     currentAudio.dataset.hazePlayerState = 'playing';
                     setPlayerStatus(feedId, 'Playing');
                 } else if (isActivePlayer(feedId, player)) {
@@ -2363,9 +2386,10 @@ async function resumeFeedAudio(feedId, player) {
     }
     setPlayerButtons(feedId, true);
     audio.muted = false;
+    audio.dataset.hazeUserPaused = '0';
     try {
         await audio.play();
-        audio.controls = false;
+        audio.controls = true;
         audio.dataset.hazePlayerState = audio.paused ? 'audio-ready' : 'playing';
         setPlayerStatus(feedId, audio.paused ? 'Audio ready' : 'Playing');
     } catch {
@@ -2412,6 +2436,7 @@ function stopFeed(feedId, { silent = false } = {}) {
             : (findFeedElement('feed-audio', feedId) || player.audio);
         if (audio) {
             audio.pause();
+            audio.controls = true;
             if (player.mode === 'http') {
                 audio.removeAttribute('src');
                 audio.load();
@@ -2420,6 +2445,7 @@ function stopFeed(feedId, { silent = false } = {}) {
             }
             audio.dataset.hazePlayerState = 'stopped';
             audio.dataset.hazeTrackAttached = '0';
+            audio.dataset.hazeUserPaused = '0';
         }
         feedPlayers.delete(feedId);
     }

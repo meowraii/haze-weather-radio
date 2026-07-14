@@ -65,6 +65,86 @@ func TestSIPDomainAllowedMatchesRequestURI(t *testing.T) {
 	}
 }
 
+func TestNormalizeIVRExtensionsAddsEnabledCanadaLine(t *testing.T) {
+	cfg := Config{}
+	normalizeIVRConfig(&cfg)
+	if len(cfg.Extensions) != 1 {
+		t.Fatalf("extensions = %#v", cfg.Extensions)
+	}
+	line := cfg.Extensions[0]
+	if line.Extension != "haze" || line.Province != "CA" || !line.enabled() {
+		t.Fatalf("default line = %#v", line)
+	}
+}
+
+func TestExtensionTelephoneServiceNameSupportsPlacementAndPronunciation(t *testing.T) {
+	service := &Service{cfg: loadedConfig{}}
+	service.cfg.Root.Operator.TelephoneName = map[string]any{"pronunciation": "tele weather"}
+	before := extensionConfig{Name: map[string]any{"text": "Saskatchewan", "pronunciation": "sask at chew on"}, NamePosition: "before"}
+	after := extensionConfig{Name: "Canada", NamePosition: "after"}
+	if got := service.extensionTelephoneServiceName(before); got != "sask at chew on tele weather" {
+		t.Fatalf("before greeting name = %q", got)
+	}
+	if got := service.extensionTelephoneServiceName(after); got != "tele weather Canada" {
+		t.Fatalf("after greeting name = %q", got)
+	}
+}
+
+func TestSIPInviteSelectsConfiguredProvinceLine(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{
+		Extensions: []extensionConfig{{Extension: "600", Province: "SK"}},
+		RTP:        rtpConfig{PortMin: 0, PortMax: 0},
+	}, Prompts: defaultPromptConfig()}}
+	request := sampleSIPInviteRequest()
+	request.URI = "sip:600@teleweather.sip.rai.blue"
+
+	call, response := acceptTestSIPInvite(service, context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
+	if call == nil {
+		t.Fatalf("expected accepted province call, response: %s", response)
+	}
+	defer call.close()
+	if call.line.Extension != "600" || call.line.directProvince() != "SK" {
+		t.Fatalf("selected line = %#v", call.line)
+	}
+}
+
+func TestSIPProvinceLineSurvivesProxyRequestURIRewrite(t *testing.T) {
+	service := &Service{cfg: loadedConfig{IVR: Config{Extensions: []extensionConfig{
+		{Extension: "haze", Province: "CA"},
+		{Extension: "600", Province: "SK"},
+	}}}}
+	request := sampleSIPInviteRequest()
+	request.URI = "sip:haze@teleweather.sip.rai.blue"
+	request.Headers["to"] = "<sip:600@teleweather.sip.rai.blue>"
+
+	line, matched := service.sipRequestLine(request)
+	if !matched || line.Extension != "600" || line.directProvince() != "SK" {
+		t.Fatalf("selected line = %#v, matched=%v", line, matched)
+	}
+}
+
+func TestSIPInviteRejectsDisabledProvinceLine(t *testing.T) {
+	disabled := false
+	service := &Service{cfg: loadedConfig{IVR: Config{
+		Extensions: []extensionConfig{
+			{Extension: "haze", Province: "CA"},
+			{Extension: "800", Province: "BC", Enabled: &disabled},
+		},
+		RTP: rtpConfig{PortMin: 0, PortMax: 0},
+	}, Prompts: defaultPromptConfig()}}
+	request := sampleSIPInviteRequest()
+	request.URI = "sip:800@teleweather.sip.rai.blue"
+
+	call, response := acceptTestSIPInvite(service, context.Background(), request, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5062}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5060})
+	if call != nil {
+		call.close()
+		t.Fatal("disabled extension accepted a call")
+	}
+	if !strings.Contains(response, "480 Temporarily Unavailable") {
+		t.Fatalf("disabled extension response = %q", response)
+	}
+}
+
 func TestSIPInviteUsesConfiguredG722AndTelephoneEvents(t *testing.T) {
 	service := &Service{cfg: loadedConfig{IVR: Config{RTP: rtpConfig{PortMin: 0, PortMax: 0}, Cache: cacheConfig{PhoneCodec: "g722"}}, Prompts: defaultPromptConfig()}}
 	request := sampleSIPInviteRequestWithFormats("9 0 101", "a=rtpmap:9 G722/8000", "a=rtpmap:0 PCMU/8000")
@@ -488,6 +568,61 @@ func TestRTPDTMFDigitDecodesEndEvent(t *testing.T) {
 	digit, key := rtpDTMFDigit(packet, sipDefaultDTMFPayload)
 	if digit != "1" || key == "" {
 		t.Fatalf("digit=%q key=%q", digit, key)
+	}
+}
+
+func TestRTPDTMFDigitDecodesInitialEventWithoutWaitingForEnd(t *testing.T) {
+	packet := make([]byte, 16)
+	packet[0] = 0x80
+	packet[1] = sipDefaultDTMFPayload
+	binary.BigEndian.PutUint32(packet[4:8], 5678)
+	packet[12] = 2
+	packet[13] = 0x00
+	packet[14] = 0
+	packet[15] = 80
+
+	digit, key := rtpDTMFDigit(packet, sipDefaultDTMFPayload)
+	if digit != "2" || key != "2:5678" {
+		t.Fatalf("digit=%q key=%q", digit, key)
+	}
+}
+
+func TestNonInterruptibleAudioPreservesQueuedDigit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alert.pcmu")
+	if err := os.WriteFile(path, make([]byte, sipPacketSamples*2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	call := &sipCall{
+		ctx:     ctx,
+		digits:  make(chan string, 2),
+		service: &Service{cfg: loadedConfig{IVR: Config{DigitTimeoutSeconds: 1}}},
+	}
+	call.digits <- "2"
+	if digit, interrupted := call.playAudioFile(path, digitInterruptNone); interrupted || digit != "" {
+		t.Fatalf("non-interruptible playback returned digit=%q interrupted=%v", digit, interrupted)
+	}
+	if digit, ok := call.waitDigit(50 * time.Millisecond); !ok || digit != "2" {
+		t.Fatalf("queued digit after playback = %q, ok=%v", digit, ok)
+	}
+}
+
+func TestAlertAudioCanBeInterruptedWithPound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alert.pcmu")
+	if err := os.WriteFile(path, make([]byte, sipPacketSamples*2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	call := &sipCall{
+		ctx:     ctx,
+		digits:  make(chan string, 1),
+		service: &Service{cfg: loadedConfig{IVR: Config{DigitTimeoutSeconds: 1}}},
+	}
+	call.digits <- "#"
+	if digit, interrupted := call.playAudioFile(path, digitInterruptPound); !interrupted || digit != "#" {
+		t.Fatalf("pound interrupt returned digit=%q interrupted=%v", digit, interrupted)
 	}
 }
 

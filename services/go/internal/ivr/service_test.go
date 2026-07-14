@@ -161,6 +161,55 @@ func TestEntryMenuSkipsLanguageWhenOnlyOneLanguageConfigured(t *testing.T) {
 	}
 }
 
+func TestProvinceExtensionSkipsCanadaProvincePrompt(t *testing.T) {
+	cfg := loadedConfig{
+		BaseDir: t.TempDir(),
+		IVR: Config{
+			DefaultLanguage: "en-CA",
+			Extensions:      []extensionConfig{{Extension: "600", Name: "Saskatchewan", NamePosition: "before", Province: "SK"}},
+		},
+		Feeds:   []feedXML{testFeedWithLanguages("sk-0001", "en-CA")},
+		Prompts: defaultPromptConfig(),
+	}
+	cfg.Root.Operator.TelephoneName = "TeleWeather"
+	service := &Service{cfg: cfg}
+	request := httptest.NewRequest(http.MethodGet, "http://ivr.test/ivr/v1/twiml?extension=600", nil)
+	response := httptest.NewRecorder()
+
+	service.writeEntryTwiML(response, request)
+
+	body := response.Body.String()
+	if !strings.Contains(body, "state=location_number") || !strings.Contains(body, "province=SK") {
+		t.Fatalf("province line did not route directly to its location numbers: %s", body)
+	}
+	if strings.Contains(body, "state=location_code") || strings.Contains(body, "main_single_language") {
+		t.Fatalf("province line fell through to the Canada province prompt: %s", body)
+	}
+	if !strings.Contains(body, "line=greeting") || !strings.Contains(body, "extension_telephone_service_name=Saskatchewan+TeleWeather") {
+		t.Fatalf("province line greeting missing or incorrect: %s", body)
+	}
+}
+
+func TestDisabledProvinceExtensionHangsUp(t *testing.T) {
+	disabled := false
+	cfg := loadedConfig{
+		IVR: Config{Extensions: []extensionConfig{
+			{Extension: "haze", Province: "CA"},
+			{Extension: "800", Province: "BC", Enabled: &disabled},
+		}},
+		Prompts: defaultPromptConfig(),
+	}
+	service := &Service{cfg: cfg}
+	request := httptest.NewRequest(http.MethodGet, "http://ivr.test/ivr/v1/twiml?extension=800", nil)
+	response := httptest.NewRecorder()
+
+	service.writeEntryTwiML(response, request)
+
+	if body := response.Body.String(); !strings.Contains(body, "<Hangup/>") || strings.Contains(body, "<Gather") {
+		t.Fatalf("disabled province line response = %s", body)
+	}
+}
+
 func TestEntryDigitRejectsUnconfiguredLanguage(t *testing.T) {
 	cfg := loadedConfig{
 		BaseDir: t.TempDir(),
@@ -268,6 +317,28 @@ func TestLocationNumberCombinesWithProvince(t *testing.T) {
 	body := response.Body.String()
 	if !strings.Contains(body, "state=location_option") || !strings.Contains(body, "code=06040") {
 		t.Fatalf("location number did not resolve official code: %s", body)
+	}
+}
+
+func TestProvinceLineAcceptsThreeDigitLocationNumber(t *testing.T) {
+	cfg := loadedConfig{
+		BaseDir: t.TempDir(),
+		IVR:     Config{DefaultLanguage: "en-CA"},
+		Feeds:   []feedXML{testFeedWithLanguages("on-0001", "en-CA")},
+		Prompts: defaultPromptConfig(),
+	}
+	service := &Service{cfg: cfg}
+	service.cache = NewProductCache(cfg, nil)
+	service.broadcast = newBroadcastHub()
+	service.resolver = resolverWithHelloWeather(cfg, locationRecord{Code: "04143", Source: "hello_weather", Name: "Toronto", Province: "ON"})
+
+	request := formRequest("http://ivr.test/ivr/v1/twiml?state=location_number&province=ON&lang=en-CA", url.Values{"Digits": {"143"}})
+	response := httptest.NewRecorder()
+	service.handleLocationNumberTwiML(response, request)
+
+	body := response.Body.String()
+	if !strings.Contains(body, "state=location_option") || !strings.Contains(body, "code=04143") {
+		t.Fatalf("three-digit province location did not resolve: %s", body)
 	}
 }
 

@@ -119,7 +119,7 @@ func (s Snapshot) PlacesBySource(source string) []Place {
 
 func (s Snapshot) Labels() map[string]string {
 	out := map[string]string{}
-	for _, source := range []string{"forecast", "clc", "sgc", "nws_same", "nws_zone", "nws_marine_same", "nws_marine_zone"} {
+	for _, source := range []string{"forecast", "clc", "sgc", "hello_weather", "nws_same", "nws_zone", "nws_marine_same", "nws_marine_zone"} {
 		for _, place := range s.PlacesBySource(source) {
 			if place.Code != "" && place.Name != "" {
 				out[place.Code] = place.Name

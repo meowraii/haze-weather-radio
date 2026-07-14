@@ -1,0 +1,845 @@
+CODE,NAME,PROVINCE,ALIASES,SOURCE_URL
+08001,Gibsons,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08003,Sechelt,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08005,Ucluelet,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08006,Cassiar,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08007,100 Mile House,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08008,Dome Creek,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08009,Good Hope Lake,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08010,Rock Creek,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08011,Kootenay (National Park),BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08012,Clearwater,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08013,Valemount,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08014,Dease Lake,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08015,Estevan Point,BC,Gold River,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08016,Pemberton,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08017,Tofino,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08018,Bella Coola,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08019,Campbell River,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08020,Nanaimo,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08021,Castlegar,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08022,Blue River,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08023,Chetwynd,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08024,Chilliwack,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08025,Dawson Creek,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08026,Creston,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08027,Vernon,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08028,Lillooet,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08029,Malahat,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08030,Kitimat,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08031,Hope Slide,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08032,Gonzales Point,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08033,Lytton,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08034,Golden,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08035,Pitt Meadows,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08036,Hope,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08037,Nelson,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08038,Nakusp,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08039,Grand Forks,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08040,Esquimalt,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08041,Princeton,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08042,Puntzi Mountain,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08043,Burns Lake,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08044,Vanderhoof,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08045,Kamloops,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08046,Port Alberni,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08047,McBride,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08048,Kelowna,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08049,Merritt,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08050,Squamish,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08051,Salmon Arm,BC,Sicamous,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08052,Sparwood,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08053,Tetsa River (Provincial Park),BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08054,Summerland,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08055,Cache Creek,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08056,Masset,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08057,Prince Rupert,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08058,Powell River,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08059,Victoria (Hartland),BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08060,Tatlayoko Lake,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08061,Comox,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08062,White Rock,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08063,Muncho Lake,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08064,Quesnel,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08065,Revelstoke,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08066,Victoria (University of),BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08067,Atlin,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08068,Yoho (National Park),BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08069,Osoyoos,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08070,Agassiz,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08071,Trail,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08072,Invermere,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08073,Stewart,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08074,Vancouver,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08075,Victoria Harbour,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08076,Williams Lake,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08077,Cranbrook,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08078,Fort St. John,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08079,Prince George,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08080,Terrace,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08081,Abbotsford,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08082,Smithers,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08083,Fort Nelson,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08084,Penticton,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08085,Victoria,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08086,Whistler,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08087,Liard River,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08088,Sandspit,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08089,Port Hardy,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08090,Mackenzie,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08091,Clinton,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08092,Courtenay,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08093,Gulf Islands (Southern),BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08094,Bella Bella,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08095,Cummins Lakes (Provincial Park),BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08096,Richmond,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08097,Duncan,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08098,Qualicum Beach,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08099,West Vancouver,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+08100,Langley,BC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07001,Cochrane,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07002,Barrhead,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07003,Canmore,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07004,High River,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07005,Stettler,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07006,Strathmore,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07007,Taber,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07008,Westlock,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07009,Wetaskiwin,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07010,Athabasca,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07011,Okotoks,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07012,Airdrie,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07014,Hinton,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07015,Lloydminster,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07016,Rocky Mountain House,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07017,Crowsnest,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07018,Camrose,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07019,Milk River,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07020,Fort Mcmurray,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07021,Rainbow Lake,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07022,Stony Plain,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07023,Cold Lake,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07024,High Level,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07025,Peace River,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07026,St Paul,AB,Vegreville,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07027,Vauxhall,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07028,Fort Chipewyan,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07029,Red Deer,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07030,Lethbridge,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07031,Grande Prairie,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07032,Lac La Biche,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07033,Mildred Lake,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07034,Kananaskis (Nakiska Ridgetop),AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07035,Onefour,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07036,Breton,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07037,Hendrickson Creek,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07038,Nordegg,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07039,Lacombe,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07040,Red Earth Creek,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07041,Willow Creek (Provincial Park),AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07042,Bow Valley (Provincial Park),AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07043,Bow Island,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07044,Stavely,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07045,Grande Cache,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07046,Pincher Creek,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07047,Suffield,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07048,Drayton Valley,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07049,Banff,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07050,Edmonton,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07051,Medicine Hat,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07052,Calgary,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07053,Sundre,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07054,Slave Lake,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07055,Wainwright,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07056,Whitecourt,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07057,Beaverlodge,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07058,Brooks,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07059,Coronation,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07060,Claresholm,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07061,Calgary (Olympic Park),AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07062,Drumheller,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07063,Elk Island (National Park),AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07064,Cardston,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07065,Garden Creek,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07066,Waterton Park,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07067,Esther,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07068,Highvale,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07069,Three Hills,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07070,Jasper,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07071,Edmonton (Aprt int.),AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+07072,Edson,AB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06001,Rosthern,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06002,Biggar,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06003,Canora,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06004,Carlyle,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06005,Fort Qu’Appelle,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06006,Humboldt,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06007,Kamsack,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06008,Melville,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06009,Moosomin,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06010,Oxbow,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06011,Shaunavon,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06012,Tisdale,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06013,La Loche,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06014,Lucky Lake,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06015,Waskesiu Lake,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06016,Maple Creek,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06017,Hudson Bay,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06018,Elbow,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06019,Wynyard,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06020,Key Lake,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06021,Kindersley,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06022,Meadow Lake,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06023,Rosetown,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06024,Moose Jaw,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06025,Spiritwood,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06026,Scott,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06027,Prince Albert,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06028,Val Marie,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06029,Cypress Hills (Provincial Park),SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06030,Collins Bay,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06031,Weyburn,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06032,Regina,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06033,Yorkton,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06034,Battleford,SK,North Battleford,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06035,Last Mountain Lake (Sanctuaire),SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06036,Stony Rapids,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06037,Outlook,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06038,La Ronge,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06039,Buffalo Narrows,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06040,Saskatoon,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06041,Swift Current,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06042,Coronach,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06043,Indian Head,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06044,Uranium City,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06045,Eastend,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06046,Melfort,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06047,Nipawin,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06048,Broadview,SK,Whitewood,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06049,Lanigan,SK,Watrous,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06050,Southend Reindeer,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06051,Assiniboia,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06052,Leader,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06053,Estevan,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06054,Rockglen,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06055,Pelican Narrows,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+06056,Lloydminster,SK,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05002,Dominion City,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05003,Altona,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05004,Pine Falls,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05005,Poplar River,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05006,Richer,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05007,Vita,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05008,Whiteshell,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05009,Grand Beach,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05010,Minnedosa,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05011,Morris,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05012,Snow Lake,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05013,Steinbach,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05014,Oak Point,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05015,McCreary,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05016,Souris,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05017,Morden,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05018,Little Grand Rapids,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05019,Pilot Mound,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05020,Virden,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05021,Arnes,MB,Riverton,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05022,Leaf Rapids,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05023,Sprague,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05024,Fisher Branch,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05025,Norway House,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05026,Winkler,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05027,Oxford House,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05028,Shoal Lake,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05029,Portage la Prairie,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05030,The Pas,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05031,Wasagaming,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05032,Roblin,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05033,Bissett,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05034,Thompson,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05035,Carberry,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05036,Winnipeg (The Forks),MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05037,Bloodvein,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05038,Winnipeg,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05039,Shamattawa,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05040,Delta,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05041,Lynn Lake,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05042,Churchill,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05043,Bachelors Island,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05044,Pinawa,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05045,Melita,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05046,Swan River,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05047,Emerson,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05048,Gretna,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05049,Deerwood,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05050,Hunters Point,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05051,Tadoule Lake,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05052,Brandon,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05053,Brochet,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05054,Berens River,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05055,Victoria Beach,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05056,York Factory,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05057,Grand Rapids,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05058,Dauphin,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05059,Island Lake,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05060,Flin Flon,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05061,Shilo,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05062,Gimli,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05063,Gods Lake,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05064,Gillam,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05065,Carman,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05066,Turtle Mountain (Provincial Park),MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+05067,Pukatawagan,MB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04001,Algonquin Park (Brent),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04003,Belleville,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04004,Brampton,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04005,Guelph,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04007,Owen Sound,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04008,Brockville,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04009,Bracebridge,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04011,Chatham-Kent,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04012,Fort Erie,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04013,Orillia,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04014,Welland,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04015,Woodstock,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04016,Walkerton,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04017,Tillsonburg,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04018,Strathroy,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04019,Port Elgin,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04021,Blind River,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04022,Temiskaming Shores,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04023,Leamington,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04024,Mississauga,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04025,Newmarket,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04026,Nipigon,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04027,Prince Edward (Picton),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04028,Kincardine,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04029,Algonquin Park (Lake of Two Rivers),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04030,Apsley,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04031,Burk's Falls,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04032,Caledon,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04033,Cochrane,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04034,Dorion,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04035,Dunchurch,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04036,Dundalk,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04037,Gogama,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04038,Gravenhurst,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04039,Greater Napanee,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04040,Greater Sudbury,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04041,Gull Bay,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04042,Haldimand County,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04043,Kaladar,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04044,Kawartha Lakes (Fenelon Falls),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04045,Lac Supérieur (Provincial Park),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04046,Lambton Shores,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04047,Lincoln,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04048,Mine Centre,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04049,New Tecumseth,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04050,Norfolk,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04051,North Perth,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04052,Ottawa (Richmond - Metcalfe),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04053,Oxtongue Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04054,Pickering,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04055,Pikangikum,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04056,Port Carling,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04057,Quinte Ouest,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04058,Renfrew,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04059,Richmond Hill,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04060,Saugeen Shores,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04061,Sharbot Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04062,South Bruce Peninsula,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04063,Sydenham,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04064,Vaughan,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04065,West Nipissing,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04066,Westport,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04067,White River,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04068,Halton Hills,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04069,Kingston,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04070,Greenstone (Geraldton),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04071,Hawkesbury,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04072,Dryden,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04073,Hearst,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04074,Kemptville,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04075,Cobourg,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04076,Kirkland Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04077,Hamilton,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04078,Hornepayne,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04079,Oakville,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04080,Port Colborne,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04081,Cambridge,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04082,Kitchener-Waterloo,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04083,Deep River,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04084,Shelburne,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04085,Markham,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04086,Brantford,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04087,Lansdowne House,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04088,Huntsville,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04089,Mount Forest,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04090,Gananoque,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04091,Chapleau,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04092,Morrisburg,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04093,Muskoka,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04094,Windsor,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04095,Burlington,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04096,Kenora,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04097,Greenstone (Nakina),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04098,St. Thomas,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04099,Peawanuck,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04100,Thunder Bay,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04101,Ogoki,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04102,Bancroft,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04103,Parry Sound,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04104,Red Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04105,Sachigo Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04106,Smiths Falls,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04107,St Catharines,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04108,Marathon,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04109,Vineland,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04110,Wingham,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04111,Armstrong,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04112,Petawawa,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04113,Moosonee,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04114,Alliston,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04115,Stirling,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04116,Stratford,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04117,Oshawa,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04118,Ottawa (Kanata - Orléans),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04119,Whitby,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04120,Pickle Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04121,Peterborough,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04122,Alexandria,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04123,Terrace Bay,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04124,Big Trout Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04125,Niagara Falls,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04126,Trenton,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04127,Timmins,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04128,Toronto Island,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04129,Sandy Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04130,Wiarton,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04131,Pembroke,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04132,Webequie,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04133,Barry's Bay,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04134,Savant Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04135,Sioux Lookout,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04136,Earlton,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04137,London,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04138,Wawa,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04139,North Bay,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04140,Orangeville,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04141,Rondeau (Provincial Park),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04142,Kapuskasing,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04143,Toronto,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04144,Gore Bay,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04145,Kakabeka Falls,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04146,Killarney,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04147,Sarnia,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04148,Atikokan,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04149,Port Perry,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04150,Collingwood,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04151,Barrie,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04152,Cornwall,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04153,Greenstone (Beardmore),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04154,Upsala,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04155,Winchester,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04156,Ignace,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04157,Tobermory,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04158,Wunnummin Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04159,Fort Frances,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04160,Goderich,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04161,Simcoe,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04162,Sault Ste Marie,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04163,Montreal River Harbour,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04164,Attawapiskat,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04165,Haliburton,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04166,Sioux Narrows,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04167,Ear Falls,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04168,Kawartha Lakes (Lindsay),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04169,Midland,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04170,Elliot Lake,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04171,Fort Severn,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04172,Rodney,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04173,Fort Albany,ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+04174,Sudbury (Greater),ON,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03002,Drummondville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03005,Granby,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03011,La Malbaie,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03013,Saint-Jérôme,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03014,Lachute,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03015,Matane,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03016,Murdochville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03017,Papineau,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03018,Percé,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03019,Pontiac,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03020,Pointe-à-la-Croix,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03021,Richelieu,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03022,Saint-Hyacinthe,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03024,Trois-Pistoles,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03025,Berthierville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03026,Escoumins,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03027,Forestville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03028,Saint-Jean-sur-Richelieu,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03029,Fermont,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03030,La Vérendry (Réserve faunique),QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03033,Saint-Agathe,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03035,Témiscouata,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03036,Akulivik,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03038,Val-des-Sources,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03040,Puvirnituq,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03041,Vanier,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03042,Val-des-Monts,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03045,La Sarre,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03046,Contrecoeur,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03047,Mont-Laurier,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03048,Beauceville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03049,Beauharnois,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03050,Bécancour,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03051,Bernières,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03052,Blainville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03053,Boisbriand,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03054,Bonaventure,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03055,Candiac,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03056,Carignan,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03057,Carleton-sur-Mer,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03058,Chambly,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03059,Chelsea,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03060,Coaticook,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03061,Cowansville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03062,Delson,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03063,Deux-Montagnes,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03064,Dolbeau-Mistassini,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03065,Donnacona,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03066,Vaudreuil-Dorion,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03067,Forillon,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03068,Huntingdon,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03069,Baie-James,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03070,Kamouraska,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03071,La Prairie,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03072,Lac-Mégantic,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03073,Lac-Saint-Jean,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03074,Lanaudière,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03076,Laval,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03077,L'Islet,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03078,Lévis,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03081,Lorraine,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03083,Magog,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03084,Marieville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03085,Mascouche,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03089,Mauricie,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03090,Mingan,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03092,Mont-Saint-Hilaire,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03093,Otterburn Park,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03094,Gaspésie (National Park),QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03095,Forillon (National Park),QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03096,Pincourt,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03097,Port-Cartier,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03098,Prévost,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03099,Lac Raglan,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03100,La Grande-Quatre,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03101,Gaspé,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03102,Maniwaki,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03103,Cap-Aux-Meules,QC,Îles-de-la-Madeleine,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03104,Havre St-Pierre,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03105,Kuujjuarapik,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03106,Quaqtaq,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03107,Tadoussac,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03108,Riviere-Du-Loup,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03109,Longueuil,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03110,Nicolet,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03111,New Carlisle,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03112,Ivujivik,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03113,Laurentides (Réserve faunique),QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03114,Parent,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03115,Shefferville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03116,Waskaganish,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03117,Aupaluk,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03118,Kangiqsualujjuaq,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03119,Charlevoix,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03120,Cap Chat,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03121,Chibougamau,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03122,Umiujaq,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03123,Mirabel,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03124,Montmagny,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03125,Natashquan,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03126,Gatineau,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03127,Mont-Joli,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03128,Salluit,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03129,Matagami,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03130,Trois-Rivieres,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03131,Inukjuak,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03132,Shawinigan,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03133,Quebec,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03134,Roberval,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03135,Sutton,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03136,Sherbrooke,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03137,Joliette,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03138,Rimouski,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03139,Témiscamingue,QC,Ville-Marie,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03140,Farnham,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03141,Sept-Iles,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03142,Port-Menier,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03143,Salaberry-de-Valleyfield,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03144,Alma,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03145,Tasiujaq,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03146,Amqui,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03147,Montréal,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03148,Rouyn-Noranda,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03149,Val-D'Or,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03150,Kuujjuaq,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03151,Matapédia,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03152,Chevery,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03153,Manicouagan,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03154,La Tuque,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03155,Kangiqsujuaq,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03156,L'Assomption,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03157,Victoriaville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03158,La Grande Rivière,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03159,Kangirsuk,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03160,Baie-Comeau,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03161,Bagotville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03162,Varennes,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03163,Blanc-Sablon,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03165,Baie-Saint-Paul,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03166,Chicoutimi,QC,Jonquiere|Saguenay,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03167,Mont-Tremblant,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03168,Amos,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03169,Grande-Vallée,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03200,Repentigny,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03201,Gouin (Reservoir),QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03202,Rigaud,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03203,Rosemère,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03205,Saint-Amable,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03206,Saint-Basile Le Grand,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03207,Saint-Constant,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03208,Sainte-Anne-des-Monts,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03209,Sainte-Anne-des-Plaines,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03300,Sainte-Catherine,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03301,Sainte-Julie,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03302,Sainte-Sophie,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03303,Sainte-Thérèse,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03304,Saint-Eustache,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03305,Saint-Félicien,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03306,Saint-Georges,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03307,Saint-Lazare,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03308,Saint-Lin-Laurentides,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03309,Saint-Luc,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03400,Saint-Michel-des-Saints,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03401,Saint-Nicéphore,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03402,Saint-Rémi,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03403,Saint-Sauveur,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03404,Saint-Timothée,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03406,Sorel-Tracy,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03407,Terrebonne,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03408,Thetford Mines,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03409,Tracy,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03500,Vallée de la Matapédia,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03502,Louiseville,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03503,Le Gardeur,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+03504,Chandler,QC,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01529,Fredericton,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01701,Bouctouche,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01702,Campbellton,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01703,Chipman,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01704,Doaktown,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01705,Fundy (National Park),NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01706,Grand-Sault,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01708,Hopewell,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01709,Kouchibouguac,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01710,Mont Carleton (Provincial Park),NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01711,Oromocto,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01712,Quispamsis,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01713,Richibucto,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01714,Rogersville,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01715,Sackville,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01716,Saint-Quentin,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01717,Shédiac,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01718,Saint Andrews,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01719,Sussex,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01720,Tracadie-Sheila,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01721,Woodstock,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01722,Bas Caraquet,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01723,Saint John,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01724,St. Leonard,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01725,Miramichi,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01726,Dalhousie,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01727,Grand Manan,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01728,Bathurst,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01730,Charlo,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01731,Miscou Island,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01732,Edmundston,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01733,Point Lepreau,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01734,Point Escuminac,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01735,St. Stephen,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01736,Moncton,NB,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01001,New Glasgow,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01002,Annapolis Royal,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01003,Antigonish,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01004,Baddeck,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01005,Bidgetown,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01006,Bridgewater,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01007,Economy,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01008,Guysborough,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01010,Sheet Harbour,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01011,Shelburne,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01012,St. Peter’s,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01013,Parrsboro,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01014,Tatamagouche,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01015,Windsor,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01016,Ingonish,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01017,Kentville,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01018,North East Margaree,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01020,Digby,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01021,Lunenburg,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01022,Malay Falls,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01023,Hart Island,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01024,Cap Fourchu,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01025,Truro,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01026,Port Hawkesbury,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01027,Brier Island,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01028,Tracadie,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01029,Yarmouth,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01030,Western Head,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01031,Sydney,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01032,Grand Étang,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01033,Amherst,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01034,Caribou,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01035,Greenwood,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01036,Beaver Island,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01037,Cap Baccaro,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01038,Chéticamp,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01039,Liverpool,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01040,Halifax (Shearwater),NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01041,Cape George,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01042,Kejimkujik (National Park),NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01043,North Mountain (Cap Breton),NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01044,Eskasoni,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01119,Halifax,NS,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01801,North Cape,PE,O'Leary,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01802,Maple Plains,PE,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01803,Summerside,PE,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01804,St. Peters Bay,PE,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01805,Charlottetown,PE,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+01806,East Point,PE,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02001,Clarenville,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02002,Campbellton,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02003,Marystown,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02004,Buchans,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02005,Grand Bank,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02006,Grand Falls-Windsor,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02007,Gros Morne,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02008,St. Alban’s,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02009,Lewisporte,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02010,Musgrave Harbour,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02011,Port au Choix,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02012,Wabush,NL,Wabush Lake,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02013,Rocky Harbour,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02014,Bonavista,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02015,Terra Nova (National Park),NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02016,Gander,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02017,Channel-Port aux Basques,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02018,Wreckhouse,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02019,Winterland,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02020,Labrador City,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02021,Churchill Falls,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02022,La Scie,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02023,Happy Valley-Goose Bay,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02024,Mount Pearl,NL,St. John’s,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02025,Makkovik,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02026,Marble Mountain,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02027,Stephenville,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02028,Cape Race,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02029,Mary’s Harbour,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02030,Placentia,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02031,Burgeo,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02032,Cartwright,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02033,Daniel’s Harbour,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02034,Badger,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02035,Twillingate,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02036,St. Lawrence,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02037,St. Anthony,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02038,Hopedale,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02039,Deer Lake,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02040,Nain,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02041,Corner Brook,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02042,New-Wes-Valley,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02043,Bay Roberts,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02044,Englee,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02045,L’Anse-au-Loup,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02046,Rigolet,NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02047,Cartwright Junction (Trans-Labrador Hwy),NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+02048,Gull Island Rapids (Trans-Labrador Hwy),NL,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09101,Kluane Lake,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09102,Carcross,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09103,Rancheria,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09104,Dempster (Highway),YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09105,Haines Junction,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09106,Dawson,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09107,Burwash Landing,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09108,Ross River,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09109,Rock River,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09110,Mayo,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09111,Old Crow,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09112,Faro,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09113,Watson Lake,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09114,Teslin,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09115,Beaver Creek,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09116,Whitehorse,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09117,Carmacks,YT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09501,Detah,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09502,Enterprise,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09503,Fort Resolution,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09504,Fort Simpson,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09505,Fort Good Hope,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09506,Whati,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09507,Ulukhaktok,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09508,Hay River,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09509,Wekweeti,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09510,Fort McPherson,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09511,Tulita,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09512,Nahanni Butte,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09513,Aklavik,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09514,Ekati (Lac de Gras),NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09515,Trout Lake,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09516,Paulatuk,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09517,Fort Smith,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09518,Gameti,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09519,Sachs Harbour,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09520,Tuktoyaktuk,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09521,Norman wells,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09522,Deline,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09523,Wrigley,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09524,Yellowknife,NT,Yellowknife Marine,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09526,Colville Lake,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09527,Fort Providence,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09528,Indin River,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09529,Fort Liard,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09530,Inuvik,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09531,Lutselke,NT,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09801,Nanisivik,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09802,Cape Dorset,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09803,Repulse Bay,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09804,Hall Beach,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09805,Qikiqtarjuaqq,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09806,Whale Cove,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09807,Pangnirtung,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09808,Taloyoak,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09809,Coral Harbour,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09810,Arctic Bay,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09811,Eureka,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09812,Grise Fiord,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09813,Kugaaruk,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09814,Baker Lake,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09815,Cambridge Bay,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09816,Kugluktuk,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09817,Chesterfield,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09818,Clyde River,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09819,Ennadai,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09820,Arviat,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09821,Iqaluit,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09822,Alert,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09823,Igloolik,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09824,Gjoa Haven,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09825,Pond Inlet,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09826,Kimmirut,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09827,Resolute,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09828,Rankin Inlet,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html
+09829,Sanikiluaq,NU,,https://www.canada.ca/en/environment-climate-change/services/weather-general-tools-resources/telephone-services/recorded-observations-forecasts.html

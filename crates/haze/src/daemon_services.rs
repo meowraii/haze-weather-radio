@@ -230,7 +230,17 @@ impl DaemonServices {
                 .and_then(|value| value.value())
                 .unwrap_or(30)
                 .clamp(1, 24 * 60);
-            let rules = runtime_cleanup_rules(cleanup_cfg);
+            let rules = runtime_cleanup_rules(cleanup_cfg)
+                .into_iter()
+                .map(|mut rule| {
+                    rule.relative_path = runtime_cleanup_path_for_layout(
+                        &host.app_dir,
+                        &host.runtime_dir,
+                        &rule.relative_path,
+                    );
+                    rule
+                })
+                .collect::<Vec<_>>();
             let rule_count = rules.len();
             let runtime_dir = host.runtime_dir.clone();
             let stop_flag = Arc::clone(&stop);
@@ -1332,6 +1342,21 @@ fn safe_relative_runtime_path(raw: &str) -> Option<PathBuf> {
     }
 }
 
+fn runtime_cleanup_path_for_layout(
+    app_dir: &Path,
+    runtime_dir: &Path,
+    configured_path: &Path,
+) -> PathBuf {
+    if app_dir != runtime_dir {
+        if let Ok(relative) = configured_path.strip_prefix("runtime") {
+            if !relative.as_os_str().is_empty() {
+                return relative.to_path_buf();
+            }
+        }
+    }
+    configured_path.to_path_buf()
+}
+
 fn run_runtime_cleanup_once(
     runtime_dir: &Path,
     rules: &[RuntimeCleanupRule],
@@ -2205,6 +2230,38 @@ mod tests {
 
         assert_eq!(stats.removed_files, 0);
         assert!(fresh.exists());
+    }
+
+    #[test]
+    fn runtime_cleanup_maps_legacy_paths_into_separate_runtime_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_dir = dir.path().join("app");
+        let runtime_dir = dir.path().join("data");
+        let target_dir = runtime_dir.join("audio/playlist/cwxr-sk01");
+        fs::create_dir_all(&app_dir).expect("app dir");
+        fs::create_dir_all(&target_dir).expect("target dir");
+        let stale = target_dir.join("forecast.wav");
+        fs::write(&stale, [1_u8, 2, 3, 4]).expect("stale file");
+        let configured_path = PathBuf::from("runtime/audio/playlist");
+        let rules = vec![RuntimeCleanupRule {
+            relative_path: runtime_cleanup_path_for_layout(
+                &app_dir,
+                &runtime_dir,
+                &configured_path,
+            ),
+            max_age: Duration::from_secs(60),
+        }];
+
+        let stats = run_runtime_cleanup_once(
+            &runtime_dir,
+            &rules,
+            SystemTime::now() + Duration::from_secs(120),
+        );
+
+        assert_eq!(rules[0].relative_path, PathBuf::from("audio/playlist"));
+        assert_eq!(stats.removed_files, 1);
+        assert!(!stale.exists());
+        assert!(!runtime_dir.join("runtime").exists());
     }
 
     #[test]

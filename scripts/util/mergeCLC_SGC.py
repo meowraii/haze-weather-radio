@@ -232,6 +232,7 @@ def main() -> int:
     clc = load_clc(input_dir / "CLC_Base_Zone.csv")
     sgc = load_sgc(input_dir / "CAP-CP_Geocodes.csv")
     forecasts = load_forecasts(input_dir / "FORECAST_LOCATIONS.csv")
+    hello_weather = load_hello_weather(input_dir / "HELLO_WEATHER_LOCATIONS.csv")
     stations = load_stations(input_dir / "SWOB_STATIONS.csv")
     postal_codes = [] if args.no_postal else load_postal_codes(input_dir / "postal-codes-canada.csv")
     zip_codes = load_zip_codes(args.zip_csv) if args.zip_csv else []
@@ -242,6 +243,7 @@ def main() -> int:
     all_places.extend(clc)
     all_places.extend(sgc)
     all_places.extend(forecasts)
+    all_places.extend(hello_weather)
     all_places.extend(nws_places)
     all_places.extend(marine_places)
     all_places.extend(stations)
@@ -396,6 +398,33 @@ def load_forecasts(path: Path) -> list[Place]:
                     "programs": programs,
                     "programmes": clean_text(row.get("programmes")),
                     "province_raw": clean_text(row.get("province_waterbody_2_province_plan_d_eau_2")),
+                },
+            )
+        )
+    return unique_places(out)
+
+
+def load_hello_weather(path: Path) -> list[Place]:
+    rows = read_table(path, header_markers={"CODE", "PROVINCE"})
+    out = []
+    for row in rows:
+        code = clean_code(row.get("code"))
+        name = clean_text(row.get("name"))
+        province = clean_region(row.get("province"))
+        if len(code) != 5 or not name or province not in CANADA_PROVINCES.values():
+            continue
+        aliases = [clean_text(value) for value in clean_text(row.get("aliases")).split("|")]
+        out.append(
+            Place(
+                source="hello_weather",
+                code=code,
+                name=name,
+                region=province,
+                country="CA",
+                kind="ECCC Hello Weather location code",
+                attrs={
+                    "aliases": [value for value in aliases if value],
+                    "source_url": clean_text(row.get("source_url")),
                 },
             )
         )

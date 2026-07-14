@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolverMapsHelloWeatherCodeToCoveredFeed(t *testing.T) {
@@ -264,6 +265,60 @@ func TestParseHelloWeatherCodesUsesOfficialProvinceSections(t *testing.T) {
 	}
 }
 
+func TestParseHelloWeatherCodesHandlesOfficialTableMarkup(t *testing.T) {
+	codes := parseHelloWeatherCodes(`
+		<details><summary>Nova Scotia</summary><table><tbody>
+		<tr><td>Yarmouth</td><td>1-833-794-3556 (79HELLO) Code: 0102<span>9</span></td></tr>
+		</tbody></table></details>
+		<h2>New Brunswick</h2><table><tbody>
+		<tr><td>Woodstock</td><td>1-833-794-3556 (79HELLO) Code: 0172<span>1</span></td></tr>
+		</tbody></table>
+		<h2>Yukon</h2><table><tbody>
+		<tr><td>Dempster (Highway)</td><td>1-833-794-3556 (79HELLO) Code: 0910<span>4</span></td></tr>
+		</tbody></table>
+	`)
+	tests := map[string]locationRecord{
+		"01029": {Name: "Yarmouth", Province: "NS"},
+		"01721": {Name: "Woodstock", Province: "NB"},
+		"09104": {Name: "Dempster (Highway)", Province: "YT"},
+	}
+	for code, want := range tests {
+		got, ok := codes[code]
+		if !ok || got.Name != want.Name || got.Province != want.Province {
+			t.Fatalf("code %s = %#v, ok=%v", code, got, ok)
+		}
+	}
+}
+
+func TestHelloWeatherProvinceNumberLookupCoversSharedCodeFamilies(t *testing.T) {
+	cfg := loadedConfig{IVR: Config{DefaultLanguage: "en-CA"}}
+	resolver := resolverWithHelloWeather(cfg,
+		locationRecord{Code: "06040", Source: "hello_weather", Name: "Saskatoon", Province: "SK"},
+		locationRecord{Code: "04143", Source: "hello_weather", Name: "Toronto", Province: "ON"},
+		locationRecord{Code: "01723", Source: "hello_weather", Name: "Saint John", Province: "NB"},
+		locationRecord{Code: "01805", Source: "hello_weather", Name: "Charlottetown", Province: "PE"},
+		locationRecord{Code: "09524", Source: "hello_weather", Name: "Yellowknife", Province: "NT"},
+	)
+	tests := []struct {
+		province string
+		number   string
+		want     string
+	}{
+		{province: "SK", number: "40", want: "06040"},
+		{province: "ON", number: "143", want: "04143"},
+		{province: "1", number: "723", want: "01723"},
+		{province: "PE", number: "805", want: "01805"},
+		{province: "9", number: "524", want: "09524"},
+		{province: "NT", number: "09524", want: "09524"},
+	}
+	for _, test := range tests {
+		got, ok := resolver.helloWeatherCodeForProvinceNumber(test.province, test.number)
+		if !ok || got != test.want {
+			t.Fatalf("province %s number %s = %q, ok=%v, want %s", test.province, test.number, got, ok, test.want)
+		}
+	}
+}
+
 func TestResolverUsesOfficialHelloWeatherDirectory(t *testing.T) {
 	cfg := loadedConfig{
 		IVR: Config{DefaultLanguage: "en-CA"},
@@ -283,6 +338,62 @@ func TestResolverUsesOfficialHelloWeatherDirectory(t *testing.T) {
 	}
 	if location.Latitude != "49.895" || location.Longitude != "-97.138" {
 		t.Fatalf("coordinates = %q,%q", location.Latitude, location.Longitude)
+	}
+}
+
+func TestResolverUsesLocalHelloWeatherDirectoryWithoutNetworkLookup(t *testing.T) {
+	cfg := loadedConfig{
+		IVR: Config{DefaultLanguage: "en-CA"},
+		HelloWeather: map[string]locationRecord{
+			"05038": {Code: "05038", Source: "hello_weather", Name: "Winnipeg", Province: "MB"},
+		},
+		Feeds: []feedXML{{ID: "mb-0001", EnabledRaw: "true", Timezone: "America/Winnipeg"}},
+	}
+	resolver := NewResolver(cfg)
+	lookupCalls := 0
+	resolver.lookupHelloWeather = func(context.Context) map[string]locationRecord {
+		lookupCalls++
+		return nil
+	}
+
+	location, err := resolver.Resolve("05038")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if location.Name != "Winnipeg" || location.Province != "MB" {
+		t.Fatalf("location = %#v", location)
+	}
+	if lookupCalls != 0 {
+		t.Fatalf("network directory lookup calls = %d, want 0", lookupCalls)
+	}
+}
+
+func TestHelloWeatherDirectorySerializesInitialFallbackLoad(t *testing.T) {
+	resolver := NewResolver(loadedConfig{})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	resolver.lookupHelloWeather = func(context.Context) map[string]locationRecord {
+		close(started)
+		<-release
+		return map[string]locationRecord{
+			"06040": {Code: "06040", Source: "hello_weather", Name: "Saskatoon", Province: "SK"},
+		}
+	}
+	first := make(chan map[string]locationRecord, 1)
+	second := make(chan map[string]locationRecord, 1)
+	go func() { first <- resolver.helloWeatherDirectory() }()
+	<-started
+	go func() { second <- resolver.helloWeatherDirectory() }()
+	select {
+	case result := <-second:
+		t.Fatalf("second lookup returned before initial load completed: %#v", result)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	for index, result := range []map[string]locationRecord{<-first, <-second} {
+		if result["06040"].Name != "Saskatoon" {
+			t.Fatalf("result %d = %#v", index, result)
+		}
 	}
 }
 

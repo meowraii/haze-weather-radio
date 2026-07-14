@@ -538,9 +538,36 @@ func writePriorityAlertManifest(path string, manifest priorityAlertManifest) err
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
+	tmp := path + "." + queueID("manifest") + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := replaceFileAtomically(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func replaceFileAtomically(sourcePath string, targetPath string) error {
+	if _, err := os.Stat(sourcePath); err != nil {
+		return err
+	}
+	firstErr := os.Rename(sourcePath, targetPath)
+	if firstErr == nil {
+		return nil
+	}
+	if _, err := os.Stat(targetPath); err != nil {
+		return firstErr
+	}
+	backupPath := targetPath + "." + queueID("replace") + ".bak"
+	if err := os.Rename(targetPath, backupPath); err != nil {
+		return err
+	}
+	if err := os.Rename(sourcePath, targetPath); err != nil {
+		_ = os.Rename(backupPath, targetPath)
+		return err
+	}
+	_ = os.Remove(backupPath)
+	return nil
 }

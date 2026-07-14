@@ -980,6 +980,45 @@ func JoinParts(parts []string) string {
 	}
 }
 
+// BypassForecastRegionCollapse keeps the warning path free of region-database work.
+func BypassForecastRegionCollapse(info capmodel.AlertInfo) bool {
+	haystack := strings.ToLower(strings.Join([]string{
+		AlertSubject(info),
+		info.Event,
+		info.Headline,
+		CAPParam(info, "layer:EC-MSC-SMC:1.0:Alert_Type"),
+	}, " "))
+	if !strings.Contains(haystack, "warning") {
+		return false
+	}
+	return strings.Contains(haystack, "tornado") || strings.Contains(haystack, "severe thunderstorm")
+}
+
+// ForecastRegionAreaPhrase formats one or more forecast-region names for speech.
+func ForecastRegionAreaPhrase(names []string) string {
+	phrases := make([]string, 0, len(names))
+	for _, name := range names {
+		localities := ForecastRegionLocalities(name)
+		if localities != "" {
+			phrases = append(phrases, "areas in and around "+localities)
+		}
+	}
+	return strings.Join(phrases, "; and ")
+}
+
+// ForecastRegionLocalities turns ECCC's dash-separated forecast name into a spoken list.
+func ForecastRegionLocalities(raw string) string {
+	name := strings.TrimSpace(raw)
+	if strings.HasSuffix(strings.ToLower(name), " region") {
+		name = strings.TrimSpace(name[:len(name)-len(" region")])
+	}
+	parts := strings.Split(name, " - ")
+	if len(parts) == 1 {
+		return name
+	}
+	return JoinParts(parts)
+}
+
 // CleanSentence trims a fragment and ensures one final period.
 func CleanSentence(value string) string {
 	text := strings.TrimSpace(value)

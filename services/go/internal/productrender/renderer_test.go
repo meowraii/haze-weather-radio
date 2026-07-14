@@ -1907,12 +1907,44 @@ func TestBroadAlertsUseConfiguredCoverageRegionNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wanted := "for areas within the Martensville, Warman, Rosthern, Delisle, and Wakaw region; and the Outlook, Watrous, Hanley, Imperial, and Dinsmore region"
+	wanted := "for areas in and around Martensville, Warman, Rosthern, Delisle, and Wakaw; and areas in and around Outlook, Watrous, Hanley, Imperial, and Dinsmore"
 	if !strings.Contains(product.Text, wanted) {
 		t.Fatalf("broad alert region text missing %q:\n%s", wanted, product.Text)
 	}
 	if strings.Contains(product.Text, "R.M. of Corman Park") || strings.Contains(product.Text, "R.M. of Rudy") {
 		t.Fatalf("broad alert should not list subregion area names:\n%s", product.Text)
+	}
+}
+
+func TestBroadAlertCollapsesCompleteFeedRegionsWhenAlertExtendsBeyondFeed(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg := loadFixtureConfig(t, dir)
+	outside := `
+    <area>
+      <areaDesc>R.M. outside the configured listening area</areaDesc>
+      <geocode><valueName>layer:EC-MSC-SMC:1.0:CLC</valueName><value>099999</value></geocode>
+    </area>`
+	alertXML := strings.Replace(testBroadCAP(), "  </info>", outside+"\n  </info>", 1)
+	alert, err := capmodel.ParseCAP([]byte(alertXML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: cfg}
+	if _, err := service.recordCAPAlert(alert, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	product, err := newRenderer(cfg).Render(renderRequest{FeedID: "sk-0001", PackageID: "alerts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := "for areas in and around Martensville, Warman, Rosthern, Delisle, and Wakaw; and areas in and around Outlook, Watrous, Hanley, Imperial, and Dinsmore"
+	if !strings.Contains(product.Text, wanted) {
+		t.Fatalf("complete feed regions did not collapse when alert extended beyond the feed:\n%s", product.Text)
+	}
+	if strings.Contains(product.Text, "R.M. outside the configured listening area") {
+		t.Fatalf("out-of-feed area leaked into rendered radio text:\n%s", product.Text)
 	}
 }
 
@@ -1943,7 +1975,7 @@ func TestWatchAlertsUseForecastRegionNamesWhenComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wanted := "for areas within the Outlook, Watrous, Hanley, Imperial, and Dinsmore region"
+	wanted := "for areas in and around Outlook, Watrous, Hanley, Imperial, and Dinsmore"
 	if !strings.Contains(product.Text, wanted) {
 		t.Fatalf("watch alert region text missing %q:\n%s", wanted, product.Text)
 	}
@@ -1979,7 +2011,7 @@ func TestWatchAlertsKeepSubregionsWhenForecastRegionIncomplete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if strings.Contains(product.Text, "areas within the Outlook, Watrous, Hanley, Imperial, and Dinsmore region") {
+	if strings.Contains(product.Text, "areas in and around Outlook, Watrous, Hanley, Imperial, and Dinsmore") {
 		t.Fatalf("partial watch should not compact to the full forecast region:\n%s", product.Text)
 	}
 	if !strings.Contains(product.Text, "R.M. of Rudy including Outlook and Glenside") {

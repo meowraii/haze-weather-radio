@@ -388,6 +388,8 @@ func (s *Service) handleTwiML(writer http.ResponseWriter, request *http.Request)
 		s.writeAlertMenuTwiML(writer, request)
 	case "alert_option":
 		s.handleAlertOptionTwiML(writer, request)
+	case "alert_readout_option":
+		s.handleAlertReadoutOptionTwiML(writer, request)
 	case "ivr_menu":
 		s.writeConfiguredMenuTwiML(writer, request)
 	case "ivr_menu_option":
@@ -397,7 +399,42 @@ func (s *Service) handleTwiML(writer http.ResponseWriter, request *http.Request)
 	}
 }
 
+func ivrExtensionFromRequest(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	for _, value := range []string{
+		request.URL.Query().Get("extension"),
+		request.URL.Query().Get("line"),
+		request.FormValue("extension"),
+		request.FormValue("Called"),
+		request.FormValue("To"),
+	} {
+		if extension := sipURIUser(value); extension != "" {
+			return extension
+		}
+	}
+	return ""
+}
+
 func (s *Service) writeEntryTwiML(writer http.ResponseWriter, request *http.Request) {
+	line, matched := s.cfg.IVR.extensionLine(ivrExtensionFromRequest(request))
+	if !line.enabled() {
+		if matched {
+			writer.Header().Set("X-Haze-IVR-Line", line.Extension)
+		}
+		writeTwiML(writer, twimlHangup())
+		return
+	}
+	directProvince := line.directProvince()
+	if directProvince != "" {
+		if language, single := s.singleConfiguredLanguage(); single {
+			s.writeLocationNumberPromptWithPlays(writer, request, language, directProvince, []string{
+				promptURL(request, "entry", "greeting", s.extensionGreetingValues(line)),
+			})
+			return
+		}
+	}
 	entry, _ := s.cfg.Prompts.Menu("entry")
 	lineKey := s.menuMainLine("entry", "")
 	numDigits := "1"
@@ -406,7 +443,12 @@ func (s *Service) writeEntryTwiML(writer http.ResponseWriter, request *http.Requ
 		numDigits = ""
 		timeout = locationCodeAutoSubmitTimeout()
 	}
-	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{"state": "entry"}), numDigits, "#", timeout, []string{
+	params := map[string]string{"state": "entry"}
+	if directProvince != "" {
+		params["province"] = directProvince
+	}
+	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", params), numDigits, "#", timeout, []string{
+		promptURL(request, "entry", "greeting", s.extensionGreetingValues(line)),
 		promptURL(request, "entry", lineKey, s.promptValues(nil)),
 	}, []string{
 		twimlTimeoutHangup(request, s.promptValues(nil)),
@@ -416,7 +458,15 @@ func (s *Service) writeEntryTwiML(writer http.ResponseWriter, request *http.Requ
 
 func (s *Service) handleEntryDigit(writer http.ResponseWriter, request *http.Request) {
 	digit := strings.TrimSpace(request.FormValue("Digits"))
+	directProvince := normalizeProvinceCode(request.URL.Query().Get("province"))
+	if directProvince == "CA" || !validProvinceCode(directProvince) {
+		directProvince = ""
+	}
 	if language, single := s.singleConfiguredLanguage(); single {
+		if directProvince != "" {
+			s.writeLocationNumberPrompt(writer, request, language, directProvince)
+			return
+		}
 		s.handleLocationCodeWithLanguageTwiML(writer, request, language, digit)
 		return
 	}
@@ -433,6 +483,10 @@ func (s *Service) handleEntryDigit(writer http.ResponseWriter, request *http.Req
 		}
 		locationMenu, _ := s.cfg.Prompts.Menu("location_code")
 		lang := fallbackText(option.Language, s.cfg.IVR.DefaultLanguage)
+		if directProvince != "" {
+			s.writeLocationNumberPrompt(writer, request, lang, directProvince)
+			return
+		}
 		body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{
 			"state": "location_code",
 			"lang":  lang,
@@ -522,14 +576,17 @@ func (s *Service) handleLocationCodeWithLanguageTwiML(writer http.ResponseWriter
 }
 
 func (s *Service) writeLocationNumberPrompt(writer http.ResponseWriter, request *http.Request, language string, province string) {
+	s.writeLocationNumberPromptWithPlays(writer, request, language, province, nil)
+}
+
+func (s *Service) writeLocationNumberPromptWithPlays(writer http.ResponseWriter, request *http.Request, language string, province string, plays []string) {
 	menu, _ := s.cfg.Prompts.Menu("location_number")
+	plays = append(plays, promptURL(request, "location_number", "main", s.promptValues(map[string]string{"province": provinceDigitDisplayName(province)})))
 	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", map[string]string{
 		"state":    "location_number",
 		"lang":     language,
 		"province": province,
-	}), "", "#", locationCodeAutoSubmitTimeoutForMenu(menu.Timeout), []string{
-		promptURL(request, "location_number", "main", s.promptValues(map[string]string{"province": provinceDigitDisplayName(province)})),
-	}, []string{
+	}), "", "#", locationCodeAutoSubmitTimeoutForMenu(menu.Timeout), plays, []string{
 		twimlTimeoutHangup(request, nil),
 	})
 	writeTwiML(writer, body)
@@ -551,7 +608,7 @@ func (s *Service) handleLocationNumberTwiML(writer http.ResponseWriter, request 
 		writeTwiML(writer, body)
 		return
 	}
-	code, ok := helloWeatherCodeFromProvinceCity(province, number)
+	code, ok := s.resolver.helloWeatherCodeForProvinceNumber(province, number)
 	if !ok {
 		s.writeEntryErrorTwiML(writer, request)
 		return
@@ -565,20 +622,16 @@ func (s *Service) writeLocationMenuTwiML(writer http.ResponseWriter, request *ht
 		s.writeEntryErrorTwiML(writer, request)
 		return
 	}
-	s.writeLocationMenuWithAlertAuto(writer, request, location, twimlAlertAutoEnabled(request))
+	s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 }
 
 func (s *Service) writeLocationMenu(writer http.ResponseWriter, request *http.Request, location ResolvedLocation) {
-	s.writeLocationMenuWithAlertAuto(writer, request, location, true)
+	s.writeLocationMenuWithAlertAuto(writer, request, location, false)
 }
 
 func (s *Service) writeLocationMenuWithAlertAuto(writer http.ResponseWriter, request *http.Request, location ResolvedLocation, autoAlertMenu bool) {
 	menu, _ := s.cfg.Prompts.Menu("location_menu")
 	alerts := s.activeIVRAlerts(request.Context(), location)
-	if autoAlertMenu && len(alerts) > 0 {
-		s.writeAlertMenu(writer, request, location)
-		return
-	}
 	params := locationTwiMLParams(location)
 	params["state"] = "location_option"
 	plays := []string{}
@@ -693,10 +746,29 @@ func (s *Service) handleAlertOptionTwiML(writer http.ResponseWriter, request *ht
 	audioParams := locationTwiMLParams(location)
 	audioParams["index"] = digit
 	afterParams := locationTwiMLParams(location)
-	afterParams["state"] = "alert_menu"
-	body := twimlPlay(twimlURL(request, "/ivr/v1/alert_audio", audioParams)) +
-		twimlRedirect(twimlURL(request, "/ivr/v1/twiml", afterParams))
+	afterParams["state"] = "alert_readout_option"
+	fallbackParams := locationTwiMLParams(location)
+	fallbackParams["state"] = "alert_menu"
+	menu, _ := s.cfg.Prompts.Menu("location_menu")
+	body := twimlGather(twimlURL(request, "/ivr/v1/twiml", afterParams), "1", "", menu.Timeout, []string{
+		twimlURL(request, "/ivr/v1/alert_audio", audioParams),
+	}, []string{
+		twimlRedirect(twimlURL(request, "/ivr/v1/twiml", fallbackParams)),
+	})
 	writeTwiML(writer, body)
+}
+
+func (s *Service) handleAlertReadoutOptionTwiML(writer http.ResponseWriter, request *http.Request) {
+	location, err := s.locationFromRequest(request)
+	if err != nil {
+		s.writeEntryErrorTwiML(writer, request)
+		return
+	}
+	if strings.TrimSpace(request.FormValue("Digits")) == "#" {
+		s.writeLocationMenuWithAlertAuto(writer, request, location, false)
+		return
+	}
+	s.writeAlertMenuTwiML(writer, request)
 }
 
 func (s *Service) writeConfiguredMenuTwiML(writer http.ResponseWriter, request *http.Request) {
@@ -1014,6 +1086,24 @@ func (s *Service) telephoneServiceName() string {
 		return "Haze Weather Telephone"
 	}
 	return fallbackText(displayText(s.cfg.Root.Operator.TelephoneName), "Haze Weather Telephone")
+}
+
+func (s *Service) extensionTelephoneServiceName(line extensionConfig) string {
+	telephoneName := s.telephoneServiceName()
+	extensionName := displayText(line.Name)
+	if extensionName == "" {
+		return telephoneName
+	}
+	if strings.EqualFold(line.NamePosition, "after") {
+		return strings.TrimSpace(telephoneName + " " + extensionName)
+	}
+	return strings.TrimSpace(extensionName + " " + telephoneName)
+}
+
+func (s *Service) extensionGreetingValues(line extensionConfig) map[string]string {
+	return s.promptValues(map[string]string{
+		"extension_telephone_service_name": s.extensionTelephoneServiceName(line),
+	})
 }
 
 func (s *Service) radioServiceName(feedID string) string {

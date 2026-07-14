@@ -12,10 +12,17 @@ import (
 )
 
 type bridgeClient struct {
-	conn   net.Conn
-	mu     sync.Mutex
-	events chan map[string]any
+	conn      net.Conn
+	mu        sync.Mutex
+	events    chan map[string]any
+	done      chan struct{}
+	closeOnce sync.Once
 }
+
+const (
+	bridgeEventBufferSize = 128
+	bridgeCriticalReserve = 16
+)
 
 func connectBridge(ctx context.Context, addr string) (*bridgeClient, error) {
 	if strings.TrimSpace(addr) == "" {
@@ -28,17 +35,27 @@ func connectBridge(ctx context.Context, addr string) (*bridgeClient, error) {
 	}
 	client := &bridgeClient{
 		conn:   conn,
-		events: make(chan map[string]any, 128),
+		events: make(chan map[string]any, bridgeEventBufferSize),
+		done:   make(chan struct{}),
 	}
 	go client.readLoop()
 	return client, nil
 }
 
 func (c *bridgeClient) Close() error {
-	if c == nil || c.conn == nil {
+	if c == nil {
 		return nil
 	}
-	return c.conn.Close()
+	var err error
+	c.closeOnce.Do(func() {
+		if c.done != nil {
+			close(c.done)
+		}
+		if c.conn != nil {
+			err = c.conn.Close()
+		}
+	})
+	return err
 }
 
 func (c *bridgeClient) Events() <-chan map[string]any {
@@ -65,6 +82,21 @@ func (c *bridgeClient) readLoop() {
 		}
 		var message map[string]any
 		if err := json.Unmarshal([]byte(line), &message); err != nil {
+			continue
+		}
+		if stringAt(message, "type") == "cap.alert.received" {
+			if c.done == nil {
+				c.events <- message
+				continue
+			}
+			select {
+			case c.events <- message:
+			case <-c.done:
+				return
+			}
+			continue
+		}
+		if cap(c.events) > 0 && len(c.events) >= cap(c.events)-bridgeCriticalReserve {
 			continue
 		}
 		select {
