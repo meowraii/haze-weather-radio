@@ -79,7 +79,7 @@
         <text hide="true">The pressure was {pressure} and {tendency}.</text>
         <winds>
           <placeholder>The wind report was not available.</placeholder>
-          <text>Winds were {dir_text} at 10 {spd_metric}</text>
+          <text>Winds were {dir_text} at {spd_metric}</text>
           <text>The wind was calm.</text>
         </winds>
       </primary>
@@ -91,7 +91,7 @@
         <text hide="true">Sky condition was {weather}.</text>
         <winds>
           <placeholder>The wind report was not available.</placeholder>
-          <text>Winds were {dir_text} at 10 {spd_metric}</text>
+          <text>Winds were {dir_text} at {spd_metric}</text>
           <text>The wind was calm.</text>
         </winds>
       </nearby>
@@ -109,7 +109,7 @@
         <text hide="true">La pression était de {pressure} et {tendency}.</text>
         <winds>
           <placeholder>Le rapport de vent n'était pas disponible.</placeholder>
-          <text>Les vents soufflaient de {dir_text} à 10 {spd_metric}</text>
+          <text>Les vents soufflaient de {dir_text} à {spd_metric}</text>
           <text>Le vent était calme.</text>
         </winds>
       </primary>
@@ -121,7 +121,7 @@
         <text hide="true">L'état du ciel était {weather}.</text>
         <winds>
           <placeholder>Le rapport de vent n'était pas disponible.</placeholder>
-          <text>Les vents soufflaient de {dir_text} à 10 {spd_metric}</text>
+          <text>Les vents soufflaient de {dir_text} à {spd_metric}</text>
           <text>Le vent était calme.</text>
         </winds>
       </nearby>
@@ -139,7 +139,7 @@
         <text hide="true">La presión era de {pressure} y {tendency}.</text>
         <winds>
           <placeholder>El informe de viento no estaba disponible.</placeholder>
-          <text>Los vientos eran de {dir_text} a 10 {spd_metric}</text>
+          <text>Los vientos eran de {dir_text} a {spd_metric}</text>
           <text>El viento estaba en calma.</text>
         </winds>
       </primary>
@@ -151,7 +151,7 @@
         <text hide="true">La condición del cielo era {weather}.</text>
         <winds>
           <placeholder>El informe de viento no estaba disponible.</placeholder>
-          <text>Los vientos eran de {dir_text} a 10 {spd_metric}</text>
+          <text>Los vientos eran de {dir_text} a {spd_metric}</text>
           <text>El viento estaba en calma.</text>
         </winds>
       </nearby>

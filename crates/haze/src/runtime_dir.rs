@@ -436,6 +436,32 @@ fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
+pub(crate) fn configured_runtime_relative_path(
+    app_dir: &Path,
+    runtime_dir: &Path,
+    configured_path: &Path,
+) -> PathBuf {
+    if app_dir != runtime_dir {
+        if let Ok(relative) = configured_path.strip_prefix("runtime") {
+            return relative.to_path_buf();
+        }
+    }
+    configured_path.to_path_buf()
+}
+
+pub(crate) fn resolve_configured_runtime_path(
+    app_dir: &Path,
+    runtime_dir: &Path,
+    configured_path: &Path,
+) -> PathBuf {
+    let relative = configured_runtime_relative_path(app_dir, runtime_dir, configured_path);
+    if relative.is_absolute() {
+        relative
+    } else {
+        runtime_dir.join(relative)
+    }
+}
+
 fn should_prompt_for_runtime_dir(path: &Path) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
@@ -527,6 +553,35 @@ pub(crate) mod tests {
         assert_eq!(
             next_child_runtime_dir(temp.path()),
             temp.path().join(format!("{DEFAULT_CHILD_DIR}-2"))
+        );
+    }
+
+    #[test]
+    fn legacy_runtime_prefix_maps_into_separate_runtime_root() {
+        let app_dir = Path::new("/opt/haze");
+        let runtime_dir = Path::new("/srv/haze");
+
+        assert_eq!(
+            resolve_configured_runtime_path(
+                app_dir,
+                runtime_dir,
+                Path::new("runtime/state/goServiceRuntime.json"),
+            ),
+            runtime_dir.join("state/goServiceRuntime.json")
+        );
+    }
+
+    #[test]
+    fn legacy_runtime_prefix_is_preserved_for_in_place_runtime() {
+        let runtime_dir = Path::new("/opt/haze");
+
+        assert_eq!(
+            resolve_configured_runtime_path(
+                runtime_dir,
+                runtime_dir,
+                Path::new("runtime/state/goServiceRuntime.json"),
+            ),
+            runtime_dir.join("runtime/state/goServiceRuntime.json")
         );
     }
 

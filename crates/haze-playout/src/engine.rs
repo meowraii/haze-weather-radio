@@ -3,7 +3,7 @@ use std::fs;
 use std::future::Future;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -36,6 +36,13 @@ const PACKAGE_REQUEST_QUEUE_CAPACITY: usize = 8;
 const CONTROL_QUEUE_CAPACITY: usize = 16;
 const DEFERRED_ROUTINE_QUEUE_CAPACITY: usize = 2;
 const COMPLETED_ROUTINE_HISTORY_CAPACITY: usize = 128;
+const SEGMENT_GROUP_REVISION_QUEUE_CAPACITY: usize = 32;
+const MAX_OPEN_SEGMENT_GROUPS: usize = ROUTINE_AUDIO_QUEUE_CAPACITY;
+const MAX_SEGMENTS_PER_GROUP: usize = 64;
+const MAX_SEGMENT_DURATION_MS: u64 = 180_000;
+const MAX_SEGMENT_PAUSE_MS: u64 = 30_000;
+const GROUP_ADMISSION_MIN_SEGMENTS: usize = 2;
+const GROUP_ADMISSION_MIN_READY_MS: u64 = 2_000;
 const REALTIME_LAG_WARN_BACKLOG_MS: u64 = 60;
 const AUDIO_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 const AUDIO_CACHE_MAX_READY_ENTRIES: usize = 96;
@@ -81,6 +88,121 @@ struct AudioItem {
     predicted_start: String,
     predicted_finish: String,
     source: ItemSource,
+    segment_group: Option<Arc<SegmentGroup>>,
+}
+
+#[derive(Debug, Clone)]
+struct SegmentGroup {
+    queue_id: String,
+    feed_id: String,
+    package_id: String,
+    title: String,
+    manifest_path: String,
+    expected_segments: usize,
+    not_before: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct SegmentGroupRequest {
+    queue_id: String,
+    feed_id: String,
+    package_id: String,
+    title: String,
+    manifest_path: String,
+    revision: u64,
+    status: SegmentGroupStatus,
+    expected_segments: usize,
+    not_before: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Default)]
+struct SegmentGroupMailbox {
+    latest_by_queue_id: HashMap<String, SegmentGroupRequest>,
+    queued_ids: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SegmentGroupStatus {
+    Open,
+    Sealed,
+    Aborted,
+}
+
+#[derive(Debug, Clone)]
+struct SegmentGroupSegment {
+    index: usize,
+    audio_path: String,
+    duration_ms: u64,
+    pause_after_ms: u64,
+    pcm: SharedPcm,
+}
+
+#[derive(Debug, Clone)]
+struct SegmentGroupRevision {
+    request: SegmentGroupRequest,
+    status: SegmentGroupStatus,
+    segments: Vec<SegmentGroupSegment>,
+}
+
+#[derive(Debug)]
+enum SegmentGroupRevisionMessage {
+    Ready(SegmentGroupRevision),
+    Rejected {
+        request: SegmentGroupRequest,
+        error: String,
+    },
+}
+
+#[derive(Debug)]
+struct SegmentGroupPlayback {
+    group: Arc<SegmentGroup>,
+    last_revision: Option<u64>,
+    status: SegmentGroupStatus,
+    segments: Vec<Option<SegmentGroupSegment>>,
+    segment_index: usize,
+    segment_offset: usize,
+    pause_remaining_bytes: usize,
+    admitted: bool,
+    admission_pending: bool,
+    admission_item: Option<AudioItem>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SegmentGroupRender {
+    Playing,
+    Underflow,
+    Completed,
+    Aborted,
+}
+
+#[derive(Debug, Deserialize)]
+struct SegmentGroupManifest {
+    #[serde(default)]
+    queue_id: String,
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    expected_segments: Option<usize>,
+    #[serde(default)]
+    sample_rate: u32,
+    #[serde(default)]
+    channels: u16,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    segments: Vec<SegmentGroupManifestSegment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SegmentGroupManifestSegment {
+    #[serde(default)]
+    index: usize,
+    #[serde(default)]
+    audio_path: String,
+    #[serde(default)]
+    duration_ms: u64,
+    #[serde(default)]
+    pause_after_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -235,6 +357,8 @@ enum ItemSource {
 struct FeedHandle {
     feed: FeedConfig,
     audio_tx: mpsc::Sender<AudioItem>,
+    segment_group_mailbox: Arc<StdMutex<SegmentGroupMailbox>>,
+    segment_group_tx: mpsc::Sender<String>,
     priority_prepare_tx: mpsc::Sender<Value>,
     breakin_tx: mpsc::Sender<BreakInCommand>,
     request_tx: mpsc::Sender<PackageRequest>,
@@ -468,6 +592,32 @@ async fn dispatch_event(
                 }
             });
         }
+        "playlist.item.group" => {
+            let data = bridge::data(&event);
+            let feed_id = bridge::first_text(&event, data, &["feed_id"]);
+            let Some(handle) = handles.get(feed_id).cloned() else {
+                return;
+            };
+            match segment_group_request_from_event(data) {
+                Ok(request) if request.feed_id == handle.feed.id => {
+                    if let Err(err) = submit_segment_group_request(
+                        &handle.segment_group_mailbox,
+                        &handle.segment_group_tx,
+                        request,
+                    ) {
+                        tracing::warn!(
+                            feed_id,
+                            "segment group revision rejected before it could be queued: {err}"
+                        );
+                    }
+                }
+                Ok(_) => tracing::warn!(
+                    feed_id,
+                    "segment group feed_id did not match its target feed"
+                ),
+                Err(err) => tracing::warn!(feed_id, "segment group event rejected: {err}"),
+            }
+        }
         "cap.alert.audio.ready" => {
             let targets = feed_targets_from_event(&event);
             for handle in matching_feed_handles(handles, &targets) {
@@ -672,6 +822,585 @@ fn pcm_duration_ms(bytes: usize, sample_rate: u32, channels: u16) -> u64 {
     ((frames as u128) * 1000 / u128::from(sample_rate)) as u64
 }
 
+fn segment_group_request_from_event(data: &Value) -> Result<SegmentGroupRequest> {
+    let queue_id = required_text(data, "queue_id")?;
+    let feed_id = required_text(data, "feed_id")?;
+    let package_id = required_text(data, "package_id")?;
+    let title = required_text(data, "title")?;
+    let manifest_path = required_text(data, "manifest_path")?;
+    let revision = required_u64(data, "revision")?;
+    let expected_segments = required_usize(data, "expected_segments")?;
+    if expected_segments == 0 || expected_segments > MAX_SEGMENTS_PER_GROUP {
+        anyhow::bail!(
+            "expected_segments must be between 1 and {MAX_SEGMENTS_PER_GROUP}, got {expected_segments}"
+        );
+    }
+    let status = parse_segment_group_status(required_text(data, "status")?)?;
+    Ok(SegmentGroupRequest {
+        queue_id,
+        feed_id,
+        package_id,
+        title,
+        manifest_path,
+        revision,
+        status,
+        expected_segments,
+        not_before: parse_time(bridge::first_text(&Value::Null, data, &["not_before"])),
+    })
+}
+
+fn required_text(value: &Value, key: &str) -> Result<String> {
+    let Some(value) = value.get(key).and_then(Value::as_str) else {
+        anyhow::bail!("{key} is required");
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        anyhow::bail!("{key} is required");
+    }
+    Ok(value.to_string())
+}
+
+fn required_u64(value: &Value, key: &str) -> Result<u64> {
+    value
+        .get(key)
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse().ok()))
+        })
+        .ok_or_else(|| anyhow::anyhow!("{key} must be an unsigned integer"))
+}
+
+fn required_usize(value: &Value, key: &str) -> Result<usize> {
+    let value = required_u64(value, key)?;
+    usize::try_from(value).map_err(|_| anyhow::anyhow!("{key} exceeds platform limits"))
+}
+
+fn parse_segment_group_status(value: String) -> Result<SegmentGroupStatus> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "open" => Ok(SegmentGroupStatus::Open),
+        "sealed" => Ok(SegmentGroupStatus::Sealed),
+        "aborted" => Ok(SegmentGroupStatus::Aborted),
+        _ => anyhow::bail!("invalid segment group status {value:?}"),
+    }
+}
+
+async fn segment_group_builder(
+    cfg: Arc<LoadedConfig>,
+    audio_cache: Arc<AudioCache>,
+    mailbox: Arc<StdMutex<SegmentGroupMailbox>>,
+    mut queue_ids: mpsc::Receiver<String>,
+    revisions: mpsc::Sender<SegmentGroupRevisionMessage>,
+) {
+    while let Some(queue_id) = queue_ids.recv().await {
+        let Some(request) = take_segment_group_request(&mailbox, &queue_id) else {
+            continue;
+        };
+        let result = if let Some(revision) = aborted_segment_group_revision(&request) {
+            Ok(revision)
+        } else {
+            read_segment_group_revision(&cfg, &audio_cache, request.clone()).await
+        };
+        let message = match result {
+            Ok(revision) => SegmentGroupRevisionMessage::Ready(revision),
+            Err(err) => SegmentGroupRevisionMessage::Rejected {
+                request,
+                error: err.to_string(),
+            },
+        };
+        if revisions.send(message).await.is_err() {
+            break;
+        }
+    }
+}
+
+fn submit_segment_group_request(
+    mailbox: &Arc<StdMutex<SegmentGroupMailbox>>,
+    queue_ids: &mpsc::Sender<String>,
+    request: SegmentGroupRequest,
+) -> Result<()> {
+    let queue_id = request.queue_id.clone();
+    let mut mailbox = mailbox
+        .lock()
+        .map_err(|_| anyhow::anyhow!("segment group mailbox lock is poisoned"))?;
+    if let Some(existing) = mailbox.latest_by_queue_id.get(&queue_id) {
+        if request.revision <= existing.revision {
+            return Ok(());
+        }
+    } else if mailbox.latest_by_queue_id.len() >= MAX_OPEN_SEGMENT_GROUPS {
+        anyhow::bail!("segment group mailbox limit reached");
+    }
+    mailbox.latest_by_queue_id.insert(queue_id.clone(), request);
+    if !mailbox.queued_ids.insert(queue_id.clone()) {
+        return Ok(());
+    }
+    match queue_ids.try_send(queue_id.clone()) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => {
+            mailbox.queued_ids.remove(&queue_id);
+            mailbox.latest_by_queue_id.remove(&queue_id);
+            anyhow::bail!("segment group token queue is full");
+        }
+        Err(TrySendError::Closed(_)) => {
+            mailbox.queued_ids.remove(&queue_id);
+            mailbox.latest_by_queue_id.remove(&queue_id);
+            anyhow::bail!("segment group worker stopped");
+        }
+    }
+}
+
+fn take_segment_group_request(
+    mailbox: &Arc<StdMutex<SegmentGroupMailbox>>,
+    queue_id: &str,
+) -> Option<SegmentGroupRequest> {
+    let mut mailbox = mailbox.lock().ok()?;
+    mailbox.queued_ids.remove(queue_id);
+    mailbox.latest_by_queue_id.remove(queue_id)
+}
+
+fn aborted_segment_group_revision(request: &SegmentGroupRequest) -> Option<SegmentGroupRevision> {
+    (request.status == SegmentGroupStatus::Aborted).then(|| SegmentGroupRevision {
+        request: request.clone(),
+        status: SegmentGroupStatus::Aborted,
+        segments: Vec::new(),
+    })
+}
+
+async fn read_segment_group_revision(
+    cfg: &LoadedConfig,
+    audio_cache: &AudioCache,
+    mut request: SegmentGroupRequest,
+) -> Result<SegmentGroupRevision> {
+    let manifest_path = resolve_path(&cfg.base_dir, &request.manifest_path);
+    let raw = tokio::fs::read(&manifest_path).await.with_context(|| {
+        format!(
+            "failed to read segment group manifest {}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: SegmentGroupManifest = serde_json::from_slice(&raw).with_context(|| {
+        format!(
+            "failed to parse segment group manifest {}",
+            manifest_path.display()
+        )
+    })?;
+    if !manifest.queue_id.trim().is_empty() && manifest.queue_id.trim() != request.queue_id {
+        anyhow::bail!("manifest queue_id did not match the revision event");
+    }
+    if manifest
+        .expected_segments
+        .is_some_and(|expected| expected != request.expected_segments)
+    {
+        anyhow::bail!("manifest expected_segments did not match the revision event");
+    }
+    promote_request_to_manifest_revision(&mut request, manifest.revision)?;
+    let status = parse_segment_group_status(manifest.status)?;
+    if manifest.sample_rate == 0 || manifest.channels == 0 {
+        anyhow::bail!("manifest sample_rate and channels must be positive");
+    }
+    if manifest.segments.len() > request.expected_segments {
+        anyhow::bail!("manifest contains more segments than expected_segments");
+    }
+    if status == SegmentGroupStatus::Sealed && manifest.segments.len() != request.expected_segments
+    {
+        anyhow::bail!("sealed manifest does not contain every expected segment");
+    }
+
+    let mut segments = Vec::with_capacity(manifest.segments.len());
+    for (expected_index, segment) in manifest.segments.into_iter().enumerate() {
+        if segment.index != expected_index {
+            anyhow::bail!("manifest segments must be a contiguous prefix starting at index zero");
+        }
+        if segment.audio_path.trim().is_empty() {
+            anyhow::bail!("segment {expected_index} is missing audio_path");
+        }
+        if segment.duration_ms == 0 || segment.duration_ms > MAX_SEGMENT_DURATION_MS {
+            anyhow::bail!("segment {expected_index} has an invalid duration_ms");
+        }
+        if segment.pause_after_ms > MAX_SEGMENT_PAUSE_MS {
+            anyhow::bail!("segment {expected_index} has an excessive pause_after_ms");
+        }
+        let path = resolve_path(&cfg.base_dir, &segment.audio_path);
+        let pcm = audio_cache
+            .read_raw_pcm(&path, manifest.sample_rate, manifest.channels, cfg)
+            .await?;
+        let actual_duration_ms = pcm_duration_ms(
+            pcm.len(),
+            cfg.root.playout.sample_rate,
+            cfg.root.playout.channels,
+        );
+        if actual_duration_ms.abs_diff(segment.duration_ms) > 250 {
+            anyhow::bail!("segment {expected_index} duration does not match its PCM payload");
+        }
+        segments.push(SegmentGroupSegment {
+            index: expected_index,
+            audio_path: segment.audio_path,
+            duration_ms: segment.duration_ms,
+            pause_after_ms: segment.pause_after_ms,
+            pcm,
+        });
+    }
+    Ok(SegmentGroupRevision {
+        request,
+        status,
+        segments,
+    })
+}
+
+fn promote_request_to_manifest_revision(
+    request: &mut SegmentGroupRequest,
+    manifest_revision: u64,
+) -> Result<()> {
+    if manifest_revision == 0 {
+        anyhow::bail!("manifest revision must be positive");
+    }
+    if manifest_revision < request.revision {
+        anyhow::bail!("manifest revision is older than the revision event");
+    }
+    request.revision = manifest_revision;
+    Ok(())
+}
+
+impl SegmentGroupPlayback {
+    fn new(revision: &SegmentGroupRevision) -> Self {
+        let request = &revision.request;
+        Self {
+            group: Arc::new(SegmentGroup {
+                queue_id: request.queue_id.clone(),
+                feed_id: request.feed_id.clone(),
+                package_id: request.package_id.clone(),
+                title: request.title.clone(),
+                manifest_path: request.manifest_path.clone(),
+                expected_segments: request.expected_segments,
+                not_before: request.not_before,
+            }),
+            last_revision: None,
+            status: SegmentGroupStatus::Open,
+            segments: vec![None; request.expected_segments],
+            segment_index: 0,
+            segment_offset: 0,
+            pause_remaining_bytes: 0,
+            admitted: false,
+            admission_pending: false,
+            admission_item: None,
+        }
+    }
+
+    fn apply_revision(&mut self, revision: SegmentGroupRevision) -> Result<()> {
+        if self
+            .last_revision
+            .is_some_and(|last_revision| revision.request.revision <= last_revision)
+        {
+            return Ok(());
+        }
+        if self.group.feed_id != revision.request.feed_id
+            || self.group.package_id != revision.request.package_id
+            || self.group.title != revision.request.title
+            || self.group.manifest_path != revision.request.manifest_path
+            || self.group.expected_segments != revision.request.expected_segments
+            || self.group.not_before != revision.request.not_before
+        {
+            anyhow::bail!("segment group identity changed across revisions");
+        }
+        if self.status == SegmentGroupStatus::Aborted {
+            self.last_revision = Some(revision.request.revision);
+            return Ok(());
+        }
+        if self.status == SegmentGroupStatus::Sealed
+            && revision.status != SegmentGroupStatus::Sealed
+        {
+            anyhow::bail!("sealed segment group cannot reopen");
+        }
+        for segment in revision.segments {
+            let Some(slot) = self.segments.get_mut(segment.index) else {
+                anyhow::bail!("segment index exceeded expected_segments");
+            };
+            if let Some(previous) = slot {
+                if previous.audio_path != segment.audio_path
+                    || previous.duration_ms != segment.duration_ms
+                    || previous.pause_after_ms != segment.pause_after_ms
+                {
+                    anyhow::bail!("segment entries must remain immutable across revisions");
+                }
+            } else {
+                *slot = Some(segment);
+            }
+        }
+        if revision.status == SegmentGroupStatus::Sealed
+            && self.segments.iter().any(Option::is_none)
+        {
+            anyhow::bail!("sealed segment group is missing a final segment");
+        }
+        self.status = revision.status;
+        self.last_revision = Some(revision.request.revision);
+        Ok(())
+    }
+
+    fn ready_duration_ms(&self) -> u64 {
+        self.segments
+            .iter()
+            .take_while(|segment| segment.is_some())
+            .filter_map(|segment| segment.as_ref())
+            .fold(0u64, |duration, segment| {
+                duration
+                    .saturating_add(segment.duration_ms)
+                    .saturating_add(segment.pause_after_ms)
+            })
+    }
+
+    fn ready_prefix_len(&self) -> usize {
+        self.segments
+            .iter()
+            .take_while(|segment| segment.is_some())
+            .count()
+    }
+
+    fn can_admit(&self) -> bool {
+        if self.status == SegmentGroupStatus::Aborted || self.admitted || self.admission_pending {
+            return false;
+        }
+        if self.status == SegmentGroupStatus::Sealed {
+            return self.ready_prefix_len() == self.group.expected_segments;
+        }
+        self.ready_prefix_len() >= GROUP_ADMISSION_MIN_SEGMENTS
+            && self.ready_duration_ms() >= GROUP_ADMISSION_MIN_READY_MS
+    }
+}
+
+fn apply_segment_group_revision(
+    cfg: &LoadedConfig,
+    groups: &mut HashMap<String, SegmentGroupPlayback>,
+    revision: SegmentGroupRevision,
+) -> Result<bool> {
+    let queue_id = revision.request.queue_id.clone();
+    if let Some(group) = groups.get_mut(&queue_id) {
+        if group
+            .last_revision
+            .is_some_and(|last_revision| revision.request.revision <= last_revision)
+        {
+            return Ok(false);
+        }
+        group.apply_revision(revision)?;
+        if group.can_admit() {
+            group.admission_pending = true;
+            group.admission_item = Some(audio_item_from_segment_group(cfg, group));
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+    if revision.status == SegmentGroupStatus::Aborted {
+        return Ok(false);
+    }
+    ensure_segment_group_capacity(groups)?;
+    let mut group = SegmentGroupPlayback::new(&revision);
+    group.apply_revision(revision)?;
+    let should_admit = group.can_admit();
+    if should_admit {
+        group.admission_pending = true;
+        group.admission_item = Some(audio_item_from_segment_group(cfg, &group));
+    }
+    groups.insert(queue_id, group);
+    Ok(should_admit)
+}
+
+fn ensure_segment_group_capacity(groups: &HashMap<String, SegmentGroupPlayback>) -> Result<()> {
+    if groups.len() >= MAX_OPEN_SEGMENT_GROUPS {
+        anyhow::bail!("open segment group limit reached");
+    }
+    Ok(())
+}
+
+fn audio_item_from_segment_group(cfg: &LoadedConfig, group: &SegmentGroupPlayback) -> AudioItem {
+    AudioItem {
+        id: group.group.queue_id.clone(),
+        package_id: group.group.package_id.clone(),
+        title: group.group.title.clone(),
+        pcm: SharedPcm::owned(Vec::new()),
+        metadata: AudioItemMetadata {
+            audio_path: group.group.manifest_path.clone(),
+            duration_ms: group.ready_duration_ms(),
+            ..Default::default()
+        },
+        gap_after: package_gap(cfg),
+        not_before: group.group.not_before,
+        queued_at: Utc::now().to_rfc3339(),
+        target_start: String::new(),
+        predicted_start: String::new(),
+        predicted_finish: String::new(),
+        source: ItemSource::Playlist,
+        segment_group: Some(Arc::clone(&group.group)),
+    }
+}
+
+fn try_admit_segment_groups(
+    audio_tx: &mpsc::Sender<AudioItem>,
+    groups: &mut HashMap<String, SegmentGroupPlayback>,
+    order: &mut VecDeque<String>,
+) {
+    while audio_tx.capacity() > 0 {
+        let Some(queue_id) = order.pop_front() else {
+            break;
+        };
+        let Some(group) = groups.get_mut(&queue_id) else {
+            continue;
+        };
+        if group.status == SegmentGroupStatus::Aborted {
+            if !group.admitted {
+                groups.remove(&queue_id);
+            }
+            continue;
+        }
+        let Some(item) = group.admission_item.take() else {
+            continue;
+        };
+        match audio_tx.try_send(item) {
+            Ok(()) => {
+                group.admitted = true;
+                group.admission_pending = false;
+            }
+            Err(TrySendError::Full(item)) => {
+                group.admission_item = Some(item);
+                order.push_front(queue_id);
+                break;
+            }
+            Err(TrySendError::Closed(_)) => break,
+        }
+    }
+}
+
+fn abort_segment_group(
+    groups: &mut HashMap<String, SegmentGroupPlayback>,
+    queue_id: &str,
+    revision: u64,
+) {
+    if let Some(group) = groups.get_mut(queue_id) {
+        if group
+            .last_revision
+            .is_some_and(|last_revision| last_revision > revision)
+        {
+            return;
+        }
+        group.status = SegmentGroupStatus::Aborted;
+        group.admission_pending = false;
+        group.admission_item = None;
+    }
+}
+
+fn segment_group_is_aborted(
+    item: &AudioItem,
+    groups: &HashMap<String, SegmentGroupPlayback>,
+) -> bool {
+    item.segment_group.is_some()
+        && groups
+            .get(&item.id)
+            .is_none_or(|group| group.status == SegmentGroupStatus::Aborted)
+}
+
+fn take_aborted_current_group(
+    current: &mut Option<AudioItem>,
+    groups: &HashMap<String, SegmentGroupPlayback>,
+) -> Option<AudioItem> {
+    current
+        .as_ref()
+        .is_some_and(|item| segment_group_is_aborted(item, groups))
+        .then(|| current.take())
+        .flatten()
+}
+
+fn take_aborted_pending_group(
+    pending: &mut Option<AudioItem>,
+    groups: &HashMap<String, SegmentGroupPlayback>,
+) -> Option<AudioItem> {
+    pending
+        .as_ref()
+        .is_some_and(|item| segment_group_is_aborted(item, groups))
+        .then(|| pending.take())
+        .flatten()
+}
+
+fn remove_aborted_interrupted_groups(
+    interrupted: &mut Option<AudioItem>,
+    deferred: &mut VecDeque<AudioItem>,
+    active_ids: &mut HashSet<String>,
+    groups: &mut HashMap<String, SegmentGroupPlayback>,
+) {
+    if interrupted
+        .as_ref()
+        .is_some_and(|item| segment_group_is_aborted(item, groups))
+    {
+        if let Some(item) = interrupted.take() {
+            active_ids.remove(&item.id);
+            groups.remove(&item.id);
+        }
+    }
+    deferred.retain(|item| {
+        if segment_group_is_aborted(item, groups) {
+            active_ids.remove(&item.id);
+            groups.remove(&item.id);
+            false
+        } else {
+            true
+        }
+    });
+}
+
+fn copy_segment_group_pcm(
+    queue_id: &str,
+    groups: &mut HashMap<String, SegmentGroupPlayback>,
+    sample_rate: u32,
+    channels: u16,
+    out: &mut [u8],
+) -> SegmentGroupRender {
+    let Some(group) = groups.get_mut(queue_id) else {
+        return SegmentGroupRender::Aborted;
+    };
+    if group.status == SegmentGroupStatus::Aborted {
+        return SegmentGroupRender::Aborted;
+    }
+    let mut out_offset = 0usize;
+    while out_offset < out.len() {
+        if group.pause_remaining_bytes > 0 {
+            let pause_bytes = (out.len() - out_offset).min(group.pause_remaining_bytes);
+            group.pause_remaining_bytes -= pause_bytes;
+            out_offset += pause_bytes;
+            continue;
+        }
+        if group.segment_index >= group.group.expected_segments {
+            return if group.status == SegmentGroupStatus::Sealed {
+                SegmentGroupRender::Completed
+            } else {
+                SegmentGroupRender::Underflow
+            };
+        }
+        let Some(segment) = group.segments[group.segment_index].as_ref() else {
+            return SegmentGroupRender::Underflow;
+        };
+        let start = group.segment_offset.min(segment.pcm.len());
+        let available = segment.pcm.len().saturating_sub(start);
+        if available == 0 {
+            group.segment_index += 1;
+            group.segment_offset = 0;
+            group.pause_remaining_bytes =
+                pause_ms_to_pcm_bytes(segment.pause_after_ms, sample_rate, channels);
+            continue;
+        }
+        let copied = available.min(out.len() - out_offset);
+        out[out_offset..out_offset + copied].copy_from_slice(&segment.pcm[start..start + copied]);
+        group.segment_offset = start + copied;
+        out_offset += copied;
+    }
+    SegmentGroupRender::Playing
+}
+
+fn pause_ms_to_pcm_bytes(pause_ms: u64, sample_rate: u32, channels: u16) -> usize {
+    let frame_bytes = u128::from(channels.max(1)) * 2;
+    let bytes = u128::from(pause_ms)
+        .saturating_mul(u128::from(sample_rate))
+        .saturating_mul(frame_bytes)
+        / 1_000;
+    usize::try_from(bytes).unwrap_or(usize::MAX)
+}
+
 impl FeedHandle {
     fn spawn(
         cfg: Arc<LoadedConfig>,
@@ -688,6 +1417,10 @@ impl FeedHandle {
         let (breakin_tx, breakin_rx) = mpsc::channel(BREAKIN_COMMAND_QUEUE_CAPACITY);
         let (request_tx, request_rx) = mpsc::channel(PACKAGE_REQUEST_QUEUE_CAPACITY);
         let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
+        let segment_group_mailbox = Arc::new(StdMutex::new(SegmentGroupMailbox::default()));
+        let (segment_group_tx, segment_group_rx) = mpsc::channel(MAX_OPEN_SEGMENT_GROUPS);
+        let (segment_group_revision_tx, segment_group_revision_rx) =
+            mpsc::channel(SEGMENT_GROUP_REVISION_QUEUE_CAPACITY);
 
         tokio::spawn(package_builder(
             Arc::clone(&cfg),
@@ -703,6 +1436,13 @@ impl FeedHandle {
             Arc::clone(&audio_cache),
             priority_prepare_rx,
             priority_tx.clone(),
+        ));
+        tokio::spawn(segment_group_builder(
+            Arc::clone(&cfg),
+            Arc::clone(&audio_cache),
+            Arc::clone(&segment_group_mailbox),
+            segment_group_rx,
+            segment_group_revision_tx,
         ));
 
         if feed.same_enabled() {
@@ -732,6 +1472,8 @@ impl FeedHandle {
                 media_client,
                 feed: feed.clone(),
                 audio_rx,
+                audio_tx: audio_tx.clone(),
+                segment_group_revision_rx,
                 priority_rx,
                 breakin_rx,
                 control_rx,
@@ -745,6 +1487,8 @@ impl FeedHandle {
         Self {
             feed,
             audio_tx,
+            segment_group_mailbox,
+            segment_group_tx,
             priority_prepare_tx,
             breakin_tx,
             request_tx,
@@ -759,6 +1503,8 @@ struct FeedRunner {
     media_client: BridgeClient,
     feed: FeedConfig,
     audio_rx: mpsc::Receiver<AudioItem>,
+    audio_tx: mpsc::Sender<AudioItem>,
+    segment_group_revision_rx: mpsc::Receiver<SegmentGroupRevisionMessage>,
     priority_rx: mpsc::Receiver<AudioItem>,
     breakin_rx: mpsc::Receiver<BreakInCommand>,
     control_rx: mpsc::Receiver<PlayoutControl>,
@@ -813,6 +1559,8 @@ impl FeedRunner {
         let mut completed_routine_ids = HashSet::<String>::new();
         let mut completed_routine_order = VecDeque::<String>::new();
         let mut deferred_routine = VecDeque::<AudioItem>::new();
+        let mut segment_groups = HashMap::<String, SegmentGroupPlayback>::new();
+        let mut segment_group_admission_order = VecDeque::<String>::new();
         let mut live_breakin: Option<LiveBreakIn> = None;
         let mut out = vec![0u8; chunk.len()];
         let mut position = 0usize;
@@ -820,6 +1568,56 @@ impl FeedRunner {
 
         loop {
             tokio::select! {
+                Some(message) = self.segment_group_revision_rx.recv() => {
+                    match message {
+                        SegmentGroupRevisionMessage::Ready(revision) => {
+                            let queue_id = revision.request.queue_id.clone();
+                            let revision_number = revision.request.revision;
+                            if completed_routine_ids.contains(&queue_id) {
+                                continue;
+                            }
+                            match apply_segment_group_revision(&self.cfg, &mut segment_groups, revision) {
+                                Ok(true) => {
+                                    if segment_group_admission_order.len() < MAX_OPEN_SEGMENT_GROUPS {
+                                        segment_group_admission_order.push_back(queue_id);
+                                    } else if let Some(group) = segment_groups.get_mut(&queue_id) {
+                                        group.admission_pending = false;
+                                        tracing::warn!(
+                                            feed_id = self.feed.id,
+                                            queue_id,
+                                            "segment group admission queue is full"
+                                        );
+                                    }
+                                }
+                                Ok(false) => {}
+                                Err(err) => {
+                                    tracing::warn!(
+                                        feed_id = self.feed.id,
+                                        queue_id,
+                                        "segment group manifest revision rejected: {err}"
+                                    );
+                                    abort_segment_group(
+                                        &mut segment_groups,
+                                        &queue_id,
+                                        revision_number,
+                                    );
+                                }
+                            }
+                        }
+                        SegmentGroupRevisionMessage::Rejected { request, error } => {
+                            tracing::warn!(
+                                feed_id = self.feed.id,
+                                queue_id = request.queue_id,
+                                "segment group manifest rejected: {error}"
+                            );
+                            abort_segment_group(
+                                &mut segment_groups,
+                                &request.queue_id,
+                                request.revision,
+                            );
+                        }
+                    }
+                }
                 Some(control) = self.control_rx.recv() => {
                     let clears_deferred = clears_deferred_routine(&control.action);
                     self.apply_control(&control.action, current.as_ref());
@@ -959,6 +1757,42 @@ impl FeedRunner {
                     debug_assert_eq!(chunks_due, 1);
                     {
                         let now = Utc::now();
+                        try_admit_segment_groups(
+                            &self.audio_tx,
+                            &mut segment_groups,
+                            &mut segment_group_admission_order,
+                        );
+                        if let Some(item) = take_aborted_current_group(&mut current, &segment_groups) {
+                            active_routine_ids.remove(&item.id);
+                            segment_groups.remove(&item.id);
+                            spawn_interrupt_item(
+                                self.client.clone(),
+                                self.feed.id.clone(),
+                                item,
+                            );
+                            position = 0;
+                            gap_until = tick_now;
+                            spawn_update_runtime(
+                                Arc::clone(&self.cfg),
+                                self.feed.id.clone(),
+                                "Idle".to_string(),
+                            );
+                        }
+                        if let Some(item) = take_aborted_pending_group(&mut pending, &segment_groups) {
+                            active_routine_ids.remove(&item.id);
+                            segment_groups.remove(&item.id);
+                            spawn_interrupt_item(
+                                self.client.clone(),
+                                self.feed.id.clone(),
+                                item,
+                            );
+                        }
+                        remove_aborted_interrupted_groups(
+                            &mut interrupted_routine,
+                            &mut deferred_routine,
+                            &mut active_routine_ids,
+                            &mut segment_groups,
+                        );
                         if let Some(done) = take_finished_breakin(&mut live_breakin) {
                             spawn_complete_live_breakin(
                                 self.client.clone(),
@@ -1026,6 +1860,7 @@ impl FeedRunner {
                                     &mut self.audio_rx,
                                     &mut active_routine_ids,
                                     &completed_routine_ids,
+                                    &mut segment_groups,
                                     &self.feed.id,
                                 ) {
                                     spawn_accept_item(self.client.clone(), self.feed.id.clone(), item.clone());
@@ -1059,13 +1894,24 @@ impl FeedRunner {
 
                         out.fill(0);
                         let mut breakin_drained = false;
+                        let mut segment_group_render = SegmentGroupRender::Playing;
                         if let Some(live) = live_breakin.as_mut() {
                             drain_live_breakin_buffer(live, &mut out);
                             if live.finishing && live.buffer.is_empty() {
                                 breakin_drained = true;
                             }
                         } else if let Some(item) = current.as_ref() {
-                            copy_item_pcm(item, &mut position, &mut out);
+                            if item.segment_group.is_some() {
+                                segment_group_render = copy_segment_group_pcm(
+                                    &item.id,
+                                    &mut segment_groups,
+                                    sample_rate,
+                                    channels,
+                                    &mut out,
+                                );
+                            } else {
+                                copy_item_pcm(item, &mut position, &mut out);
+                            }
                         }
                         let completed_breakin = if breakin_drained {
                             live_breakin.take()
@@ -1128,13 +1974,44 @@ impl FeedRunner {
                             );
                         }
 
-                        if live_breakin.is_none() && current.as_ref().is_some_and(|item| position >= item.pcm.len()) {
+                        let current_completed = current.as_ref().is_some_and(|item| {
+                            if item.segment_group.is_some() {
+                                segment_group_render == SegmentGroupRender::Completed
+                            } else {
+                                position >= item.pcm.len()
+                            }
+                        });
+                        let current_aborted = current.as_ref().is_some_and(|item| {
+                            item.segment_group.is_some()
+                                && segment_group_render == SegmentGroupRender::Aborted
+                        });
+                        if live_breakin.is_none() && current_aborted {
+                            if let Some(item) = current.take() {
+                                active_routine_ids.remove(&item.id);
+                                segment_groups.remove(&item.id);
+                                spawn_interrupt_item(
+                                    self.client.clone(),
+                                    self.feed.id.clone(),
+                                    item,
+                                );
+                                position = 0;
+                                gap_until = tick_now;
+                                spawn_update_runtime(
+                                    Arc::clone(&self.cfg),
+                                    self.feed.id.clone(),
+                                    "Idle".to_string(),
+                                );
+                            }
+                        } else if live_breakin.is_none() && current_completed {
                             if let Some(item) = current.take() {
                                 let completed_item_id = item.id.clone();
                                 if item.is_alert() {
                                     active_priority_ids.remove(&item.id);
                                 } else {
                                     active_routine_ids.remove(&item.id);
+                                    if item.segment_group.is_some() {
+                                        segment_groups.remove(&item.id);
+                                    }
                                     remember_completed_routine_item(
                                         &mut completed_routine_ids,
                                         &mut completed_routine_order,
@@ -1948,7 +2825,8 @@ impl AudioCache {
         let channels = cfg.root.playout.channels;
         let allow_file_backed = runtime_audio_path(&path, &cfg.base_dir);
         self.get_or_load(key, move || async move {
-            if allow_file_backed
+            if runtime_raw_pcm_mmap_supported()
+                && allow_file_backed
                 && source_rate == sample_rate
                 && source_channels.max(1) == channels.max(1)
             {
@@ -2204,6 +3082,16 @@ fn runtime_audio_path(path: &Path, base_dir: &Path) -> bool {
     false
 }
 
+#[cfg(windows)]
+fn runtime_raw_pcm_mmap_supported() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+fn runtime_raw_pcm_mmap_supported() -> bool {
+    true
+}
+
 fn map_raw_pcm_file(path: &Path, channels: u16) -> Result<SharedPcm> {
     let mmap = map_read_only(path)?;
     let frame_bytes = usize::from(channels.max(1)) * 2;
@@ -2443,6 +3331,7 @@ async fn build_package(
         predicted_start: String::new(),
         predicted_finish: String::new(),
         source: ItemSource::Generated,
+        segment_group: None,
     })
 }
 
@@ -2489,6 +3378,7 @@ async fn audio_item_from_rendered_product(
         predicted_start: String::new(),
         predicted_finish: String::new(),
         source: ItemSource::Generated,
+        segment_group: None,
     }))
 }
 
@@ -2641,6 +3531,7 @@ async fn audio_item_from_mixed_rendered_product(
         predicted_start: String::new(),
         predicted_finish: String::new(),
         source: ItemSource::Generated,
+        segment_group: None,
     }))
 }
 
@@ -2898,6 +3789,7 @@ async fn audio_item_from_ready(
         predicted_finish: bridge::first_text(&Value::Null, &data, &["predicted_finish_at"])
             .to_string(),
         source: ItemSource::Playlist,
+        segment_group: None,
     })
 }
 
@@ -2980,6 +3872,7 @@ async fn audio_item_from_priority_ready(
             header: title,
             event,
         },
+        segment_group: None,
     })
 }
 
@@ -3228,6 +4121,7 @@ async fn audio_item_from_alert(
             header: item.header.clone(),
             event: item.event.clone(),
         },
+        segment_group: None,
     })
 }
 
@@ -3309,9 +4203,19 @@ fn next_unique_routine_item(
     rx: &mut mpsc::Receiver<AudioItem>,
     active_ids: &mut HashSet<String>,
     completed_ids: &HashSet<String>,
+    segment_groups: &mut HashMap<String, SegmentGroupPlayback>,
     feed_id: &str,
 ) -> Option<AudioItem> {
     while let Ok(item) = rx.try_recv() {
+        if item.segment_group.is_some() && segment_group_is_aborted(&item, segment_groups) {
+            segment_groups.remove(&item.id);
+            tracing::debug!(
+                feed_id,
+                queue_id = item.id,
+                "skipping aborted segment group"
+            );
+            continue;
+        }
         if completed_ids.contains(item.id.trim()) {
             tracing::debug!(
                 feed_id,
@@ -3551,6 +4455,7 @@ mod tests {
                 header: "Severe Thunderstorm Warning".to_string(),
                 event: "SVR".to_string(),
             },
+            segment_group: None,
         };
 
         let data = item_event_data("sk-0001", &item);
@@ -4098,10 +5003,13 @@ mod tests {
 
         let mut active = HashSet::<String>::new();
         let completed = HashSet::<String>::new();
-        let first = next_unique_routine_item(&mut rx, &mut active, &completed, "sk-0001")
-            .expect("first routine item");
-        let second = next_unique_routine_item(&mut rx, &mut active, &completed, "sk-0001")
-            .expect("second routine item");
+        let mut groups = HashMap::new();
+        let first =
+            next_unique_routine_item(&mut rx, &mut active, &completed, &mut groups, "sk-0001")
+                .expect("first routine item");
+        let second =
+            next_unique_routine_item(&mut rx, &mut active, &completed, &mut groups, "sk-0001")
+                .expect("second routine item");
 
         assert_eq!(first.id, "routine-1");
         assert_eq!(second.id, "routine-2");
@@ -4120,8 +5028,10 @@ mod tests {
 
         let mut active = HashSet::<String>::new();
         let completed = HashSet::from(["routine-1".to_string()]);
-        let item = next_unique_routine_item(&mut rx, &mut active, &completed, "sk-0001")
-            .expect("next routine item");
+        let mut groups = HashMap::new();
+        let item =
+            next_unique_routine_item(&mut rx, &mut active, &completed, &mut groups, "sk-0001")
+                .expect("next routine item");
 
         assert_eq!(item.id, "routine-2");
     }
@@ -4144,6 +5054,7 @@ mod tests {
             predicted_start: String::new(),
             predicted_finish: String::new(),
             source: ItemSource::Playlist,
+            segment_group: None,
         }
     }
 
@@ -4165,6 +5076,7 @@ mod tests {
                 header: id.to_string(),
                 event: "SVR".to_string(),
             },
+            segment_group: None,
         }
     }
 
@@ -4173,6 +5085,414 @@ mod tests {
             .iter()
             .flat_map(|sample| sample.to_le_bytes())
             .collect()
+    }
+
+    fn test_group_request(
+        queue_id: &str,
+        revision: u64,
+        expected_segments: usize,
+    ) -> SegmentGroupRequest {
+        SegmentGroupRequest {
+            queue_id: queue_id.to_string(),
+            feed_id: "sk-0001".to_string(),
+            package_id: "forecast".to_string(),
+            title: "Forecast".to_string(),
+            manifest_path: format!("runtime/audio/playout/{queue_id}.json"),
+            revision,
+            status: SegmentGroupStatus::Open,
+            expected_segments,
+            not_before: None,
+        }
+    }
+
+    fn test_group_segment(
+        index: usize,
+        samples: &[i16],
+        pause_after_ms: u64,
+    ) -> SegmentGroupSegment {
+        SegmentGroupSegment {
+            index,
+            audio_path: format!("runtime/audio/playout/segment-{index}.raw"),
+            duration_ms: 1_000,
+            pause_after_ms,
+            pcm: SharedPcm::owned(pcm16(samples)),
+        }
+    }
+
+    fn test_group_revision(
+        queue_id: &str,
+        revision: u64,
+        expected_segments: usize,
+        status: SegmentGroupStatus,
+        segments: Vec<SegmentGroupSegment>,
+    ) -> SegmentGroupRevision {
+        SegmentGroupRevision {
+            request: test_group_request(queue_id, revision, expected_segments),
+            status,
+            segments,
+        }
+    }
+
+    fn test_group_item(group: Arc<SegmentGroup>) -> AudioItem {
+        AudioItem {
+            id: group.queue_id.clone(),
+            package_id: group.package_id.clone(),
+            title: group.title.clone(),
+            pcm: SharedPcm::owned(Vec::new()),
+            metadata: AudioItemMetadata::default(),
+            gap_after: Duration::ZERO,
+            not_before: group.not_before,
+            queued_at: String::new(),
+            target_start: String::new(),
+            predicted_start: String::new(),
+            predicted_finish: String::new(),
+            source: ItemSource::Playlist,
+            segment_group: Some(group),
+        }
+    }
+
+    #[test]
+    fn newer_manifest_revision_promotes_a_lagged_event_before_apply() {
+        let mut request = test_group_request("group-1", 3, 2);
+        let manifest: SegmentGroupManifest =
+            serde_json::from_value(json!({"revision": 5})).expect("deserialize manifest revision");
+        promote_request_to_manifest_revision(&mut request, manifest.revision)
+            .expect("newer manifest revision");
+        let revision = SegmentGroupRevision {
+            request,
+            status: SegmentGroupStatus::Open,
+            segments: vec![
+                test_group_segment(0, &[1], 0),
+                test_group_segment(1, &[2], 0),
+            ],
+        };
+        let mut group = SegmentGroupPlayback::new(&revision);
+
+        group
+            .apply_revision(revision)
+            .expect("apply promoted revision");
+
+        assert_eq!(group.last_revision, Some(5));
+    }
+
+    #[test]
+    fn zero_or_older_manifest_revision_is_rejected() {
+        let mut request = test_group_request("group-1", 5, 2);
+
+        assert!(promote_request_to_manifest_revision(&mut request, 0).is_err());
+        assert!(promote_request_to_manifest_revision(&mut request, 4).is_err());
+        assert_eq!(request.revision, 5);
+    }
+
+    #[test]
+    fn segment_group_mailbox_coalesces_per_queue_without_losing_other_groups() {
+        let mailbox = Arc::new(StdMutex::new(SegmentGroupMailbox::default()));
+        let (queue_ids, mut queued_ids) = mpsc::channel(MAX_OPEN_SEGMENT_GROUPS);
+
+        for revision in 1..=64 {
+            submit_segment_group_request(
+                &mailbox,
+                &queue_ids,
+                test_group_request("group-a", revision, 2),
+            )
+            .expect("queue coalesced group-a revision");
+        }
+        submit_segment_group_request(&mailbox, &queue_ids, test_group_request("group-a", 63, 2))
+            .expect("ignore stale group-a revision");
+        submit_segment_group_request(&mailbox, &queue_ids, test_group_request("group-b", 1, 2))
+            .expect("queue group-b");
+
+        let first_queue_id = queued_ids.try_recv().expect("first queue token");
+        assert_eq!(first_queue_id, "group-a");
+        let first = take_segment_group_request(&mailbox, &first_queue_id).expect("group-a request");
+        assert_eq!(first.revision, 64);
+
+        submit_segment_group_request(&mailbox, &queue_ids, test_group_request("group-a", 65, 2))
+            .expect("queue group-a update during processing");
+
+        let second_queue_id = queued_ids.try_recv().expect("second queue token");
+        assert_eq!(second_queue_id, "group-b");
+        let second =
+            take_segment_group_request(&mailbox, &second_queue_id).expect("group-b request");
+        assert_eq!(second.revision, 1);
+
+        let third_queue_id = queued_ids.try_recv().expect("updated queue token");
+        assert_eq!(third_queue_id, "group-a");
+        let third =
+            take_segment_group_request(&mailbox, &third_queue_id).expect("updated group-a request");
+        assert_eq!(third.revision, 65);
+        assert!(queued_ids.try_recv().is_err());
+    }
+
+    #[test]
+    fn segment_group_revisions_merge_immutable_prefixes_and_dedupe_old_revisions() {
+        let first = test_group_revision(
+            "group-1",
+            1,
+            3,
+            SegmentGroupStatus::Open,
+            vec![
+                test_group_segment(0, &[1], 0),
+                test_group_segment(1, &[2], 0),
+            ],
+        );
+        let mut group = SegmentGroupPlayback::new(&first);
+        group.apply_revision(first).expect("apply first revision");
+
+        let second = test_group_revision(
+            "group-1",
+            2,
+            3,
+            SegmentGroupStatus::Open,
+            vec![
+                test_group_segment(0, &[1], 0),
+                test_group_segment(1, &[2], 0),
+                test_group_segment(2, &[3], 0),
+            ],
+        );
+        group.apply_revision(second).expect("apply second revision");
+        assert_eq!(group.last_revision, Some(2));
+        assert!(group.segments.iter().all(Option::is_some));
+
+        let stale = test_group_revision(
+            "group-1",
+            1,
+            3,
+            SegmentGroupStatus::Open,
+            vec![test_group_segment(0, &[9], 0)],
+        );
+        group.apply_revision(stale).expect("ignore stale revision");
+        assert_eq!(group.last_revision, Some(2));
+        assert_eq!(
+            group.segments[0].as_ref().expect("segment zero").audio_path,
+            "runtime/audio/playout/segment-0.raw"
+        );
+    }
+
+    #[test]
+    fn segment_group_admission_requires_buffered_prefix_or_short_seal() {
+        let long_single = test_group_revision(
+            "group-1",
+            1,
+            3,
+            SegmentGroupStatus::Open,
+            vec![test_group_segment(0, &[1], 0)],
+        );
+        let mut group = SegmentGroupPlayback::new(&long_single);
+        group
+            .apply_revision(long_single)
+            .expect("apply single segment");
+        assert!(!group.can_admit());
+
+        let buffered = test_group_revision(
+            "group-1",
+            2,
+            3,
+            SegmentGroupStatus::Open,
+            vec![
+                test_group_segment(0, &[1], 0),
+                test_group_segment(1, &[2], 0),
+            ],
+        );
+        group
+            .apply_revision(buffered)
+            .expect("apply buffered prefix");
+        assert!(group.can_admit());
+
+        let sealed = test_group_revision(
+            "group-2",
+            1,
+            1,
+            SegmentGroupStatus::Sealed,
+            vec![test_group_segment(0, &[7], 0)],
+        );
+        let mut short_group = SegmentGroupPlayback::new(&sealed);
+        short_group
+            .apply_revision(sealed)
+            .expect("apply sealed group");
+        assert!(short_group.can_admit());
+    }
+
+    #[test]
+    fn segment_group_underflow_holds_at_boundary_and_applies_segment_pause() {
+        let revision = test_group_revision(
+            "group-1",
+            1,
+            3,
+            SegmentGroupStatus::Open,
+            vec![
+                test_group_segment(0, &[1], 2),
+                test_group_segment(1, &[2], 0),
+            ],
+        );
+        let mut group = SegmentGroupPlayback::new(&revision);
+        group.apply_revision(revision).expect("apply revision");
+        let mut groups = HashMap::from([("group-1".to_string(), group)]);
+        let mut out = vec![0u8; 10];
+
+        let state = copy_segment_group_pcm("group-1", &mut groups, 1_000, 1, &mut out);
+
+        assert_eq!(state, SegmentGroupRender::Underflow);
+        assert_eq!(&out[0..2], &pcm16(&[1]));
+        assert_eq!(&out[2..6], &[0, 0, 0, 0]);
+        assert_eq!(&out[6..8], &pcm16(&[2]));
+        assert_eq!(groups["group-1"].segment_index, 2);
+    }
+
+    #[test]
+    fn segment_group_abort_stops_rendering_without_completion() {
+        let first = test_group_revision(
+            "group-1",
+            1,
+            2,
+            SegmentGroupStatus::Open,
+            vec![
+                test_group_segment(0, &[1], 0),
+                test_group_segment(1, &[2], 0),
+            ],
+        );
+        let mut group = SegmentGroupPlayback::new(&first);
+        group.apply_revision(first).expect("apply open revision");
+        let aborted = test_group_revision("group-1", 2, 2, SegmentGroupStatus::Aborted, Vec::new());
+        group
+            .apply_revision(aborted)
+            .expect("apply aborted revision");
+        let mut groups = HashMap::from([("group-1".to_string(), group)]);
+        let mut out = vec![0u8; 2];
+
+        assert_eq!(
+            copy_segment_group_pcm("group-1", &mut groups, 1_000, 1, &mut out),
+            SegmentGroupRender::Aborted
+        );
+    }
+
+    #[test]
+    fn aborted_group_revision_skips_a_missing_manifest_and_preserves_identity() {
+        let mut first = test_group_revision(
+            "group-1",
+            1,
+            2,
+            SegmentGroupStatus::Open,
+            vec![
+                test_group_segment(0, &[1], 0),
+                test_group_segment(1, &[2], 0),
+            ],
+        );
+        first.request.manifest_path = "runtime/audio/playout/missing-group-1.json".to_string();
+        let mut group = SegmentGroupPlayback::new(&first);
+        group.apply_revision(first).expect("apply open revision");
+
+        let mut aborted_request = test_group_request("group-1", 2, 2);
+        aborted_request.status = SegmentGroupStatus::Aborted;
+        aborted_request.manifest_path = "runtime/audio/playout/missing-group-1.json".to_string();
+        assert!(!Path::new(&aborted_request.manifest_path).exists());
+        let aborted = aborted_segment_group_revision(&aborted_request)
+            .expect("abort revision does not read its manifest");
+
+        group.apply_revision(aborted).expect("apply abort revision");
+        assert_eq!(group.status, SegmentGroupStatus::Aborted);
+        assert_eq!(group.last_revision, Some(2));
+    }
+
+    #[test]
+    fn alert_preemption_preserves_segment_group_identity_and_order() {
+        let revision = test_group_revision(
+            "group-1",
+            1,
+            2,
+            SegmentGroupStatus::Sealed,
+            vec![
+                test_group_segment(0, &[1], 0),
+                test_group_segment(1, &[2], 0),
+            ],
+        );
+        let mut group = SegmentGroupPlayback::new(&revision);
+        group.apply_revision(revision).expect("apply revision");
+        let routine = test_group_item(Arc::clone(&group.group));
+        let mut groups = HashMap::from([("group-1".to_string(), group)]);
+        let mut first = vec![0u8; 2];
+        assert_eq!(
+            copy_segment_group_pcm("group-1", &mut groups, 1_000, 1, &mut first),
+            SegmentGroupRender::Playing
+        );
+
+        let mut interrupted_priority = None;
+        let mut priority_pending = VecDeque::from([test_priority_item("alert-1", &[9])]);
+        let mut interrupted_routine = Some(routine);
+        let mut deferred = VecDeque::new();
+        let priority = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred,
+            false,
+        )
+        .expect("priority item");
+        let resumed = take_next_buffered_item(
+            &mut interrupted_priority,
+            &mut priority_pending,
+            &mut interrupted_routine,
+            &mut deferred,
+            false,
+        )
+        .expect("resumed group");
+        let mut resumed_pcm = vec![0u8; 2];
+
+        assert!(priority.is_alert());
+        assert_eq!(resumed.id, "group-1");
+        assert_eq!(
+            copy_segment_group_pcm("group-1", &mut groups, 1_000, 1, &mut resumed_pcm),
+            SegmentGroupRender::Playing
+        );
+        assert_eq!(resumed_pcm, pcm16(&[2]));
+    }
+
+    #[test]
+    fn ordinary_playlist_items_still_copy_pcm_directly() {
+        let item = test_audio_item_with_pcm("routine-1", "Forecast", pcm16(&[4, 5]));
+        let mut out = vec![0u8; 4];
+        let mut position = 0;
+
+        assert!(item.segment_group.is_none());
+        assert_eq!(copy_item_pcm(&item, &mut position, &mut out), 4);
+        assert_eq!(out, pcm16(&[4, 5]));
+    }
+
+    #[test]
+    fn segment_group_event_rejects_excessive_expected_segments_and_invalid_status() {
+        let excessive = json!({
+            "queue_id": "group-1",
+            "feed_id": "sk-0001",
+            "package_id": "forecast",
+            "title": "Forecast",
+            "manifest_path": "runtime/audio/playout/group-1.json",
+            "revision": 1,
+            "status": "open",
+            "expected_segments": MAX_SEGMENTS_PER_GROUP + 1,
+        });
+        assert!(segment_group_request_from_event(&excessive).is_err());
+
+        let invalid_status = json!({
+            "queue_id": "group-1",
+            "feed_id": "sk-0001",
+            "package_id": "forecast",
+            "title": "Forecast",
+            "manifest_path": "runtime/audio/playout/group-1.json",
+            "revision": 1,
+            "status": "partial",
+            "expected_segments": 2,
+        });
+        assert!(segment_group_request_from_event(&invalid_status).is_err());
+
+        let template = test_group_revision("template", 1, 1, SegmentGroupStatus::Open, Vec::new());
+        let mut groups = HashMap::new();
+        for index in 0..MAX_OPEN_SEGMENT_GROUPS {
+            groups.insert(
+                format!("group-{index}"),
+                SegmentGroupPlayback::new(&template),
+            );
+        }
+        assert!(ensure_segment_group_capacity(&groups).is_err());
     }
 
     #[tokio::test]
@@ -4312,6 +5632,15 @@ mod tests {
             .join("runtime/audio/playlist/feed/item.wav");
 
         assert!(runtime_audio_path(&absolute, Path::new(".")));
+    }
+
+    #[test]
+    fn runtime_raw_pcm_mapping_matches_file_deletion_platform_support() {
+        #[cfg(windows)]
+        assert!(!runtime_raw_pcm_mmap_supported());
+
+        #[cfg(not(windows))]
+        assert!(runtime_raw_pcm_mmap_supported());
     }
 
     #[test]

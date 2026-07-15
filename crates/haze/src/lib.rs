@@ -125,7 +125,10 @@ pub fn run(args: DaemonArgs) -> Result<()> {
     let _instance_guard = if args.host_smoke {
         None
     } else {
-        Some(acquire_runtime_instance_lock(&layout.runtime_dir)?)
+        Some(acquire_runtime_instance_lock(
+            &layout.app_dir,
+            &layout.runtime_dir,
+        )?)
     };
     let _log_guard = init_tracing(args.log_level.as_deref(), &layout.runtime_dir);
     let mut host_bridge = host_bridge::HostBridge::start()?;
@@ -312,8 +315,15 @@ impl Drop for RuntimeInstanceGuard {
     }
 }
 
-fn acquire_runtime_instance_lock(runtime_dir: &Path) -> Result<RuntimeInstanceGuard> {
-    let path = runtime_dir.join(DAEMON_LOCK_FILE);
+fn acquire_runtime_instance_lock(
+    app_dir: &Path,
+    runtime_dir: &Path,
+) -> Result<RuntimeInstanceGuard> {
+    let path = runtime_dir::resolve_configured_runtime_path(
+        app_dir,
+        runtime_dir,
+        Path::new(DAEMON_LOCK_FILE),
+    );
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -548,12 +558,12 @@ mod tests {
     #[test]
     fn runtime_instance_lock_blocks_second_host() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let first = acquire_runtime_instance_lock(temp.path()).expect("first lock");
+        let first = acquire_runtime_instance_lock(temp.path(), temp.path()).expect("first lock");
 
-        assert!(acquire_runtime_instance_lock(temp.path()).is_err());
+        assert!(acquire_runtime_instance_lock(temp.path(), temp.path()).is_err());
 
         drop(first);
-        assert!(acquire_runtime_instance_lock(temp.path()).is_ok());
+        assert!(acquire_runtime_instance_lock(temp.path(), temp.path()).is_ok());
     }
 
     #[cfg(unix)]
@@ -569,7 +579,8 @@ mod tests {
         fs::create_dir_all(lock_path.parent().expect("lock parent")).expect("lock dir");
         fs::write(&lock_path, child.id().to_string()).expect("write stale lock");
 
-        let guard = acquire_runtime_instance_lock(temp.path()).expect("lock replaces reused pid");
+        let guard = acquire_runtime_instance_lock(temp.path(), temp.path())
+            .expect("lock replaces reused pid");
 
         assert_eq!(read_lock_pid(&lock_path), Some(std::process::id()));
         drop(guard);

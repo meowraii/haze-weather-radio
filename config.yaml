@@ -82,6 +82,9 @@ services:
       language: "en-US"
       timezone: "Local"
       out_dir: "runtime/audio/tts"
+      cache_dir: "runtime/cache/tts"
+      cache_max_bytes: 536870912
+      cache_max_entries: 4096
       timeout: "60s"
       piper_voices_dir: "managed/voices/piper"
       kokoro_model_dir: "managed/voices/kokoro-multi-lang-v1_0"

@@ -135,7 +135,8 @@ impl DaemonServices {
         publisher: Sender<Value>,
         media_publisher: Sender<Value>,
     ) -> Result<Self> {
-        let config: RootConfig = decode_config_with_overlay(&host.config_path, &host.runtime_dir)?;
+        let config: RootConfig =
+            decode_config_with_overlay(&host.config_path, &host.app_dir, &host.runtime_dir)?;
         let stop = Arc::new(AtomicBool::new(false));
         let Some(daemon_cfg) = config
             .services
@@ -233,7 +234,7 @@ impl DaemonServices {
             let rules = runtime_cleanup_rules(cleanup_cfg)
                 .into_iter()
                 .map(|mut rule| {
-                    rule.relative_path = runtime_cleanup_path_for_layout(
+                    rule.relative_path = crate::runtime_dir::configured_runtime_relative_path(
                         &host.app_dir,
                         &host.runtime_dir,
                         &rule.relative_path,
@@ -1342,21 +1343,6 @@ fn safe_relative_runtime_path(raw: &str) -> Option<PathBuf> {
     }
 }
 
-fn runtime_cleanup_path_for_layout(
-    app_dir: &Path,
-    runtime_dir: &Path,
-    configured_path: &Path,
-) -> PathBuf {
-    if app_dir != runtime_dir {
-        if let Ok(relative) = configured_path.strip_prefix("runtime") {
-            if !relative.as_os_str().is_empty() {
-                return relative.to_path_buf();
-            }
-        }
-    }
-    configured_path.to_path_buf()
-}
-
 fn run_runtime_cleanup_once(
     runtime_dir: &Path,
     rules: &[RuntimeCleanupRule],
@@ -1929,7 +1915,7 @@ fn publish_scheduled_package(publisher: &Sender<Value>, pkg_id: &str) {
     }));
 }
 
-fn decode_config_with_overlay<T>(path: &Path, runtime_dir: &Path) -> Result<T>
+fn decode_config_with_overlay<T>(path: &Path, app_dir: &Path, runtime_dir: &Path) -> Result<T>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -1943,7 +1929,11 @@ where
         .and_then(serde_yaml::Value::as_str)
         .filter(|raw| !raw.trim().is_empty())
         .unwrap_or(DEFAULT_SETTINGS_FILE);
-    let settings_path = resolve_path(runtime_dir, Path::new(settings_file));
+    let settings_path = crate::runtime_dir::resolve_configured_runtime_path(
+        app_dir,
+        runtime_dir,
+        Path::new(settings_file),
+    );
     if settings_path.is_file() {
         let overlay_raw = fs::read_to_string(&settings_path).with_context(|| {
             format!(
@@ -2244,7 +2234,7 @@ mod tests {
         fs::write(&stale, [1_u8, 2, 3, 4]).expect("stale file");
         let configured_path = PathBuf::from("runtime/audio/playlist");
         let rules = vec![RuntimeCleanupRule {
-            relative_path: runtime_cleanup_path_for_layout(
+            relative_path: crate::runtime_dir::configured_runtime_relative_path(
                 &app_dir,
                 &runtime_dir,
                 &configured_path,

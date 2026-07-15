@@ -259,6 +259,9 @@ struct TtsConfig {
     language: Option<String>,
     timezone: Option<String>,
     out_dir: Option<String>,
+    cache_dir: Option<String>,
+    cache_max_bytes: Option<u64>,
+    cache_max_entries: Option<usize>,
     timeout: Option<String>,
     piper_voices_dir: Option<String>,
     kokoro_model_dir: Option<String>,
@@ -375,8 +378,12 @@ impl GoServiceSupervisor {
     /// parsed. Individual optional service spawn failures are recorded in the
     /// runtime status file and do not abort the Haze daemon.
     pub(crate) fn start(host: &ServiceHostConfig) -> Result<Self> {
-        let root = load_config_with_overlay(&host.config_path, &host.runtime_dir)?;
-        let status_path = host.runtime_dir.join(STATUS_FILE);
+        let root = load_config_with_overlay(&host.config_path, &host.app_dir, &host.runtime_dir)?;
+        let status_path = crate::runtime_dir::resolve_configured_runtime_path(
+            &host.app_dir,
+            &host.runtime_dir,
+            Path::new(STATUS_FILE),
+        );
         if let Some(parent) = status_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!(
@@ -1029,6 +1036,26 @@ fn service_specs(root: &RootConfig, host: &ServiceHostConfig) -> Vec<ServiceSpec
                     .filter(|value| !value.trim().is_empty())
                 {
                     args.extend(["--piper-voices-dir".to_string(), voices_dir.to_string()]);
+                }
+                let cache_dir = tts
+                    .cache_dir
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("runtime/cache/tts");
+                let cache_dir = crate::runtime_dir::resolve_configured_runtime_path(
+                    &host.app_dir,
+                    &host.runtime_dir,
+                    Path::new(cache_dir),
+                );
+                args.extend([
+                    "--cache-dir".to_string(),
+                    cache_dir.to_string_lossy().into_owned(),
+                ]);
+                if let Some(max_bytes) = tts.cache_max_bytes {
+                    args.extend(["--cache-max-bytes".to_string(), max_bytes.to_string()]);
+                }
+                if let Some(max_entries) = tts.cache_max_entries {
+                    args.extend(["--cache-max-entries".to_string(), max_entries.to_string()]);
                 }
                 if let Some(model_dir) = tts
                     .kokoro_model_dir
@@ -2003,7 +2030,7 @@ fn terminate_pid_tree(pid: u32) -> std::io::Result<()> {
     }
 }
 
-fn load_config_with_overlay(path: &Path, runtime_dir: &Path) -> Result<RootConfig> {
+fn load_config_with_overlay(path: &Path, app_dir: &Path, runtime_dir: &Path) -> Result<RootConfig> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read daemon config {}", path.display()))?;
     let raw = expand_env_vars(&raw);
@@ -2015,7 +2042,11 @@ fn load_config_with_overlay(path: &Path, runtime_dir: &Path) -> Result<RootConfi
         .and_then(serde_yaml::Value::as_str)
         .filter(|raw| !raw.trim().is_empty())
         .unwrap_or(DEFAULT_SETTINGS_FILE);
-    let settings_path = resolve_path(runtime_dir, Path::new(settings_file));
+    let settings_path = crate::runtime_dir::resolve_configured_runtime_path(
+        app_dir,
+        runtime_dir,
+        Path::new(settings_file),
+    );
     if settings_path.is_file() {
         let overlay_raw = fs::read_to_string(&settings_path).with_context(|| {
             format!(
@@ -2448,6 +2479,87 @@ services:
         assert_eq!(specs[0].binary, executable_name("haze-ivr"));
         assert!(specs[0].args.contains(&"--bridge".to_string()));
         assert!(specs[0].args.contains(&"--media-bridge".to_string()));
+    }
+
+    #[test]
+    fn tts_service_resolves_configured_persistent_cache_dir() {
+        let root: RootConfig = serde_yaml::from_str(
+            r#"
+services:
+  go:
+    enabled: true
+    tts:
+      enabled: true
+      cache_dir: runtime/cache/tts-custom
+      cache_max_bytes: 123456
+      cache_max_entries: 321
+"#,
+        )
+        .expect("config");
+
+        let host = ServiceHostConfig {
+            app_dir: PathBuf::from("/srv/haze-weather-radio"),
+            runtime_dir: PathBuf::from("/srv/haze-weather-radio/runtime"),
+            config_path: PathBuf::from("/srv/haze-weather-radio/config.yaml"),
+        };
+        let specs = service_specs(&root, &host);
+        let tts = specs
+            .iter()
+            .find(|spec| spec.binary == executable_name("haze-tts"))
+            .expect("tts service spec");
+
+        assert!(tts.args.windows(2).any(|args| {
+            args == [
+                "--cache-dir".to_string(),
+                host.runtime_dir
+                    .join("cache/tts-custom")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+        }));
+        assert!(tts
+            .args
+            .windows(2)
+            .any(|args| { args == ["--cache-max-bytes".to_string(), "123456".to_string()] }));
+        assert!(tts
+            .args
+            .windows(2)
+            .any(|args| { args == ["--cache-max-entries".to_string(), "321".to_string()] }));
+    }
+
+    #[test]
+    fn tts_service_resolves_default_persistent_cache_dir_in_legacy_layout() {
+        let root: RootConfig = serde_yaml::from_str(
+            r#"
+services:
+  go:
+    enabled: true
+    tts:
+      enabled: true
+"#,
+        )
+        .expect("config");
+        let host = ServiceHostConfig {
+            app_dir: PathBuf::from("/srv/haze-weather-radio"),
+            runtime_dir: PathBuf::from("/srv/haze-weather-radio"),
+            config_path: PathBuf::from("/srv/haze-weather-radio/config.yaml"),
+        };
+
+        let specs = service_specs(&root, &host);
+        let tts = specs
+            .iter()
+            .find(|spec| spec.binary == executable_name("haze-tts"))
+            .expect("tts service spec");
+
+        assert!(tts.args.windows(2).any(|args| {
+            args == [
+                "--cache-dir".to_string(),
+                host.runtime_dir
+                    .join("runtime/cache/tts")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+        }));
     }
 
     #[test]
