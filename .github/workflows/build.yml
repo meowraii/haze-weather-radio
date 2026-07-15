@@ -68,8 +68,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $clang64 = "C:\msys64\clang64"
+          $msysRoot = "C:\msys64"
+          $clang64 = Join-Path $msysRoot "clang64"
           $bin = Join-Path $clang64 "bin"
+          $usrBin = Join-Path $msysRoot "usr\bin"
           $pkgConfig = Join-Path $bin "pkg-config.exe"
           if (-not (Test-Path -LiteralPath $pkgConfig)) {
             $pkgConfig = Join-Path $bin "pkgconf.exe"
@@ -84,11 +86,10 @@ jobs:
             Set-Item -Path "Env:$Name" -Value $Value
             "$Name=$Value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
-          $env:Path = "$bin;$env:Path"
+          $env:Path = "$bin;$usrBin;$env:Path"
           Add-Content -Path $env:GITHUB_PATH -Value $bin
           Set-CiEnv "PKG_CONFIG" $pkgConfig
           Set-CiEnv "PKG_CONFIG_PATH" $pkgConfigPath
-          Set-CiEnv "PKG_CONFIG_LIBDIR" $pkgConfigPath
           Set-CiEnv "PKG_CONFIG_ALLOW_CROSS" "1"
           Set-CiEnv "FFMPEG_PKG_CONFIG_PATH" $ffmpegPkgConfigPath
           Set-CiEnv "LIBCLANG_PATH" $bin
@@ -96,8 +97,16 @@ jobs:
           Set-CiEnv "CC_x86_64_pc_windows_gnullvm" "x86_64-w64-mingw32-clang.exe"
           Set-CiEnv "CXX_x86_64_pc_windows_gnullvm" "x86_64-w64-mingw32-clang++.exe"
           Set-CiEnv "AR_x86_64_pc_windows_gnullvm" "llvm-ar.exe"
-          & $pkgConfig --exists glib-2.0 libavcodec opus gstreamer-1.0 gstreamer-app-1.0
+          foreach ($package in @("glib-2.0", "libavcodec", "opus", "gstreamer-1.0", "gstreamer-app-1.0", "gstreamer-audio-1.0", "gstreamer-video-1.0")) {
+            & $pkgConfig --print-errors --exists $package
+            if ($LASTEXITCODE -ne 0) {
+              throw "MSYS2 CLANG64 package check failed for $package"
+            }
+          }
           & (Join-Path $bin "ffmpeg.exe") -hide_banner -version
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSYS2 CLANG64 ffmpeg failed its version check"
+          }
 
       - name: Set up Go
         uses: actions/setup-go@v5
