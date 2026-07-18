@@ -182,6 +182,69 @@ func TestHandleSynthesisJobReusesIdenticalCompletedAudio(t *testing.T) {
 	}
 }
 
+func TestHandleSynthesisJobReusesPersistentCacheAfterRestart(t *testing.T) {
+	provider := &fakeProvider{id: "piper", audio: tts.Audio{
+		Format:     tts.FormatWAV,
+		SampleRate: 22050,
+		Channels:   1,
+		Data:       []byte("persistent cached wav"),
+	}}
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(state *serviceState, jobID string, outputPath string) map[string]any {
+		conn, peer := net.Pipe()
+		defer conn.Close()
+		defer peer.Close()
+		go handleSynthesisJob(context.Background(), conn, state, map[string]any{
+			"type": "tts.synthesize",
+			"data": map[string]any{
+				"job_id":      jobID,
+				"provider":    "piper",
+				"text":        "unchanged forecast",
+				"voice_id":    "voice-a",
+				"language":    "en-CA",
+				"output_path": outputPath,
+			},
+		})
+		var event map[string]any
+		if err := json.NewDecoder(peer).Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		return event["data"].(map[string]any)
+	}
+
+	newState := func() *serviceState {
+		return &serviceState{
+			cfg: serviceConfig{
+				Timeout:         time.Second,
+				CacheDir:        cacheDir,
+				CacheMaxBytes:   1 << 20,
+				CacheMaxEntries: 8,
+			},
+			providers:    map[string]tts.Provider{"piper": provider},
+			dictionaries: map[string]dictionaryResult{},
+		}
+	}
+
+	first := run(newState(), "job-1", filepath.Join(dir, "first.wav"))
+	secondPath := filepath.Join(dir, "second.wav")
+	second := run(newState(), "job-2", secondPath)
+
+	if provider.requestCount() != 1 {
+		t.Fatalf("provider requests = %d, want 1", provider.requestCount())
+	}
+	if first["cache_hit"] != false || second["cache_hit"] != true {
+		t.Fatalf("cache metadata first=%v second=%v", first["cache_hit"], second["cache_hit"])
+	}
+	if raw, err := os.ReadFile(secondPath); err != nil || string(raw) != "persistent cached wav" {
+		t.Fatalf("persistent cached output = %q err=%v", raw, err)
+	}
+}
+
 func TestSynthesisQueuePrioritizesRealtimeJobs(t *testing.T) {
 	queue := &synthesisQueue{
 		high:   make(chan map[string]any, 3),

@@ -36,7 +36,10 @@ var codecExt = map[string]string{
 	"wav":        "wav",
 }
 
-const maxDiscordAttachmentBytes = 8 * 1024 * 1024
+const (
+	maxDiscordAttachmentBytes = 8 * 1024 * 1024
+	opusBitrate               = "16k"
+)
 
 func webhookHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
@@ -390,14 +393,7 @@ func transcodeAlertAudio(ctx context.Context, src string, codec string, sampleRa
 	cmd := exec.CommandContext(
 		transcodeCtx,
 		"ffmpeg",
-		"-loglevel", "error",
-		"-f", "s16le",
-		"-ar", strconv.Itoa(sampleRate),
-		"-ac", strconv.Itoa(channels),
-		"-i", src,
-		"-c:a", outCodec,
-		"-f", ext,
-		"pipe:1",
+		ffmpegAudioTranscodeArgs(src, outCodec, ext, sampleRate, channels)...,
 	)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -418,6 +414,21 @@ func transcodeAlertAudio(ctx context.Context, src string, codec string, sampleRa
 		name = base + "." + ext
 	}
 	return attachment{Name: name, Data: stdout.Bytes()}, nil
+}
+
+func ffmpegAudioTranscodeArgs(src string, codec string, ext string, sampleRate int, channels int) []string {
+	args := []string{
+		"-loglevel", "error",
+		"-f", "s16le",
+		"-ar", strconv.Itoa(sampleRate),
+		"-ac", strconv.Itoa(channels),
+		"-i", src,
+		"-c:a", codec,
+	}
+	if codec == "libopus" {
+		args = append(args, "-b:a", opusBitrate)
+	}
+	return append(args, "-f", ext, "pipe:1")
 }
 
 func colorInt(value string) int {

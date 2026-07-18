@@ -1,12 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::env;
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
+use std::num::{NonZeroU16, NonZeroU32};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -17,7 +16,25 @@ use tokio::time::sleep;
 use tokio::time::Duration;
 use tracing::{info, warn};
 
+use crate::architecture::{
+    AudioRoutingSpec, AudioTopologyMode, AudioTrackId, ChannelLayout, FeedId, GainDb, MixMatrix,
+    MpegTsPid, ResolvedProgramMapSpec,
+};
+use crate::audio_routing::AudioGainController;
 use crate::config::{EncoderCodecSettings, FeedConfig};
+use crate::gst_output_sink::{CpuBgrxFrameHandle, GstOutputSinkFactory};
+use crate::media_pcm::{MediaPcmSubscription, PcmChunk};
+use crate::output_workers::{
+    AudioPacket, AudioPayload, OutputFanout, OutputWorkerConfig, VideoFrame,
+};
+use crate::program_mapping::{
+    build_gstreamer_program_map, redacted_resolved_program_map_status,
+    PlannedAudioTrackAssociation, PlannedTrackAssociations, PlannedVideoTrackAssociation,
+    ValidatedGstProgramMap,
+};
+use crate::source_caps::{
+    CapsWriter, LastKnownCapsStore, SourceCaps, SourceFieldOrder, SourceScanMode,
+};
 use crate::state::RuntimeState;
 use crate::wgpu_renderer::{OverlayRenderState, WgpuFrameRenderer};
 
@@ -27,18 +44,27 @@ use gstreamer_app as gst_app;
 
 const DEFAULT_UDP_BUFFER_BYTES: u32 = 4 * 1024 * 1024;
 const GST_BUS_POLL_INTERVAL_MS: u64 = 10;
-const PRIORITY_AUDIO_RESTART_SUPPRESS: Duration = Duration::from_secs(300);
+const OUTPUT_FANOUT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Debug)]
+enum PipelineRunExit {
+    Clean,
+    Reconfigure(SourceCaps),
+}
+
 pub(crate) async fn run_supervised(
     feed: FeedConfig,
     state_rx: watch::Receiver<RuntimeState>,
     mut shutdown_rx: watch::Receiver<bool>,
     base_dir: PathBuf,
     status_tx: Option<mpsc::Sender<Value>>,
+    media_pcm: MediaPcmSubscription,
 ) -> Result<()> {
     configure_portable_gstreamer_paths();
     gst::init().context("failed to initialize GStreamer")?;
     let restart = restart_backoff_bounds(&feed);
     let mut restart_delay = restart.initial;
+    let mut effective_caps_override = None;
     loop {
         if *shutdown_rx.borrow() {
             info!(feed_id = %feed.id, "gstreamer cgen supervisor shutting down");
@@ -49,15 +75,54 @@ pub(crate) async fn run_supervised(
         let shutdown_once = shutdown_rx.clone();
         let base_once = base_dir.clone();
         let status_once = status_tx.clone();
+        let media_pcm_once = media_pcm.clone();
+        let caps_once = effective_caps_override.clone();
+        let output_fanout = spawn_output_fanout(&feed)?;
+        let output_fanout_once = output_fanout.clone();
         let result = tokio::task::spawn_blocking(move || {
-            run_pipeline_once(feed_once, state_once, shutdown_once, base_once, status_once)
+            run_pipeline_once(
+                feed_once,
+                state_once,
+                shutdown_once,
+                base_once,
+                status_once,
+                media_pcm_once,
+                caps_once,
+                output_fanout_once,
+            )
         })
         .await
         .context("gstreamer cgen worker panicked")?;
+        if let Some(fanout) = output_fanout.as_deref() {
+            if tokio::time::timeout(OUTPUT_FANOUT_SHUTDOWN_TIMEOUT, fanout.shutdown())
+                .await
+                .is_err()
+            {
+                warn!(
+                    feed_id = %feed.id,
+                    timeout_ms = OUTPUT_FANOUT_SHUTDOWN_TIMEOUT.as_millis(),
+                    "timed out while stopping isolated CGEN output workers"
+                );
+            }
+        }
         match result {
-            Ok(()) => {
+            Ok(PipelineRunExit::Clean) => {
                 info!(feed_id = %feed.id, "gstreamer cgen pipeline exited cleanly");
                 restart_delay = restart.initial;
+            }
+            Ok(PipelineRunExit::Reconfigure(caps)) => {
+                info!(
+                    feed_id = %feed.id,
+                    width = caps.width(),
+                    height = caps.height(),
+                    frame_rate_numerator = caps.frame_rate().numerator(),
+                    frame_rate_denominator = caps.frame_rate().denominator(),
+                    "rebuilding cgen resources for changed source caps"
+                );
+                effective_caps_override = Some(caps);
+                restart_delay = restart.initial;
+                tokio::task::yield_now().await;
+                continue;
             }
             Err(err) => warn!(feed_id = %feed.id, "gstreamer cgen pipeline failed: {err:#}"),
         }
@@ -93,6 +158,48 @@ fn restart_backoff_bounds(feed: &FeedConfig) -> RestartBackoff {
     }
 }
 
+fn spawn_output_fanout(feed: &FeedConfig) -> Result<Option<Arc<OutputFanout>>> {
+    if !feed.has_explicit_outputs() {
+        return Ok(None);
+    }
+    let pipeline_spec = feed.pipeline_spec()?;
+    let program_map = pipeline_spec
+        .program_map
+        .as_ref()
+        .map(crate::architecture::ProgramMapSpec::resolve)
+        .transpose()?;
+    let mut worker_config = OutputWorkerConfig::default();
+    worker_config.initial_backoff =
+        Duration::from_millis(u64::from(feed.sync.reconnect_initial_ms.clamp(100, 60_000)));
+    worker_config.maximum_backoff = Duration::from_millis(u64::from(
+        feed.sync
+            .reconnect_max_ms
+            .max(feed.sync.reconnect_initial_ms)
+            .clamp(feed.sync.reconnect_initial_ms.max(100), 300_000),
+    ));
+    let factory = Arc::new(GstOutputSinkFactory::new(program_map));
+    let fanout = OutputFanout::spawn(pipeline_spec.outputs, factory, worker_config)
+        .context("failed to start isolated CGEN output workers")?;
+    Ok(Some(Arc::new(fanout)))
+}
+
+fn output_worker_status_value(fanout: Option<&OutputFanout>) -> Value {
+    match fanout {
+        Some(fanout) => json!({
+            "mode": "isolated_workers",
+            "outputs": fanout
+                .statuses()
+                .iter()
+                .map(crate::output_workers::OutputStatusSnapshot::status_value)
+                .collect::<Vec<_>>(),
+        }),
+        None => json!({
+            "mode": "legacy_single_sink",
+            "outputs": [],
+        }),
+    }
+}
+
 fn sync_status_value(feed: &FeedConfig) -> Value {
     json!({
         "hard_reset_ms": feed.sync.hard_reset_ms,
@@ -107,16 +214,103 @@ fn sync_status_value(feed: &FeedConfig) -> Value {
 pub(crate) fn gstreamer_catalog_json() -> Result<Value> {
     configure_portable_gstreamer_paths();
     gst::init().context("failed to initialize GStreamer")?;
+    let ancillary = crate::ancillary::AncillaryBackendCapabilities::current_gstreamer();
     Ok(json!({
         "formats": gstreamer_muxer_catalog(),
         "video_codecs": gstreamer_encoder_catalog(gst::ElementFactoryType::VIDEO_ENCODER, "video"),
         "audio_codecs": gstreamer_encoder_catalog(gst::ElementFactoryType::AUDIO_ENCODER, "audio"),
         "video_decoders": gstreamer_decoder_catalog(),
+        "input_devices": gstreamer_input_device_catalog()?,
+        "input_backends": ["v4l2", "directshow"],
+        "capabilities": {
+            "audio_topologies": {
+                "force_layout": true,
+                "preserve_native_tracks": false,
+            },
+            "ancillary": ancillary.status_value(),
+        },
         "gstreamer": {
             "source": "haze-cgen-registry",
             "runtime": "gstreamer-rs",
         },
     }))
+}
+
+fn gstreamer_input_device_catalog() -> Result<Vec<Value>> {
+    let monitor = gst::DeviceMonitor::new();
+    monitor.set_show_all_devices(false);
+    monitor
+        .add_filter(Some("Video/Source"), None)
+        .context("failed to add GStreamer video device filter")?;
+    monitor
+        .start()
+        .context("failed to start GStreamer device discovery")?;
+    let mut devices = monitor
+        .devices()
+        .into_iter()
+        .map(|device| {
+            let properties = device.properties();
+            let property = |keys: &[&str]| {
+                properties.as_ref().and_then(|properties| {
+                    keys.iter().find_map(|key| {
+                        properties
+                            .get::<String>(*key)
+                            .ok()
+                            .map(|value| value.trim().to_string())
+                            .filter(|value| !value.is_empty())
+                    })
+                })
+            };
+            let display_name = device.display_name().to_string();
+            let persistent_id = property(&[
+                "device.path",
+                "device.id",
+                "device.unique-id",
+                "device.name",
+            ])
+            .unwrap_or_else(|| display_name.clone());
+            let element = device
+                .create_element(None)
+                .ok()
+                .and_then(|element| element.factory())
+                .map(|factory| factory.name().to_string())
+                .unwrap_or_default();
+            let backend = property(&["device.api"])
+                .or_else(|| element.contains("v4l2").then_some("v4l2".to_string()))
+                .or_else(|| {
+                    (element.contains("dshow") || element.contains("directshow"))
+                        .then_some("directshow".to_string())
+                })
+                .unwrap_or_else(|| "gstreamer".to_string());
+            let caps = device
+                .caps()
+                .map(|caps| caps.to_string())
+                .unwrap_or_default();
+            json!({
+                "id": persistent_id,
+                "label": display_name,
+                "backend": backend,
+                "element": element,
+                "class": device.device_class().to_string(),
+                "caps": caps.chars().take(4096).collect::<String>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    monitor.stop();
+    devices.sort_by(|left, right| {
+        left.get("label")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .cmp(
+                &right
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+            )
+    });
+    Ok(devices)
 }
 
 fn configure_portable_gstreamer_paths() {
@@ -390,12 +584,18 @@ fn catalog_implementation_name(element: &str, lower: &str) -> &'static str {
 }
 
 fn run_pipeline_once(
-    feed: FeedConfig,
+    mut feed: FeedConfig,
     mut state_rx: watch::Receiver<RuntimeState>,
     mut shutdown_rx: watch::Receiver<bool>,
     base_dir: PathBuf,
     status_tx: Option<mpsc::Sender<Value>>,
-) -> Result<()> {
+    media_pcm: MediaPcmSubscription,
+    effective_caps_override: Option<SourceCaps>,
+    output_fanout: Option<Arc<OutputFanout>>,
+) -> Result<PipelineRunExit> {
+    let caps_runtime = prepare_source_caps_runtime(&mut feed, &base_dir, effective_caps_override)?;
+    let audio_routing_spec = feed.audio_routing_spec()?;
+    let audio_output_layout = forced_audio_output_layout(&audio_routing_spec)?;
     let plan = GstPipelinePlan::from_feed(&feed)?;
     info!(
         feed_id = %feed.id,
@@ -420,6 +620,10 @@ fn run_pipeline_once(
             "output_active": false,
             "pipeline_description": crate::config::redacted_pipeline_description(&feed, &plan.description),
             "output_ladder": plan.status_value(),
+            "output_workers": output_worker_status_value(output_fanout.as_deref()),
+            "detected_caps": caps_runtime.detected_caps(),
+            "effective_caps": caps_runtime.effective_caps(),
+            "source_caps": caps_runtime.status_value(),
             "sync": sync_status_value(&feed),
         }),
     );
@@ -435,6 +639,9 @@ fn run_pipeline_once(
                 "output_active": false,
                 "last_error": err.to_string(),
                 "required_elements": plan.required_elements,
+                "detected_caps": caps_runtime.detected_caps(),
+                "effective_caps": caps_runtime.effective_caps(),
+                "source_caps": caps_runtime.status_value(),
                 "sync": sync_status_value(&feed),
             }),
         );
@@ -447,19 +654,26 @@ fn run_pipeline_once(
         .downcast::<gst::Pipeline>()
         .map_err(|_| anyhow::anyhow!("GStreamer CGEN description did not produce a pipeline"))?;
     apply_mpegts_program_map(&pipeline, &plan)?;
+    if plan.uses_output_fanout() {
+        let fanout = output_fanout
+            .as_ref()
+            .context("isolated CGEN output plan is missing its output workers")?;
+        install_output_fanout_sinks(
+            &pipeline,
+            Arc::clone(fanout),
+            feed.video.width,
+            feed.video.height,
+            audio_output_layout,
+        )?;
+    } else if output_fanout.is_some() {
+        bail!("legacy CGEN pipeline received isolated output workers");
+    }
     let priority_appsrc = priority_audio_appsrc(&pipeline)?;
     let input_health = Arc::new(Mutex::new(InputHealth::default()));
-    install_program_video_probe(&pipeline, Arc::clone(&input_health))?;
-    install_program_audio_probe(&pipeline, Arc::clone(&input_health))?;
-    let priority_drain = Duration::from_millis(
-        u64::from(feed.sync.source_buffer_ms.clamp(40, 5_000)).saturating_add(1_000),
-    );
-    let mut priority_feeder = PriorityAudioFeeder::new(
-        priority_appsrc,
-        base_dir.clone(),
-        feed.id.clone(),
-        priority_drain,
-    );
+    install_program_video_probe(&pipeline, Arc::clone(&input_health), caps_runtime.clone())?;
+    let audio_mix =
+        install_audio_mix_runtime(&pipeline, Arc::clone(&input_health), audio_routing_spec)?;
+    let mut priority_feeder = PriorityAudioFeeder::new(priority_appsrc, media_pcm);
     let mut text_overlay = TextOverlayController::default();
     let wgpu_compositors = match install_wgpu_overlay_probes(
         &pipeline,
@@ -482,6 +696,9 @@ fn run_pipeline_once(
                     "output_active": false,
                     "fatal": true,
                     "last_error": err.to_string(),
+                    "detected_caps": caps_runtime.detected_caps(),
+                    "effective_caps": caps_runtime.effective_caps(),
+                    "source_caps": caps_runtime.status_value(),
                     "sync": sync_status_value(&feed),
                 }),
             );
@@ -492,7 +709,18 @@ fn run_pipeline_once(
         let state = state_rx.borrow();
         let video_connected = input_video_connected(&input_health, &feed);
         let audio_connected = input_audio_connected(&input_health, &feed);
-        let feeder_status = priority_feeder.update(priority_audio_for_feed(&feed, &state));
+        let feeder_status = priority_audio_for_feed(&feed, &state).map_or(
+            PriorityAudioSourceStatus {
+                status: "idle",
+                queue_id: None,
+                error: None,
+            },
+            |audio| PriorityAudioSourceStatus {
+                status: "waiting",
+                queue_id: Some(audio.queue_id.clone()),
+                error: None,
+            },
+        );
         let video_mode = desired_video_selector_mode(&feed, &state, video_connected);
         (
             desired_audio_selector_mode_with_status(&feed, audio_connected, &feeder_status),
@@ -501,7 +729,7 @@ fn run_pipeline_once(
     };
     let mut current_audio_mode = initial_audio_mode;
     let mut current_video_mode = initial_video_mode;
-    set_audio_selector_mode(&pipeline, initial_audio_mode)?;
+    audio_mix.set_mode(initial_audio_mode)?;
     set_video_selector_mode(&pipeline, initial_video_mode)?;
     let mut diagnostics = PipelineDiagnostics::default();
     pipeline
@@ -534,12 +762,20 @@ fn run_pipeline_once(
             "priority_input_format": feed.priority_input.format,
             "mute_standby_routine": feed.audio.mute_standby_routine,
             "audio_selector": initial_audio_mode.as_str(),
+            "audio_mix": audio_mix.status_value(),
             "video_selector": initial_video_mode.as_str(),
+            "priority_audio_pipeline": priority_feeder.active_status().status,
+            "priority_audio_media_bridge": priority_feeder.media_status_value(),
+            "audio_drops": priority_feeder.media_pcm.dropped_chunks(),
             "text_overlay": text_overlay.status_value(),
             "graphics_renderer": wgpu_compositors.status_value(),
             "input_health": input_health_status(&input_health, &feed),
+            "detected_caps": caps_runtime.detected_caps(),
+            "effective_caps": caps_runtime.effective_caps(),
+            "source_caps": caps_runtime.status_value(),
             "pipeline_diagnostics": diagnostics.status_value(),
             "output_ladder": plan.status_value(),
+            "output_workers": output_worker_status_value(output_fanout.as_deref()),
             "sync": sync_status_value(&feed),
         }),
     );
@@ -553,7 +789,7 @@ fn run_pipeline_once(
             pipeline
                 .set_state(gst::State::Null)
                 .context("failed to stop GStreamer CGEN pipeline during shutdown")?;
-            return Ok(());
+            return Ok(PipelineRunExit::Clean);
         }
         while let Some(message) =
             bus.timed_pop(gst::ClockTime::from_mseconds(GST_BUS_POLL_INTERVAL_MS))
@@ -561,10 +797,31 @@ fn run_pipeline_once(
             use gst::MessageView;
             match message.view() {
                 MessageView::Eos(..) => {
+                    mark_input_timeout(&input_health);
+                    let _ = set_video_selector_mode(&pipeline, VideoSelectorMode::Standby);
+                    publish_status(
+                        &status_tx,
+                        &feed,
+                        &state_rx,
+                        true,
+                        json!({
+                            "media_backend": "gstreamer-rs",
+                            "input_connected": false,
+                            "input_video_connected": false,
+                            "output_active": true,
+                            "video_selector": "standby",
+                            "visual_lifecycle": "standby",
+                            "input_unhealthy_reason": "eos",
+                            "detected_caps": caps_runtime.detected_caps(),
+                            "effective_caps": caps_runtime.effective_caps(),
+                            "source_caps": caps_runtime.status_value(),
+                            "input_health": input_health_status(&input_health, &feed),
+                        }),
+                    );
                     pipeline
                         .set_state(gst::State::Null)
                         .context("failed to stop GStreamer CGEN pipeline")?;
-                    return Ok(());
+                    return Ok(PipelineRunExit::Clean);
                 }
                 MessageView::Error(err) => {
                     let src = err
@@ -575,6 +832,7 @@ fn run_pipeline_once(
                         .debug()
                         .map(|debug| debug.to_string())
                         .unwrap_or_default();
+                    mark_input_timeout(&input_health);
                     let _ = pipeline.set_state(gst::State::Null);
                     let error_text =
                         format!("GStreamer CGEN error from {src}: {} {debug}", err.error());
@@ -588,10 +846,16 @@ fn run_pipeline_once(
                             "graphics_backend": plan.graphics_backend,
                             "fatal": false,
                             "input_connected": false,
+                            "input_video_connected": false,
                             "output_active": false,
+                            "input_unhealthy_reason": "decoder_or_pipeline_error",
                             "last_error": error_text,
+                            "detected_caps": caps_runtime.detected_caps(),
+                            "effective_caps": caps_runtime.effective_caps(),
+                            "source_caps": caps_runtime.status_value(),
                             "pipeline_diagnostics": diagnostics.status_value(),
                             "output_ladder": plan.status_value(),
+                            "output_workers": output_worker_status_value(output_fanout.as_deref()),
                             "sync": sync_status_value(&feed),
                         }),
                     );
@@ -613,6 +877,9 @@ fn run_pipeline_once(
                             json!({
                                 "media_backend": "gstreamer-rs",
                                 "gst_state": format!("{:?}", state.current()),
+                                "detected_caps": caps_runtime.detected_caps(),
+                                "effective_caps": caps_runtime.effective_caps(),
+                                "source_caps": caps_runtime.status_value(),
                             }),
                         );
                     }
@@ -635,6 +902,37 @@ fn run_pipeline_once(
                 _ => {}
             }
         }
+        if let Some(changed_caps) = caps_runtime.reconfigure_request() {
+            mark_input_timeout(&input_health);
+            set_video_selector_mode(&pipeline, VideoSelectorMode::Standby)?;
+            publish_status(
+                &status_tx,
+                &feed,
+                &state_rx,
+                true,
+                json!({
+                    "media_backend": "gstreamer-rs",
+                    "graphics_backend": plan.graphics_backend,
+                    "input_connected": false,
+                    "input_video_connected": false,
+                    "output_active": true,
+                    "video_selector": "standby",
+                    "visual_lifecycle": "standby",
+                    "reconfigure_state": "rebuilding",
+                    "reconfigure_reason": "source_caps_changed",
+                    "detected_caps": caps_runtime.detected_caps(),
+                    "effective_caps": caps_runtime.effective_caps(),
+                    "source_caps": caps_runtime.status_value(),
+                    "output_ladder": plan.status_value(),
+                    "output_workers": output_worker_status_value(output_fanout.as_deref()),
+                    "sync": sync_status_value(&feed),
+                }),
+            );
+            pipeline
+                .set_state(gst::State::Null)
+                .context("failed to stop GStreamer CGEN pipeline for caps reconfiguration")?;
+            return Ok(PipelineRunExit::Reconfigure(changed_caps));
+        }
         {
             let state = state_rx.borrow();
             let video_connected = input_video_connected(&input_health, &feed);
@@ -644,14 +942,26 @@ fn run_pipeline_once(
                 current_video_mode = video_mode;
             }
             let priority_audio = priority_audio_for_feed(&feed, &state);
-            let feeder_status = priority_feeder.update(priority_audio);
             let audio_connected = input_audio_connected(&input_health, &feed);
+            let lifecycle_status = priority_audio.map_or(
+                PriorityAudioSourceStatus {
+                    status: "idle",
+                    queue_id: None,
+                    error: None,
+                },
+                |audio| PriorityAudioSourceStatus {
+                    status: "waiting",
+                    queue_id: Some(audio.queue_id.clone()),
+                    error: None,
+                },
+            );
             let audio_mode =
-                desired_audio_selector_mode_with_status(&feed, audio_connected, &feeder_status);
+                desired_audio_selector_mode_with_status(&feed, audio_connected, &lifecycle_status);
             if current_audio_mode != audio_mode {
-                set_audio_selector_mode(&pipeline, audio_mode)?;
+                audio_mix.set_mode(audio_mode)?;
                 current_audio_mode = audio_mode;
             }
+            let feeder_status = priority_feeder.update(priority_audio);
             text_overlay.sync(
                 &pipeline,
                 &feed,
@@ -664,16 +974,32 @@ fn run_pipeline_once(
             pipeline
                 .set_state(gst::State::Null)
                 .context("failed to stop GStreamer CGEN pipeline during shutdown")?;
-            return Ok(());
+            return Ok(PipelineRunExit::Clean);
         }
         if state_rx.has_changed().unwrap_or(false) || Instant::now() >= next_status {
             let state = state_rx.borrow_and_update();
             let video_connected = input_video_connected(&input_health, &feed);
             let audio_connected = input_audio_connected(&input_health, &feed);
             let priority_audio = priority_audio_for_feed(&feed, &state);
-            let feeder_status = priority_feeder.update(priority_audio);
+            let lifecycle_status = priority_audio.map_or(
+                PriorityAudioSourceStatus {
+                    status: "idle",
+                    queue_id: None,
+                    error: None,
+                },
+                |audio| PriorityAudioSourceStatus {
+                    status: "waiting",
+                    queue_id: Some(audio.queue_id.clone()),
+                    error: None,
+                },
+            );
             let audio_mode =
-                desired_audio_selector_mode_with_status(&feed, audio_connected, &feeder_status);
+                desired_audio_selector_mode_with_status(&feed, audio_connected, &lifecycle_status);
+            if current_audio_mode != audio_mode {
+                audio_mix.set_mode(audio_mode)?;
+                current_audio_mode = audio_mode;
+            }
+            let feeder_status = priority_feeder.update(priority_audio);
             let video_mode = desired_video_selector_mode(&feed, &state, video_connected);
             let priority_active = priority_audio_active(&feed, &state);
             let visual_lifecycle = if state.banner_for(feed.id.as_str()).is_some() {
@@ -684,10 +1010,8 @@ fn run_pipeline_once(
                 "release"
             };
             drop(state);
-            if current_audio_mode != audio_mode {
-                set_audio_selector_mode(&pipeline, audio_mode)?;
-                current_audio_mode = audio_mode;
-            }
+            let media_pcm_status = priority_feeder.media_status_value();
+            let audio_drops = priority_feeder.media_pcm.dropped_chunks();
             if current_video_mode != video_mode {
                 set_video_selector_mode(&pipeline, video_mode)?;
                 current_video_mode = video_mode;
@@ -705,12 +1029,15 @@ fn run_pipeline_once(
                     "priority_audio_enabled": feed.priority_input.priority_audio_enabled(),
                     "mute_standby_routine": feed.audio.mute_standby_routine,
                     "audio_selector": audio_mode.as_str(),
+                    "audio_mix": audio_mix.status_value(),
                     "video_selector": video_mode.as_str(),
                     "audio_lifecycle": audio_mode.status_text(priority_active),
                     "priority_audio_active": priority_active,
                     "priority_audio_pipeline": feeder_status.status,
                     "priority_audio_queue_id": feeder_status.queue_id,
                     "priority_audio_error": feeder_status.error,
+                    "priority_audio_media_bridge": media_pcm_status,
+                    "audio_drops": audio_drops,
                     "text_overlay": text_overlay.status_value(),
                     "graphics_renderer": wgpu_compositors.status_value(),
                     "visual_lifecycle": visual_lifecycle,
@@ -718,8 +1045,12 @@ fn run_pipeline_once(
                     "input_video_connected": video_connected,
                     "input_audio_connected": audio_connected,
                     "input_health": input_health_status(&input_health, &feed),
+                    "detected_caps": caps_runtime.detected_caps(),
+                    "effective_caps": caps_runtime.effective_caps(),
+                    "source_caps": caps_runtime.status_value(),
                     "pipeline_diagnostics": diagnostics.status_value(),
                     "output_ladder": plan.status_value(),
+                    "output_workers": output_worker_status_value(output_fanout.as_deref()),
                     "sync": sync_status_value(&feed),
                 }),
             );
@@ -1232,9 +1563,7 @@ fn write_bgrx_preview_jpeg(path: &Path, frame: &[u8], width: usize, height: usiz
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).context("failed to create cgen preview directory")?;
     }
-    let tmp = path.with_extension("preview.jpg.tmp");
-    fs::write(&tmp, jpeg).context("failed to write cgen preview temp file")?;
-    fs::rename(&tmp, path).context("failed to replace cgen preview file")?;
+    crate::atomic_file::write(path, &jpeg).context("failed to replace cgen preview file")?;
     Ok(())
 }
 
@@ -1413,6 +1742,110 @@ enum AudioSelectorMode {
     Priority,
 }
 
+const AUDIO_MIX_SAMPLE_RATE: u32 = 48_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioBus {
+    Program,
+    Alert,
+}
+
+impl AudioBus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Program => "program",
+            Self::Alert => "alert",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct AudioMatrixRuntimeState {
+    source_layout: Option<ChannelLayout>,
+    ready: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AudioMixRuntime {
+    spec: AudioRoutingSpec,
+    output_layout: ChannelLayout,
+    gains: Arc<Mutex<AudioGainController>>,
+    program_matrix: Arc<Mutex<AudioMatrixRuntimeState>>,
+    alert_matrix: Arc<Mutex<AudioMatrixRuntimeState>>,
+}
+
+impl AudioMixRuntime {
+    fn set_mode(&self, mode: AudioSelectorMode) -> Result<()> {
+        let (program, alert) = match mode {
+            AudioSelectorMode::Silence => (GainDb::Muted, GainDb::Muted),
+            AudioSelectorMode::Program => (self.spec.idle_program_gain, GainDb::Muted),
+            AudioSelectorMode::Priority => (self.spec.alert_program_gain, self.spec.alert_gain),
+        };
+        let mut gains = self
+            .gains
+            .lock()
+            .map_err(|_| anyhow::anyhow!("CGEN audio gain controller lock poisoned"))?;
+        if mode == AudioSelectorMode::Priority {
+            gains.prime_alert(GainDb::Muted);
+        }
+        gains.set_targets(
+            program,
+            alert,
+            AUDIO_MIX_SAMPLE_RATE,
+            self.spec.transition_ms,
+        );
+        Ok(())
+    }
+
+    fn status_value(&self) -> Value {
+        let gains = self.gains.lock().ok().map(|gains| gains.status());
+        json!({
+            "engine": "audiomixer",
+            "topology": "force_layout",
+            "output_layout": channel_layout_name(self.output_layout),
+            "sample_rate": AUDIO_MIX_SAMPLE_RATE,
+            "transition_ms": self.spec.transition_ms,
+            "program_matrix": audio_matrix_status_value(&self.program_matrix),
+            "alert_matrix": audio_matrix_status_value(&self.alert_matrix),
+            "program_gain_linear": gains.map(|status| status.program_current),
+            "program_gain_target_linear": gains.map(|status| status.program_target),
+            "alert_gain_linear": gains.map(|status| status.alert_current),
+            "alert_gain_target_linear": gains.map(|status| status.alert_target),
+        })
+    }
+}
+
+fn audio_matrix_status_value(state: &Arc<Mutex<AudioMatrixRuntimeState>>) -> Value {
+    let Ok(state) = state.lock() else {
+        return json!({
+            "ready": false,
+            "error": "audio matrix state lock poisoned",
+        });
+    };
+    json!({
+        "ready": state.ready,
+        "source_layout": state.source_layout.map(channel_layout_name),
+        "error": state.error,
+    })
+}
+
+fn channel_layout_name(layout: ChannelLayout) -> &'static str {
+    match layout {
+        ChannelLayout::Mono => "mono",
+        ChannelLayout::Stereo => "stereo",
+        ChannelLayout::Surround51 => "5.1",
+    }
+}
+
+fn channel_mask(layout: ChannelLayout) -> u64 {
+    match layout {
+        ChannelLayout::Mono => 0x04,
+        ChannelLayout::Stereo => 0x03,
+        ChannelLayout::Surround51 => 0x3f,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VideoSelectorMode {
     Program,
@@ -1453,14 +1886,6 @@ impl AudioSelectorMode {
         }
     }
 
-    fn pad_name(self) -> &'static str {
-        match self {
-            Self::Silence => "sink_0",
-            Self::Program => "sink_1",
-            Self::Priority => "sink_2",
-        }
-    }
-
     fn status_text(self, priority_active: bool) -> &'static str {
         match (self, priority_active) {
             (Self::Priority, true) => "priority",
@@ -1470,6 +1895,262 @@ impl AudioSelectorMode {
             (Self::Priority, false) => "priority",
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct SourceCapsRuntime {
+    inner: Arc<Mutex<SourceCapsRuntimeState>>,
+    writer: Option<CapsWriter>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceCapsRuntimeState {
+    detected: Option<SourceCaps>,
+    effective: SourceCaps,
+    last_known: Option<SourceCaps>,
+    effective_origin: &'static str,
+    reconfigure: Option<SourceCaps>,
+    detection_error: Option<String>,
+    persistence_error: Option<String>,
+}
+
+impl SourceCapsRuntime {
+    fn new(
+        effective: SourceCaps,
+        last_known: Option<SourceCaps>,
+        effective_origin: &'static str,
+        writer: Option<CapsWriter>,
+        persistence_error: Option<String>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(SourceCapsRuntimeState {
+                detected: None,
+                effective,
+                last_known,
+                effective_origin,
+                reconfigure: None,
+                detection_error: None,
+                persistence_error,
+            })),
+            writer,
+        }
+    }
+
+    fn observe(&self, caps: SourceCaps) {
+        let should_persist = {
+            let Ok(mut state) = self.inner.lock() else {
+                return;
+            };
+            state.detection_error = None;
+            if state.detected.as_ref() != Some(&caps) {
+                state.detected = Some(caps.clone());
+                if caps == state.effective {
+                    state.effective_origin = "detected";
+                    state.reconfigure = None;
+                } else {
+                    state.reconfigure = Some(caps.clone());
+                }
+            }
+            state.last_known.as_ref() != Some(&caps)
+        };
+        if should_persist {
+            if let Some(writer) = &self.writer {
+                writer.enqueue(&caps);
+            }
+        }
+    }
+
+    fn record_detection_error(&self, error: impl Into<String>) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.detection_error = Some(error.into());
+        }
+    }
+
+    fn reconfigure_request(&self) -> Option<SourceCaps> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|state| state.reconfigure.clone())
+    }
+
+    fn detected_caps(&self) -> Option<SourceCaps> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|state| state.detected.clone())
+    }
+
+    fn effective_caps(&self) -> SourceCaps {
+        self.inner
+            .lock()
+            .map(|state| state.effective.clone())
+            .unwrap_or_else(|_| SourceCaps::fallback())
+    }
+
+    fn status_value(&self) -> Value {
+        let writer = self.writer.as_ref().map(CapsWriter::status);
+        match self.inner.lock() {
+            Ok(state) => {
+                let last_known_good = writer
+                    .as_ref()
+                    .and_then(|status| status.last_written.clone())
+                    .or_else(|| state.last_known.clone());
+                json!({
+                    "detected": state.detected,
+                    "effective": state.effective,
+                    "last_known_good": last_known_good,
+                    "effective_origin": state.effective_origin,
+                    "reconfigure_required": state.reconfigure.is_some(),
+                    "reconfigure_target": state.reconfigure,
+                    "detection_error": state.detection_error,
+                    "persistence_error": state.persistence_error,
+                    "persistence": writer.map(|status| json!({
+                        "queued": status.queued,
+                        "dropped": status.dropped,
+                        "written": status.written,
+                        "last_error": status.last_error,
+                    })),
+                })
+            }
+            Err(_) => json!({
+                "detected": null,
+                "effective": SourceCaps::fallback(),
+                "effective_origin": "fallback",
+                "reconfigure_required": false,
+                "last_error": "source caps status lock poisoned",
+            }),
+        }
+    }
+}
+
+fn prepare_source_caps_runtime(
+    feed: &mut FeedConfig,
+    base_dir: &Path,
+    effective_override: Option<SourceCaps>,
+) -> Result<SourceCapsRuntime> {
+    let feed_id = FeedId::parse(&feed.id).context("invalid CGEN feed ID for caps state")?;
+    let (last_known, writer, persistence_error) = match LastKnownCapsStore::new(base_dir, &feed_id)
+    {
+        Ok(store) => {
+            let (last_known, load_error) = match store.load() {
+                Ok(caps) => (caps, None),
+                Err(err) => (None, Some(err.to_string())),
+            };
+            match CapsWriter::spawn(store) {
+                Ok(writer) => (last_known, Some(writer), load_error),
+                Err(err) => {
+                    let error = match load_error {
+                        Some(load_error) => format!("{load_error}; {err}"),
+                        None => err.to_string(),
+                    };
+                    (last_known, None, Some(error))
+                }
+            }
+        }
+        Err(err) => (None, None, Some(err.to_string())),
+    };
+
+    let input_is_dummy = matches!(
+        feed.program_input
+            .input_type
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "dummy" | "none" | "no_input"
+    );
+    let (effective, origin) = if let Some(caps) = effective_override {
+        (caps, "reconfigure")
+    } else if input_is_dummy {
+        (configured_dummy_caps(feed)?, "dummy")
+    } else if let Some(caps) = last_known.clone() {
+        (caps, "last_known_good")
+    } else {
+        (SourceCaps::fallback(), "fallback")
+    };
+    apply_effective_source_caps(feed, &effective);
+    Ok(SourceCapsRuntime::new(
+        effective,
+        last_known,
+        origin,
+        writer,
+        persistence_error,
+    ))
+}
+
+fn configured_dummy_caps(feed: &FeedConfig) -> Result<SourceCaps> {
+    let width = if feed.program_input.width > 0 {
+        feed.program_input.width
+    } else {
+        feed.video.width
+    };
+    let height = if feed.program_input.height > 0 {
+        feed.program_input.height
+    } else {
+        feed.video.height
+    };
+    let frame_rate = if feed.program_input.fps.trim().is_empty() {
+        feed.video.fps.as_str()
+    } else {
+        feed.program_input.fps.as_str()
+    };
+    let (frame_rate_numerator, frame_rate_denominator) =
+        parse_positive_fraction(frame_rate).unwrap_or((30_000, 1_001));
+    let interlaced = feed.program_input.interlaced || feed.video.interlaced;
+    let (scan_mode, field_order) = if interlaced {
+        let field_order = match feed
+            .program_input
+            .field_order
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "bff" | "bottom" | "bottom_first" | "bottom-field-first" => {
+                SourceFieldOrder::BottomFieldFirst
+            }
+            _ => SourceFieldOrder::TopFieldFirst,
+        };
+        (SourceScanMode::Interlaced, field_order)
+    } else {
+        (SourceScanMode::Progressive, SourceFieldOrder::NotApplicable)
+    };
+    SourceCaps::new(
+        width,
+        height,
+        frame_rate_numerator,
+        frame_rate_denominator,
+        scan_mode,
+        field_order,
+        1,
+        1,
+        "unknown",
+    )
+    .context("invalid configured dummy source caps")
+}
+
+fn apply_effective_source_caps(feed: &mut FeedConfig, caps: &SourceCaps) {
+    feed.video.width = caps.width();
+    feed.video.height = caps.height();
+    feed.video.fps = format!(
+        "{}/{}",
+        caps.frame_rate().numerator(),
+        caps.frame_rate().denominator()
+    );
+    feed.video.interlaced = caps.scan_mode() == SourceScanMode::Interlaced;
+    feed.video.field_order = match caps.field_order() {
+        SourceFieldOrder::BottomFieldFirst => "bff",
+        SourceFieldOrder::NotApplicable
+        | SourceFieldOrder::TopFieldFirst
+        | SourceFieldOrder::Unknown => "tff",
+    }
+    .to_string();
+}
+
+fn parse_positive_fraction(raw: &str) -> Option<(u32, u32)> {
+    let raw = raw.trim();
+    let (numerator, denominator) = raw.split_once('/').unwrap_or((raw, "1"));
+    let numerator = numerator.trim().parse::<u32>().ok()?;
+    let denominator = denominator.trim().parse::<u32>().ok()?;
+    (numerator > 0 && denominator > 0).then_some((numerator, denominator))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1507,8 +2188,11 @@ impl InputHealth {
         self.audio_timed_out = true;
     }
 
-    fn video_connected(self, feed: &FeedConfig) -> bool {
-        self.stream_connected(self.last_video_frame, self.video_timed_out, feed)
+    fn video_connected(self, _feed: &FeedConfig) -> bool {
+        !self.video_timed_out
+            && self
+                .last_video_frame
+                .is_some_and(|frame| frame.elapsed() <= Duration::from_secs(2))
     }
 
     fn audio_connected(self, feed: &FeedConfig) -> bool {
@@ -1560,12 +2244,24 @@ fn input_health_status(input_health: &Arc<Mutex<InputHealth>>, feed: &FeedConfig
             let audio_age_ms = health
                 .last_audio_frame
                 .map(|instant| u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX));
+            let video_connected = health.video_connected(feed);
+            let audio_connected = health.audio_connected(feed);
+            let unhealthy_reason = if health.video_timed_out {
+                Some("source_timeout")
+            } else if !video_connected {
+                Some("no_decoded_video_for_2s")
+            } else {
+                None
+            };
             json!({
-                "connected": health.video_connected(feed) && health.audio_connected(feed),
-                "video_connected": health.video_connected(feed),
-                "audio_connected": health.audio_connected(feed),
+                "connected": video_connected && audio_connected,
+                "video_connected": video_connected,
+                "audio_connected": audio_connected,
                 "video_timed_out": health.video_timed_out,
                 "audio_timed_out": health.audio_timed_out,
+                "video_stale": !video_connected,
+                "video_timeout_ms": 2000,
+                "unhealthy_reason": unhealthy_reason,
                 "last_program_frame_age_ms": video_age_ms,
                 "last_video_frame_age_ms": video_age_ms,
                 "last_audio_frame_age_ms": audio_age_ms,
@@ -1591,38 +2287,379 @@ fn mark_input_timeout(input_health: &Arc<Mutex<InputHealth>>) {
 fn install_program_video_probe(
     pipeline: &gst::Pipeline,
     input_health: Arc<Mutex<InputHealth>>,
+    caps_runtime: SourceCapsRuntime,
 ) -> Result<()> {
-    let selector = pipeline
-        .by_name("video_selector")
-        .context("GStreamer CGEN pipeline is missing video_selector")?;
-    let pad = selector
-        .static_pad(VideoSelectorMode::Program.pad_name())
-        .context("GStreamer CGEN video selector missing program sink")?;
-    pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
-        if let Ok(mut health) = input_health.lock() {
-            health.mark_video_frame();
-        }
-        gst::PadProbeReturn::Ok
-    });
+    let monitor = pipeline
+        .by_name("program_video_monitor")
+        .context("GStreamer CGEN pipeline is missing program_video_monitor")?;
+    let pad = monitor
+        .static_pad("src")
+        .context("GStreamer CGEN program video monitor missing source pad")?;
+    pad.add_probe(
+        gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
+        move |_pad, info| {
+            if info.buffer().is_some() {
+                if let Ok(mut health) = input_health.lock() {
+                    health.mark_video_frame();
+                }
+            }
+            if let Some(event) = info.event() {
+                if let gst::EventView::Caps(caps_event) = event.view() {
+                    match source_caps_from_gstreamer(caps_event.caps()) {
+                        Ok(caps) => caps_runtime.observe(caps),
+                        Err(err) => caps_runtime.record_detection_error(err.to_string()),
+                    }
+                }
+            }
+            gst::PadProbeReturn::Ok
+        },
+    );
     Ok(())
 }
 
-fn install_program_audio_probe(
+fn source_caps_from_gstreamer(caps: &gst::CapsRef) -> Result<SourceCaps> {
+    let structure = caps
+        .structure(0)
+        .context("decoded video caps contain no structures")?;
+    let width = structure
+        .get::<i32>("width")
+        .context("decoded video caps are missing fixed width")?;
+    let height = structure
+        .get::<i32>("height")
+        .context("decoded video caps are missing fixed height")?;
+    let width = u32::try_from(width).context("decoded video caps width is invalid")?;
+    let height = u32::try_from(height).context("decoded video caps height is invalid")?;
+    let frame_rate = structure
+        .get::<gst::Fraction>("framerate")
+        .context("decoded video caps are missing fixed framerate")?;
+    let frame_rate_numerator =
+        u32::try_from(frame_rate.numer()).context("decoded video framerate is invalid")?;
+    let frame_rate_denominator =
+        u32::try_from(frame_rate.denom()).context("decoded video framerate is invalid")?;
+    let pixel_aspect_ratio = structure
+        .get::<gst::Fraction>("pixel-aspect-ratio")
+        .unwrap_or_else(|_| gst::Fraction::new(1, 1));
+    let pixel_aspect_ratio_numerator = u32::try_from(pixel_aspect_ratio.numer())
+        .context("decoded video pixel aspect ratio is invalid")?;
+    let pixel_aspect_ratio_denominator = u32::try_from(pixel_aspect_ratio.denom())
+        .context("decoded video pixel aspect ratio is invalid")?;
+    let interlace_mode = structure
+        .get::<String>("interlace-mode")
+        .unwrap_or_else(|_| "progressive".to_string())
+        .to_ascii_lowercase();
+    let (scan_mode, field_order) = if interlace_mode == "progressive" {
+        (SourceScanMode::Progressive, SourceFieldOrder::NotApplicable)
+    } else {
+        let field_order = match structure
+            .get::<String>("field-order")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "top-field-first" | "top_field_first" | "tff" => SourceFieldOrder::TopFieldFirst,
+            "bottom-field-first" | "bottom_field_first" | "bff" => {
+                SourceFieldOrder::BottomFieldFirst
+            }
+            _ => SourceFieldOrder::Unknown,
+        };
+        (SourceScanMode::Interlaced, field_order)
+    };
+    let colorimetry = structure
+        .get::<String>("colorimetry")
+        .unwrap_or_else(|_| "unknown".to_string());
+    SourceCaps::new(
+        width,
+        height,
+        frame_rate_numerator,
+        frame_rate_denominator,
+        scan_mode,
+        field_order,
+        pixel_aspect_ratio_numerator,
+        pixel_aspect_ratio_denominator,
+        colorimetry,
+    )
+    .context("decoded video caps failed validation")
+}
+
+fn install_audio_mix_runtime(
     pipeline: &gst::Pipeline,
     input_health: Arc<Mutex<InputHealth>>,
+    spec: AudioRoutingSpec,
+) -> Result<AudioMixRuntime> {
+    let AudioTopologyMode::ForceLayout(output_layout) = spec.topology else {
+        bail!(
+            "preserve-native audio routing cannot run through the decoded single-track CGEN mixer"
+        );
+    };
+    let gains = Arc::new(Mutex::new(AudioGainController::new(&spec)));
+    let program_matrix = install_audio_matrix_probe(
+        pipeline,
+        "program_audio_monitor",
+        "program_audio_matrix",
+        AudioBus::Program,
+        output_layout,
+        Some(input_health),
+    )?;
+    let alert_matrix = install_audio_matrix_probe(
+        pipeline,
+        "alert_audio_monitor",
+        "alert_audio_matrix",
+        AudioBus::Alert,
+        output_layout,
+        None,
+    )?;
+    install_audio_gain_probe(
+        pipeline,
+        "program_audio_gain",
+        AudioBus::Program,
+        output_layout.channels(),
+        Arc::clone(&gains),
+    )?;
+    install_audio_gain_probe(
+        pipeline,
+        "alert_audio_gain",
+        AudioBus::Alert,
+        output_layout.channels(),
+        Arc::clone(&gains),
+    )?;
+    Ok(AudioMixRuntime {
+        spec,
+        output_layout,
+        gains,
+        program_matrix,
+        alert_matrix,
+    })
+}
+
+fn install_audio_matrix_probe(
+    pipeline: &gst::Pipeline,
+    monitor_name: &'static str,
+    converter_name: &'static str,
+    bus: AudioBus,
+    output_layout: ChannelLayout,
+    input_health: Option<Arc<Mutex<InputHealth>>>,
+) -> Result<Arc<Mutex<AudioMatrixRuntimeState>>> {
+    let monitor = pipeline
+        .by_name(monitor_name)
+        .with_context(|| format!("GStreamer CGEN pipeline is missing {monitor_name}"))?;
+    let converter = pipeline
+        .by_name(converter_name)
+        .with_context(|| format!("GStreamer CGEN pipeline is missing {converter_name}"))?;
+    converter.find_property("mix-matrix").with_context(|| {
+        format!("GStreamer element {converter_name} has no mix-matrix property")
+    })?;
+    let pad = monitor.static_pad("src").with_context(|| {
+        format!("GStreamer CGEN audio monitor {monitor_name} has no source pad")
+    })?;
+    let state = Arc::new(Mutex::new(AudioMatrixRuntimeState::default()));
+    let state_for_probe = Arc::clone(&state);
+    pad.add_probe(
+        gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
+        move |_pad, info| {
+            if info.buffer().is_some() {
+                if let Some(input_health) = &input_health {
+                    if let Ok(mut health) = input_health.lock() {
+                        health.mark_audio_frame();
+                    }
+                }
+                let ready = state_for_probe
+                    .lock()
+                    .map(|state| state.ready)
+                    .unwrap_or(false);
+                return if ready {
+                    gst::PadProbeReturn::Ok
+                } else {
+                    gst::PadProbeReturn::Drop
+                };
+            }
+            let Some(event) = info.event() else {
+                return gst::PadProbeReturn::Ok;
+            };
+            let gst::EventView::Caps(caps_event) = event.view() else {
+                return gst::PadProbeReturn::Ok;
+            };
+            let result = audio_matrix_from_caps(caps_event.caps(), bus, output_layout).and_then(
+                |(source_layout, matrix)| {
+                    set_gstreamer_mix_matrix(&converter, &matrix)?;
+                    Ok(source_layout)
+                },
+            );
+            if let Ok(mut state) = state_for_probe.lock() {
+                match result {
+                    Ok(source_layout) => {
+                        state.source_layout = Some(source_layout);
+                        state.ready = true;
+                        state.error = None;
+                    }
+                    Err(err) => {
+                        warn!(
+                            audio_bus = bus.as_str(),
+                            "CGEN audio matrix rejected caps: {err:#}"
+                        );
+                        state.source_layout = None;
+                        state.ready = false;
+                        state.error = Some(err.to_string());
+                    }
+                }
+            }
+            gst::PadProbeReturn::Ok
+        },
+    )
+    .with_context(|| format!("failed to install {bus:?} audio matrix probe"))?;
+    Ok(state)
+}
+
+fn audio_matrix_from_caps(
+    caps: &gst::CapsRef,
+    bus: AudioBus,
+    output_layout: ChannelLayout,
+) -> Result<(ChannelLayout, MixMatrix)> {
+    let structure = caps
+        .structure(0)
+        .context("decoded audio caps contain no structures")?;
+    let format = structure
+        .get::<String>("format")
+        .context("decoded audio caps are missing a fixed sample format")?;
+    if format != "F32LE" {
+        bail!("decoded audio sample format {format} is not F32LE");
+    }
+    let rate = structure
+        .get::<i32>("rate")
+        .context("decoded audio caps are missing a fixed sample rate")?;
+    if rate != i32::try_from(AUDIO_MIX_SAMPLE_RATE).unwrap_or(48_000) {
+        bail!("decoded audio sample rate {rate} is not {AUDIO_MIX_SAMPLE_RATE}");
+    }
+    let channels = structure
+        .get::<i32>("channels")
+        .context("decoded audio caps are missing a fixed channel count")?;
+    let source_layout = channel_layout_from_count(channels)?;
+    let matrix = match bus {
+        AudioBus::Program => MixMatrix::for_program(source_layout, output_layout)?,
+        AudioBus::Alert => alert_mix_matrix(source_layout, output_layout)?,
+    };
+    Ok((source_layout, matrix))
+}
+
+fn channel_layout_from_count(channels: i32) -> Result<ChannelLayout> {
+    match channels {
+        1 => Ok(ChannelLayout::Mono),
+        2 => Ok(ChannelLayout::Stereo),
+        6 => Ok(ChannelLayout::Surround51),
+        _ => bail!(
+            "unsupported decoded audio channel count {channels}; CGEN supports mono, stereo, or 5.1"
+        ),
+    }
+}
+
+fn alert_mix_matrix(
+    source_layout: ChannelLayout,
+    output_layout: ChannelLayout,
+) -> Result<MixMatrix> {
+    let source_to_mono = MixMatrix::for_program(source_layout, ChannelLayout::Mono)?;
+    let destination_channels = usize::from(output_layout.channels());
+    let mut coefficients = Vec::with_capacity(
+        usize::from(source_layout.channels()).saturating_mul(destination_channels),
+    );
+    for coefficient in source_to_mono.coefficients {
+        coefficients.extend(std::iter::repeat(coefficient).take(destination_channels));
+    }
+    Ok(MixMatrix::new(
+        source_layout.channels(),
+        output_layout.channels(),
+        coefficients,
+    )?)
+}
+
+fn gstreamer_mix_matrix_rows(matrix: &MixMatrix) -> Vec<Vec<f32>> {
+    let source_channels = usize::from(matrix.source_channels);
+    let destination_channels = usize::from(matrix.destination_channels);
+    (0..destination_channels)
+        .map(|destination| {
+            (0..source_channels)
+                .map(|source| matrix.coefficients[source * destination_channels + destination])
+                .collect()
+        })
+        .collect()
+}
+
+fn set_gstreamer_mix_matrix(converter: &gst::Element, matrix: &MixMatrix) -> Result<()> {
+    if converter.find_property("mix-matrix").is_none() {
+        bail!("audio converter does not expose mix-matrix");
+    }
+    let value = gst::Array::new(
+        gstreamer_mix_matrix_rows(matrix)
+            .into_iter()
+            .map(|row| gst::Array::new(row)),
+    );
+    converter.set_property("mix-matrix", &value);
+    Ok(())
+}
+
+fn install_audio_gain_probe(
+    pipeline: &gst::Pipeline,
+    gain_name: &'static str,
+    bus: AudioBus,
+    channels: u16,
+    gains: Arc<Mutex<AudioGainController>>,
 ) -> Result<()> {
-    let selector = pipeline
-        .by_name("audio_selector")
-        .context("GStreamer CGEN pipeline is missing audio_selector")?;
-    let pad = selector
-        .static_pad(AudioSelectorMode::Program.pad_name())
-        .context("GStreamer CGEN audio selector missing program sink")?;
-    pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
-        if let Ok(mut health) = input_health.lock() {
-            health.mark_audio_frame();
+    let gain = pipeline
+        .by_name(gain_name)
+        .with_context(|| format!("GStreamer CGEN pipeline is missing {gain_name}"))?;
+    let pad = gain
+        .static_pad("src")
+        .with_context(|| format!("GStreamer CGEN audio gain {gain_name} has no source pad"))?;
+    pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
+        let Some(buffer) = info.buffer_mut() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let buffer = buffer.make_mut();
+        let Ok(mut map) = buffer.map_writable() else {
+            warn!(
+                audio_bus = bus.as_str(),
+                "failed to map CGEN audio buffer for gain ramp"
+            );
+            return gst::PadProbeReturn::Drop;
+        };
+        let Ok(mut gains) = gains.lock() else {
+            return gst::PadProbeReturn::Drop;
+        };
+        match apply_audio_gain_f32le(map.as_mut_slice(), channels, bus, &mut gains) {
+            Ok(()) => gst::PadProbeReturn::Ok,
+            Err(err) => {
+                warn!(
+                    audio_bus = bus.as_str(),
+                    "dropping malformed CGEN audio buffer: {err:#}"
+                );
+                gst::PadProbeReturn::Drop
+            }
         }
-        gst::PadProbeReturn::Ok
-    });
+    })
+    .with_context(|| format!("failed to install {bus:?} audio gain probe"))?;
+    Ok(())
+}
+
+fn apply_audio_gain_f32le(
+    bytes: &mut [u8],
+    channels: u16,
+    bus: AudioBus,
+    gains: &mut AudioGainController,
+) -> Result<()> {
+    let frame_bytes = usize::from(channels).saturating_mul(std::mem::size_of::<f32>());
+    if frame_bytes == 0 || bytes.len() % frame_bytes != 0 {
+        bail!("audio buffer is not aligned to {channels} F32LE channels");
+    }
+    for frame in bytes.chunks_exact_mut(frame_bytes) {
+        let gain = match bus {
+            AudioBus::Program => gains.next_program_gain(),
+            AudioBus::Alert => gains.next_alert_gain(),
+        };
+        for sample in frame.chunks_exact_mut(std::mem::size_of::<f32>()) {
+            let mut encoded = [0_u8; std::mem::size_of::<f32>()];
+            encoded.copy_from_slice(sample);
+            let scaled = f32::from_le_bytes(encoded) * gain;
+            sample.copy_from_slice(&scaled.to_le_bytes());
+        }
+    }
     Ok(())
 }
 
@@ -1656,18 +2693,10 @@ fn desired_audio_selector_mode(
     input_connected: bool,
 ) -> AudioSelectorMode {
     let status = if let Some(audio) = priority_audio_for_feed(feed, state) {
-        if audio.audio_path.is_some() {
-            PriorityAudioSourceStatus {
-                status: "active",
-                queue_id: Some(audio.queue_id.clone()),
-                error: None,
-            }
-        } else {
-            PriorityAudioSourceStatus {
-                status: "missing-path",
-                queue_id: Some(audio.queue_id.clone()),
-                error: Some("priority audio event has no audio_path".to_string()),
-            }
+        PriorityAudioSourceStatus {
+            status: "waiting",
+            queue_id: Some(audio.queue_id.clone()),
+            error: None,
         }
     } else {
         PriorityAudioSourceStatus {
@@ -1684,10 +2713,8 @@ fn desired_audio_selector_mode_with_status(
     input_connected: bool,
     feeder_status: &PriorityAudioSourceStatus,
 ) -> AudioSelectorMode {
-    if feeder_status.is_live_priority() {
+    if feeder_status.queue_id.is_some() {
         AudioSelectorMode::Priority
-    } else if feeder_status.forces_silence() {
-        AudioSelectorMode::Silence
     } else if !feed.priority_input.routine_audio_enabled() {
         AudioSelectorMode::Silence
     } else if !input_connected || mute_standby_routine_applies(feed) {
@@ -1705,11 +2732,7 @@ fn priority_audio_active(feed: &FeedConfig, state: &RuntimeState) -> bool {
     if !feed.priority_input.priority_audio_enabled() {
         return false;
     }
-    let feed_id = if feed.priority_input.feed_id.trim().is_empty() {
-        feed.id.as_str()
-    } else {
-        feed.priority_input.feed_id.as_str()
-    };
+    let feed_id = configured_priority_feed_id(feed);
     state.priority_audio_for(feed_id).is_some()
 }
 
@@ -1720,12 +2743,20 @@ fn priority_audio_for_feed<'a>(
     if !feed.priority_input.priority_audio_enabled() {
         return None;
     }
-    let feed_id = if feed.priority_input.feed_id.trim().is_empty() {
+    state.priority_audio_for(configured_priority_feed_id(feed))
+}
+
+fn configured_priority_feed_id(feed: &FeedConfig) -> &str {
+    let configured = if feed.alert.feed_id.trim().is_empty() {
+        feed.priority_input.feed_id.trim()
+    } else {
+        feed.alert.feed_id.trim()
+    };
+    if configured.is_empty() || configured == "*" {
         feed.id.as_str()
     } else {
-        feed.priority_input.feed_id.as_str()
-    };
-    state.priority_audio_for(feed_id)
+        configured
+    }
 }
 
 fn set_video_selector_mode(pipeline: &gst::Pipeline, mode: VideoSelectorMode) -> Result<()> {
@@ -1735,17 +2766,6 @@ fn set_video_selector_mode(pipeline: &gst::Pipeline, mode: VideoSelectorMode) ->
     let pad = selector
         .static_pad(mode.pad_name())
         .with_context(|| format!("GStreamer CGEN video selector missing {}", mode.pad_name()))?;
-    selector.set_property("active-pad", &pad);
-    Ok(())
-}
-
-fn set_audio_selector_mode(pipeline: &gst::Pipeline, mode: AudioSelectorMode) -> Result<()> {
-    let selector = pipeline
-        .by_name("audio_selector")
-        .context("GStreamer CGEN pipeline is missing audio_selector")?;
-    let pad = selector
-        .static_pad(mode.pad_name())
-        .with_context(|| format!("GStreamer CGEN audio selector missing {}", mode.pad_name()))?;
     selector.set_property("active-pad", &pad);
     Ok(())
 }
@@ -1765,11 +2785,123 @@ fn apply_mpegts_program_map(pipeline: &gst::Pipeline, plan: &GstPipelinePlan) ->
     let mux = pipeline
         .by_name("mux")
         .context("GStreamer CGEN pipeline is missing mpegts mux")?;
-    let structure = plan
+    let program_map = plan
         .program_map
+        .as_ref()
+        .context("MPEG-TS CGEN plan is missing a validated program map")?;
+    let structure = program_map
+        .structure()
         .parse::<gst::Structure>()
-        .with_context(|| format!("failed to parse mpegts program map {}", plan.program_map))?;
+        .with_context(|| "failed to parse validated MPEG-TS program map")?;
     mux.set_property("prog-map", &structure);
+    Ok(())
+}
+
+fn install_output_fanout_sinks(
+    pipeline: &gst::Pipeline,
+    fanout: Arc<OutputFanout>,
+    width: u32,
+    height: u32,
+    audio_layout: ChannelLayout,
+) -> Result<()> {
+    let width = NonZeroU32::new(width).context("master output width must be non-zero")?;
+    let height = NonZeroU32::new(height).context("master output height must be non-zero")?;
+    let audio_channels = NonZeroU16::new(audio_layout.channels())
+        .context("master output audio layout must have channels")?;
+    let video_sink = pipeline
+        .by_name("master_video_sink")
+        .context("isolated CGEN output pipeline is missing master video appsink")?
+        .downcast::<gst_app::AppSink>()
+        .map_err(|_| anyhow::anyhow!("master video sink is not an appsink"))?;
+    let audio_sink = pipeline
+        .by_name("master_audio_sink")
+        .context("isolated CGEN output pipeline is missing master audio appsink")?
+        .downcast::<gst_app::AppSink>()
+        .map_err(|_| anyhow::anyhow!("master audio sink is not an appsink"))?;
+
+    let video_fanout = Arc::clone(&fanout);
+    let video_sequence = Arc::new(AtomicU64::new(0));
+    let video_sequence_for_callback = Arc::clone(&video_sequence);
+    video_sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let Some(buffer) = sample.buffer() else {
+                    return Err(gst::FlowError::Error);
+                };
+                let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                let bytes = map.as_slice();
+                let rows = usize::try_from(height.get()).map_err(|_| gst::FlowError::Error)?;
+                if rows == 0 || bytes.len() % rows != 0 {
+                    return Err(gst::FlowError::Error);
+                }
+                let stride =
+                    u32::try_from(bytes.len() / rows).map_err(|_| gst::FlowError::Error)?;
+                let stride = NonZeroU32::new(stride).ok_or(gst::FlowError::Error)?;
+                let pixels = Arc::<[u8]>::from(bytes);
+                let surface = CpuBgrxFrameHandle::new(width, height, stride, pixels)
+                    .map_err(|_| gst::FlowError::Error)?;
+                let sequence = video_sequence_for_callback.fetch_add(1, Ordering::Relaxed) + 1;
+                let frame = VideoFrame {
+                    sequence,
+                    pts_ns: buffer.pts().map(|pts| pts.nseconds()).unwrap_or(0),
+                    duration_ns: buffer
+                        .duration()
+                        .map(|duration| duration.nseconds())
+                        .filter(|duration| *duration > 0)
+                        .unwrap_or(33_366_667),
+                    discontinuity: buffer.flags().contains(gst::BufferFlags::DISCONT),
+                    width,
+                    height,
+                    surface: Arc::new(surface),
+                };
+                let _ = video_fanout.publish_video(Arc::new(frame));
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+
+    let audio_fanout = fanout;
+    let audio_sequence = Arc::new(AtomicU64::new(0));
+    let audio_sequence_for_callback = Arc::clone(&audio_sequence);
+    audio_sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let Some(buffer) = sample.buffer() else {
+                    return Err(gst::FlowError::Error);
+                };
+                let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                let bytes = map.as_slice();
+                if bytes.len() % std::mem::size_of::<f32>() != 0 {
+                    return Err(gst::FlowError::Error);
+                }
+                let samples = bytes
+                    .chunks_exact(std::mem::size_of::<f32>())
+                    .map(|sample| f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]))
+                    .collect::<Vec<_>>();
+                let frames = u64::try_from(samples.len() / usize::from(audio_channels.get()))
+                    .map_err(|_| gst::FlowError::Error)?;
+                let duration_ns = buffer
+                    .duration()
+                    .map(|duration| duration.nseconds())
+                    .filter(|duration| *duration > 0)
+                    .unwrap_or_else(|| frames.saturating_mul(1_000_000_000) / 48_000);
+                let sequence = audio_sequence_for_callback.fetch_add(1, Ordering::Relaxed) + 1;
+                let packet = AudioPacket {
+                    sequence,
+                    pts_ns: buffer.pts().map(|pts| pts.nseconds()).unwrap_or(0),
+                    duration_ns,
+                    discontinuity: buffer.flags().contains(gst::BufferFlags::DISCONT),
+                    sample_rate: NonZeroU32::new(48_000).expect("constant sample rate is non-zero"),
+                    channels: audio_channels,
+                    payload: AudioPayload::InterleavedF32(Arc::from(samples)),
+                };
+                let _ = audio_fanout.publish_audio(Arc::new(packet));
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
     Ok(())
 }
 
@@ -1782,387 +2914,206 @@ struct PriorityAudioSourceStatus {
 
 impl PriorityAudioSourceStatus {
     fn is_live_priority(&self) -> bool {
-        matches!(self.status, "active" | "padding")
-    }
-
-    fn forces_silence(&self) -> bool {
-        matches!(
-            self.status,
-            "silence" | "missing-path" | "finished" | "error"
-        )
+        self.status == "active"
     }
 }
 
 struct PriorityAudioFeeder {
     appsrc: gst_app::AppSrc,
-    base_dir: PathBuf,
-    feed_id: String,
-    eof_drain: Duration,
-    active: Option<ActivePriorityAudioFeeder>,
-    completed: BTreeMap<String, Instant>,
-}
-
-struct ActivePriorityAudioFeeder {
-    queue_id: String,
-    source_status: &'static str,
-    started_at: Instant,
-    release_after: Duration,
-    stop: Arc<AtomicBool>,
-    reached_eof: Arc<AtomicBool>,
-    reached_eof_at: Arc<Mutex<Option<Instant>>>,
-    finished: Arc<AtomicBool>,
-    error: Arc<Mutex<Option<String>>>,
-    worker: Option<thread::JoinHandle<()>>,
+    media_pcm: MediaPcmSubscription,
+    active_queue_id: Option<String>,
+    last_sequence: Option<u64>,
+    last_source_pts_ns: Option<u64>,
+    source_pts_origin_ns: Option<u64>,
+    running_pts_origin: Option<gst::ClockTime>,
+    current_caps: Option<(u32, u16)>,
+    last_chunk_at: Option<Instant>,
+    error: Option<String>,
 }
 
 impl PriorityAudioFeeder {
-    fn new(
-        appsrc: gst_app::AppSrc,
-        base_dir: PathBuf,
-        feed_id: String,
-        eof_drain: Duration,
-    ) -> Self {
+    fn new(appsrc: gst_app::AppSrc, media_pcm: MediaPcmSubscription) -> Self {
+        appsrc.set_format(gst::Format::Time);
+        appsrc.set_is_live(true);
         Self {
             appsrc,
-            base_dir,
-            feed_id,
-            eof_drain,
-            active: None,
-            completed: BTreeMap::new(),
+            media_pcm,
+            active_queue_id: None,
+            last_sequence: None,
+            last_source_pts_ns: None,
+            source_pts_origin_ns: None,
+            running_pts_origin: None,
+            current_caps: None,
+            last_chunk_at: None,
+            error: None,
         }
     }
 
     fn update(&mut self, audio: Option<&crate::state::PriorityAudio>) -> PriorityAudioSourceStatus {
-        self.prune_completed();
         let Some(audio) = audio else {
-            if self.active.as_ref().is_some_and(|active| {
-                active.source_status != "silence" && !self.active_ready_to_release(active)
-            }) {
-                return self.active_status();
-            }
-            self.stop();
+            self.reset();
             return PriorityAudioSourceStatus {
                 status: "idle",
                 queue_id: None,
                 error: None,
             };
         };
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|active| active.queue_id == audio.queue_id)
-        {
-            if self
-                .active
-                .as_ref()
-                .is_some_and(|active| self.active_ready_to_release(active))
-            {
-                self.completed
-                    .insert(audio.queue_id.clone(), Instant::now());
-                self.stop();
-                return PriorityAudioSourceStatus {
-                    status: "idle",
-                    queue_id: None,
-                    error: None,
-                };
+        if self.active_queue_id.as_deref() != Some(audio.queue_id.as_str()) {
+            self.reset();
+            self.active_queue_id = Some(audio.queue_id.clone());
+        }
+        for chunk in self.media_pcm.drain_correlated(&audio.queue_id) {
+            if let Err(err) = self.push_chunk(chunk) {
+                if self.error.is_none() {
+                    warn!(
+                        feed_id = %self.media_pcm.feed_id(),
+                        queue_id = %audio.queue_id,
+                        "correlated priority audio appsrc failed: {err:#}"
+                    );
+                }
+                self.error = Some(err.to_string());
+                self.media_pcm.record_appsrc_error();
             }
-            return self.active_status();
         }
-        if self.completed.contains_key(&audio.queue_id) {
-            return PriorityAudioSourceStatus {
-                status: "idle",
-                queue_id: None,
-                error: None,
-            };
-        }
-        self.stop();
-        let Some(path) = audio.audio_path.as_ref() else {
-            self.active = Some(self.silence_active(
-                audio.queue_id.clone(),
-                "priority audio event has no audio_path",
-            ));
-            return self.active_status();
-        };
-
-        let sample_rate = audio.sample_rate.max(8_000);
-        let channels = audio.channels.clamp(1, 6);
-        let path = resolve_media_path(&self.base_dir, path);
-        if !path.is_file() {
-            warn!(
-                feed_id = %self.feed_id,
-                queue_id = %audio.queue_id,
-                path = %path.display(),
-                "priority audio file is missing; forcing alert silence"
-            );
-            self.active =
-                Some(self.silence_active(audio.queue_id.clone(), "priority audio file is missing"));
-            return self.active_status();
-        }
-        let caps = gst::Caps::builder("audio/x-raw")
-            .field("format", "S16LE")
-            .field("rate", i32::try_from(sample_rate).unwrap_or(48_000))
-            .field("channels", i32::from(channels))
-            .field("layout", "interleaved")
-            .build();
-        self.appsrc.set_caps(Some(&caps));
-        self.appsrc.set_format(gst::Format::Time);
-        self.appsrc.set_is_live(true);
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let reached_eof = Arc::new(AtomicBool::new(false));
-        let reached_eof_at = Arc::new(Mutex::new(None));
-        let finished = Arc::new(AtomicBool::new(false));
-        let error = Arc::new(Mutex::new(None));
-        let release_after = Duration::from_millis(
-            audio
-                .duration_ms
-                .unwrap_or(0)
-                .saturating_add(self.eof_drain.as_millis().try_into().unwrap_or(u64::MAX))
-                .saturating_add(1_000),
-        )
-        .max(self.eof_drain.saturating_add(Duration::from_secs(2)));
-        let worker = spawn_priority_audio_feeder(
-            self.appsrc.clone(),
-            self.feed_id.clone(),
-            audio.queue_id.clone(),
-            path,
-            sample_rate,
-            channels,
-            Arc::clone(&stop),
-            Arc::clone(&reached_eof),
-            Arc::clone(&reached_eof_at),
-            Arc::clone(&finished),
-            Arc::clone(&error),
-        );
-        self.active = Some(ActivePriorityAudioFeeder {
-            queue_id: audio.queue_id.clone(),
-            source_status: "active",
-            started_at: Instant::now(),
-            release_after,
-            stop,
-            reached_eof,
-            reached_eof_at,
-            finished,
-            error,
-            worker: Some(worker),
-        });
         self.active_status()
     }
 
-    fn silence_active(&self, queue_id: String, reason: &str) -> ActivePriorityAudioFeeder {
-        ActivePriorityAudioFeeder {
-            queue_id,
-            source_status: "silence",
-            started_at: Instant::now(),
-            release_after: Duration::ZERO,
-            stop: Arc::new(AtomicBool::new(false)),
-            reached_eof: Arc::new(AtomicBool::new(false)),
-            reached_eof_at: Arc::new(Mutex::new(None)),
-            finished: Arc::new(AtomicBool::new(false)),
-            error: Arc::new(Mutex::new(Some(reason.to_string()))),
-            worker: None,
-        }
-    }
-
-    fn active_ready_to_release(&self, active: &ActivePriorityAudioFeeder) -> bool {
-        if active.source_status == "silence" {
-            return false;
-        }
-        if active.finished.load(Ordering::Relaxed) {
-            return true;
-        }
-        if active.started_at.elapsed() >= active.release_after {
-            return true;
-        }
-        active
-            .reached_eof_at
-            .lock()
-            .ok()
-            .and_then(|guard| *guard)
-            .is_some_and(|at| at.elapsed() >= self.eof_drain)
-    }
-
-    fn stop(&mut self) {
-        if let Some(mut active) = self.active.take() {
-            active.stop.store(true, Ordering::Relaxed);
-            if let Some(worker) = active.worker.take() {
-                if worker.join().is_err() {
-                    warn!(
-                        feed_id = %self.feed_id,
-                        queue_id = %active.queue_id,
-                        "priority audio feeder thread panicked during stop"
-                    );
-                }
-            }
-        }
-    }
-
-    fn prune_completed(&mut self) {
-        let now = Instant::now();
-        self.completed.retain(|_, completed_at| {
-            now.duration_since(*completed_at) < PRIORITY_AUDIO_RESTART_SUPPRESS
-        });
-    }
-
     fn active_status(&self) -> PriorityAudioSourceStatus {
-        let Some(active) = self.active.as_ref() else {
+        let Some(queue_id) = self.active_queue_id.as_ref() else {
             return PriorityAudioSourceStatus {
                 status: "idle",
                 queue_id: None,
                 error: None,
             };
         };
-        let error = active.error.lock().ok().and_then(|guard| guard.clone());
-        let status = if error.is_some() {
-            if active.source_status == "silence" {
-                "silence"
-            } else {
-                "error"
-            }
-        } else if active.reached_eof.load(Ordering::Relaxed) {
-            "padding"
-        } else if active.finished.load(Ordering::Relaxed) {
-            "finished"
+        let status = if self.error.is_some() {
+            "error"
+        } else if self
+            .last_chunk_at
+            .is_some_and(|at| at.elapsed() <= Duration::from_millis(750))
+        {
+            "active"
         } else {
-            active.source_status
+            "waiting"
         };
         PriorityAudioSourceStatus {
             status,
-            queue_id: Some(active.queue_id.clone()),
-            error,
+            queue_id: Some(queue_id.clone()),
+            error: self.error.clone(),
         }
     }
-}
 
-impl Drop for PriorityAudioFeeder {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn spawn_priority_audio_feeder(
-    appsrc: gst_app::AppSrc,
-    feed_id: String,
-    queue_id: String,
-    path: PathBuf,
-    sample_rate: u32,
-    channels: u16,
-    stop: Arc<AtomicBool>,
-    reached_eof: Arc<AtomicBool>,
-    reached_eof_at: Arc<Mutex<Option<Instant>>>,
-    finished: Arc<AtomicBool>,
-    error: Arc<Mutex<Option<String>>>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        if let Err(err) = run_priority_audio_feeder(
-            &appsrc,
-            &path,
-            sample_rate,
-            channels,
-            Arc::clone(&stop),
-            Arc::clone(&reached_eof),
-            Arc::clone(&reached_eof_at),
-        ) {
-            warn!(
-                feed_id = %feed_id,
-                queue_id = %queue_id,
-                path = %path.display(),
-                "priority audio feeder failed: {err:#}"
+    fn push_chunk(&mut self, chunk: PcmChunk) -> Result<()> {
+        debug_assert_eq!(chunk.media_kind, crate::media_pcm::PcmMediaKind::Alert);
+        let source_layout = channel_layout_from_count(i32::from(chunk.channels))?;
+        if chunk.channel_layout != channel_layout_name(source_layout) {
+            bail!(
+                "correlated priority PCM layout {} is ambiguous for {} channels; expected {}",
+                chunk.channel_layout,
+                chunk.channels,
+                channel_layout_name(source_layout)
             );
-            if let Ok(mut guard) = error.lock() {
-                *guard = Some(err.to_string());
+        }
+        let mut discontinuity = chunk.discontinuity;
+        if let Some(previous) = self.last_sequence {
+            if chunk.sequence <= previous {
+                self.media_pcm.record_duplicate_or_reordered();
+                return Ok(());
+            }
+            if chunk.sequence != previous.saturating_add(1) {
+                discontinuity = true;
+                self.media_pcm.record_sequence_gap();
             }
         }
-        finished.store(true, Ordering::Relaxed);
-    })
-}
-
-fn run_priority_audio_feeder(
-    appsrc: &gst_app::AppSrc,
-    path: &Path,
-    sample_rate: u32,
-    channels: u16,
-    stop: Arc<AtomicBool>,
-    reached_eof: Arc<AtomicBool>,
-    reached_eof_at: Arc<Mutex<Option<Instant>>>,
-) -> Result<()> {
-    let mut file = File::open(path)
-        .with_context(|| format!("failed to open priority audio {}", path.display()))?;
-    let chunk_bytes = pcm_chunk_bytes(sample_rate, channels, 20);
-    let mut chunk = vec![0u8; chunk_bytes];
-    let mut eof = false;
-    let chunk_period = Duration::from_millis(20);
-    let mut next_deadline = Instant::now() + chunk_period;
-    while !stop.load(Ordering::Relaxed) {
-        let count = if eof {
-            0
-        } else {
-            match file.read(&mut chunk) {
-                Ok(0) => {
-                    eof = true;
-                    reached_eof.store(true, Ordering::Relaxed);
-                    if let Ok(mut guard) = reached_eof_at.lock() {
-                        if guard.is_none() {
-                            *guard = Some(Instant::now());
-                        }
-                    }
-                    0
-                }
-                Ok(count) => count,
-                Err(err) => {
-                    return Err(err).with_context(|| {
-                        format!("failed to read priority audio {}", path.display())
-                    })
-                }
+        if self
+            .last_source_pts_ns
+            .is_some_and(|previous| chunk.pts_ns < previous)
+        {
+            discontinuity = true;
+        }
+        let next_caps = (chunk.sample_rate, chunk.channels);
+        if self.current_caps != Some(next_caps) {
+            let caps = gst::Caps::builder("audio/x-raw")
+                .field("format", "S16LE")
+                .field("rate", i32::try_from(chunk.sample_rate).unwrap_or(48_000))
+                .field("channels", i32::from(chunk.channels))
+                .field(
+                    "channel-mask",
+                    gst::Bitmask::new(channel_mask(source_layout)),
+                )
+                .field("layout", "interleaved")
+                .build();
+            self.appsrc.set_caps(Some(&caps));
+            self.current_caps = Some(next_caps);
+            discontinuity = true;
+        }
+        if discontinuity || self.source_pts_origin_ns.is_none() {
+            self.source_pts_origin_ns = Some(chunk.pts_ns);
+            self.running_pts_origin = self
+                .appsrc
+                .current_running_time()
+                .or(Some(gst::ClockTime::ZERO));
+            self.media_pcm.record_discontinuity();
+        }
+        let source_origin = self.source_pts_origin_ns.unwrap_or(chunk.pts_ns);
+        let running_origin = self.running_pts_origin.unwrap_or(gst::ClockTime::ZERO);
+        let pts = running_origin.saturating_add(gst::ClockTime::from_nseconds(
+            chunk.pts_ns.saturating_sub(source_origin),
+        ));
+        let mut buffer = gst::Buffer::from_mut_slice(chunk.pcm.as_ref().to_vec());
+        {
+            let buffer = buffer.make_mut();
+            buffer.set_pts(pts);
+            buffer.set_duration(gst::ClockTime::from_mseconds(u64::from(chunk.duration_ms)));
+            buffer.set_offset(chunk.sequence);
+            buffer.set_offset_end(chunk.sequence.saturating_add(1));
+            if discontinuity {
+                buffer.set_flags(gst::BufferFlags::DISCONT);
             }
-        };
-        let payload = if count == 0 {
-            vec![0u8; chunk_bytes]
-        } else {
-            chunk[..count].to_vec()
-        };
-        let duration = pcm_duration(sample_rate, channels, payload.len());
-        let mut buffer = gst::Buffer::from_mut_slice(payload);
-        buffer.make_mut().set_duration(duration);
-        match appsrc.push_buffer(buffer) {
-            Ok(_) => {}
-            Err(gst::FlowError::Flushing | gst::FlowError::Eos) => return Ok(()),
-            Err(err) => bail!("failed to push priority audio to appsrc: {err:?}"),
         }
-        let now = Instant::now();
-        if now < next_deadline {
-            thread::sleep(next_deadline - now);
-        }
-        while next_deadline <= Instant::now() {
-            next_deadline += chunk_period;
-        }
+        self.appsrc
+            .push_buffer(buffer)
+            .map_err(|err| anyhow::anyhow!("failed to push correlated PCM to appsrc: {err:?}"))?;
+        self.last_sequence = Some(chunk.sequence);
+        self.last_source_pts_ns = Some(chunk.pts_ns);
+        self.last_chunk_at = Some(Instant::now());
+        self.error = None;
+        Ok(())
     }
-    Ok(())
-}
 
-fn resolve_media_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base_dir.join(path)
+    fn reset(&mut self) {
+        self.active_queue_id = None;
+        self.last_sequence = None;
+        self.last_source_pts_ns = None;
+        self.source_pts_origin_ns = None;
+        self.running_pts_origin = None;
+        self.current_caps = None;
+        self.last_chunk_at = None;
+        self.error = None;
     }
-}
 
-fn pcm_chunk_bytes(sample_rate: u32, channels: u16, millis: u32) -> usize {
-    let frames = sample_rate.saturating_mul(millis).div_ceil(1000).max(1);
-    usize::try_from(frames)
-        .unwrap_or(960)
-        .saturating_mul(usize::from(channels.max(1)))
-        .saturating_mul(2)
-}
-
-fn pcm_duration(sample_rate: u32, channels: u16, bytes: usize) -> gst::ClockTime {
-    let frame_bytes = usize::from(channels.max(1)).saturating_mul(2).max(1);
-    let frames = bytes / frame_bytes;
-    let nanos =
-        (u128::try_from(frames).unwrap_or(0) * 1_000_000_000u128) / u128::from(sample_rate.max(1));
-    gst::ClockTime::from_nseconds(u64::try_from(nanos).unwrap_or(u64::MAX))
+    fn media_status_value(&self) -> Value {
+        let mut status = self.media_pcm.status_value();
+        if let Some(object) = status.as_object_mut() {
+            object.insert(
+                "active_queue_id".to_string(),
+                self.active_queue_id
+                    .as_ref()
+                    .map_or(Value::Null, |value| Value::String(value.clone())),
+            );
+            object.insert(
+                "last_sequence".to_string(),
+                self.last_sequence
+                    .map_or(Value::Null, |value| Value::from(value)),
+            );
+            object.insert(
+                "last_source_pts_ns".to_string(),
+                self.last_source_pts_ns
+                    .map_or(Value::Null, |value| Value::from(value)),
+            );
+        }
+        status
+    }
 }
 
 fn publish_status(
@@ -2283,7 +3234,8 @@ struct GstPipelinePlan {
     description: String,
     videos: Vec<PlannedVideoRendition>,
     audios: Vec<PlannedAudioRendition>,
-    program_map: String,
+    program_map: Option<ValidatedGstProgramMap>,
+    requested_program_map: Option<ResolvedProgramMapSpec>,
     mux_kind: MuxKind,
     required_elements: Vec<String>,
     graphics_backend: &'static str,
@@ -2319,82 +3271,163 @@ struct PlannedAudioRendition {
 }
 
 impl GstPipelinePlan {
+    fn uses_output_fanout(&self) -> bool {
+        self.mux_kind == MuxKind::Fanout
+    }
+
     fn from_feed(feed: &FeedConfig) -> Result<Self> {
+        let audio_routing = feed.audio_routing_spec()?;
+        let audio_output_layout = forced_audio_output_layout(&audio_routing)?;
         let source = InputSourceFragment::from_feed(feed)?;
-        let sink = SinkFragment::from_url(feed.program_output_url(), feed)?;
+        let resolved_output = feed.resolved_program_output_url();
+        let sink = if feed.has_explicit_outputs() {
+            SinkFragment::fanout()
+        } else {
+            SinkFragment::from_url(&resolved_output, feed)?
+        };
         let mut videos = feed.enabled_video_renditions(feed.video.width, feed.video.height);
         let mut audios = feed.enabled_audio_renditions();
         if sink.mux_kind == MuxKind::Flv {
             videos.truncate(1);
             audios.truncate(1);
         }
-        let planned_videos = videos
+        if let Some(audio) = audios
             .iter()
-            .enumerate()
-            .map(|(index, video)| PlannedVideoRendition::from_config(feed, video, index))
-            .collect::<Vec<_>>();
-        let planned_audios = planned_videos
-            .iter()
-            .flat_map(|video| {
-                audios.iter().enumerate().map(|(audio_index, audio)| {
-                    PlannedAudioRendition::from_config(
-                        feed,
-                        audio,
-                        video.program,
-                        audio_pid_for(video.video_pid, audio_index),
-                    )
+            .find(|audio| audio.channels() != audio_output_layout.channels())
+        {
+            bail!(
+                "enabled audio rendition {} requests {} channels but forced layout {} requires {}; mixed-layout renditions would bypass the validated CGEN matrix",
+                audio.id,
+                audio.channels(),
+                channel_layout_name(audio_output_layout),
+                audio_output_layout.channels()
+            );
+        }
+        let resolved_program_map = match sink.mux_kind {
+            MuxKind::MpegTs => {
+                let pipeline_spec = feed.pipeline_spec()?;
+                Some(
+                    pipeline_spec
+                        .program_map
+                        .as_ref()
+                        .context("MPEG-TS CGEN output requires a program map")?
+                        .resolve()?,
+                )
+            }
+            MuxKind::Fanout => {
+                let pipeline_spec = feed.pipeline_spec()?;
+                pipeline_spec
+                    .program_map
+                    .as_ref()
+                    .map(crate::architecture::ProgramMapSpec::resolve)
+                    .transpose()?
+            }
+            MuxKind::Flv => None,
+        };
+        let (planned_videos, planned_audios) = if sink.mux_kind == MuxKind::Fanout {
+            planned_master_tracks(feed, &videos, audio_output_layout)?
+        } else if let Some(resolved) = &resolved_program_map {
+            planned_mpegts_tracks(feed, &videos, &audios, resolved)?
+        } else {
+            let planned_videos = videos
+                .iter()
+                .enumerate()
+                .map(|(index, video)| PlannedVideoRendition::from_config(feed, video, index))
+                .collect::<Vec<_>>();
+            let planned_audios = planned_videos
+                .iter()
+                .flat_map(|video| {
+                    audios.iter().enumerate().map(|(audio_index, audio)| {
+                        PlannedAudioRendition::from_config(
+                            feed,
+                            audio,
+                            video.program,
+                            audio_pid_for(video.video_pid, audio_index),
+                        )
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
+            (planned_videos, planned_audios)
+        };
         let video_input = source.video_branch();
         let audio_input = source.audio_branch();
-        let mux = mux_fragment(feed, sink.mux_kind);
         let queue = queue_fragment(feed, QueueLeak::None);
         let video_live_queue = queue_fragment(feed, QueueLeak::Downstream);
         let audio_live_queue = queue_fragment(feed, QueueLeak::Downstream);
         let priority_max_bytes = priority_appsrc_max_bytes(feed);
         let priority_max_latency = queue_time_ns(feed);
+        let audio_mix_caps = audio_mix_caps_fragment(audio_output_layout);
         let standby_caps = source_video_caps_fragment(feed);
-        let video_branches = videos
-            .iter()
-            .enumerate()
-            .map(|(index, video)| {
-                video_rendition_branch(feed, video, &planned_videos[index], index, sink.mux_kind)
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        let (video_branches, audio_branches, output_tail) = if sink.mux_kind == MuxKind::Fanout {
+            (
+                format!(
+                    "video_tee. ! {video_live_queue} ! videoconvert ! videoscale ! videorate ! {standby_caps},format=BGRx ! identity name=cgen_overlay_master silent=true ! appsink name=master_video_sink emit-signals=false sync=false max-buffers=1 drop=true"
+                ),
+                format!(
+                    "audio_tee. ! {audio_live_queue} ! audioconvert ! audioresample ! {audio_mix_caps} ! appsink name=master_audio_sink emit-signals=false sync=false max-buffers=32 drop=true"
+                ),
+                String::new(),
+            )
+        } else {
+            let video_branches = videos
+                .iter()
+                .enumerate()
+                .map(|(index, video)| {
+                    video_rendition_branch(
+                        feed,
+                        video,
+                        &planned_videos[index],
+                        index,
+                        sink.mux_kind,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let audio_branches = planned_audios
+                .iter()
+                .enumerate()
+                .map(|(index, audio)| audio_rendition_branch(feed, audio, index, sink.mux_kind))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mux = mux_fragment(feed, sink.mux_kind);
+            let output_tail = format!("{mux} ! {queue} ! {}", sink.description);
+            (video_branches, audio_branches, output_tail)
+        };
         let program_video_input = format!(
-            "{video_input} ! {video_live_queue} ! videoconvert ! videoscale ! videorate ! {standby_caps} ! video_selector.sink_0"
+            "{video_input} ! identity name=program_video_monitor silent=true ! {video_live_queue} ! videoconvert ! videoscale ! videorate ! {standby_caps} ! video_selector.sink_0"
         );
-        let audio_branches = planned_audios
-            .iter()
-            .enumerate()
-            .map(|(index, audio)| audio_rendition_branch(feed, audio, index, sink.mux_kind))
-            .collect::<Vec<_>>()
-            .join(" ");
         let description = format!(
             "{} \
              {program_video_input} \
              videotestsrc name=standby_video_src pattern=black is-live=true do-timestamp=true ! {standby_caps} ! {queue} ! video_selector.sink_1 \
              videotestsrc name=smpte_video_src pattern=smpte is-live=true do-timestamp=true ! {standby_caps} ! {queue} ! video_selector.sink_2 \
              input-selector name=video_selector sync-streams=true sync-mode=clock cache-buffers=false drop-backwards=true ! {queue} ! tee name=video_tee \
-             input-selector name=audio_selector sync-streams=true sync-mode=clock cache-buffers=false drop-backwards=true ! {queue} ! audioconvert ! audioresample ! audiorate ! audio/x-raw,rate=48000,layout=interleaved ! tee name=audio_tee \
-             audiotestsrc wave=silence is-live=true do-timestamp=true ! audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved ! {queue} ! audio_selector.sink_0 \
-             {audio_input} ! {audio_live_queue} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,layout=interleaved ! {queue} ! audio_selector.sink_1 \
-             appsrc name=priority_audio_src is-live=true block=false leaky-type=downstream stream-type=stream format=time do-timestamp=true min-latency=0 max-latency={priority_max_latency} max-bytes={priority_max_bytes} ! {queue} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,layout=interleaved ! {queue} ! audio_selector.sink_2 \
+             audiomixer name=audio_mixer ignore-inactive-pads=true latency={priority_max_latency} ! {queue} ! audioconvert ! audioresample ! audiorate ! {audio_mix_caps} ! tee name=audio_tee \
+             audiotestsrc wave=silence is-live=true do-timestamp=true ! {audio_mix_caps} ! {queue} ! audio_mixer. \
+             {audio_input} ! {audio_live_queue} ! audioconvert ! audioresample ! audio/x-raw,format=F32LE,rate=48000,layout=interleaved ! identity name=program_audio_monitor silent=true ! audioconvert name=program_audio_matrix ! {audio_mix_caps} ! identity name=program_audio_gain silent=true ! {queue} ! audio_mixer. \
+             appsrc name=priority_audio_src is-live=true block=false leaky-type=downstream stream-type=stream format=time do-timestamp=true min-latency=0 max-latency={priority_max_latency} max-bytes={priority_max_bytes} ! {queue} ! audioconvert ! audioresample ! audio/x-raw,format=F32LE,rate=48000,layout=interleaved ! identity name=alert_audio_monitor silent=true ! audioconvert name=alert_audio_matrix ! {audio_mix_caps} ! identity name=alert_audio_gain silent=true ! {queue} ! audio_mixer. \
              {video_branches} \
              {audio_branches} \
-             {mux} ! {queue} ! {}"
+             {output_tail}"
             , source.description
-            , sink.description
         );
-        let program_map = program_map_fragment(&planned_videos, &planned_audios);
+        let program_map = if sink.mux_kind == MuxKind::MpegTs {
+            resolved_program_map
+                .as_ref()
+                .map(|resolved| {
+                    validated_program_map_for_plan(resolved, &planned_videos, &planned_audios)
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let required_elements = required_elements(&source, &sink, &planned_videos, &planned_audios);
         Ok(Self {
             description,
             videos: planned_videos,
             audios: planned_audios,
             program_map,
+            requested_program_map: resolved_program_map,
             mux_kind: sink.mux_kind,
             required_elements,
             graphics_backend: "wgpu",
@@ -2407,11 +3440,28 @@ impl GstPipelinePlan {
             "audios": self.audios.iter().map(PlannedAudioRendition::status_value).collect::<Vec<_>>(),
             "video_count": self.videos.len(),
             "audio_count": self.audios.len(),
-            "program_map": self.program_map,
+            "program_map": self.program_map.as_ref()
+                .map(ValidatedGstProgramMap::redacted_status_value)
+                .or_else(|| self.requested_program_map.as_ref().map(redacted_resolved_program_map_status))
+                .unwrap_or(Value::Null),
+            "output_mode": if self.uses_output_fanout() {
+                "isolated_workers"
+            } else {
+                "legacy_single_sink"
+            },
             "required_elements": self.required_elements,
             "video_memory": "SystemMemory",
             "graphics_backend": self.graphics_backend,
         })
+    }
+}
+
+fn forced_audio_output_layout(spec: &AudioRoutingSpec) -> Result<ChannelLayout> {
+    match spec.topology {
+        AudioTopologyMode::ForceLayout(layout) => Ok(layout),
+        AudioTopologyMode::PreserveNativeTracks => bail!(
+            "preserve-native audio routing is unavailable in the current decoded single-track CGEN runtime; select force_layout until track codec, language, layout, and ordering retention can be guaranteed"
+        ),
     }
 }
 
@@ -2439,6 +3489,7 @@ fn required_elements(
     let mut elements = BTreeSet::from([
         "appsrc".to_string(),
         "audioconvert".to_string(),
+        "audiomixer".to_string(),
         "audiorate".to_string(),
         "audioresample".to_string(),
         "audiotestsrc".to_string(),
@@ -2456,6 +3507,9 @@ fn required_elements(
     elements.insert(sink.mux_kind.required_element().to_string());
     elements.extend(source.required_elements.iter().cloned());
     elements.extend(sink.required_elements.iter().cloned());
+    if sink.mux_kind == MuxKind::Fanout {
+        return elements.into_iter().collect();
+    }
     elements.extend(
         videos
             .iter()
@@ -2624,23 +3678,130 @@ fn audio_pid_for(video_pid: i32, audio_index: usize) -> i32 {
     video_pid + 1 + i32::try_from(audio_index).unwrap_or(0)
 }
 
-fn program_map_fragment(
+fn planned_mpegts_tracks(
+    feed: &FeedConfig,
+    videos: &[crate::config::VideoRenditionConfig],
+    audios: &[crate::config::AudioRenditionConfig],
+    resolved: &ResolvedProgramMapSpec,
+) -> Result<(Vec<PlannedVideoRendition>, Vec<PlannedAudioRendition>)> {
+    let mut planned_videos = Vec::with_capacity(videos.len());
+    for (index, video) in videos.iter().enumerate() {
+        let configured_program = planned_program_number(video.program_number(index), "video")?;
+        let program = resolved
+            .programs
+            .iter()
+            .find(|program| program.program_number == configured_program)
+            .with_context(|| {
+                format!(
+                    "enabled video rendition {:?} targets program {} that is absent from the program map",
+                    video.id,
+                    configured_program
+                )
+            })?;
+        let video_pid = program.video_pid.with_context(|| {
+            format!(
+                "enabled video rendition {:?} targets audio-only program {}",
+                video.id, configured_program
+            )
+        })?;
+        let mut planned = PlannedVideoRendition::from_config(feed, video, index);
+        planned.program = i32::from(program.program_number.get());
+        planned.video_pid = i32::from(video_pid.get());
+        planned.pmt_pid = i32::from(program.pmt_pid.get());
+        planned_videos.push(planned);
+    }
+
+    let mut planned_audios = Vec::new();
+    for program in &resolved.programs {
+        for (track_id, pid) in &program.audio {
+            let audio = audios
+                .iter()
+                .find(|audio| audio.id.eq_ignore_ascii_case(track_id.as_str()))
+                .with_context(|| {
+                    format!(
+                        "program {} maps audio track {:?}, but no matching enabled rendition exists",
+                        program.program_number, track_id
+                    )
+                })?;
+            planned_audios.push(PlannedAudioRendition::from_config(
+                feed,
+                audio,
+                i32::from(program.program_number.get()),
+                i32::from(pid.get()),
+            ));
+        }
+    }
+    Ok((planned_videos, planned_audios))
+}
+
+fn planned_master_tracks(
+    feed: &FeedConfig,
+    videos: &[crate::config::VideoRenditionConfig],
+    audio_layout: ChannelLayout,
+) -> Result<(Vec<PlannedVideoRendition>, Vec<PlannedAudioRendition>)> {
+    let source_video = videos
+        .first()
+        .context("isolated output workers require one enabled master video rendition")?;
+    let mut master_video = PlannedVideoRendition::from_config(feed, source_video, 0);
+    master_video.id = "master".to_string();
+    master_video.width = feed.video.width;
+    master_video.height = feed.video.height;
+    master_video.fps = feed.video.fps.clone();
+    master_video.interlaced = feed.video.interlaced;
+    master_video.field_order = feed.video.field_order.clone();
+    master_video.standard = feed.video.standard.clone();
+    let master_audio = PlannedAudioRendition {
+        id: "master".to_string(),
+        program: 0,
+        audio_pid: 0,
+        channels: audio_layout.channels(),
+        codec: "raw_f32".to_string(),
+        bitrate_bps: 0,
+        language: "und".to_string(),
+        encoder: EncoderCodecSettings::default(),
+    };
+    Ok((vec![master_video], vec![master_audio]))
+}
+
+fn validated_program_map_for_plan(
+    resolved: &ResolvedProgramMapSpec,
     videos: &[PlannedVideoRendition],
     audios: &[PlannedAudioRendition],
-) -> String {
-    let mut fields = Vec::with_capacity(videos.len() + audios.len() + 1);
-    fields.push("program_map".to_string());
-    fields.extend(
-        videos
-            .iter()
-            .map(|video| format!("sink_{}=(int){}", video.video_pid, video.program)),
-    );
-    fields.extend(
-        audios
-            .iter()
-            .map(|audio| format!("sink_{}=(int){}", audio.audio_pid, audio.program)),
-    );
-    fields.join(",")
+) -> Result<ValidatedGstProgramMap> {
+    let video = videos
+        .iter()
+        .map(|track| {
+            Ok(PlannedVideoTrackAssociation {
+                program_number: planned_program_number(track.program, "video")?,
+                sink_pid: planned_mpegts_pid(track.video_pid, "video")?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let audio = audios
+        .iter()
+        .map(|track| {
+            Ok(PlannedAudioTrackAssociation {
+                program_number: planned_program_number(track.program, "audio")?,
+                track_id: AudioTrackId::parse(&track.id)
+                    .with_context(|| format!("invalid audio track ID {:?}", track.id))?,
+                sink_pid: planned_mpegts_pid(track.audio_pid, "audio")?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    build_gstreamer_program_map(resolved, &PlannedTrackAssociations { video, audio })
+        .context("MPEG-TS program map does not match planned encoder tracks")
+}
+
+fn planned_program_number(value: i32, kind: &str) -> Result<NonZeroU16> {
+    let value = u16::try_from(value)
+        .with_context(|| format!("planned {kind} program number {value} is outside u16"))?;
+    NonZeroU16::new(value).with_context(|| format!("planned {kind} program number is zero"))
+}
+
+fn planned_mpegts_pid(value: i32, kind: &str) -> Result<MpegTsPid> {
+    let value = u16::try_from(value)
+        .with_context(|| format!("planned {kind} MPEG-TS PID {value} is outside u16"))?;
+    MpegTsPid::new(value).with_context(|| format!("planned {kind} MPEG-TS PID is invalid"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2708,6 +3869,7 @@ fn priority_appsrc_max_bytes(feed: &FeedConfig) -> u64 {
 enum MuxKind {
     MpegTs,
     Flv,
+    Fanout,
 }
 
 impl MuxKind {
@@ -2715,6 +3877,7 @@ impl MuxKind {
         match self {
             Self::MpegTs => "mpegtsmux",
             Self::Flv => "flvmux",
+            Self::Fanout => "appsink",
         }
     }
 
@@ -2722,6 +3885,7 @@ impl MuxKind {
         match self {
             Self::MpegTs => format!("mux.sink_{}", video.video_pid),
             Self::Flv => "mux.video".to_string(),
+            Self::Fanout => unreachable!("fanout uses raw master-frame appsinks"),
         }
     }
 
@@ -2729,6 +3893,7 @@ impl MuxKind {
         match self {
             Self::MpegTs => format!("mux.sink_{}", audio.audio_pid),
             Self::Flv => "mux.audio".to_string(),
+            Self::Fanout => unreachable!("fanout uses raw master-audio appsinks"),
         }
     }
 }
@@ -2740,6 +3905,7 @@ fn mux_fragment(feed: &FeedConfig, kind: MuxKind) -> String {
             "mpegtsmux name=mux alignment=7 latency={latency_ns} pat-interval=4500 pmt-interval=4500 si-interval=4500 pcr-interval=1800"
         ),
         MuxKind::Flv => "flvmux name=mux streamable=true latency=0".to_string(),
+        MuxKind::Fanout => String::new(),
     }
 }
 
@@ -2773,11 +3939,72 @@ struct InputSourceFragment {
 
 impl InputSourceFragment {
     fn from_feed(feed: &FeedConfig) -> Result<Self> {
-        Self::from_stream(feed)
+        match feed
+            .program_input
+            .input_type
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "dummy" | "none" | "no_input" => Self::from_dummy(feed),
+            "device" | "v4l2" | "directshow" | "dshow" => Self::from_device(feed),
+            _ => Self::from_stream(feed),
+        }
+    }
+
+    fn from_dummy(feed: &FeedConfig) -> Result<Self> {
+        let foreground = gst_solid_color(feed.program_input.background.as_str());
+        Ok(Self {
+            description: format!(
+                "videotestsrc name=video_src pattern=solid-color foreground-color={foreground} is-live=true do-timestamp=true \
+                 audiotestsrc name=audio_src wave=silence is-live=true do-timestamp=true"
+            ),
+            video_pad: "video_src.",
+            audio_pad: "audio_src.",
+            video_decode_chain: format!(" ! {}", source_video_caps_fragment(feed)),
+            audio_decode_chain: String::new(),
+            required_elements: vec!["audiotestsrc".to_string(), "videotestsrc".to_string()],
+        })
+    }
+
+    fn from_device(feed: &FeedConfig) -> Result<Self> {
+        let device_id = feed.program_input.device_id.trim();
+        if device_id.is_empty() {
+            bail!("gstreamer cgen device input requires a persistent device id");
+        }
+        let backend = feed
+            .program_input
+            .device_backend
+            .trim()
+            .to_ascii_lowercase();
+        let (video_source, device_property) = match backend.as_str() {
+            "directshow" | "dshow" => ("dshowvideosrc", "device-name"),
+            "v4l2" => ("v4l2src", "device"),
+            "" if cfg!(windows) => ("dshowvideosrc", "device-name"),
+            "" => ("v4l2src", "device"),
+            _ => bail!("unsupported gstreamer device backend"),
+        };
+        Ok(Self {
+            description: format!(
+                "{video_source} name=video_src {device_property}={} do-timestamp=true \
+                 autoaudiosrc name=audio_src",
+                gst_quote(device_id)
+            ),
+            video_pad: "video_src.",
+            audio_pad: "audio_src.",
+            video_decode_chain: " ! decodebin".to_string(),
+            audio_decode_chain: String::new(),
+            required_elements: vec![
+                video_source.to_string(),
+                "autoaudiosrc".to_string(),
+                "decodebin".to_string(),
+            ],
+        })
     }
 
     fn from_stream(feed: &FeedConfig) -> Result<Self> {
-        let url = feed.program_input_url();
+        let resolved_input = feed.resolved_program_input_url();
+        let url = resolved_input.as_str();
         let url = url.trim();
         if url.is_empty() {
             bail!("gstreamer cgen input url is empty");
@@ -2851,6 +4078,16 @@ impl InputSourceFragment {
     }
 }
 
+fn gst_solid_color(value: &str) -> String {
+    let trimmed = value.trim().trim_start_matches('#');
+    let (rgb, alpha) = match trimmed.len() {
+        6 if trimmed.bytes().all(|byte| byte.is_ascii_hexdigit()) => (trimmed, "FF"),
+        8 if trimmed.bytes().all(|byte| byte.is_ascii_hexdigit()) => (&trimmed[..6], &trimmed[6..]),
+        _ => ("000000", "FF"),
+    };
+    format!("0x{alpha}{rgb}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SinkFragment {
     description: String,
@@ -2859,6 +4096,14 @@ struct SinkFragment {
 }
 
 impl SinkFragment {
+    fn fanout() -> Self {
+        Self {
+            description: String::new(),
+            required_elements: vec!["appsink".to_string()],
+            mux_kind: MuxKind::Fanout,
+        }
+    }
+
     fn from_url(url: &str, feed: &FeedConfig) -> Result<Self> {
         let url = url.trim();
         if url.is_empty() {
@@ -2922,8 +4167,14 @@ fn source_video_caps_fragment(feed: &FeedConfig) -> String {
     let Some(output_framerate) = gst_fraction(feed.video.fps.as_str()) else {
         return caps;
     };
-    let framerate = rendition_framerate_for_caps(output_framerate.as_str(), feed.video.interlaced);
-    format!("{caps},framerate={framerate}")
+    format!("{caps},framerate={output_framerate}")
+}
+
+fn audio_mix_caps_fragment(layout: ChannelLayout) -> String {
+    format!(
+        "audio/x-raw,format=F32LE,rate={AUDIO_MIX_SAMPLE_RATE},channels={},layout=interleaved",
+        layout.channels()
+    )
 }
 
 fn rendition_framerate_for_caps(framerate: &str, interlaced: bool) -> String {
@@ -3232,9 +4483,157 @@ mod tests {
     use super::*;
     use crate::config::{
         AudioConfig, AudioRenditionConfig, BannerConfig, ClockConfig, EncoderCodecSettings,
-        EndpointConfig, FeedConfig, GraphicsConfig, LadderConfig, PriorityInputConfig,
-        StandbyConfig, StateConfig, SyncConfig, TextConfig, VideoConfig, VideoRenditionConfig,
+        EndpointConfig, FeedConfig, GraphicsConfig, LadderConfig, OutputConfig,
+        PriorityInputConfig, StandbyConfig, StateConfig, SyncConfig, TextConfig, VideoConfig,
+        VideoRenditionConfig,
     };
+
+    #[test]
+    fn preserve_native_fails_closed_until_track_retention_is_guaranteed() {
+        let mut feed = test_feed();
+        feed.audio.topology = "preserve_native_tracks".to_string();
+
+        let error = GstPipelinePlan::from_feed(&feed)
+            .expect_err("single-track decoded runtime must reject preserve-native mode");
+
+        assert!(error.to_string().contains("preserve-native audio routing"));
+        assert!(error.to_string().contains("track codec, language, layout"));
+    }
+
+    #[test]
+    fn forced_audio_layout_is_shared_by_runtime_and_plan_validation() {
+        let spec = AudioRoutingSpec {
+            topology: AudioTopologyMode::ForceLayout(ChannelLayout::Surround51),
+            ..AudioRoutingSpec::default()
+        };
+        assert_eq!(
+            forced_audio_output_layout(&spec).expect("forced layout"),
+            ChannelLayout::Surround51
+        );
+
+        let preserve = AudioRoutingSpec::default();
+        let error = forced_audio_output_layout(&preserve)
+            .expect_err("decoded single-track runtime cannot preserve native tracks");
+        assert!(error.to_string().contains("preserve-native audio routing"));
+    }
+
+    #[test]
+    fn forced_layout_rejects_legacy_rendition_rematrixing() {
+        let mut feed = test_feed();
+        feed.ladder.audios[1].enabled = "true".to_string();
+
+        let error = GstPipelinePlan::from_feed(&feed)
+            .expect_err("stereo master must reject a 5.1 legacy rendition");
+
+        assert!(error.to_string().contains("forced layout stereo"));
+        assert!(error
+            .to_string()
+            .contains("mixed-layout renditions would bypass"));
+    }
+
+    #[test]
+    fn explicit_outputs_use_one_master_compositor_fanout() {
+        let mut feed = test_feed();
+        feed.outputs.outputs = vec![OutputConfig {
+            id: "primary".to_string(),
+            enabled: true,
+            destination: "rtmp".to_string(),
+            url: "rtmp://example.invalid/live".to_string(),
+            video_codec: "h264".to_string(),
+            video_bitrate_kbps: 4_000,
+            gop_frames: 60,
+            audio_codec: "aac".to_string(),
+            audio_bitrate_kbps: 192,
+            sample_rate: 48_000,
+            ..Default::default()
+        }];
+
+        let plan = GstPipelinePlan::from_feed(&feed).expect("fanout plan");
+
+        assert!(plan.uses_output_fanout());
+        assert_eq!(plan.videos.len(), 1);
+        assert_eq!(plan.videos[0].id, "master");
+        assert_eq!(plan.audios.len(), 1);
+        assert!(plan
+            .description
+            .contains("identity name=cgen_overlay_master"));
+        assert!(plan.description.contains("appsink name=master_video_sink"));
+        assert!(plan.description.contains("appsink name=master_audio_sink"));
+        assert!(!plan.description.contains("mpegtsmux name=mux"));
+        assert!(plan.required_elements.contains(&"appsink".to_string()));
+        assert!(!plan.required_elements.contains(&"x264enc".to_string()));
+    }
+
+    #[test]
+    fn gstreamer_matrix_rows_transpose_source_major_coefficients() {
+        let matrix = MixMatrix::for_program(ChannelLayout::Stereo, ChannelLayout::Surround51)
+            .expect("matrix");
+
+        let rows = gstreamer_mix_matrix_rows(&matrix);
+
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[0], vec![1.0, 0.0]);
+        assert_eq!(rows[1], vec![0.0, 1.0]);
+        assert_eq!(rows[3], vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn multichannel_alert_matrix_omits_source_lfe_and_replicates_mono_sum() {
+        let matrix = alert_mix_matrix(ChannelLayout::Surround51, ChannelLayout::Stereo)
+            .expect("alert matrix");
+
+        assert_eq!(matrix.coefficients[6], 0.0);
+        assert_eq!(matrix.coefficients[7], 0.0);
+        for destination in 0..2 {
+            let sum = (0..6)
+                .map(|source| matrix.coefficients[source * 2 + destination])
+                .sum::<f32>();
+            assert!((sum - 1.0).abs() < 0.000_001);
+        }
+    }
+
+    #[test]
+    fn f32le_alert_gain_ramps_over_twenty_milliseconds() {
+        let spec = AudioRoutingSpec {
+            topology: AudioTopologyMode::ForceLayout(ChannelLayout::Stereo),
+            ..AudioRoutingSpec::default()
+        };
+        let mut gains = AudioGainController::new(&spec);
+        gains.prime_alert(GainDb::Muted);
+        gains.set_targets(GainDb::Muted, GainDb::Db(0.0), AUDIO_MIX_SAMPLE_RATE, 20);
+        let mut bytes = vec![0_u8; 961 * 2 * std::mem::size_of::<f32>()];
+        for sample in bytes.chunks_exact_mut(std::mem::size_of::<f32>()) {
+            sample.copy_from_slice(&1.0_f32.to_le_bytes());
+        }
+
+        apply_audio_gain_f32le(&mut bytes, 2, AudioBus::Alert, &mut gains).expect("gain ramp");
+
+        let left = bytes
+            .chunks_exact(2 * std::mem::size_of::<f32>())
+            .map(|frame| f32::from_le_bytes(frame[..4].try_into().expect("sample")))
+            .collect::<Vec<_>>();
+        assert_eq!(left[0], 0.0);
+        assert!((left[960] - 1.0).abs() < 0.000_001);
+        assert!(left
+            .windows(2)
+            .all(|window| window[1] >= window[0] && window[1] - window[0] <= 0.001_1));
+    }
+
+    #[test]
+    fn unsupported_channel_count_is_rejected_before_default_rematrixing() {
+        gst::init().expect("GStreamer initialization");
+        let caps = gst::Caps::builder("audio/x-raw")
+            .field("format", "F32LE")
+            .field("rate", 48_000i32)
+            .field("channels", 4i32)
+            .field("layout", "interleaved")
+            .build();
+
+        let error = audio_matrix_from_caps(caps.as_ref(), AudioBus::Program, ChannelLayout::Stereo)
+            .expect_err("four-channel input is not a supported deterministic layout");
+
+        assert!(error.to_string().contains("channel count 4"));
+    }
 
     #[test]
     fn parses_udp_sink_url() {
@@ -3244,6 +4643,39 @@ mod tests {
         assert_eq!(endpoint.port, 9001);
         assert_eq!(endpoint.buffer_size, Some(1_048_576));
         assert!(endpoint.reuse);
+    }
+
+    #[test]
+    fn dummy_input_builds_live_video_and_silent_audio_sources() {
+        let mut feed = test_feed();
+        feed.program_input.input_type = "dummy".to_string();
+        feed.program_input.url.clear();
+        feed.program_input.background = "#10203080".to_string();
+
+        let source = InputSourceFragment::from_feed(&feed).expect("dummy input");
+
+        assert!(source.description.contains("videotestsrc name=video_src"));
+        assert!(source.description.contains("foreground-color=0x80102030"));
+        assert!(source.description.contains("audiotestsrc name=audio_src"));
+        assert_eq!(source.video_pad, "video_src.");
+        assert_eq!(source.audio_pad, "audio_src.");
+    }
+
+    #[test]
+    fn device_input_uses_validated_backend_and_quotes_persistent_id() {
+        let mut feed = test_feed();
+        feed.program_input.input_type = "device".to_string();
+        feed.program_input.url.clear();
+        feed.program_input.device_backend = "v4l2".to_string();
+        feed.program_input.device_id = "/dev/video0".to_string();
+
+        let source = InputSourceFragment::from_feed(&feed).expect("device input");
+
+        assert!(source
+            .description
+            .contains("v4l2src name=video_src device=\"/dev/video0\""));
+        assert!(source.description.contains("autoaudiosrc name=audio_src"));
+        assert!(source.required_elements.contains(&"v4l2src".to_string()));
     }
 
     #[test]
@@ -3261,6 +4693,9 @@ mod tests {
         assert!(plan
             .description
             .contains("input-selector name=video_selector"));
+        assert!(plan
+            .description
+            .contains("identity name=program_video_monitor silent=true"));
         assert!(plan.description.contains(
             "input-selector name=video_selector sync-streams=true sync-mode=clock cache-buffers=false drop-backwards=true"
         ));
@@ -3276,20 +4711,33 @@ mod tests {
         assert!(plan
             .description
             .contains("identity name=cgen_overlay_hd silent=true"));
+        assert!(!plan.description.contains("name=audio_selector"));
         assert!(plan
             .description
-            .contains("input-selector name=audio_selector"));
-        assert!(plan.description.contains(
-            "input-selector name=audio_selector sync-streams=true sync-mode=clock cache-buffers=false drop-backwards=true"
-        ));
+            .contains("audiomixer name=audio_mixer ignore-inactive-pads=true latency=240000000"));
         assert!(plan.description.contains("audiotestsrc wave=silence"));
         assert!(plan.description.contains("appsrc name=priority_audio_src"));
         assert!(plan.description.contains(
             "appsrc name=priority_audio_src is-live=true block=false leaky-type=downstream stream-type=stream format=time do-timestamp=true min-latency=0 max-latency=240000000"
         ));
-        assert!(plan.description.contains("audio_selector.sink_0"));
-        assert!(plan.description.contains("audio_selector.sink_1"));
-        assert!(plan.description.contains("audio_selector.sink_2"));
+        assert!(plan
+            .description
+            .contains("identity name=program_audio_monitor silent=true"));
+        assert!(plan
+            .description
+            .contains("audioconvert name=program_audio_matrix"));
+        assert!(plan
+            .description
+            .contains("identity name=program_audio_gain silent=true"));
+        assert!(plan
+            .description
+            .contains("identity name=alert_audio_monitor silent=true"));
+        assert!(plan
+            .description
+            .contains("audioconvert name=alert_audio_matrix"));
+        assert!(plan
+            .description
+            .contains("identity name=alert_audio_gain silent=true"));
         assert!(plan.description.contains("video_tee."));
         assert!(plan.description.contains("audio_tee."));
         assert!(plan.description.contains(
@@ -3303,7 +4751,7 @@ mod tests {
         assert!(plan.description.contains("audiorate"));
         assert!(plan
             .description
-            .contains("audio/x-raw,rate=48000,channels=2,layout=interleaved"));
+            .contains("audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved"));
         assert!(plan.description.contains("latency=120000000"));
         assert!(plan.description.contains("pat-interval=4500"));
         assert!(plan.description.contains("pcr-interval=1800"));
@@ -3321,6 +4769,7 @@ mod tests {
             "videoconvert ! video/x-raw,format=I420 ! interlace field-pattern=1:1 top-field-first=true"
         ));
         assert!(plan.required_elements.contains(&"identity".to_string()));
+        assert!(plan.required_elements.contains(&"audiomixer".to_string()));
         assert!(!plan.description.contains("interlace-mode=interleaved"));
         assert!(plan.description.contains("buffer-size=4194304"));
         assert!(plan.required_elements.contains(&"udpsrc".to_string()));
@@ -3455,12 +4904,15 @@ mod tests {
         ];
         feed.ladder.audios = vec![
             AudioRenditionConfig {
-                id: "surround_51".to_string(),
+                id: "secondary_stereo".to_string(),
                 enabled: "true".to_string(),
-                channels: 6,
+                channels: 2,
                 acodec: "ac3".to_string(),
                 bitrate_kbps: Some(384),
                 language: "eng".to_string(),
+                program: Some(1),
+                audio_pid: Some(0x102),
+                pmt_pid: Some(0x1000),
             },
             AudioRenditionConfig {
                 id: "stereo".to_string(),
@@ -3469,6 +4921,9 @@ mod tests {
                 acodec: "ac3".to_string(),
                 bitrate_kbps: Some(192),
                 language: "eng".to_string(),
+                program: Some(1),
+                audio_pid: Some(0x101),
+                pmt_pid: Some(0x1000),
             },
         ];
 
@@ -3491,22 +4946,23 @@ mod tests {
             .contains("x264enc tune=zerolatency speed-preset=ultrafast bitrate=6000 qos=true"));
         assert!(plan
             .description
-            .contains("audio/x-raw,rate=48000,channels=6,layout=interleaved"));
-        assert!(plan
-            .description
             .contains("audio/x-raw,rate=48000,channels=2,layout=interleaved"));
 
         let status = plan.status_value();
         assert_eq!(status["video_count"], 2);
         assert_eq!(status["audio_count"], 4);
-        assert_eq!(status["program_map"], "program_map,sink_256=(int)1,sink_288=(int)2,sink_257=(int)1,sink_258=(int)1,sink_289=(int)2,sink_290=(int)2");
+        assert_eq!(status["program_map"]["transport_stream_id"], 1);
+        assert_eq!(
+            status["program_map"]["prog_map"],
+            "program_map,sink_256=(int)1,sink_257=(int)1,sink_258=(int)1,sink_259=(int)2,sink_260=(int)2,sink_288=(int)2,PMT_1=(int)4096,PCR_1=(int)256,PMT_2=(int)4097,PCR_2=(int)288"
+        );
         assert_eq!(status["videos"][0]["program"], 1);
         assert_eq!(status["videos"][0]["video_pid"], 0x100);
         assert_eq!(status["videos"][0]["pmt_pid"], 0x1000);
         assert_eq!(status["videos"][1]["program"], 2);
         assert_eq!(status["audios"][0]["program"], 1);
-        assert_eq!(status["audios"][0]["audio_pid"], 0x101);
-        assert_eq!(status["audios"][0]["channels"], 6);
+        assert_eq!(status["audios"][0]["audio_pid"], 0x102);
+        assert_eq!(status["audios"][0]["channels"], 2);
         assert_eq!(status["audios"][0]["bitrate_bps"], 384_000);
         assert_eq!(status["audios"][1]["language"], "eng");
     }
@@ -3640,16 +5096,28 @@ mod tests {
     }
 
     #[test]
-    fn gstreamer_plan_parses_and_selector_modes_are_settable() {
+    fn gstreamer_plan_parses_and_audio_mix_modes_are_settable() {
         gst::init().expect("gst init");
         let feed = test_feed();
         let plan = GstPipelinePlan::from_feed(&feed).expect("plan");
         let element = gst::parse::launch(&plan.description).expect("parse launch");
         let pipeline = element.downcast::<gst::Pipeline>().expect("pipeline");
 
-        set_audio_selector_mode(&pipeline, AudioSelectorMode::Silence).expect("silence pad");
-        set_audio_selector_mode(&pipeline, AudioSelectorMode::Program).expect("program pad");
-        set_audio_selector_mode(&pipeline, AudioSelectorMode::Priority).expect("priority pad");
+        let audio_mix = install_audio_mix_runtime(
+            &pipeline,
+            Arc::new(Mutex::new(InputHealth::default())),
+            feed.audio_routing_spec().expect("audio routing"),
+        )
+        .expect("audio mixer probes");
+        audio_mix
+            .set_mode(AudioSelectorMode::Silence)
+            .expect("silence mix");
+        audio_mix
+            .set_mode(AudioSelectorMode::Program)
+            .expect("program mix");
+        audio_mix
+            .set_mode(AudioSelectorMode::Priority)
+            .expect("priority mix");
         set_video_selector_mode(&pipeline, VideoSelectorMode::Program).expect("program video pad");
         set_video_selector_mode(&pipeline, VideoSelectorMode::Standby).expect("standby video pad");
         set_video_selector_mode(&pipeline, VideoSelectorMode::Smpte).expect("smpte video pad");
@@ -3830,6 +5298,138 @@ mod tests {
     }
 
     #[test]
+    fn decoded_video_is_unhealthy_after_exact_two_second_window() {
+        let feed = test_feed();
+        let mut health = InputHealth::default();
+        health.last_video_frame = Some(Instant::now() - Duration::from_millis(2_001));
+        health.video_timed_out = false;
+
+        assert!(!health.video_connected(&feed));
+        let status = input_health_status(&Arc::new(Mutex::new(health)), &feed);
+        assert_eq!(status["video_timeout_ms"], 2_000);
+        assert_eq!(status["unhealthy_reason"], "no_decoded_video_for_2s");
+    }
+
+    #[test]
+    fn parses_complete_progressive_gstreamer_caps() {
+        gst::init().expect("GStreamer initialization");
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("width", 1920i32)
+            .field("height", 1080i32)
+            .field("framerate", gst::Fraction::new(60_000, 1_001))
+            .field("interlace-mode", "progressive")
+            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+            .field("colorimetry", "bt709")
+            .build();
+
+        let parsed = source_caps_from_gstreamer(caps.as_ref()).expect("source caps");
+
+        assert_eq!(parsed.width(), 1920);
+        assert_eq!(parsed.height(), 1080);
+        assert_eq!(parsed.frame_rate().numerator(), 60_000);
+        assert_eq!(parsed.frame_rate().denominator(), 1_001);
+        assert_eq!(parsed.scan_mode(), SourceScanMode::Progressive);
+        assert_eq!(parsed.field_order(), SourceFieldOrder::NotApplicable);
+        assert_eq!(parsed.pixel_aspect_ratio().numerator(), 1);
+        assert_eq!(parsed.colorimetry(), "bt709");
+    }
+
+    #[test]
+    fn parses_interlaced_field_order_and_non_square_pixels() {
+        gst::init().expect("GStreamer initialization");
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("width", 720i32)
+            .field("height", 480i32)
+            .field("framerate", gst::Fraction::new(30_000, 1_001))
+            .field("interlace-mode", "interleaved")
+            .field("field-order", "bottom-field-first")
+            .field("pixel-aspect-ratio", gst::Fraction::new(8, 9))
+            .field("colorimetry", "bt601")
+            .build();
+
+        let parsed = source_caps_from_gstreamer(caps.as_ref()).expect("source caps");
+
+        assert_eq!(parsed.scan_mode(), SourceScanMode::Interlaced);
+        assert_eq!(parsed.field_order(), SourceFieldOrder::BottomFieldFirst);
+        assert_eq!(parsed.pixel_aspect_ratio().numerator(), 8);
+        assert_eq!(parsed.pixel_aspect_ratio().denominator(), 9);
+        assert_eq!(parsed.colorimetry(), "bt601");
+    }
+
+    #[test]
+    fn caps_change_requests_reconfigure_without_changing_effective_caps_in_place() {
+        let effective = SourceCaps::fallback();
+        let detected = SourceCaps::new(
+            1280,
+            720,
+            60_000,
+            1_001,
+            SourceScanMode::Progressive,
+            SourceFieldOrder::NotApplicable,
+            1,
+            1,
+            "bt709",
+        )
+        .unwrap();
+        let runtime = SourceCapsRuntime::new(effective.clone(), None, "fallback", None, None);
+
+        runtime.observe(detected.clone());
+
+        assert_eq!(runtime.effective_caps(), effective);
+        assert_eq!(runtime.detected_caps(), Some(detected.clone()));
+        assert_eq!(runtime.reconfigure_request(), Some(detected));
+        assert_eq!(runtime.status_value()["reconfigure_required"], true);
+    }
+
+    #[test]
+    fn last_known_caps_seed_the_next_pipeline_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let feed_id = FeedId::parse("CAP-IT-ALL").unwrap();
+        let store = LastKnownCapsStore::new(directory.path(), &feed_id).unwrap();
+        let last_known = SourceCaps::new(
+            1280,
+            720,
+            60_000,
+            1_001,
+            SourceScanMode::Progressive,
+            SourceFieldOrder::NotApplicable,
+            1,
+            1,
+            "bt709",
+        )
+        .unwrap();
+        store.save(&last_known).unwrap();
+        let mut feed = test_feed();
+
+        let runtime =
+            prepare_source_caps_runtime(&mut feed, directory.path(), None).expect("caps runtime");
+
+        assert_eq!(runtime.effective_caps(), last_known);
+        assert_eq!(feed.video.width, 1280);
+        assert_eq!(feed.video.height, 720);
+        assert_eq!(feed.video.fps, "60000/1001");
+        assert_eq!(
+            runtime.status_value()["effective_origin"],
+            "last_known_good"
+        );
+    }
+
+    #[test]
+    fn missing_caps_state_uses_safe_fallback_until_detection() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut feed = test_feed();
+
+        let runtime =
+            prepare_source_caps_runtime(&mut feed, directory.path(), None).expect("caps runtime");
+
+        assert_eq!(runtime.effective_caps(), SourceCaps::fallback());
+        assert_eq!(feed.video.width, 720);
+        assert_eq!(feed.video.height, 480);
+        assert_eq!(feed.video.fps, "30000/1001");
+        assert_eq!(runtime.status_value()["effective_origin"], "fallback");
+    }
+
+    #[test]
     fn source_audio_health_is_independent_from_video_health() {
         let mut feed = test_feed();
         feed.audio.mute_standby_routine = false;
@@ -3856,7 +5456,7 @@ mod tests {
     }
 
     #[test]
-    fn priority_audio_forces_program_audio_off() {
+    fn active_priority_owns_mix_while_waiting_for_correlated_bridge_pcm() {
         let mut feed = test_feed();
         feed.audio.mute_standby_routine = false;
         let mut state = RuntimeState::default();
@@ -3878,43 +5478,81 @@ mod tests {
     }
 
     #[test]
-    fn priority_audio_feeder_status_reports_padding_and_errors() {
+    fn priority_audio_feeder_status_reports_live_chunks_and_errors() {
         gst::init().expect("gst init");
         let appsrc = gst::ElementFactory::make("appsrc")
             .build()
             .expect("appsrc")
             .downcast::<gst_app::AppSrc>()
             .expect("appsrc type");
-        let reached_eof = Arc::new(AtomicBool::new(false));
-        let reached_eof_at = Arc::new(Mutex::new(None));
-        let error = Arc::new(Mutex::new(None));
-        let feeder = PriorityAudioFeeder {
-            appsrc,
-            base_dir: PathBuf::new(),
-            feed_id: "CAP-IT-ALL".to_string(),
-            eof_drain: Duration::from_millis(1_000),
-            active: Some(ActivePriorityAudioFeeder {
-                queue_id: "q1".to_string(),
-                source_status: "active",
-                started_at: Instant::now(),
-                release_after: Duration::from_secs(60),
-                stop: Arc::new(AtomicBool::new(false)),
-                reached_eof: Arc::clone(&reached_eof),
-                reached_eof_at,
-                finished: Arc::new(AtomicBool::new(false)),
-                error: Arc::clone(&error),
-                worker: None,
-            }),
-            completed: BTreeMap::new(),
-        };
+        let media = crate::media_pcm::MediaPcmHub::new().subscribe("CAP-IT-ALL");
+        let mut feeder = PriorityAudioFeeder::new(appsrc, media);
+        feeder.active_queue_id = Some("q1".to_string());
+        feeder.last_chunk_at = Some(Instant::now());
 
         assert_eq!(feeder.active_status().status, "active");
-        reached_eof.store(true, Ordering::Relaxed);
-        assert_eq!(feeder.active_status().status, "padding");
-        *error.lock().expect("error lock") = Some("push failed".to_string());
+        feeder.error = Some("push failed".to_string());
         let status = feeder.active_status();
         assert_eq!(status.status, "error");
         assert_eq!(status.error.as_deref(), Some("push failed"));
+    }
+
+    #[test]
+    fn priority_audio_feeder_pushes_only_correlated_bridge_pcm() {
+        use base64::Engine as _;
+
+        gst::init().expect("gst init");
+        let element = gst::parse::launch(
+            "appsrc name=priority_audio_src is-live=true block=false format=time ! fakesink sync=false",
+        )
+        .expect("parse appsrc pipeline");
+        let pipeline = element.downcast::<gst::Pipeline>().expect("pipeline");
+        let appsrc = priority_audio_appsrc(&pipeline).expect("priority appsrc");
+        let hub = crate::media_pcm::MediaPcmHub::new();
+        let media = hub.subscribe("CAP-IT-ALL");
+        let mut feeder = PriorityAudioFeeder::new(appsrc, media);
+        let pcm = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 1_920]);
+        hub.ingest_raw(
+            &serde_json::to_vec(&json!({
+                "type": "playout.pcm",
+                "feed_id": "CAP-IT-ALL",
+                "queue_id": "q1",
+                "data": {
+                    "feed_id": "CAP-IT-ALL",
+                    "queue_id": "q1",
+                    "sequence": 9,
+                    "pts_ns": 180_000_000,
+                    "discontinuity": true,
+                    "sample_rate": 48_000,
+                    "channels": 1,
+                    "channel_layout": "mono",
+                    "duration_ms": 20,
+                    "media_kind": "alert",
+                    "pcm": pcm,
+                }
+            }))
+            .expect("PCM event"),
+        );
+        let audio = crate::state::PriorityAudio {
+            queue_id: "q1".to_string(),
+            audio_path: None,
+            duration_ms: Some(20),
+            sample_rate: 48_000,
+            channels: 1,
+            banner_text: None,
+            background_color: None,
+            priority: None,
+            presentation: Default::default(),
+            started_at: chrono::Utc::now(),
+        };
+        pipeline
+            .set_state(gst::State::Playing)
+            .expect("play pipeline");
+        let status = feeder.update(Some(&audio));
+        assert_eq!(status.status, "active");
+        assert_eq!(status.queue_id.as_deref(), Some("q1"));
+        assert_eq!(feeder.last_sequence, Some(9));
+        pipeline.set_state(gst::State::Null).expect("stop pipeline");
     }
 
     #[test]
@@ -3933,10 +5571,10 @@ mod tests {
     }
 
     #[test]
-    fn active_priority_padding_keeps_priority_selected_for_drain() {
+    fn waiting_for_correlated_pcm_uses_configured_alert_mix() {
         let feed = test_feed();
         let status = PriorityAudioSourceStatus {
-            status: "padding",
+            status: "waiting",
             queue_id: Some("q1".to_string()),
             error: None,
         };
@@ -3965,7 +5603,7 @@ mod tests {
     }
 
     #[test]
-    fn priority_audio_without_path_forces_silence() {
+    fn priority_audio_without_bridge_pcm_keeps_canonical_alert_mix_active() {
         let mut feed = test_feed();
         feed.audio.mute_standby_routine = false;
         let mut state = RuntimeState::default();
@@ -3980,25 +5618,21 @@ mod tests {
         })));
         assert_eq!(
             desired_audio_selector_mode(&feed, &state, true),
-            AudioSelectorMode::Silence
+            AudioSelectorMode::Priority
         );
         assert!(priority_audio_active(&feed, &state));
     }
 
     #[test]
-    fn priority_audio_missing_path_holds_silence_until_state_clears() {
+    fn priority_audio_waits_for_bridge_until_state_clears() {
         gst::init().expect("gst init");
         let appsrc = gst::ElementFactory::make("appsrc")
             .build()
             .expect("appsrc")
             .downcast::<gst_app::AppSrc>()
             .expect("appsrc type");
-        let mut feeder = PriorityAudioFeeder::new(
-            appsrc,
-            PathBuf::new(),
-            "CAP-IT-ALL".to_string(),
-            Duration::from_millis(250),
-        );
+        let media = crate::media_pcm::MediaPcmHub::new().subscribe("CAP-IT-ALL");
+        let mut feeder = PriorityAudioFeeder::new(appsrc, media);
         let audio = crate::state::PriorityAudio {
             queue_id: "q-missing".to_string(),
             audio_path: None,
@@ -4008,24 +5642,16 @@ mod tests {
             banner_text: None,
             background_color: None,
             priority: None,
+            presentation: Default::default(),
             started_at: chrono::Utc::now(),
         };
 
         let first = feeder.update(Some(&audio));
-        assert_eq!(first.status, "silence");
+        assert_eq!(first.status, "waiting");
         let held = feeder.update(Some(&audio));
-        assert_eq!(held.status, "silence");
+        assert_eq!(held.status, "waiting");
         let cleared = feeder.update(None);
         assert_eq!(cleared.status, "idle");
-    }
-
-    #[test]
-    fn pcm_timing_helpers_make_realtime_chunks() {
-        assert_eq!(pcm_chunk_bytes(48_000, 2, 20), 3840);
-        assert_eq!(
-            pcm_duration(48_000, 2, 3840),
-            gst::ClockTime::from_mseconds(20)
-        );
     }
     #[test]
     fn text_overlay_state_tracks_banner_presentation() {
@@ -4416,6 +6042,21 @@ mod tests {
         assert!(writer.write_due_at(now + FRAME_PREVIEW_INTERVAL));
     }
 
+    #[test]
+    fn preview_writer_replaces_an_existing_jpeg() {
+        let directory = tempfile::tempdir().expect("temporary preview directory");
+        let path = directory.path().join("feed.preview.jpg");
+        let black = vec![0_u8; 2 * 2 * 4];
+        let white = vec![255_u8; 2 * 2 * 4];
+
+        write_bgrx_preview_jpeg(&path, &black, 2, 2).expect("first preview");
+        write_bgrx_preview_jpeg(&path, &white, 2, 2).expect("replacement preview");
+
+        let jpeg = std::fs::read(path).expect("preview jpeg");
+        assert!(jpeg.starts_with(&[0xff, 0xd8]));
+        assert!(jpeg.ends_with(&[0xff, 0xd9]));
+    }
+
     fn test_feed() -> FeedConfig {
         FeedConfig {
             id: "CAP-IT-ALL".to_string(),
@@ -4457,6 +6098,7 @@ mod tests {
                 idle: "source".to_string(),
                 alert_mode: "replace".to_string(),
                 mute_standby_routine: true,
+                ..Default::default()
             },
             ladder: LadderConfig {
                 videos: vec![VideoRenditionConfig {
@@ -4482,14 +6124,20 @@ mod tests {
                         acodec: "ac3".to_string(),
                         bitrate_kbps: Some(192),
                         language: "eng".to_string(),
+                        program: Some(1),
+                        audio_pid: Some(0x101),
+                        pmt_pid: Some(0x1000),
                     },
                     AudioRenditionConfig {
                         id: "surround_51".to_string(),
-                        enabled: "true".to_string(),
+                        enabled: "false".to_string(),
                         channels: 6,
                         acodec: "ac3".to_string(),
                         bitrate_kbps: Some(384),
                         language: "eng".to_string(),
+                        program: Some(1),
+                        audio_pid: Some(0x102),
+                        pmt_pid: Some(0x1000),
                     },
                 ],
             },
@@ -4500,6 +6148,11 @@ mod tests {
             state: StateConfig::default(),
             standby: StandbyConfig::default(),
             sync: SyncConfig::default(),
+            alert: Default::default(),
+            ancillary: Default::default(),
+            compositor: Default::default(),
+            program_mapping: Default::default(),
+            outputs: Default::default(),
             encoder: Default::default(),
         }
     }

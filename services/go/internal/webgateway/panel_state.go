@@ -183,7 +183,7 @@ func panelStatePayload(config Config, configPath string, startedAt time.Time, re
 
 func publicStatePayload(config Config, configPath string, startedAt time.Time, request *http.Request, auth *AuthManager, mediaAvailable bool, listenerStats ...map[string]FeedListenerStats) (map[string]any, error) {
 	feedAccess := publicFeedAccess(config)
-	includeFeeds := publicRequestWantsFeeds(request) && (feedAccess == "public" || (feedAccess == "auth_required" && auth != nil && auth.Authenticated(request)))
+	includeFeeds := publicRequestWantsFeeds(request) && (feedAccess == "public" || (feedAccess == "auth_required" && auth != nil && auth.FullyAuthenticated(request)))
 	var summary map[string]any
 	var err error
 	if includeFeeds {

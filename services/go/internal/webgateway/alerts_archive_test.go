@@ -58,6 +58,21 @@ func TestArchiveSAMEAllowedSuppressesCancellationsAndStaleWarnings(t *testing.T)
 	}
 }
 
+func TestArchiveRecordOriginatorUsesCAPPolicyMetadata(t *testing.T) {
+	record := archiveCAPRecord{Alert: capmodel.Alert{
+		Sender: "alerts.example.test",
+		Infos:  []capmodel.AlertInfo{{Parameters: []capmodel.NameValue{{Name: "eas-org", Value: "EAS"}}}},
+	}}
+	if got := archiveRecordOriginator(record); got != "EAS" {
+		t.Fatalf("archive originator = %q, want EAS", got)
+	}
+	record.Alert.Infos[0].Parameters = nil
+	record.Alert.Sender = "cap-pac@canada.ca"
+	if got := archiveRecordOriginator(record); got != "WXR" {
+		t.Fatalf("weather archive originator = %q, want WXR", got)
+	}
+}
+
 func TestArchiveRebroadcastEventDataCarriesCompletePriorityAlertPayload(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	alert := parseArchiveTestAlert(t, archiveTestCAP("urn:test:force-svr", "Alert", "yellow warning - severe thunderstorm - in effect", "2099-06-15T21:30:00-06:00", false))

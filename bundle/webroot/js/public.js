@@ -163,7 +163,7 @@ const WEBRTC_CODECS = [
 ];
 const DEFAULT_FEED_MODE = 'http';
 const DEFAULT_WEBRTC_CODEC = 'auto';
-const DEFAULT_HTTP_CODEC = 'flac';
+const DEFAULT_HTTP_CODEC = 'opus';
 const HTTP_CODECS = [
     ['opus', 'Opus / Ogg'],
     ['pcm16', 'PCM16 / WAV'],
@@ -2032,7 +2032,8 @@ async function startFeed(feedId) {
 
 async function startFeedHTTP(feedId) {
     feedId = String(feedId || '');
-    if (!feedId || !summaryState?.media_available) {
+    const feed = currentPublicFeeds.find((item) => String(item?.id || '') === feedId);
+    if (!feedId || !feed || !feedCanHTTP(feed)) {
         setPlayerStatus(feedId, 'HTTP streaming unavailable');
         return;
     }
@@ -2060,8 +2061,9 @@ async function startFeedHTTP(feedId) {
 
 async function startFeedWebRTC(feedId) {
     feedId = String(feedId || '');
-    if (!feedId || !summaryState?.webrtc_enabled) {
-        setPlayerStatus(feedId, 'Streaming unavailable');
+    const feed = currentPublicFeeds.find((item) => String(item?.id || '') === feedId);
+    if (!feedId || !feed || !feedCanWebRTC(feed)) {
+        setPlayerStatus(feedId, 'WebRTC unavailable');
         return;
     }
     const existingPlayer = feedPlayers.get(feedId);
@@ -2344,11 +2346,12 @@ async function copyHTTPLink(feedId) {
     feedId = String(feedId || '');
     if (!feedId) return;
     const includesToken = Boolean(publicAudioToken());
-    const link = listenPageURL(feedId, true, null, { includeToken: true });
+    const relativeLink = httpStreamURL(feedId, false, selectedFeedCodec(feedId));
+    const link = new URL(relativeLink, window.location.origin).toString();
     window.hazeLastShareLink = link;
     try {
         await copyTextToClipboard(link);
-        setPlayerStatus(feedId, 'Listen link copied');
+        setPlayerStatus(feedId, 'HTTP stream link copied');
     } catch {
         setPlayerStatus(feedId, includesToken ? 'Copy blocked; browser denied clipboard access' : `Copy blocked: ${link}`);
     }
@@ -2454,7 +2457,12 @@ function stopFeed(feedId, { silent = false } = {}) {
     }
     setPlayerButtons(feedId, false);
     if (!silent) {
-        setPlayerStatus(feedId, summaryState?.webrtc_enabled ? 'Stopped' : 'Streaming unavailable');
+        const feed = currentPublicFeeds.find((item) => String(item?.id || '') === feedId);
+        const mode = player?.mode || selectedFeedMode(feedId);
+        const available = Boolean(feed && (mode === 'http' ? feedCanHTTP(feed) : feedCanWebRTC(feed)));
+        setPlayerStatus(feedId, available
+            ? 'Stopped'
+            : (mode === 'http' ? 'HTTP streaming unavailable' : 'WebRTC unavailable'));
     }
 }
 
@@ -2800,10 +2808,13 @@ function renderListen(feeds) {
         codec,
         media: Boolean(summaryState?.media_available),
         siteNames,
-        nowPlaying,
         http: Boolean(feed.http_stream_enabled),
     });
     if (listenSignature === lastListenSignature) {
+        const nowPlayingElement = listenPanel.querySelector('[data-listen-now-playing]');
+        if (nowPlayingElement && nowPlayingElement.textContent !== nowPlaying) {
+            nowPlayingElement.textContent = nowPlaying;
+        }
         return;
     }
     lastListenSignature = listenSignature;
@@ -2814,7 +2825,7 @@ function renderListen(feeds) {
             <div class="public-listen-title">
                 <p class="feed-id">${escapeHtml(feedID)}</p>
                 <h3>${escapeHtml(siteNames)}</h3>
-                <p class="public-feed-now">${escapeHtml(nowPlaying)}</p>
+                <p class="public-feed-now" data-listen-now-playing>${escapeHtml(nowPlaying)}</p>
             </div>
             <div class="public-listen-toolbar">
                 <label class="public-listen-field">

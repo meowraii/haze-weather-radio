@@ -307,6 +307,148 @@ struct AudioCache {
 struct PcmPublish {
     data: Vec<u8>,
     duration_ms: u32,
+    sequence: u64,
+    pts_ns: u64,
+    discontinuity: bool,
+    queue_id: Option<String>,
+    media_kind: PcmMediaKind,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum PcmMediaKind {
+    Silence,
+    Routine,
+    Alert,
+    OperatorBreakIn,
+}
+
+impl PcmMediaKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Silence => "silence",
+            Self::Routine => "routine",
+            Self::Alert => "alert",
+            Self::OperatorBreakIn => "operator_breakin",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct PcmMediaContext {
+    item_id: Option<String>,
+    queue_id: Option<String>,
+    media_kind: PcmMediaKind,
+}
+
+impl PcmMediaContext {
+    fn active(live_breakin: Option<&LiveBreakIn>, current: Option<&AudioItem>) -> Self {
+        if let Some(live) = live_breakin {
+            return Self {
+                item_id: Some(live.id.clone()),
+                queue_id: Some(live.id.clone()),
+                media_kind: PcmMediaKind::OperatorBreakIn,
+            };
+        }
+        if let Some(item) = current {
+            let queue_id = item.is_alert().then(|| item.id.clone());
+            return Self {
+                item_id: Some(item.id.clone()),
+                queue_id,
+                media_kind: if item.is_alert() {
+                    PcmMediaKind::Alert
+                } else {
+                    PcmMediaKind::Routine
+                },
+            };
+        }
+        Self {
+            item_id: None,
+            queue_id: None,
+            media_kind: PcmMediaKind::Silence,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PcmPublishBuilder {
+    data: Vec<u8>,
+    duration_ms: u32,
+    pts_ns: Option<u64>,
+    context: Option<PcmMediaContext>,
+    next_sequence: u64,
+    needs_discontinuity: bool,
+}
+
+impl PcmPublishBuilder {
+    fn new(capacity: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(capacity),
+            duration_ms: 0,
+            pts_ns: None,
+            context: None,
+            next_sequence: 0,
+            needs_discontinuity: true,
+        }
+    }
+
+    fn duration_ms(&self) -> u32 {
+        self.duration_ms
+    }
+
+    fn push(&mut self, data: &[u8], duration_ms: u32, pts_ns: u64, context: PcmMediaContext) {
+        debug_assert!(self
+            .context
+            .as_ref()
+            .is_none_or(|active| active == &context));
+        if self.data.is_empty() {
+            self.pts_ns = Some(pts_ns);
+            self.context = Some(context);
+        }
+        self.data.extend_from_slice(data);
+        self.duration_ms = self.duration_ms.saturating_add(duration_ms);
+    }
+
+    fn take(&mut self) -> Option<PcmPublish> {
+        if self.data.is_empty() {
+            return None;
+        }
+        let context = self.context.take()?;
+        let publish = PcmPublish {
+            data: std::mem::take(&mut self.data),
+            duration_ms: std::mem::take(&mut self.duration_ms),
+            sequence: self.next_sequence,
+            pts_ns: self.pts_ns.take().unwrap_or(0),
+            discontinuity: std::mem::take(&mut self.needs_discontinuity),
+            queue_id: context.queue_id,
+            media_kind: context.media_kind,
+        };
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        Some(publish)
+    }
+
+    fn recycle(&mut self, mut data: Vec<u8>) {
+        data.clear();
+        self.data = data;
+    }
+
+    fn mark_discontinuity(&mut self) {
+        self.needs_discontinuity = true;
+    }
+}
+
+#[derive(Debug, Default)]
+struct PcmDeliveryState {
+    previous_publish_failed: bool,
+}
+
+impl PcmDeliveryState {
+    fn prepare(&self, chunk: &mut PcmPublish) {
+        chunk.discontinuity |= self.previous_publish_failed;
+    }
+
+    fn record_result(&mut self, succeeded: bool) {
+        self.previous_publish_failed = !succeeded;
+    }
 }
 
 struct PcmPublisher {
@@ -1540,8 +1682,10 @@ impl FeedRunner {
         let channels = self.cfg.root.playout.channels;
         let chunk = silence_chunk(sample_rate, channels, PCM_CHUNK_MS);
         let publish_chunk_count = (MEDIA_PUBLISH_CHUNK_MS / PCM_CHUNK_MS).max(1) as usize;
-        let mut publish_buffer = Vec::with_capacity(chunk.len() * publish_chunk_count);
-        let mut publish_duration_ms = 0u32;
+        let publish_buffer_capacity = chunk.len() * publish_chunk_count;
+        let mut publish_builder = PcmPublishBuilder::new(publish_buffer_capacity);
+        let mut last_publish_context: Option<PcmMediaContext> = None;
+        let mut next_pts_frames = 0u64;
         let chunk_interval = Duration::from_millis(u64::from(PCM_CHUNK_MS));
         let mut ticker = interval(chunk_interval);
         ticker.set_missed_tick_behavior(realtime_tick_missed_behavior());
@@ -1741,6 +1885,19 @@ impl FeedRunner {
                     last_media_tick = tick_now;
                     let (chunks_due, dropped_backlog) =
                         realtime_chunks_due(&mut media_remainder, elapsed);
+                    if dropped_backlog > Duration::ZERO {
+                        flush_pcm_publish(
+                            &mut publish_builder,
+                            &mut pcm_publisher,
+                            publish_buffer_capacity,
+                            &self.feed.id,
+                            &mut dropped_pcm_publishes,
+                        );
+                        next_pts_frames = next_pts_frames.saturating_add(
+                            duration_sample_frames(dropped_backlog, sample_rate),
+                        );
+                        publish_builder.mark_discontinuity();
+                    }
                     if dropped_backlog > Duration::ZERO
                         && dropped_backlog >= realtime_lag_warn_backlog()
                         && last_lag_log.elapsed() >= Duration::from_secs(10)
@@ -1913,6 +2070,8 @@ impl FeedRunner {
                                 copy_item_pcm(item, &mut position, &mut out);
                             }
                         }
+                        let publish_context =
+                            PcmMediaContext::active(live_breakin.as_ref(), current.as_ref());
                         let completed_breakin = if breakin_drained {
                             live_breakin.take()
                         } else {
@@ -1924,45 +2083,39 @@ impl FeedRunner {
                                 tracing::warn!(feed_id = self.feed.id, sink = sink.name(), "sink write failed: {err}");
                             }
                         }
-                        publish_buffer.extend_from_slice(&out);
-                        publish_duration_ms = publish_duration_ms.saturating_add(PCM_CHUNK_MS);
-                        if publish_duration_ms >= MEDIA_PUBLISH_CHUNK_MS {
-                            let data = std::mem::take(&mut publish_buffer);
-                            let duration_ms = publish_duration_ms;
-                            publish_duration_ms = 0;
-                            match pcm_publisher.tx.try_send(PcmPublish {
-                                data,
-                                duration_ms,
-                            }) {
-                                Ok(()) => {
-                                    publish_buffer = pcm_publisher
-                                        .recycled
-                                        .try_recv()
-                                        .unwrap_or_else(|_| {
-                                            Vec::with_capacity(chunk.len() * publish_chunk_count)
-                                        });
-                                }
-                                Err(TrySendError::Full(mut unsent)) => {
-                                    unsent.data.clear();
-                                    publish_buffer = unsent.data;
-                                    dropped_pcm_publishes = dropped_pcm_publishes.saturating_add(1);
-                                    if dropped_pcm_publishes == 1 || dropped_pcm_publishes.is_multiple_of(50) {
-                                        tracing::warn!(
-                                            feed_id = self.feed.id,
-                                            dropped_chunks = dropped_pcm_publishes,
-                                            "media publisher is behind; dropping stale bridge PCM"
-                                        );
-                                    }
-                                }
-                                Err(TrySendError::Closed(mut unsent)) => {
-                                    unsent.data.clear();
-                                    publish_buffer = unsent.data;
-                                    tracing::warn!(
-                                        feed_id = self.feed.id,
-                                        "media publisher stopped before PCM could be forwarded"
-                                    );
-                                }
-                            }
+                        if last_publish_context
+                            .as_ref()
+                            .is_some_and(|previous| previous != &publish_context)
+                        {
+                            flush_pcm_publish(
+                                &mut publish_builder,
+                                &mut pcm_publisher,
+                                publish_buffer_capacity,
+                                &self.feed.id,
+                                &mut dropped_pcm_publishes,
+                            );
+                            publish_builder.mark_discontinuity();
+                        }
+                        last_publish_context = Some(publish_context.clone());
+                        let pts_ns = sample_frames_to_ns(next_pts_frames, sample_rate);
+                        publish_builder.push(
+                            &out,
+                            PCM_CHUNK_MS,
+                            pts_ns,
+                            publish_context,
+                        );
+                        next_pts_frames = next_pts_frames.saturating_add(pcm_frame_count(
+                            out.len(),
+                            channels,
+                        ));
+                        if publish_builder.duration_ms() >= MEDIA_PUBLISH_CHUNK_MS {
+                            flush_pcm_publish(
+                                &mut publish_builder,
+                                &mut pcm_publisher,
+                                publish_buffer_capacity,
+                                &self.feed.id,
+                                &mut dropped_pcm_publishes,
+                            );
                         }
                         if let Some(done) = completed_breakin {
                             spawn_complete_live_breakin(
@@ -2614,6 +2767,25 @@ fn realtime_chunks_due(media_remainder: &mut Duration, elapsed: Duration) -> (us
     (1, available.saturating_sub(chunk_interval))
 }
 
+fn pcm_frame_count(bytes: usize, channels: u16) -> u64 {
+    let frame_bytes = usize::from(channels.max(1)).saturating_mul(2);
+    u64::try_from(bytes / frame_bytes).unwrap_or(u64::MAX)
+}
+
+fn duration_sample_frames(duration: Duration, sample_rate: u32) -> u64 {
+    let frames = duration
+        .as_nanos()
+        .saturating_mul(u128::from(sample_rate.max(1)))
+        / 1_000_000_000u128;
+    u64::try_from(frames).unwrap_or(u64::MAX)
+}
+
+fn sample_frames_to_ns(frames: u64, sample_rate: u32) -> u64 {
+    let nanoseconds =
+        u128::from(frames).saturating_mul(1_000_000_000u128) / u128::from(sample_rate.max(1));
+    u64::try_from(nanoseconds).unwrap_or(u64::MAX)
+}
+
 fn realtime_tick_missed_behavior() -> MissedTickBehavior {
     MissedTickBehavior::Skip
 }
@@ -2756,10 +2928,14 @@ fn spawn_pcm_publisher(
     let (tx, mut rx) = mpsc::channel::<PcmPublish>(pcm_publish_queue_capacity());
     let (recycle_tx, recycled) = mpsc::channel::<Vec<u8>>(pcm_publish_queue_capacity() + 2);
     tokio::spawn(async move {
+        let mut delivery_state = PcmDeliveryState::default();
         while let Some(mut chunk) = rx.recv().await {
-            let _ = client
+            delivery_state.prepare(&mut chunk);
+            let succeeded = client
                 .publish(pcm_publish_event(&feed_id, sample_rate, channels, &chunk))
-                .await;
+                .await
+                .is_ok();
+            delivery_state.record_result(succeeded);
             chunk.data.clear();
             let _ = recycle_tx.try_send(chunk.data);
         }
@@ -2767,20 +2943,84 @@ fn spawn_pcm_publisher(
     PcmPublisher { tx, recycled }
 }
 
+fn flush_pcm_publish(
+    builder: &mut PcmPublishBuilder,
+    publisher: &mut PcmPublisher,
+    fallback_capacity: usize,
+    feed_id: &str,
+    dropped_publishes: &mut u64,
+) {
+    let Some(chunk) = builder.take() else {
+        return;
+    };
+    match publisher.tx.try_send(chunk) {
+        Ok(()) => {
+            builder.recycle(
+                publisher
+                    .recycled
+                    .try_recv()
+                    .unwrap_or_else(|_| Vec::with_capacity(fallback_capacity)),
+            );
+        }
+        Err(TrySendError::Full(unsent)) => {
+            builder.recycle(unsent.data);
+            builder.mark_discontinuity();
+            *dropped_publishes = (*dropped_publishes).saturating_add(1);
+            if *dropped_publishes == 1 || (*dropped_publishes).is_multiple_of(50) {
+                tracing::warn!(
+                    feed_id,
+                    dropped_chunks = *dropped_publishes,
+                    "media publisher is behind; dropping stale bridge PCM"
+                );
+            }
+        }
+        Err(TrySendError::Closed(unsent)) => {
+            builder.recycle(unsent.data);
+            builder.mark_discontinuity();
+            tracing::warn!(
+                feed_id,
+                "media publisher stopped before PCM could be forwarded"
+            );
+        }
+    }
+}
+
 fn pcm_publish_event(feed_id: &str, sample_rate: u32, channels: u16, chunk: &PcmPublish) -> Value {
     let pcm = base64::engine::general_purpose::STANDARD.encode(&chunk.data);
-    json!({
+    let mut data = json!({
+        "feed_id": feed_id,
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "channel_layout": pcm_channel_layout(channels),
+        "duration_ms": chunk.duration_ms,
+        "sequence": chunk.sequence,
+        "pts_ns": chunk.pts_ns,
+        "discontinuity": chunk.discontinuity,
+        "media_kind": chunk.media_kind.as_str(),
+        "pcm": pcm,
+    });
+    if let (Some(queue_id), Some(object)) = (&chunk.queue_id, data.as_object_mut()) {
+        object.insert("queue_id".to_string(), json!(queue_id));
+    }
+    let mut event = json!({
         "type": "playout.pcm",
         "source": SOURCE_ID,
         "feed_id": feed_id,
-        "data": {
-            "feed_id": feed_id,
-            "sample_rate": sample_rate,
-            "channels": channels,
-            "duration_ms": chunk.duration_ms,
-            "pcm": pcm,
-        }
-    })
+        "data": data,
+    });
+    if let (Some(queue_id), Some(object)) = (&chunk.queue_id, event.as_object_mut()) {
+        object.insert("queue_id".to_string(), json!(queue_id));
+    }
+    event
+}
+
+fn pcm_channel_layout(channels: u16) -> String {
+    match channels.max(1) {
+        1 => "mono".to_string(),
+        2 => "stereo".to_string(),
+        6 => "5.1".to_string(),
+        count => format!("{count}ch"),
+    }
 }
 
 impl AudioCache {
@@ -5863,6 +6103,179 @@ mod tests {
         assert!(media_publish_chunk_duration() <= Duration::from_millis(40));
         assert!(media_publish_queue_duration() <= Duration::from_millis(640));
         assert!(pcm_publish_queue_capacity() >= 4);
+    }
+
+    #[test]
+    fn alert_pcm_event_includes_queue_and_timing_contract() {
+        let chunk = PcmPublish {
+            data: vec![1, 0, 2, 0],
+            duration_ms: 20,
+            sequence: 7,
+            pts_ns: 140_000_000,
+            discontinuity: true,
+            queue_id: Some("alert-7".to_string()),
+            media_kind: PcmMediaKind::Alert,
+        };
+
+        let event = pcm_publish_event("sk-0001", 48_000, 1, &chunk);
+
+        assert_eq!(event["type"], "playout.pcm");
+        assert_eq!(event["feed_id"], "sk-0001");
+        assert_eq!(event["queue_id"], "alert-7");
+        assert_eq!(event["data"]["feed_id"], "sk-0001");
+        assert_eq!(event["data"]["sample_rate"], 48_000);
+        assert_eq!(event["data"]["channels"], 1);
+        assert_eq!(event["data"]["channel_layout"], "mono");
+        assert_eq!(event["data"]["duration_ms"], 20);
+        assert_eq!(event["data"]["sequence"], 7);
+        assert_eq!(event["data"]["pts_ns"], 140_000_000u64);
+        assert_eq!(event["data"]["discontinuity"], true);
+        assert_eq!(event["data"]["queue_id"], "alert-7");
+        assert_eq!(event["data"]["media_kind"], "alert");
+        assert_eq!(event["data"]["pcm"], "AQACAA==");
+    }
+
+    #[test]
+    fn routine_pcm_event_preserves_audio_fields_without_queue_id() {
+        let chunk = PcmPublish {
+            data: vec![1, 2],
+            duration_ms: 40,
+            sequence: 8,
+            pts_ns: 160_000_000,
+            discontinuity: false,
+            queue_id: None,
+            media_kind: PcmMediaKind::Routine,
+        };
+
+        let event = pcm_publish_event("sk-0001", 48_000, 2, &chunk);
+
+        assert!(event.get("queue_id").is_none());
+        assert!(event["data"].get("queue_id").is_none());
+        assert_eq!(event["data"]["sample_rate"], 48_000);
+        assert_eq!(event["data"]["channels"], 2);
+        assert_eq!(event["data"]["duration_ms"], 40);
+        assert_eq!(event["data"]["channel_layout"], "stereo");
+        assert_eq!(event["data"]["media_kind"], "routine");
+        assert_eq!(event["data"]["pcm"], "AQI=");
+    }
+
+    #[test]
+    fn pcm_builder_sequences_chunks_and_marks_explicit_discontinuities() {
+        let context = PcmMediaContext {
+            item_id: Some("alert-1".to_string()),
+            queue_id: Some("alert-1".to_string()),
+            media_kind: PcmMediaKind::Alert,
+        };
+        let mut builder = PcmPublishBuilder::new(8);
+
+        builder.push(&[1, 2], 20, 0, context.clone());
+        let first = builder.take().expect("first publish");
+        assert_eq!(first.sequence, 0);
+        assert_eq!(first.pts_ns, 0);
+        assert!(first.discontinuity);
+
+        builder.recycle(first.data);
+        builder.push(&[3, 4], 20, 20_000_000, context.clone());
+        let second = builder.take().expect("second publish");
+        assert_eq!(second.sequence, 1);
+        assert_eq!(second.pts_ns, 20_000_000);
+        assert!(!second.discontinuity);
+
+        builder.recycle(second.data);
+        builder.mark_discontinuity();
+        builder.push(&[5, 6], 20, 90_000_000, context);
+        let after_gap = builder.take().expect("publish after gap");
+        assert_eq!(after_gap.sequence, 2);
+        assert_eq!(after_gap.pts_ns, 90_000_000);
+        assert!(after_gap.discontinuity);
+    }
+
+    #[test]
+    fn publisher_failure_marks_first_reconnected_chunk_discontinuous() {
+        let mut state = PcmDeliveryState::default();
+        let mut failed = PcmPublish {
+            data: Vec::new(),
+            duration_ms: 20,
+            sequence: 4,
+            pts_ns: 80_000_000,
+            discontinuity: false,
+            queue_id: None,
+            media_kind: PcmMediaKind::Routine,
+        };
+        state.prepare(&mut failed);
+        assert!(!failed.discontinuity);
+        state.record_result(false);
+
+        let mut reconnected = PcmPublish {
+            sequence: 5,
+            pts_ns: 100_000_000,
+            ..failed
+        };
+        reconnected.discontinuity = false;
+        state.prepare(&mut reconnected);
+        assert!(reconnected.discontinuity);
+        state.record_result(true);
+
+        let mut continuous = PcmPublish {
+            sequence: 6,
+            pts_ns: 120_000_000,
+            discontinuity: false,
+            ..reconnected
+        };
+        state.prepare(&mut continuous);
+        assert!(!continuous.discontinuity);
+    }
+
+    #[test]
+    fn active_pcm_context_correlates_only_priority_audio() {
+        let routine = test_audio_item("routine-1", "Forecast");
+        let alert = test_priority_item("alert-1", &[1]);
+        let live = LiveBreakIn {
+            id: "breakin-1".to_string(),
+            title: "Break-in".to_string(),
+            buffer: VecDeque::new(),
+            finishing: false,
+        };
+
+        let routine_context = PcmMediaContext::active(None, Some(&routine));
+        assert_eq!(routine_context.media_kind, PcmMediaKind::Routine);
+        assert_eq!(routine_context.item_id.as_deref(), Some("routine-1"));
+        assert_eq!(routine_context.queue_id, None);
+
+        let alert_context = PcmMediaContext::active(None, Some(&alert));
+        assert_eq!(alert_context.media_kind, PcmMediaKind::Alert);
+        assert_eq!(alert_context.queue_id.as_deref(), Some("alert-1"));
+
+        let breakin_context = PcmMediaContext::active(Some(&live), Some(&alert));
+        assert_eq!(breakin_context.media_kind, PcmMediaKind::OperatorBreakIn);
+        assert_eq!(breakin_context.queue_id.as_deref(), Some("breakin-1"));
+
+        assert_eq!(
+            PcmMediaContext::active(None, None).media_kind,
+            PcmMediaKind::Silence
+        );
+    }
+
+    #[test]
+    fn pcm_pts_uses_sample_frames_and_advances_across_dropped_time() {
+        assert_eq!(pcm_frame_count(1_920, 1), 960);
+        assert_eq!(sample_frames_to_ns(960, 48_000), 20_000_000);
+        assert_eq!(
+            duration_sample_frames(Duration::from_millis(50), 48_000),
+            2_400
+        );
+        let after_gap =
+            960u64.saturating_add(duration_sample_frames(Duration::from_millis(50), 48_000));
+        assert_eq!(sample_frames_to_ns(after_gap, 48_000), 70_000_000);
+    }
+
+    #[test]
+    fn pcm_channel_layout_names_are_stable() {
+        assert_eq!(pcm_channel_layout(0), "mono");
+        assert_eq!(pcm_channel_layout(1), "mono");
+        assert_eq!(pcm_channel_layout(2), "stereo");
+        assert_eq!(pcm_channel_layout(6), "5.1");
+        assert_eq!(pcm_channel_layout(8), "8ch");
     }
 
     #[test]

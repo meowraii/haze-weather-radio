@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene schema_version="1" id="Program_Passthrough" name="Program_Passthrough">
+  <node id="root" name="Program Passthrough" enabled="true">
+    <transform x="0" y="0" width="0" height="0" z_index="0" opacity="1" clip_children="false">
+      <anchors left="0" top="0" right="1" bottom="1"/>
+    </transform>
+    <group/>
+  </node>
+</scene>

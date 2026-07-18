@@ -27,6 +27,14 @@ func TestCgenCatalogScansBundledGStreamerPlugins(t *testing.T) {
 	if !catalogPayloadContains(payload, "formats", "mpegts") {
 		t.Fatalf("expected mpegts format from bundled plugin scan: %#v", payload["formats"])
 	}
+	capabilities, ok := payload["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected runtime capability map: %#v", payload["capabilities"])
+	}
+	audioTopologies, ok := capabilities["audio_topologies"].(map[string]bool)
+	if !ok || !audioTopologies["force_layout"] || audioTopologies["preserve_native_tracks"] {
+		t.Fatalf("unexpected audio topology capabilities: %#v", capabilities["audio_topologies"])
+	}
 	if !catalogPayloadContains(payload, "formats", "matroska") {
 		t.Fatalf("expected matroska format from bundled plugin scan: %#v", payload["formats"])
 	}
@@ -35,6 +43,47 @@ func TestCgenCatalogScansBundledGStreamerPlugins(t *testing.T) {
 	}
 	if !catalogPayloadContains(payload, "audio_codecs", "opusenc") {
 		t.Fatalf("expected opusenc audio encoder from bundled plugin scan: %#v", payload["audio_codecs"])
+	}
+}
+
+func TestCgenInputDevicePayloadKeepsSupportedPersistentDevices(t *testing.T) {
+	devices := cgenInputDevicePayload([]cgenInputDevice{
+		{
+			ID:      "/dev/v4l/by-id/camera-b",
+			Label:   "Camera B",
+			Backend: "Video4Linux2",
+			Element: "v4l2src",
+			Caps:    "video/x-raw,width=1920,height=1080",
+		},
+		{
+			ID:      "capture-a",
+			Label:   "Camera A",
+			Backend: "DirectShow",
+			Element: "dshowvideosrc",
+		},
+		{
+			ID:      "capture-a",
+			Label:   "Duplicate Camera A",
+			Backend: "dshow",
+		},
+		{
+			ID:      "pipewire-camera",
+			Label:   "Unsupported Camera",
+			Backend: "pipewire",
+		},
+	})
+
+	if len(devices) != 2 {
+		t.Fatalf("device count = %d, want 2: %#v", len(devices), devices)
+	}
+	if got := stringValue(devices[0], "label"); got != "Camera A" {
+		t.Fatalf("first device label = %q, want Camera A", got)
+	}
+	if got := stringValue(devices[0], "backend"); got != "directshow" {
+		t.Fatalf("first device backend = %q, want directshow", got)
+	}
+	if got := stringValue(devices[1], "backend"); got != "v4l2" {
+		t.Fatalf("second device backend = %q, want v4l2", got)
 	}
 }
 

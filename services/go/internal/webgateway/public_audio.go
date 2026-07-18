@@ -27,6 +27,7 @@ const (
 	httpAudioMaxCodecID     = 64
 	httpAudioDrainLimit     = 64
 	httpAudioProxyBuffer    = httpWAVFrameSamples * httpWAVChannels * (httpWAVBitsPerSample / 8) * 16
+	httpOpusBitrate         = "16k"
 )
 
 type httpAudioFormat struct {
@@ -50,7 +51,7 @@ func (s *Server) publicFeedAudio(writer http.ResponseWriter, request *http.Reque
 		http.Error(writer, "public feeds are disabled", http.StatusNotFound)
 		return
 	}
-	if access == "auth_required" && !s.auth.Authenticated(request) {
+	if access == "auth_required" && !s.auth.FullyAuthenticated(request) {
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -311,9 +312,9 @@ func httpAudioFormatByID(raw string) (httpAudioFormat, bool) {
 	case "m4a", "mp4_aac", "fmp4_aac":
 		return httpAudioFormat{ID: "m4a", ContentType: "audio/mp4", Extension: "m4a", FFmpegFormat: "mp4", FFmpegCodec: "aac", Bitrate: "96k", Channels: 1, SampleRate: 48000, ExtraOutputArg: []string{"-movflags", "frag_keyframe+empty_moov+default_base_moof"}}, true
 	case "opus", "ogg_opus", "opus_ogg":
-		return httpAudioFormat{ID: "opus", ContentType: "audio/ogg; codecs=opus", Extension: "opus", FFmpegFormat: "ogg", FFmpegCodec: "libopus", Bitrate: "48k", Channels: 1, SampleRate: 48000, ExtraOutputArg: []string{"-page_duration", "20000"}}, true
+		return httpAudioFormat{ID: "opus", ContentType: "audio/ogg; codecs=opus", Extension: "opus", FFmpegFormat: "ogg", FFmpegCodec: "libopus", Bitrate: httpOpusBitrate, Channels: 1, SampleRate: 48000, ExtraOutputArg: []string{"-page_duration", "20000"}}, true
 	case "webm_opus", "opus_webm", "webm":
-		return httpAudioFormat{ID: "webm_opus", ContentType: "audio/webm; codecs=opus", Extension: "webm", FFmpegFormat: "webm", FFmpegCodec: "libopus", Bitrate: "48k", Channels: 1, SampleRate: 48000}, true
+		return httpAudioFormat{ID: "webm_opus", ContentType: "audio/webm; codecs=opus", Extension: "webm", FFmpegFormat: "webm", FFmpegCodec: "libopus", Bitrate: httpOpusBitrate, Channels: 1, SampleRate: 48000}, true
 	case "vorbis", "ogg_vorbis":
 		return httpAudioFormat{ID: "vorbis", ContentType: "audio/ogg; codecs=vorbis", Extension: "ogg", FFmpegFormat: "ogg", FFmpegCodec: "libvorbis", Bitrate: "80k", Channels: 1, SampleRate: 48000, ExtraOutputArg: []string{"-page_duration", "20000"}}, true
 	case "flac":

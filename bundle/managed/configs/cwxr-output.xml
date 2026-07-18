@@ -2,7 +2,7 @@
 <!-- custom output config for Canada Weather Radio Service -->
 <outputs>
   <feed id="cwxr-*">
-    <webrtc enabled="false"/>
+    <webrtc enabled="true"/>
 
     <icecast enabled="true">
       <host>${HAZE_ICECAST_HOST}</host>
@@ -12,7 +12,7 @@
       <mount></mount>
       <ssl>false</ssl>
       <format>opus</format>
-      <bitrate_kbps>64</bitrate_kbps>
+      <bitrate_kbps>16</bitrate_kbps>
       <acodec>libopus</acodec>
     </icecast>
 

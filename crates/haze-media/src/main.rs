@@ -39,6 +39,8 @@ const DEFAULT_OUTPUTS_FILE: &str = "managed/configs/output.xml";
 const DEFAULT_LISTEN: &str = "127.0.0.1:8097";
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 1;
+const OPUS_BITRATE_BPS: u32 = 16_000;
+const OPUS_BITRATE_KBPS: u32 = OPUS_BITRATE_BPS / 1_000;
 const FRAME_DURATION: Duration = Duration::from_millis(20);
 const FRAME_SAMPLES: usize = SAMPLE_RATE as usize / 50;
 const FRAME_BYTES: usize = FRAME_SAMPLES * CHANNELS as usize * 2;
@@ -64,6 +66,9 @@ const STR0M_WEBRTC_PEER_PREROLL_FRAMES: usize = 3;
 const STR0M_WEBRTC_PEER_MAX_BUFFER_FRAMES: usize = 16;
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
 const STR0M_WEBRTC_PEER_DRAIN_LIMIT: usize = 16;
+const MAX_WEBRTC_UDP_PORTS: u32 = 4_096;
+#[cfg(feature = "gstreamer-backend")]
+static WEBRTC_UDP_PORT_CURSOR: AtomicU64 = AtomicU64::new(0);
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
 const ENCODED_HTTP_QUEUE_CAPACITY: usize = 64;
 #[cfg(feature = "gstreamer-backend")]
@@ -170,7 +175,19 @@ struct MediaServiceConfig {
     #[serde(default)]
     backend: String,
     #[serde(default)]
+    webrtc: MediaWebRTCConfig,
+    #[serde(default)]
     audio_processing: MediaAudioProcessingConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MediaWebRTCConfig {
+    #[serde(default)]
+    public_ip: String,
+    #[serde(default)]
+    udp_port_min: Option<u16>,
+    #[serde(default)]
+    udp_port_max: Option<u16>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -274,7 +291,7 @@ impl OutputNodeXml {
             .parse::<u32>()
             .ok()
             .filter(|value| *value > 0)
-            .unwrap_or(64)
+            .unwrap_or(OPUS_BITRATE_KBPS)
     }
 }
 
@@ -1003,6 +1020,37 @@ fn apply_media_audio_processing_config(config: &MediaAudioProcessingConfig) {
     );
 }
 
+fn apply_media_webrtc_config(config: &MediaWebRTCConfig) {
+    set_env_string_if_absent("HAZE_MEDIA_WEBRTC_HOST", &config.public_ip);
+    set_env_u16_if_absent(
+        "HAZE_MEDIA_WEBRTC_UDP_PORT_MIN",
+        config.udp_port_min.filter(|port| *port > 0),
+    );
+    set_env_u16_if_absent(
+        "HAZE_MEDIA_WEBRTC_UDP_PORT_MAX",
+        config.udp_port_max.filter(|port| *port > 0),
+    );
+}
+
+fn set_env_string_if_absent(name: &str, value: &str) {
+    if env::var_os(name).is_some() {
+        return;
+    }
+    let value = value.trim();
+    if !value.is_empty() {
+        env::set_var(name, value);
+    }
+}
+
+fn set_env_u16_if_absent(name: &str, value: Option<u16>) {
+    if env::var_os(name).is_some() {
+        return;
+    }
+    if let Some(value) = value {
+        env::set_var(name, value.to_string());
+    }
+}
+
 fn set_env_bool_if_absent(name: &str, value: Option<bool>) {
     if env::var_os(name).is_some() {
         return;
@@ -1049,6 +1097,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let root = load_root_config(&args.config)?;
     apply_media_audio_processing_config(&root.services.rust.media.audio_processing);
+    apply_media_webrtc_config(&root.services.rust.media.webrtc);
+    let webrtc_udp_port_range = configured_webrtc_udp_port_range()?;
     let listen = first_non_blank(&[
         args.listen.as_deref(),
         Some(root.services.rust.media.listen.as_str()),
@@ -1076,6 +1126,13 @@ async fn main() -> Result<()> {
     let gstreamer_available = initialize_gstreamer(backend)?;
     let webrtc_codecs = detect_gstreamer_webrtc_codecs(gstreamer_available);
     let state = MediaState::new(outputs, backend, gstreamer_available, webrtc_codecs);
+
+    if let Some((udp_port_min, udp_port_max)) = webrtc_udp_port_range {
+        info!(
+            udp_port_min,
+            udp_port_max, "str0m WebRTC UDP port range configured"
+        );
+    }
 
     info!(
         listen,
@@ -2062,25 +2119,55 @@ async fn build_str0m_webrtc_peer(
     request_peer_ip: Option<IpAddr>,
 ) -> Result<Str0mWebRTCPeer> {
     let offer_sdp = offer_sdp.to_string();
-    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
-        .await
-        .context("failed to bind str0m WebRTC UDP socket")?;
+    let socket = bind_str0m_webrtc_udp_socket().await?;
     let local_addr = socket
         .local_addr()
         .context("failed to read str0m WebRTC UDP socket address")?;
-    let candidate_ip = detect_webrtc_candidate_ip(&offer_sdp, request_peer_ip);
-    let candidate_addr = SocketAddr::new(candidate_ip.ip, local_addr.port());
-    warn!(
-        candidate = %candidate_addr,
-        source = candidate_ip.source,
-        "selected str0m WebRTC ICE host candidate"
-    );
+    let selected_ip = detect_webrtc_candidate_ip(&offer_sdp, request_peer_ip);
+    let public_ip = configured_webrtc_public_candidate_ip();
+    let host_ip = if public_ip.is_some_and(|candidate| candidate.ip == selected_ip.ip) {
+        detect_webrtc_host_candidate_ip(&offer_sdp, request_peer_ip)
+    } else {
+        selected_ip
+    };
+    let host_addr = SocketAddr::new(host_ip.ip, local_addr.port());
     let mut rtc = str0m::RtcConfig::new()
         .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
         .build(Instant::now());
-    let candidate = str0m::Candidate::host(candidate_addr, "udp")
-        .with_context(|| format!("failed to build host ICE candidate for {candidate_addr}"))?;
-    rtc.add_local_candidate(candidate);
+    let host_candidate = str0m::Candidate::host(host_addr, "udp")
+        .with_context(|| format!("failed to build host ICE candidate for {host_addr}"))?;
+    rtc.add_local_candidate(host_candidate);
+    info!(
+        candidate = %host_addr,
+        source = host_ip.source,
+        "added str0m WebRTC ICE host candidate"
+    );
+    if let Some(public_ip) = public_ip.filter(|candidate| candidate.ip != host_ip.ip) {
+        let public_addr = SocketAddr::new(public_ip.ip, local_addr.port());
+        if public_addr.is_ipv4() == host_addr.is_ipv4() {
+            let public_candidate =
+                str0m::Candidate::server_reflexive(public_addr, host_addr, "udp").with_context(
+                    || {
+                        format!(
+                    "failed to build server-reflexive ICE candidate {public_addr} for {host_addr}"
+                )
+                    },
+                )?;
+            rtc.add_local_candidate(public_candidate);
+            info!(
+                candidate = %public_addr,
+                base = %host_addr,
+                source = public_ip.source,
+                "added str0m WebRTC ICE server-reflexive candidate"
+            );
+        } else {
+            warn!(
+                candidate = %public_addr,
+                base = %host_addr,
+                "ignored WebRTC public candidate with a different IP family than its host candidate"
+            );
+        }
+    }
     let offer = str0m::change::SdpOffer::from_sdp_string(&offer_sdp)
         .context("failed to parse WebRTC offer SDP")?;
     let answer = rtc
@@ -2092,10 +2179,77 @@ async fn build_str0m_webrtc_peer(
     Ok(Str0mWebRTCPeer {
         rtc,
         socket,
-        local_candidate_addr: candidate_addr,
+        local_candidate_addr: host_addr,
         answer_sdp,
         selection,
     })
+}
+
+fn configured_webrtc_udp_port_range() -> Result<Option<(u16, u16)>> {
+    parse_webrtc_udp_port_range(
+        env::var("HAZE_MEDIA_WEBRTC_UDP_PORT_MIN").ok().as_deref(),
+        env::var("HAZE_MEDIA_WEBRTC_UDP_PORT_MAX").ok().as_deref(),
+    )
+}
+
+fn parse_webrtc_udp_port_range(
+    raw_min: Option<&str>,
+    raw_max: Option<&str>,
+) -> Result<Option<(u16, u16)>> {
+    let raw_min = raw_min.map(str::trim).filter(|value| !value.is_empty());
+    let raw_max = raw_max.map(str::trim).filter(|value| !value.is_empty());
+    if raw_min.is_none() && raw_max.is_none() {
+        return Ok(None);
+    }
+    let Some(raw_min) = raw_min else {
+        bail!("HAZE_MEDIA_WEBRTC_UDP_PORT_MIN is required when the WebRTC UDP range is configured");
+    };
+    let Some(raw_max) = raw_max else {
+        bail!("HAZE_MEDIA_WEBRTC_UDP_PORT_MAX is required when the WebRTC UDP range is configured");
+    };
+    let min = raw_min
+        .parse::<u16>()
+        .with_context(|| format!("invalid HAZE_MEDIA_WEBRTC_UDP_PORT_MIN {raw_min:?}"))?;
+    let max = raw_max
+        .parse::<u16>()
+        .with_context(|| format!("invalid HAZE_MEDIA_WEBRTC_UDP_PORT_MAX {raw_max:?}"))?;
+    if min < 1_024 {
+        bail!("WebRTC UDP ports below 1024 are not supported");
+    }
+    if max < min {
+        bail!("WebRTC UDP port maximum must be greater than or equal to the minimum");
+    }
+    let count = u32::from(max) - u32::from(min) + 1;
+    if count > MAX_WEBRTC_UDP_PORTS {
+        bail!(
+            "WebRTC UDP port range contains {count} ports; the maximum is {MAX_WEBRTC_UDP_PORTS}"
+        );
+    }
+    Ok(Some((min, max)))
+}
+
+#[cfg(feature = "gstreamer-backend")]
+async fn bind_str0m_webrtc_udp_socket() -> Result<UdpSocket> {
+    let Some((min, max)) = configured_webrtc_udp_port_range()? else {
+        return UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .await
+            .context("failed to bind str0m WebRTC UDP socket");
+    };
+    let count = u64::from(max) - u64::from(min) + 1;
+    let start = WEBRTC_UDP_PORT_CURSOR.fetch_add(1, Ordering::Relaxed) % count;
+    for offset in 0..count {
+        let port = u64::from(min) + ((start + offset) % count);
+        let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port as u16));
+        match UdpSocket::bind(addr).await {
+            Ok(socket) => return Ok(socket),
+            Err(err) if err.kind() == ErrorKind::AddrInUse => continue,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to bind str0m WebRTC UDP socket at {addr}"));
+            }
+        }
+    }
+    bail!("WebRTC UDP port range {min}-{max} is exhausted")
 }
 
 #[cfg(not(feature = "gstreamer-backend"))]
@@ -2131,22 +2285,58 @@ fn detect_webrtc_candidate_ip(
 }
 
 #[cfg(feature = "gstreamer-backend")]
+fn configured_webrtc_public_candidate_ip() -> Option<WebRTCCandidateIp> {
+    let overrides = [
+        (
+            "HAZE_MEDIA_WEBRTC_HOST",
+            env::var("HAZE_MEDIA_WEBRTC_HOST").ok(),
+        ),
+        ("HAZE_WEBRTC_HOST", env::var("HAZE_WEBRTC_HOST").ok()),
+        ("HAZE_PUBLIC_HOST", env::var("HAZE_PUBLIC_HOST").ok()),
+    ];
+    configured_webrtc_public_candidate_ip_inner(&overrides)
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn configured_webrtc_public_candidate_ip_inner(
+    overrides: &[(&'static str, Option<String>)],
+) -> Option<WebRTCCandidateIp> {
+    for (name, raw) in overrides {
+        let Some(raw) = raw.as_deref() else {
+            continue;
+        };
+        if let Some(ip) = parse_webrtc_host_override(*name, raw) {
+            return Some(WebRTCCandidateIp { ip, source: *name });
+        }
+    }
+    None
+}
+
+#[cfg(feature = "gstreamer-backend")]
 fn detect_webrtc_candidate_ip_inner(
     offer_sdp: &str,
     request_peer_ip: Option<IpAddr>,
     overrides: &[(&'static str, Option<String>)],
 ) -> WebRTCCandidateIp {
-    for (name, raw) in overrides {
-        let Some(raw) = raw.as_deref() else {
-            continue;
-        };
-        match parse_webrtc_host_override(*name, raw) {
-            Some(ip) => {
-                return WebRTCCandidateIp { ip, source: *name };
-            }
-            None => continue,
+    if let Some(remote_ip) = request_peer_ip.filter(|ip| webrtc_peer_is_private(*ip)) {
+        if let Some(ip) = local_ip_for_remote(remote_ip) {
+            return WebRTCCandidateIp {
+                ip,
+                source: "private_http_peer_route",
+            };
         }
     }
+    if let Some(candidate) = configured_webrtc_public_candidate_ip_inner(overrides) {
+        return candidate;
+    }
+    detect_webrtc_host_candidate_ip(offer_sdp, request_peer_ip)
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn detect_webrtc_host_candidate_ip(
+    offer_sdp: &str,
+    request_peer_ip: Option<IpAddr>,
+) -> WebRTCCandidateIp {
     if let Some(remote_ip) = request_peer_ip {
         if let Some(ip) = local_ip_for_remote(remote_ip) {
             return WebRTCCandidateIp {
@@ -2180,6 +2370,14 @@ fn detect_webrtc_candidate_ip_inner(
         "WebRTC host candidate used fallback selection; set HAZE_MEDIA_WEBRTC_HOST for deterministic receiver access"
     );
     fallback
+}
+
+#[cfg(feature = "gstreamer-backend")]
+fn webrtc_peer_is_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_link_local() || ip.is_loopback(),
+        IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local() || ip.is_loopback(),
+    }
 }
 
 fn parse_webrtc_request_peer_ip(payload: &WebRTCOfferRequest) -> Option<IpAddr> {
@@ -2383,7 +2581,7 @@ fn gstreamer_webrtc_encoder_pipeline(selection: WebRTCCodecSelection) -> Result<
     let pipeline = match selection.codec {
         WebRTCAudioCodec::Opus => format!(
             "{source} \
-             ! opusenc bitrate=96000 bitrate-type=cbr frame-size=20 audio-type=generic dtx=false inband-fec=true \
+             ! opusenc bitrate={OPUS_BITRATE_BPS} bitrate-type=cbr frame-size=20 audio-type=generic dtx=false inband-fec=true \
              ! appsink name=sink emit-signals=true sync=false"
         ),
         WebRTCAudioCodec::Pcmu => format!(
@@ -3321,10 +3519,10 @@ fn gstreamer_audio_pipeline(codec: &str) -> Result<String> {
     );
     match codec {
         "opus" => Ok(format!(
-            "{source} ! {common} ! opusenc bitrate=96000 frame-size=20 inband-fec=true ! oggmux ! appsink name=sink emit-signals=true sync=false"
+            "{source} ! {common} ! opusenc bitrate={OPUS_BITRATE_BPS} frame-size=20 inband-fec=true ! oggmux ! appsink name=sink emit-signals=true sync=false"
         )),
         "aac" => Ok(format!(
-            "{source} ! {common} ! avenc_aac bitrate=96000 ! aacparse ! appsink name=sink emit-signals=true sync=false"
+            "{source} ! {common} ! avenc_aac bitrate=96000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=adts ! appsink name=sink emit-signals=true sync=false"
         )),
         _ => bail!("unsupported GStreamer audio codec {codec}"),
     }
@@ -4821,6 +5019,33 @@ mod tests {
         assert_eq!(selected.source, "HAZE_WEBRTC_HOST");
     }
 
+    #[test]
+    fn webrtc_udp_port_range_is_bounded_and_validated() {
+        assert_eq!(
+            parse_webrtc_udp_port_range(Some("50000"), Some("50199")).unwrap(),
+            Some((50_000, 50_199))
+        );
+        assert_eq!(parse_webrtc_udp_port_range(None, None).unwrap(), None);
+        assert!(parse_webrtc_udp_port_range(Some("50000"), None).is_err());
+        assert!(parse_webrtc_udp_port_range(Some("1023"), Some("1024")).is_err());
+        assert!(parse_webrtc_udp_port_range(Some("50199"), Some("50000")).is_err());
+        assert!(parse_webrtc_udp_port_range(Some("50000"), Some("55000")).is_err());
+    }
+
+    #[cfg(feature = "gstreamer-backend")]
+    #[test]
+    fn webrtc_private_peer_detection_keeps_lan_candidates_routable() {
+        assert!(webrtc_peer_is_private(IpAddr::V4(Ipv4Addr::new(
+            172, 16, 1, 30
+        ))));
+        assert!(webrtc_peer_is_private(IpAddr::V4(Ipv4Addr::new(
+            169, 254, 1, 2
+        ))));
+        assert!(!webrtc_peer_is_private(IpAddr::V4(Ipv4Addr::new(
+            198, 51, 100, 20
+        ))));
+    }
+
     #[cfg(feature = "gstreamer-backend")]
     #[test]
     fn webrtc_request_peer_ip_prefers_proxy_client_ip() {
@@ -4988,9 +5213,16 @@ mod tests {
     #[test]
     fn gstreamer_opus_pipeline_uses_clean_broadcast_bitrate() {
         let pipeline = gstreamer_audio_pipeline("opus").unwrap();
-        assert!(pipeline.contains("bitrate=96000"));
+        assert!(pipeline.contains("bitrate=16000"));
         assert!(pipeline.contains("frame-size=20"));
         assert!(pipeline.contains("max-size-time=1900000000"));
         assert!(pipeline.contains("max-size-buffers=95"));
+    }
+
+    #[cfg(feature = "gstreamer-backend")]
+    #[test]
+    fn gstreamer_aac_pipeline_emits_adts_frames() {
+        let pipeline = gstreamer_audio_pipeline("aac").unwrap();
+        assert!(pipeline.contains("stream-format=adts"));
     }
 }

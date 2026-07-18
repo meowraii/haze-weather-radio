@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -37,6 +38,7 @@ func run() error {
 	surface := flag.String("surface", "combined", "HTTP surface: public, admin, or combined")
 	checkCodecs := flag.Bool("check-codecs", false, "print WebRTC codec capabilities and exit")
 	requireOpus := flag.Bool("require-opus", false, "fail --check-codecs unless native Opus is available")
+	unlockAccount := flag.String("unlock-account", "", "locally unlock an account, revoke its sessions, audit the recovery, and exit")
 	flag.Parse()
 
 	if *checkCodecs {
@@ -70,16 +72,33 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if username := strings.TrimSpace(*unlockAccount); username != "" {
+		auth := webgateway.NewAuthManagerWithPath(config, *configPath)
+		defer auth.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := auth.RecoverLockedAccount(ctx, username); err != nil {
+			return fmt.Errorf("unlock account %q: %w", username, err)
+		}
+		log.Printf("haze-web: account %q unlocked and all sessions revoked", username)
+		return nil
+	}
 	tlsRuntime, err := webgateway.NewTLSRuntime(config, *configPath)
 	if err != nil {
 		return err
 	}
 
-	handler := webgateway.NewServerWithSurface(config, *configPath, *webroot, *surface).Handler()
+	webServer := webgateway.NewServerWithSurface(config, *configPath, *webroot, *surface)
+	defer webServer.Close()
+	handler := webServer.Handler()
 	server := &http.Server{
 		Addr:              *addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig:         tlsRuntime.TLSConfig(),
+	}
+	if configureTLSProtocols(server) {
+		log.Printf("haze-web TLS HTTP/2 disabled by HAZE_WEB_DISABLE_HTTP2")
 	}
 	normalizedSurface := webgateway.NormalizeSurface(*surface)
 	var publicServers []*http.Server
@@ -130,7 +149,14 @@ func run() error {
 		}
 	}()
 
-	log.Printf("haze-web %s listening on %s", *surface, *addr)
+	if tlsRuntime.Enabled {
+		log.Printf("haze-web %s HTTPS listening on %s", *surface, *addr)
+		if tlsRuntime.Mode == "acme" {
+			return server.ListenAndServeTLS("", "")
+		}
+		return server.ListenAndServeTLS(tlsRuntime.CertFile, tlsRuntime.KeyFile)
+	}
+	log.Printf("haze-web %s HTTP listening on %s", *surface, *addr)
 	return server.ListenAndServe()
 }
 
@@ -169,6 +195,7 @@ func startPublicPortServers(config webgateway.Config, handler http.Handler, tlsR
 			ReadHeaderTimeout: 10 * time.Second,
 			TLSConfig:         tlsRuntime.TLSConfig(),
 		}
+		configureTLSProtocols(httpsServer)
 		servers = append(servers, httpsServer)
 		go servePublicHTTPS(httpsServer, tlsRuntime)
 
@@ -192,6 +219,23 @@ func startPublicPortServers(config webgateway.Config, handler http.Handler, tlsR
 	servers = append(servers, httpServer)
 	go servePublicHTTP(httpServer)
 	return servers
+}
+
+func configureTLSProtocols(server *http.Server) bool {
+	if server == nil || !environmentFlagEnabled("HAZE_WEB_DISABLE_HTTP2") {
+		return false
+	}
+	server.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
+	return true
+}
+
+func environmentFlagEnabled(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func servePublicHTTP(server *http.Server) {

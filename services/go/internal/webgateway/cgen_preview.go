@@ -16,8 +16,7 @@ func (s *Server) cgenPreview(writer http.ResponseWriter, request *http.Request) 
 	if !requestMethodGETOrHEAD(writer, request) {
 		return
 	}
-	if !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+	if _, ok := s.requireAdminRequest(writer, request); !ok {
 		return
 	}
 	feedID := strings.TrimSpace(request.URL.Query().Get("feed"))

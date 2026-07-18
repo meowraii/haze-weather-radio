@@ -43,7 +43,6 @@ export class AdminTransportClient extends EventTarget {
         const url = new URL(`${this.base}${path}`, window.location.origin);
         const params = { ...this.params, ...extra };
         if (!this.stream) params.mode = params.mode || 'control';
-        if (this.includeSessionToken && session.token) params.token = session.token;
         Object.entries(params).forEach(([key, value]) => {
             if (value !== undefined && value !== null && value !== '') {
                 url.searchParams.set(key, String(value));
@@ -212,7 +211,12 @@ export class AdminTransportClient extends EventTarget {
         if (type === 'login') return this.fetchJSON(`${this.base}/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: payload.password || '' }),
+            body: JSON.stringify({
+                username: payload.username || '',
+                password: payload.password || '',
+                totp: payload.totp || '',
+                persistent: Boolean(payload.persistent),
+            }),
         }, timeoutMs);
         if (type === 'logout') return this.fetchJSON(`${this.base}/auth/logout`, {
             method: 'POST',
@@ -242,11 +246,8 @@ export class AdminTransportClient extends EventTarget {
             headers: session.authHeaders({ 'Content-Type': 'application/json', 'X-Haze-Admin-Intent': 'command' }),
             body: JSON.stringify({ command, payload }),
         }, timeoutMs, { rawResponse: true });
-        if (response.payload?.type === 'command_error') {
-            throw new Error(response.payload.detail || 'Panel command failed.');
-        }
-        if (!response.ok) {
-            throw new Error(response.payload?.detail || `Panel command failed with HTTP ${response.status}.`);
+        if (response.payload?.type === 'command_error' || !response.ok) {
+            throw this.responseError(response.status, response.payload, 'Panel command failed.');
         }
         return response.payload?.result !== undefined ? response.payload.result : response.payload;
     }
@@ -269,7 +270,7 @@ export class AdminTransportClient extends EventTarget {
             }
             if (rawResponse) return { ok: response.ok, status: response.status, payload };
             if (!response.ok) {
-                throw new Error(payload.detail || `Panel request failed with HTTP ${response.status}.`);
+                throw this.responseError(response.status, payload, 'Panel request failed.');
             }
             if (payload.type === 'auth_error' || payload.type === 'error' || payload.type === 'webrtc_error') {
                 throw new Error(payload.detail || 'Panel request failed.');
@@ -281,6 +282,17 @@ export class AdminTransportClient extends EventTarget {
         } finally {
             window.clearTimeout(timer);
         }
+    }
+
+    responseError(status, payload = {}, fallback = 'Panel request failed.') {
+        const error = new Error(payload.detail || `${fallback} HTTP ${status}.`);
+        error.status = status;
+        error.code = payload.code || '';
+        error.payload = payload;
+        if (status === 401) {
+            window.dispatchEvent(new CustomEvent('haze:session-invalid', { detail: { code: error.code } }));
+        }
+        return error;
     }
 
     dispatch(type, detail) {

@@ -17,7 +17,7 @@ func newOpusFrameEncoder(sampleRate int, channels int) (opusFrameEncoder, error)
 	if err != nil {
 		return nil, err
 	}
-	_ = encoder.SetBitrate(96000)
+	_ = encoder.SetBitrate(opusBitrateBPS)
 	_ = encoder.SetComplexity(8)
 	_ = encoder.SetDTX(false)
 	return &libOpusFrameEncoder{encoder: encoder}, nil

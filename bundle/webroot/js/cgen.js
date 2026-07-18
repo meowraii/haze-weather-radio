@@ -23,6 +23,15 @@ const fontPreview = document.getElementById('cgenFontPreview');
 const fontPicker = document.getElementById('cgenFontPicker');
 const fontPickerLabel = document.getElementById('cgenFontPickerLabel');
 const fontMenu = document.getElementById('cgenFontMenu');
+const sceneSelect = document.getElementById('cgenSceneSelect');
+const sceneXML = document.getElementById('cgenSceneXML');
+const sceneState = document.getElementById('cgenSceneState');
+const sceneRefreshButton = document.getElementById('cgenSceneRefreshButton');
+const sceneNewButton = document.getElementById('cgenSceneNewButton');
+const sceneSaveButton = document.getElementById('cgenSceneSaveButton');
+const sceneDeleteButton = document.getElementById('cgenSceneDeleteButton');
+const outputsBody = document.getElementById('cgenOutputsBody');
+const addOutputButton = document.getElementById('cgenAddOutputButton');
 const cgenTabs = Array.from(document.querySelectorAll('[data-cgen-tab]'));
 const cgenTabPanels = Array.from(document.querySelectorAll('[data-cgen-panel]'));
 
@@ -36,10 +45,30 @@ const fields = {
     programInputFormat: document.getElementById('cgenProgramInputFormat'),
     hardwareDecoderEnabled: document.getElementById('cgenHardwareDecoderEnabled'),
     hardwareDecoder: document.getElementById('cgenHardwareDecoder'),
+    deviceBackend: document.getElementById('cgenDeviceBackend'),
+    deviceID: document.getElementById('cgenDeviceID'),
+    dummyWidth: document.getElementById('cgenDummyWidth'),
+    dummyHeight: document.getElementById('cgenDummyHeight'),
+    dummyFPS: document.getElementById('cgenDummyFPS'),
+    dummyScanMode: document.getElementById('cgenDummyScanMode'),
+    dummyBackground: document.getElementById('cgenDummyBackground'),
     priorityFeed: document.getElementById('cgenPriorityFeed'),
     audioSource: document.getElementById('cgenAudioSource'),
     audioIdle: document.getElementById('cgenAudioIdle'),
     muteStandbyRoutine: document.getElementById('cgenMuteStandbyRoutine'),
+    captionsPass: document.getElementById('cgenCaptionsPass'),
+    scte35Pass: document.getElementById('cgenScte35Pass'),
+    scte104Pass: document.getElementById('cgenScte104Pass'),
+    audioTopology: document.getElementById('cgenAudioTopology'),
+    forcedLayout: document.getElementById('cgenForcedLayout'),
+    idleProgramGain: document.getElementById('cgenIdleProgramGain'),
+    alertProgramGain: document.getElementById('cgenAlertProgramGain'),
+    alertGain: document.getElementById('cgenAlertGain'),
+    audioTransition: document.getElementById('cgenAudioTransition'),
+    alertScene: document.getElementById('cgenAlertScene'),
+    compositorEngine: document.getElementById('cgenCompositorEngine'),
+    pidAssignment: document.getElementById('cgenPidAssignment'),
+    generatedAlertCues: document.getElementById('cgenGeneratedAlertCues'),
     programOutput: document.getElementById('cgenProgramOutput'),
     outputFormat: document.getElementById('cgenOutputFormat'),
     vcodec: document.getElementById('cgenVCodec'),
@@ -120,6 +149,7 @@ const fields = {
 
 let bound = false;
 let cgenEnabled = true;
+let cgenRevision = '';
 let feeds = [];
 let selectedID = '';
 let editorDirty = false;
@@ -128,11 +158,16 @@ let previewDirty = false;
 let metaDirty = false;
 let previewStreamFeedID = '';
 let previewRetryTimer = 0;
+let scenes = [];
+let sceneCollectionRevision = '';
+let activeScene = null;
+let sceneDirty = false;
 let cgenCatalog = {
     formats: [],
     video_codecs: [],
     audio_codecs: [],
     video_decoders: [],
+    devices: [],
     fonts: [],
 };
 const managedFontFaces = new Map();
@@ -220,14 +255,319 @@ function value(key, fallback = '') {
 }
 
 function inputTypeValue() {
-    if (fields.programInputType) fields.programInputType.value = 'stream';
-    return 'stream';
+    const type = String(fields.programInputType?.value || 'uri_or_file').trim().toLowerCase();
+    if (['uri_or_file', 'device', 'dummy', 'stream'].includes(type)) return type;
+    return 'uri_or_file';
 }
 
 function updateProgramInputVisibility() {
     const type = inputTypeValue();
-    const hardwareDecoderEnabled = type === 'stream' && fields.hardwareDecoderEnabled?.checked === true;
+    document.querySelectorAll('[data-cgen-input-option]').forEach((element) => {
+        const supported = String(element.dataset.cgenInputOption || '').split(/\s+/).filter(Boolean);
+        element.hidden = !supported.includes(type);
+    });
+    const hardwareDecoderEnabled = ['uri_or_file', 'stream', 'device'].includes(type) && fields.hardwareDecoderEnabled?.checked === true;
     if (fields.hardwareDecoder) fields.hardwareDecoder.disabled = !hardwareDecoderEnabled;
+}
+
+function updateAudioTopologyVisibility() {
+    const topology = String(fields.audioTopology?.value || 'force_layout').trim().toLowerCase();
+    document.querySelectorAll('[data-cgen-audio-option]').forEach((element) => {
+        const supported = String(element.dataset.cgenAudioOption || '').split(/\s+/).filter(Boolean);
+        element.hidden = !supported.includes(topology);
+    });
+    const preserve = topology === 'preserve_native_tracks';
+    if (fields.acodec) {
+        if (preserve) {
+            ensureSelectOption(fields.acodec, 'match_input', 'Match Input');
+            fields.acodec.value = 'match_input';
+        } else if (fields.acodec.value === 'match_input') {
+            ensureSelectOption(fields.acodec, 'avenc_aac', 'AAC - libav (avenc_aac)');
+            fields.acodec.value = 'avenc_aac';
+        }
+        fields.acodec.disabled = preserve;
+    }
+    if (fields.audioEncoderBitrate) fields.audioEncoderBitrate.disabled = preserve;
+    outputsBody?.querySelectorAll('[data-output-field="audio_codec"]').forEach((select) => {
+        if (preserve) {
+            select.value = 'match_input';
+        } else if (select.value === 'match_input') {
+            select.value = 'aac';
+        }
+        select.disabled = preserve;
+    });
+}
+
+function updatePidAssignmentVisibility() {
+    const manual = String(fields.pidAssignment?.value || 'auto') === 'manual';
+    [
+        fields.hdVideoPID, fields.hdPmtPID,
+        fields.p720VideoPID, fields.p720PmtPID,
+        fields.sdVideoPID, fields.sdPmtPID,
+        fields.stereoAudioPID, fields.stereoPmtPID,
+        fields.surroundAudioPID, fields.surroundPmtPID,
+    ].forEach((field) => {
+        if (field) field.disabled = !manual;
+    });
+}
+
+function pidEditorValue(key, fallback) {
+    return value('pidAssignment', 'auto') === 'manual' ? value(key, fallback) : 'auto';
+}
+
+function option(value, label) {
+    const entry = document.createElement('option');
+    entry.value = value;
+    entry.textContent = label;
+    return entry;
+}
+
+function destinationSelect(value) {
+    const select = document.createElement('select');
+    select.dataset.outputField = 'destination';
+    select.append(
+        option('mpeg_ts_udp', 'MPEG-TS / UDP'),
+        option('mpeg_ts_srt', 'MPEG-TS / SRT'),
+        option('rtp', 'RTP endpoints'),
+        option('rtmp', 'RTMP'),
+        option('file', 'File'),
+    );
+    select.value = value || 'mpeg_ts_udp';
+    return select;
+}
+
+function codecSelect(kind, value) {
+    const select = document.createElement('select');
+    select.dataset.outputField = kind;
+    if (kind === 'video_codec') {
+        select.append(option('h264', 'H.264'), option('h265', 'H.265'), option('mpeg2', 'MPEG-2'));
+    } else {
+        select.append(option('aac', 'AAC'), option('ac3', 'AC-3'), option('mp2', 'MP2'), option('match_input', 'Match input'));
+    }
+    select.value = value || (kind === 'video_codec' ? 'h264' : 'aac');
+    return select;
+}
+
+function rateControlSelect(value) {
+    const select = document.createElement('select');
+    select.dataset.outputField = 'rate_control';
+    select.style.marginTop = '4px';
+    select.append(option('cbr', 'CBR'), option('vbr', 'VBR target/max'));
+    select.value = value || 'cbr';
+    return select;
+}
+
+function endpointInput(value, placeholder, field) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.placeholder = placeholder;
+    input.value = String(value || '');
+    input.dataset.outputField = field;
+    return input;
+}
+
+function numericOutputInput(value, placeholder, field, min, step = '1') {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = String(min);
+    input.step = step;
+    input.placeholder = placeholder;
+    input.value = String(value || '');
+    input.dataset.outputField = field;
+    input.style.marginTop = '4px';
+    return input;
+}
+
+function setRtpEndpointVisibility(row) {
+    const isRtp = row.querySelector('[data-output-field="destination"]')?.value === 'rtp';
+    const audioEndpoints = row.querySelector('[data-output-field="audio_urls"]');
+    if (audioEndpoints) audioEndpoints.hidden = !isRtp;
+}
+
+function outputRow(rawOutput = {}) {
+    const output = rawOutput && typeof rawOutput === 'object' ? rawOutput : {};
+    const row = document.createElement('tr');
+    row.dataset.outputRow = 'true';
+    row._cgenOutputBase = { ...output };
+
+    const enabledCell = document.createElement('td');
+    const enabled = document.createElement('input');
+    enabled.type = 'checkbox';
+    enabled.checked = output.enabled !== false;
+    enabled.dataset.outputField = 'enabled';
+    enabledCell.append(enabled);
+
+    const idCell = document.createElement('td');
+    const id = document.createElement('input');
+    id.type = 'text';
+    id.maxLength = 96;
+    id.value = output.id || 'output';
+    id.dataset.outputField = 'id';
+    idCell.append(id);
+
+    const destinationCell = document.createElement('td');
+    const destination = destinationSelect(output.destination);
+    destinationCell.append(destination);
+
+    const endpointCell = document.createElement('td');
+    const endpoint = endpointInput(output.url || output.video_url, '${OUTPUT_URL}', 'url');
+    const audioEndpoints = endpointInput(output.audio_urls, 'Audio URLs, comma separated', 'audio_urls');
+    audioEndpoints.style.marginTop = '4px';
+    endpointCell.append(endpoint, audioEndpoints);
+
+    const videoCell = document.createElement('td');
+    const videoCodec = codecSelect('video_codec', normalizeVideoCodec(output.video_codec));
+    const videoBitrate = numericOutputInput(output.video_bitrate_kbps || '8000', 'video kbps', 'video_bitrate_kbps', 100);
+    const videoMaxBitrate = numericOutputInput(output.video_max_bitrate_kbps || '', 'max kbps (VBR)', 'video_max_bitrate_kbps', 100);
+    const gop = numericOutputInput(output.gop_frames || '60', 'GOP frames', 'gop_frames', 1);
+    videoCell.append(videoCodec, rateControlSelect(output.rate_control), videoBitrate, videoMaxBitrate, gop);
+    const audioCell = document.createElement('td');
+    const audioCodec = codecSelect('audio_codec', normalizeAudioCodec(output.audio_codec));
+    const audioBitrate = numericOutputInput(output.audio_bitrate_kbps || '192', 'audio kbps', 'audio_bitrate_kbps', 32, '8');
+    const sampleRate = numericOutputInput(output.sample_rate || '48000', 'sample rate', 'sample_rate', 8000);
+    audioCell.append(audioCodec, audioBitrate, sampleRate);
+
+    const removeCell = document.createElement('td');
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn-danger';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', () => {
+        row.remove();
+        editorDirty = true;
+        scheduleRender({ preview: false, meta: true });
+    });
+    removeCell.append(remove);
+
+    destination.addEventListener('change', () => setRtpEndpointVisibility(row));
+    row.append(enabledCell, idCell, destinationCell, endpointCell, videoCell, audioCell, removeCell);
+    setRtpEndpointVisibility(row);
+    return row;
+}
+
+function renderOutputsEditor(outputs = []) {
+    if (!outputsBody) return;
+    outputsBody.replaceChildren(...outputs.map((output) => outputRow(output)));
+}
+
+function readOutputsEditor() {
+    if (!outputsBody) return [];
+    return Array.from(outputsBody.querySelectorAll('[data-output-row]')).map((row, index) => {
+        const read = (name) => row.querySelector(`[data-output-field="${name}"]`);
+        const enabled = read('enabled');
+        const destination = String(read('destination')?.value || 'mpeg_ts_udp');
+        const endpoint = String(read('url')?.value || '').trim();
+        const result = {
+            ...(row._cgenOutputBase || {}),
+            id: sanitizeID(read('id')?.value || `output-${index + 1}`),
+            enabled: enabled?.checked !== false,
+            destination,
+            url: destination === 'rtp' ? '' : endpoint,
+            video_url: destination === 'rtp' ? endpoint : '',
+            audio_urls: destination === 'rtp' ? String(read('audio_urls')?.value || '').trim() : '',
+            video_codec: String(read('video_codec')?.value || 'h264'),
+            audio_codec: String(read('audio_codec')?.value || 'aac'),
+            video_bitrate_kbps: String(read('video_bitrate_kbps')?.value || '8000'),
+            video_max_bitrate_kbps: String(read('video_max_bitrate_kbps')?.value || ''),
+            rate_control: String(read('rate_control')?.value || 'cbr'),
+            audio_bitrate_kbps: String(read('audio_bitrate_kbps')?.value || '192'),
+            sample_rate: String(read('sample_rate')?.value || '48000'),
+            gop_frames: String(read('gop_frames')?.value || '60'),
+        };
+        return result;
+    });
+}
+
+function normalizeVideoCodec(codec) {
+    const value = String(codec || '').toLowerCase();
+    if (value.includes('265') || value.includes('hevc')) return 'h265';
+    if (value.includes('mpeg2')) return 'mpeg2';
+    return 'h264';
+}
+
+function normalizeAudioCodec(codec) {
+    const value = String(codec || '').toLowerCase();
+    if (value === 'match_input' || value.includes('match')) return 'match_input';
+    if (value.includes('ac3')) return 'ac3';
+    if (value.includes('mp2')) return 'mp2';
+    return 'aac';
+}
+
+function legacyOutputFromFeed(feed) {
+    if (!feed?.program_output_url) return [];
+    return [{
+        id: 'legacy-main',
+        enabled: feed.enabled !== false,
+        destination: String(feed.program_output_url).toLowerCase().startsWith('srt:') ? 'mpeg_ts_srt' : 'mpeg_ts_udp',
+        url: feed.program_output_url,
+        video_codec: normalizeVideoCodec(feed.vcodec),
+        audio_codec: normalizeAudioCodec(feed.acodec),
+        video_bitrate_kbps: feed.video_bitrate_kbps || feed.hd_bitrate_kbps || '12000',
+        audio_bitrate_kbps: feed.audio_bitrate_kbps || feed.stereo_bitrate_kbps || '192',
+        sample_rate: '48000',
+        gop_frames: feed.video_gop || '15',
+        rate_control: 'cbr',
+    }];
+}
+
+function validatePipelineEditor(feed) {
+    const alertFeed = String(feed.alert_feed_id || '').trim();
+    if (!alertFeed || alertFeed === '*') throw new Error('A concrete alert feed ID is required. Wildcards are not supported.');
+    if (feed.program_input_type === 'device' && !String(feed.device_id || '').trim()) {
+        throw new Error('Select a persistent capture device ID.');
+    }
+    if (['uri_or_file', 'stream'].includes(feed.program_input_type) && !String(feed.program_input_url || '').trim()) {
+        throw new Error('A program URL, file, or environment reference is required.');
+    }
+    if (!protectedAlertScene(feed.alert_scene_id)) throw new Error('Program_Passthrough and Standby cannot be selected as alert scenes.');
+    if (feed.audio_topology === 'preserve_native_tracks' && !preserveNativeAudioAvailable()) {
+        throw new Error('Preserve-native audio is unavailable in the current media backend. Select Force layout.');
+    }
+    validateGain(feed.audio_idle_program_gain_db, 'Idle program gain');
+    validateGain(feed.audio_alert_program_gain_db, 'Alert program gain');
+    validateGain(feed.audio_alert_gain_db, 'Alert audio gain');
+    if (!Array.isArray(feed.outputs) || !feed.outputs.some((output) => output.enabled !== false)) {
+        throw new Error('At least one encoder destination must be enabled.');
+    }
+    const ids = new Set();
+    for (const output of feed.outputs) {
+        if (ids.has(output.id)) throw new Error(`Output ID ${output.id} is duplicated.`);
+        ids.add(output.id);
+        const endpoint = output.destination === 'rtp' ? output.video_url : output.url;
+        if (output.enabled !== false && !String(endpoint || '').trim()) {
+            throw new Error(`Output ${output.id} requires an endpoint reference.`);
+        }
+        if (output.enabled !== false && output.destination === 'rtp' && !String(output.audio_urls || '').trim()) {
+            throw new Error(`RTP output ${output.id} requires explicit audio endpoints.`);
+        }
+        if (output.enabled !== false && output.destination === 'rtmp' && (output.video_codec !== 'h264' || output.audio_codec !== 'aac')) {
+            throw new Error(`RTMP output ${output.id} requires H.264 video and AAC audio.`);
+        }
+        if (output.enabled !== false && output.rate_control === 'vbr') {
+            const target = Number(output.video_bitrate_kbps);
+            const max = Number(output.video_max_bitrate_kbps);
+            if (!Number.isFinite(max) || max < target) {
+                throw new Error(`VBR output ${output.id} requires a max bitrate at or above its target bitrate.`);
+            }
+        }
+        if (feed.audio_topology === 'preserve_native_tracks' && output.audio_codec !== 'match_input') {
+            throw new Error(`Output ${output.id} must use Match input while native tracks are preserved.`);
+        }
+        if (feed.audio_topology !== 'preserve_native_tracks' && output.audio_codec === 'match_input') {
+            throw new Error(`Output ${output.id} requires AAC, AC-3, or MP2 in forced-layout mode.`);
+        }
+    }
+}
+
+function validateGain(raw, label) {
+    const value = String(raw ?? '').trim().toLowerCase();
+    if (value === 'muted') return;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric < -60 || numeric > 12) {
+        throw new Error(`${label} must be muted or a number from -60 dB through +12 dB.`);
+    }
 }
 
 function optionLabelForValue(value) {
@@ -272,6 +612,40 @@ function sanitizeID(value) {
 
 function readEditor() {
     const id = sanitizeID(value('id'));
+    const outputs = readOutputsEditor();
+    const primaryOutput = outputs.find((output) => output.enabled !== false && ['mpeg_ts_udp', 'mpeg_ts_srt'].includes(output.destination));
+    const dummyScanMode = value('dummyScanMode', 'progressive');
+    const alertFeedID = value('priorityFeed', id);
+    const captions = value('captionsPass') ? 'pass' : 'drop';
+    const scte35 = value('scte35Pass') ? 'pass' : 'drop';
+    const scte104 = value('scte104Pass') ? 'pass' : 'drop';
+    const audioTopology = value('audioTopology', 'force_layout');
+    const forceLayout = value('forcedLayout', 'stereo');
+    const idleProgramGain = value('idleProgramGain', '0');
+    const alertProgramGain = value('alertProgramGain', 'muted');
+    const alertGain = value('alertGain', '0');
+    const transitionMS = value('audioTransition', '20');
+    const alertSceneID = value('alertScene', 'Standard_Crawl');
+    const compositorEngine = value('compositorEngine', 'legacy');
+    const audioMappings = [];
+    if (value('stereoEnabled')) audioMappings.push({ track_id: 'stereo', pid: pidEditorValue('stereoAudioPID', '257') });
+    if (value('surroundEnabled')) audioMappings.push({ track_id: 'surround_51', pid: pidEditorValue('surroundAudioPID', '258') });
+    const programMapping = {
+        transport_stream_id: value('transportStreamID', '1'),
+        programs: [{
+            number: value('hdProgram', '1'),
+            service_name: value('serviceName', 'Haze CGEN'),
+            provider_name: value('providerName', 'Haze'),
+            pmt_pid: pidEditorValue('hdPmtPID', '4096'),
+            video_pid: pidEditorValue('hdVideoPID', '256'),
+            audio: audioMappings,
+            scte35: {
+                input: scte35,
+                generated_alert_cues: value('generatedAlertCues'),
+                pid: 'auto',
+            },
+        }],
+    };
     return {
         id,
         name: value('name', id),
@@ -284,10 +658,65 @@ function readEditor() {
         program_input_format: value('programInputFormat', 'mpegts'),
         hardware_decoder_enabled: value('hardwareDecoderEnabled'),
         hardware_decoder: value('hardwareDecoder'),
-        priority_feed_id: value('priorityFeed', id),
+        decoder_preference: value('hardwareDecoderEnabled') ? value('hardwareDecoder', 'auto') : 'auto',
+        device_backend: value('deviceBackend', 'v4l2'),
+        device_id: value('deviceID'),
+        dummy_width: value('dummyWidth', '720'),
+        dummy_height: value('dummyHeight', '480'),
+        dummy_fps: value('dummyFPS', '30000/1001'),
+        dummy_scan_mode: dummyScanMode,
+        dummy_interlaced: dummyScanMode !== 'progressive',
+        dummy_field_order: dummyScanMode === 'interlaced_bff' ? 'bff' : 'tff',
+        dummy_background: value('dummyBackground', '#000000FF'),
+        priority_feed_id: alertFeedID,
+        alert_feed_id: alertFeedID,
         audio_source: value('audioSource', 'priority'),
         priority_input_format: 'priority-audio',
-        program_output_url: value('programOutput'),
+        ancillary_captions: captions,
+        ancillary_scte35: scte35,
+        ancillary_scte104: scte104,
+        audio_topology: audioTopology,
+        audio_force_layout: forceLayout,
+        idle_program_gain_db: idleProgramGain,
+        alert_program_gain_db: alertProgramGain,
+        alert_gain_db: alertGain,
+        audio_idle_program_gain_db: idleProgramGain,
+        audio_alert_program_gain_db: alertProgramGain,
+        audio_alert_gain_db: alertGain,
+        audio_transition_ms: transitionMS,
+        compositor_engine: compositorEngine,
+        alert_scene_id: alertSceneID,
+        pid_assignment: value('pidAssignment', 'auto'),
+        generated_alert_cues: value('generatedAlertCues'),
+        program_input: {
+            type: inputTypeValue(),
+            url: value('programInput'),
+            format: value('programInputFormat', 'mpegts'),
+            hardware_decoder_enabled: value('hardwareDecoderEnabled'),
+            hardware_decoder: value('hardwareDecoder'),
+            device_backend: value('deviceBackend', 'v4l2'),
+            device_id: value('deviceID'),
+            width: value('dummyWidth', '720'),
+            height: value('dummyHeight', '480'),
+            fps: value('dummyFPS', '30000/1001'),
+            interlaced: dummyScanMode !== 'progressive',
+            field_order: dummyScanMode === 'interlaced_bff' ? 'bff' : 'tff',
+            background: value('dummyBackground', '#000000FF'),
+        },
+        alert: { feed_id: alertFeedID },
+        ancillary: { captions, scte35, scte104 },
+        audio_routing: {
+            topology: audioTopology,
+            force_layout: forceLayout,
+            idle_program_gain_db: idleProgramGain,
+            alert_program_gain_db: alertProgramGain,
+            alert_gain_db: alertGain,
+            transition_ms: transitionMS,
+        },
+        compositor: { alert_scene_id: alertSceneID, engine: compositorEngine },
+        program_mapping: programMapping,
+        outputs,
+        program_output_url: primaryOutput?.url || value('programOutput'),
         program_output_format: value('outputFormat', 'mpegts'),
         vcodec: value('vcodec', 'avenc_mpeg2video'),
         acodec: value('acodec', 'avenc_ac3'),
@@ -312,28 +741,28 @@ function readEditor() {
         hd_enabled: 'auto',
         hd_bitrate_kbps: value('hdBitrate', '12000'),
         hd_program: value('hdProgram', '1'),
-        hd_video_pid: value('hdVideoPID', '256'),
-        hd_pmt_pid: value('hdPmtPID', '4096'),
+        hd_video_pid: pidEditorValue('hdVideoPID', '256'),
+        hd_pmt_pid: pidEditorValue('hdPmtPID', '4096'),
         p720_enabled: value('p720Enabled'),
         p720_bitrate_kbps: value('p720Bitrate', '8000'),
         p720_program: value('p720Program', '2'),
-        p720_video_pid: value('p720VideoPID', '288'),
-        p720_pmt_pid: value('p720PmtPID', '4097'),
+        p720_video_pid: pidEditorValue('p720VideoPID', '288'),
+        p720_pmt_pid: pidEditorValue('p720PmtPID', '4097'),
         sd_enabled: value('sdEnabled'),
         sd_bitrate_kbps: value('sdBitrate', '5000'),
         sd_program: value('sdProgram', '3'),
-        sd_video_pid: value('sdVideoPID', '320'),
-        sd_pmt_pid: value('sdPmtPID', '4098'),
+        sd_video_pid: pidEditorValue('sdVideoPID', '320'),
+        sd_pmt_pid: pidEditorValue('sdPmtPID', '4098'),
         surround_enabled: value('surroundEnabled'),
         surround_bitrate_kbps: value('surroundBitrate', '384'),
         surround_program: value('surroundProgram', '1'),
-        surround_audio_pid: value('surroundAudioPID', '258'),
-        surround_pmt_pid: value('surroundPmtPID', '4096'),
+        surround_audio_pid: pidEditorValue('surroundAudioPID', '258'),
+        surround_pmt_pid: pidEditorValue('surroundPmtPID', '4096'),
         stereo_enabled: value('stereoEnabled'),
         stereo_bitrate_kbps: value('stereoBitrate', '192'),
         stereo_program: value('stereoProgram', '1'),
-        stereo_audio_pid: value('stereoAudioPID', '257'),
-        stereo_pmt_pid: value('stereoPmtPID', '4096'),
+        stereo_audio_pid: pidEditorValue('stereoAudioPID', '257'),
+        stereo_pmt_pid: pidEditorValue('stereoPmtPID', '4096'),
         width: value('width', '1920'),
         height: value('height', '1080'),
         fps: value('fps', '30000/1001'),
@@ -355,7 +784,7 @@ function readEditor() {
         banner_background_enabled: true,
         banner_height: value('bannerHeight', '128'),
         standby_mode: value('standbyMode', 'banner'),
-        standby_text: value('standbyText', 'EAS Details Channel'),
+        standby_text: value('standbyText', 'Emergency Alert Details Channel'),
         standby_font_size: value('standbyFontSize', value('fontSize', '58')),
         standby_y_percent: value('standbyYPercent', '10'),
         text_enabled: value('textEnabled'),
@@ -379,21 +808,50 @@ function readEditor() {
 
 function writeEditor(feed) {
     if (!feed) return;
+    const mappedProgram = Array.isArray(feed.program_mapping?.programs) ? feed.program_mapping.programs[0] : null;
+    const mappedAudio = Array.isArray(mappedProgram?.audio) ? mappedProgram.audio : [];
+    const mappedAudioPID = (trackID, fallback) => mappedAudio.find((stream) => stream.track_id === trackID)?.pid || fallback;
     setValue('id', feed.id);
     setValue('name', feed.name || feed.id);
     setValue('enabled', Boolean(feed.enabled));
     setValue('mode', feed.mode || 'release');
     setValue('smpteBars', Boolean(feed.smpte_bars));
     setValue('sunnyCat', Boolean(feed.sunny_cat));
-    setValue('programInputType', 'stream');
+    setValue('programInputType', feed.program_input_type || 'uri_or_file');
     setValue('programInput', feed.program_input_url || '');
     setValue('programInputFormat', feed.program_input_format || 'mpegts');
     setValue('hardwareDecoderEnabled', Boolean(feed.hardware_decoder_enabled));
     setValue('hardwareDecoder', feed.hardware_decoder || '');
-    setValue('priorityFeed', feed.priority_feed_id || feed.id);
+    setValue('deviceBackend', feed.device_backend || 'v4l2');
+    setValue('deviceID', feed.device_id || '');
+    setValue('dummyWidth', feed.dummy_width || '720');
+    setValue('dummyHeight', feed.dummy_height || '480');
+    setValue('dummyFPS', feed.dummy_fps || '30000/1001');
+    const dummyScanMode = feed.dummy_scan_mode || (feed.dummy_interlaced
+        ? (feed.dummy_field_order === 'bff' ? 'interlaced_bff' : 'interlaced_tff')
+        : 'progressive');
+    setValue('dummyScanMode', dummyScanMode);
+    setValue('dummyBackground', feed.dummy_background || '#000000FF');
+    const configuredAlertFeed = feed.alert_feed_id || feed.priority_feed_id || feed.id;
+    setValue('priorityFeed', configuredAlertFeed === '*' ? feed.id : configuredAlertFeed);
     setValue('audioSource', feed.audio_source || 'priority');
     setValue('audioIdle', feed.audio_idle || 'source');
     setValue('muteStandbyRoutine', feed.mute_standby_routine !== false);
+    setValue('captionsPass', feed.ancillary_captions === 'pass' || feed.captions_passthrough === true);
+    setValue('scte35Pass', feed.ancillary_scte35 === 'pass' || feed.scte35_passthrough === true);
+    setValue('scte104Pass', feed.ancillary_scte104 === 'pass' || feed.scte104_passthrough === true);
+    setValue('audioTopology', feed.audio_topology || 'force_layout');
+    setValue('forcedLayout', feed.audio_force_layout || feed.force_layout || 'stereo');
+    setValue('idleProgramGain', feed.idle_program_gain_db ?? feed.audio_idle_program_gain_db ?? '0');
+    setValue('alertProgramGain', feed.alert_program_gain_db ?? feed.audio_alert_program_gain_db ?? 'muted');
+    setValue('alertGain', feed.alert_gain_db ?? feed.audio_alert_gain_db ?? '0');
+    setValue('audioTransition', feed.audio_transition_ms || '20');
+    setValue('compositorEngine', feed.compositor_engine || 'legacy');
+    setValue('alertScene', feed.alert_scene_id || 'Standard_Crawl');
+    const hasAutoPID = [mappedProgram?.video_pid, mappedProgram?.pmt_pid, ...mappedAudio.map((stream) => stream.pid)]
+        .some((pid) => String(pid || '').toLowerCase() === 'auto');
+    setValue('pidAssignment', feed.pid_assignment || (hasAutoPID ? 'auto' : 'manual'));
+    setValue('generatedAlertCues', Boolean(feed.generated_alert_cues ?? mappedProgram?.scte35?.generated_alert_cues));
     setValue('programOutput', feed.program_output_url || '');
     setValue('outputFormat', feed.program_output_format || 'mpegts');
     setValue('vcodec', feed.vcodec || 'avenc_mpeg2video');
@@ -408,13 +866,13 @@ function writeEditor(feed) {
     setValue('audioEncoderBitrate', feed.audio_encoder_bitrate_kbps || feed.stereo_bitrate_kbps || feed.audio_bitrate_kbps || '192');
     setValue('audioProfile', feed.audio_profile || '');
     setValue('audioLevel', feed.audio_level || '');
-    setValue('serviceName', feed.service_name || '');
-    setValue('providerName', feed.provider_name || '');
+    setValue('serviceName', mappedProgram?.service_name || feed.service_name || '');
+    setValue('providerName', mappedProgram?.provider_name || feed.provider_name || '');
     setValue('serviceID', feed.service_id || '1');
-    setValue('transportStreamID', feed.transport_stream_id || '1');
-    setValue('hdProgram', feed.hd_program || '1');
-    setValue('hdVideoPID', feed.hd_video_pid || '256');
-    setValue('hdPmtPID', feed.hd_pmt_pid || '4096');
+    setValue('transportStreamID', feed.program_mapping?.transport_stream_id || feed.transport_stream_id || '1');
+    setValue('hdProgram', mappedProgram?.number || feed.hd_program || '1');
+    setValue('hdVideoPID', mappedProgram?.video_pid || feed.hd_video_pid || '256');
+    setValue('hdPmtPID', mappedProgram?.pmt_pid || feed.hd_pmt_pid || '4096');
     setValue('p720Enabled', Boolean(feed.p720_enabled));
     setValue('p720Bitrate', feed.p720_bitrate_kbps || '8000');
     setValue('p720Program', feed.p720_program || '2');
@@ -428,13 +886,13 @@ function writeEditor(feed) {
     setValue('surroundEnabled', feed.surround_enabled !== false);
     setValue('surroundBitrate', feed.surround_bitrate_kbps || '384');
     setValue('surroundProgram', feed.surround_program || '1');
-    setValue('surroundAudioPID', feed.surround_audio_pid || '258');
-    setValue('surroundPmtPID', feed.surround_pmt_pid || '4096');
+    setValue('surroundAudioPID', mappedAudioPID('surround_51', feed.surround_audio_pid || '258'));
+    setValue('surroundPmtPID', mappedProgram?.pmt_pid || feed.surround_pmt_pid || '4096');
     setValue('stereoEnabled', feed.stereo_enabled !== false);
     setValue('stereoBitrate', feed.stereo_bitrate_kbps || feed.audio_bitrate_kbps || '192');
     setValue('stereoProgram', feed.stereo_program || '1');
-    setValue('stereoAudioPID', feed.stereo_audio_pid || '257');
-    setValue('stereoPmtPID', feed.stereo_pmt_pid || '4096');
+    setValue('stereoAudioPID', mappedAudioPID('stereo', feed.stereo_audio_pid || '257'));
+    setValue('stereoPmtPID', mappedProgram?.pmt_pid || feed.stereo_pmt_pid || '4096');
     setValue('syncHardReset', feed.sync_hard_reset_ms || '250');
     setValue('syncMaxAudioFrames', feed.sync_max_audio_frames_per_video || '8');
     setValue('syncSourceBuffer', feed.sync_source_buffer_ms || '240');
@@ -457,7 +915,7 @@ function writeEditor(feed) {
     setValue('bannerHeight', feed.banner_height || feed.ticker_height || '128');
     setValue('bannerMode', feed.banner_mode || 'auto');
     setValue('standbyMode', feed.standby_mode || 'banner');
-    setValue('standbyText', feed.standby_text || 'EAS Details Channel');
+    setValue('standbyText', feed.standby_text || 'Emergency Alert Details Channel');
     setValue('standbyFontSize', feed.standby_font_size || feed.font_size || '58');
     setValue('standbyYPercent', feed.standby_y_percent || '10');
     setValue('text', feed.text || '');
@@ -468,7 +926,10 @@ function writeEditor(feed) {
     setValue('clockX', feed.clock_x || '48');
     setValue('clockY', feed.clock_y || '48');
     setValue('clockFontSize', feed.clock_font_size || '30');
+    renderOutputsEditor(Array.isArray(feed.outputs) ? feed.outputs : legacyOutputFromFeed(feed));
     updateProgramInputVisibility();
+    updateAudioTopologyVisibility();
+    updatePidAssignmentVisibility();
     updateEncoderControlVisibility();
     scheduleRender();
     editorDirty = false;
@@ -476,12 +937,12 @@ function writeEditor(feed) {
 
 function catalogID(entry) {
     if (!entry || typeof entry !== 'object') return '';
-    return String(entry.id || entry.value || '').trim();
+    return String(entry.id || entry.value || entry.persistent_id || entry.device_id || '').trim();
 }
 
 function catalogLabel(entry) {
     if (!entry || typeof entry !== 'object') return '';
-    return String(entry.label || entry.id || '').trim();
+    return String(entry.label || entry.display_name || entry.name || entry.id || '').trim();
 }
 
 function catalogOptionTitle(entry) {
@@ -524,14 +985,27 @@ function populateCatalogSelect(select, entries, fallbackEntries = [], options = 
 }
 
 function populateCgenCatalogSelectors() {
-    const formats = cgenCatalog.formats || [];
+    const formats = [
+        { id: 'auto', label: 'Auto detect' },
+        { id: 'mpegts', label: 'MPEG-TS' },
+        { id: 'rtp', label: 'RTP' },
+        { id: 'srt', label: 'SRT' },
+        { id: 'file', label: 'File' },
+        ...(cgenCatalog.formats || []),
+    ];
     populateCatalogSelect(fields.programInputFormat, formats, [{ id: 'mpegts', label: 'MPEG-TS' }]);
     populateCatalogSelect(fields.hardwareDecoder, streamVideoDecoderEntries(), [
+        { id: 'auto', label: 'Auto select' },
+        { id: 'software', label: 'Software decoder' },
+        { id: 'nvdec', label: 'NVIDIA NVDEC' },
+        { id: 'quicksync', label: 'Intel QuickSync' },
+        { id: 'vaapi', label: 'VAAPI' },
         { id: 'nvh264dec', label: 'H.264 / AVC - NVIDIA NVDEC (nvh264dec)', element: 'nvh264dec' },
         { id: 'avdec_h264', label: 'H.264 / AVC - libav (avdec_h264)', element: 'avdec_h264' },
         { id: 'avdec_mpeg2video', label: 'MPEG-2 Video - libav (avdec_mpeg2video)', element: 'avdec_mpeg2video' },
     ]);
-    populateCatalogSelect(fields.outputFormat, formats, [{ id: 'mpegts', label: 'MPEG-TS' }]);
+    populateDeviceSelector();
+    populateCatalogSelect(fields.outputFormat, [{ id: 'mpegts', label: 'MPEG-TS' }], [{ id: 'mpegts', label: 'MPEG-TS' }]);
     populateCatalogSelect(fields.vcodec, cgenCatalog.video_codecs || [], [
         { id: 'avenc_mpeg2video', label: 'MPEG-2 Video - libav (avenc_mpeg2video)', element: 'avenc_mpeg2video' },
         { id: 'x264enc', label: 'H.264 / AVC - x264 software (x264enc)', element: 'x264enc' },
@@ -547,17 +1021,38 @@ function populateCgenCatalogSelectors() {
     renderFontPicker();
     updateFontPreview();
     updateProgramInputVisibility();
+    updateAudioTopologyVisibility();
     updateEncoderControlVisibility();
+}
+
+function populateDeviceSelector() {
+    const devices = Array.isArray(cgenCatalog.devices) ? cgenCatalog.devices : [];
+    const backend = String(fields.deviceBackend?.value || '').toLowerCase();
+    const matches = devices.filter((entry) => {
+        const deviceBackend = String(entry?.backend || entry?.kind || '').toLowerCase();
+        return !backend || !deviceBackend || deviceBackend === backend;
+    });
+    populateCatalogSelect(fields.deviceID, matches, [{ id: '', label: 'No devices discovered' }]);
+    if (fields.deviceID && !fields.deviceID.options.length) {
+        fields.deviceID.append(option('', 'No devices discovered'));
+    }
 }
 
 function streamVideoDecoderEntries() {
     const entries = Array.isArray(cgenCatalog.video_decoders) ? cgenCatalog.video_decoders : [];
     const format = String(fields.programInputFormat?.value || 'mpegts').trim().toLowerCase();
-    if (!format || format === 'mpegts' || format === 'ts') return entries;
-    return entries.filter((entry) => {
+    const standard = [
+        { id: 'auto', label: 'Auto select' },
+        { id: 'software', label: 'Software decoder' },
+        { id: 'nvdec', label: 'NVIDIA NVDEC' },
+        { id: 'quicksync', label: 'Intel QuickSync' },
+        { id: 'vaapi', label: 'VAAPI' },
+    ];
+    const filtered = !format || ['auto', 'mpegts', 'ts', 'rtp', 'srt', 'file'].includes(format) ? entries : entries.filter((entry) => {
         const haystack = `${entry?.id || ''} ${entry?.label || ''} ${entry?.kind || ''}`.toLowerCase();
         return haystack.includes(format);
     });
+    return [...standard, ...filtered];
 }
 
 function updateFontPreview() {
@@ -736,11 +1231,14 @@ function renderMeta() {
     const runtime = selected()?.runtime || {};
     const inputHealth = runtime.input_health && typeof runtime.input_health === 'object' ? runtime.input_health : {};
     const diagnostics = runtime.pipeline_diagnostics && typeof runtime.pipeline_diagnostics === 'object' ? runtime.pipeline_diagnostics : {};
-    setText(metaProgramInput, feed.program_input_url || '-');
+    setText(metaProgramInput, programInputSummary(feed));
     const standbyMute = feed.mute_standby_routine === false ? 'standby routine live' : 'standby routine muted';
     const standbyAudio = feed.audio_idle === 'routine' ? 'feed routine standby' : 'program input standby';
     setText(metaPriority, `${feed.priority_feed_id || feed.id || '-'} / ${feed.audio_source || 'priority'} / ${standbyAudio} / ${standbyMute}`);
-    setText(metaOutput, feed.program_output_url || '-');
+    const configuredOutputs = Array.isArray(feed.outputs) ? feed.outputs.filter((output) => output.enabled !== false) : [];
+    setText(metaOutput, configuredOutputs.length
+        ? `${configuredOutputs.length} isolated destination${configuredOutputs.length === 1 ? '' : 's'}`
+        : redactEndpointForDisplay(feed.program_output_url));
     if (metaRuntime) {
         const videoLive = runtime.input_video_connected === true || inputHealth.video_connected === true;
         const audioLive = runtime.input_audio_connected === true || inputHealth.audio_connected === true;
@@ -750,7 +1248,11 @@ function renderMeta() {
         const output = runtime.output_active === true ? 'output active' : 'output idle';
         const backend = runtime.media_backend || 'cgen';
         const gstState = runtime.gst_state ? `, ${runtime.gst_state}` : '';
-        setText(metaRuntime, `${backend}: ${connected}, ${output}${gstState}`);
+        const ancillaryWarnings = ancillaryDegradationWarnings(runtime.ancillary_capabilities);
+        const ancillaryDegraded = ancillaryWarnings.length;
+        const ancillary = ancillaryDegraded > 0 ? `, ${ancillaryDegraded} ancillary request${ancillaryDegraded === 1 ? '' : 's'} unavailable` : '';
+        setText(metaRuntime, `${backend}: ${connected}, ${output}${gstState}${ancillary}`);
+        metaRuntime.title = ancillaryWarnings.join('\n');
     }
     if (metaDrift) {
         setText(metaDrift, formatPipelineDiagnostics(diagnostics));
@@ -764,6 +1266,55 @@ function renderMeta() {
     }
     updateSunnyVisibility(feed, runtime);
     updatePreviewStream(feed);
+}
+
+function ancillaryDegradationWarnings(capabilities) {
+    const outputs = Array.isArray(capabilities?.outputs) ? capabilities.outputs : [];
+    const warnings = [];
+    for (const output of outputs) {
+        const outputID = String(output?.output_id || 'output');
+        const captionPolicies = [output?.eia608?.captions, output?.eia708?.captions];
+        const caption = captionPolicies.find((item) => item?.requested === 'pass' && item?.effective !== 'pass');
+        if (caption) warnings.push(`${outputID} captions: ${caption.warning || 'requested passthrough is unavailable'}`);
+        const sharedPolicy = output?.eia708 || output?.eia608;
+        for (const kind of ['scte35', 'scte104']) {
+            const item = sharedPolicy?.[kind];
+            if (item?.requested === 'pass' && item?.effective !== 'pass') {
+                warnings.push(`${outputID} ${kind.toUpperCase()}: ${item.warning || 'requested passthrough is unavailable'}`);
+            }
+        }
+    }
+    return warnings;
+}
+
+function programInputSummary(feed) {
+    switch (feed.program_input_type) {
+        case 'device':
+            return `${feed.device_backend || 'device'} / ${feed.device_id || 'not selected'}`;
+        case 'dummy':
+            return `dummy ${feed.dummy_width || 720}x${feed.dummy_height || 480} ${feed.dummy_fps || '30000/1001'} ${feed.dummy_scan_mode || 'progressive'}`;
+        default:
+            return redactEndpointForDisplay(feed.program_input_url);
+    }
+}
+
+function redactEndpointForDisplay(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '-';
+    if (/\$\{|\$\(|%[A-Za-z_][A-Za-z0-9_]*%/.test(raw)) return '[environment reference]';
+    try {
+        const parsed = new URL(raw, window.location.origin);
+        const explicitScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw);
+        parsed.username = '';
+        parsed.password = '';
+        const hadOptions = parsed.search.length > 1;
+        parsed.search = '';
+        const text = explicitScheme ? parsed.toString() : `${parsed.pathname}${parsed.search}${parsed.hash}`;
+        const summary = `${text}${hadOptions ? ' [options hidden]' : ''}`;
+        return summary.length > 160 ? `${summary.slice(0, 157)}...` : summary;
+    } catch {
+        return '[configured endpoint]';
+    }
 }
 
 function formatStreamHealth(label, live, timedOut, ageValue) {
@@ -840,7 +1391,7 @@ function drawStandby(ctx, width, height, feed) {
     const sy = height / outputHeight;
     const fontSize = Math.max(8, clampNumber(feed.standby_font_size || feed.font_size, 8, 220, 58) * sy);
     const yPercent = clampNumber(feed.standby_y_percent, 0, 100, 10);
-    const text = feed.standby_text || 'EAS Details Channel';
+    const text = feed.standby_text || 'Emergency Alert Details Channel';
     const font = feed.font || 'Arial';
     ctx.font = `${canvasFontWeight(feed.font_weight, 'regular')} ${fontSize}px ${font}, Arial, sans-serif`;
     ctx.textBaseline = 'top';
@@ -1012,9 +1563,182 @@ function escapeHtml(value) {
     }[char]));
 }
 
+function sceneByID(id) {
+    return scenes.find((scene) => scene.id === id) || null;
+}
+
+function protectedAlertScene(id) {
+    return id !== 'Program_Passthrough' && id !== 'Standby';
+}
+
+function populateAlertSceneOptions() {
+    if (!fields.alertScene) return;
+    const current = String(fields.alertScene.value || selected()?.alert_scene_id || 'Standard_Crawl');
+    const available = scenes.filter((scene) => protectedAlertScene(scene.id));
+    const defaults = [
+        { id: 'Standard_Crawl', name: 'Standard_Crawl' },
+        { id: 'Fullscreen_Takeover', name: 'Fullscreen_Takeover' },
+    ];
+    const merged = [...defaults, ...available];
+    fields.alertScene.replaceChildren();
+    const seen = new Set();
+    for (const scene of merged) {
+        if (!scene.id || seen.has(scene.id)) continue;
+        seen.add(scene.id);
+        fields.alertScene.append(option(scene.id, scene.name || scene.id));
+    }
+    ensureSelectOption(fields.alertScene, protectedAlertScene(current) ? current : 'Standard_Crawl');
+    fields.alertScene.value = protectedAlertScene(current) ? current : 'Standard_Crawl';
+}
+
+function renderSceneCatalog(selectedSceneID = '') {
+    if (!sceneSelect) return;
+    const selectedValue = selectedSceneID || activeScene?.id || sceneSelect.value;
+    sceneSelect.replaceChildren();
+    if (!scenes.length) {
+        sceneSelect.append(option('', 'No managed scenes found'));
+        sceneSelect.disabled = true;
+    } else {
+        sceneSelect.disabled = false;
+        for (const scene of scenes) {
+            const suffix = scene.locked ? ' (locked)' : scene.protected ? ' (protected)' : '';
+            sceneSelect.append(option(scene.id, `${scene.name || scene.id}${suffix}`));
+        }
+        sceneSelect.value = sceneByID(selectedValue)?.id || scenes[0].id;
+    }
+    populateAlertSceneOptions();
+}
+
+function sceneBadge(text) {
+    const badge = document.createElement('span');
+    badge.className = 'cgen-scene-badge';
+    badge.textContent = text;
+    return badge;
+}
+
+function renderSceneState(message = '') {
+    if (!sceneState) return;
+    sceneState.replaceChildren();
+    if (message) {
+        const text = document.createElement('span');
+        text.textContent = message;
+        sceneState.append(text);
+    }
+    if (activeScene) {
+        sceneState.append(
+            sceneBadge(activeScene.id || 'new scene'),
+            sceneBadge(activeScene.revision ? `revision ${activeScene.revision.slice(0, 12)}` : 'unsaved'),
+        );
+        if (activeScene.protected) sceneState.append(sceneBadge('protected'));
+        if (activeScene.locked) sceneState.append(sceneBadge('locked'));
+    }
+    const locked = activeScene?.locked === true;
+    if (sceneXML) sceneXML.disabled = locked;
+    if (sceneSaveButton) sceneSaveButton.disabled = locked || !activeScene;
+    if (sceneDeleteButton) sceneDeleteButton.disabled = !activeScene || activeScene.protected === true;
+}
+
+async function loadScene(sceneID) {
+    if (!sceneID) {
+        activeScene = null;
+        if (sceneXML) sceneXML.value = '';
+        renderSceneState('Select or create a scene.');
+        return;
+    }
+    const payload = await panelClient.command('cgen.scenes.get', { scene_id: sceneID }, 10000);
+    activeScene = payload.scene || null;
+    sceneDirty = false;
+    if (sceneXML) sceneXML.value = String(activeScene?.xml || '');
+    if (sceneSelect && activeScene?.id) sceneSelect.value = activeScene.id;
+    renderSceneState('Scene loaded.');
+}
+
+async function loadScenes({ selectID = '', announce = false } = {}) {
+    const payload = await panelClient.command('cgen.scenes.list', {}, 10000);
+    scenes = Array.isArray(payload.scenes) ? payload.scenes : [];
+    sceneCollectionRevision = String(payload.revision || '');
+    const nextID = selectID || activeScene?.id || scenes[0]?.id || '';
+    renderSceneCatalog(nextID);
+    if (nextID && sceneByID(nextID)) {
+        await loadScene(nextID);
+    } else {
+        activeScene = null;
+        sceneDirty = false;
+        if (sceneXML) sceneXML.value = '';
+        renderSceneState('No scene document selected.');
+    }
+    if (announce) setStatus(`Scene catalog refreshed: ${scenes.length} documents.`, 'ok');
+}
+
+function newSceneXML(id) {
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<scene schema_version="1" id="${id}" name="${id}">\n  <node id="root" name="Root" enabled="true">\n    <transform x="0" y="0" width="0" height="0" z_index="0" opacity="1" clip_children="false">\n      <anchors left="0" top="0" right="1" bottom="1"/>\n    </transform>\n    <group/>\n  </node>\n</scene>\n`;
+}
+
+function beginNewScene() {
+    if (sceneDirty && !window.confirm('Discard unsaved scene XML?')) return;
+    const id = `Custom_Scene_${Date.now().toString(36)}`;
+    activeScene = { id, name: id, filename: '', revision: '', protected: false, locked: false };
+    sceneDirty = true;
+    if (sceneSelect) {
+        sceneSelect.disabled = false;
+        ensureSelectOption(sceneSelect, id, `${id} (unsaved)`);
+        sceneSelect.value = id;
+    }
+    if (sceneXML) {
+        sceneXML.disabled = false;
+        sceneXML.value = newSceneXML(id);
+        sceneXML.focus();
+    }
+    renderSceneState('New scene is not saved yet. Edit the id and name in XML if needed.');
+}
+
+async function saveScene() {
+    if (!activeScene || activeScene.locked) return;
+    const xml = String(sceneXML?.value || '');
+    if (!xml.trim()) throw new Error('Scene XML is required.');
+    sceneSaveButton.disabled = true;
+    try {
+        const request = {
+            expected_revision: activeScene.revision || '',
+            xml,
+        };
+        if (activeScene.revision) {
+            request.original_id = activeScene.id;
+            request.filename = activeScene.filename;
+        }
+        const result = await panelClient.command('cgen.scenes.save', request, 12000);
+        const savedID = result.changed_scene_id || result.id || activeScene.id;
+        sceneDirty = false;
+        await loadScenes({ selectID: savedID });
+        setStatus(`Scene saved: ${savedID}.`, 'ok');
+    } finally {
+        renderSceneState();
+    }
+}
+
+async function deleteScene() {
+    if (!activeScene || activeScene.protected) return;
+    if (!window.confirm(`Delete scene ${activeScene.name || activeScene.id}?`)) return;
+    const deletedID = activeScene.id;
+    sceneDeleteButton.disabled = true;
+    try {
+        await panelClient.command('cgen.scenes.delete', {
+            scene_id: activeScene.id,
+            expected_revision: activeScene.revision || '',
+        }, 10000);
+        activeScene = null;
+        sceneDirty = false;
+        await loadScenes();
+        setStatus(`Scene deleted: ${deletedID}.`, 'ok');
+    } finally {
+        renderSceneState();
+    }
+}
+
 async function loadCgen() {
     const payload = await panelClient.command('cgen.get', {}, 10000);
     cgenEnabled = payload.enabled !== false;
+    cgenRevision = String(payload.revision || payload.config_revision || payload.hash || '');
     feeds = Array.isArray(payload.feeds) ? payload.feeds : [];
     if (pathLabel) pathLabel.textContent = payload.path || 'managed/configs/cgen.xml';
     globalEnabled.checked = cgenEnabled;
@@ -1034,8 +1758,11 @@ async function loadCgenCatalog({ announce = false } = {}) {
         video_codecs: Array.isArray(payload.video_codecs) ? payload.video_codecs : [],
         audio_codecs: Array.isArray(payload.audio_codecs) ? payload.audio_codecs : [],
         video_decoders: Array.isArray(payload.video_decoders) ? payload.video_decoders : [],
+        capabilities: payload.capabilities && typeof payload.capabilities === 'object' ? payload.capabilities : {},
+        devices: Array.isArray(payload.devices) ? payload.devices : (Array.isArray(payload.input_devices) ? payload.input_devices : []),
         fonts: Array.isArray(payload.fonts) ? payload.fonts : [],
     };
+    applyCatalogCapabilities();
     registerManagedFontFaces();
     populateCgenCatalogSelectors();
     if (announce) {
@@ -1046,8 +1773,25 @@ async function loadCgenCatalog({ announce = false } = {}) {
     }
 }
 
+function preserveNativeAudioAvailable() {
+    return cgenCatalog?.capabilities?.audio_topologies?.preserve_native_tracks === true;
+}
+
+function applyCatalogCapabilities() {
+    const option = fields.audioTopology?.querySelector('option[value="preserve_native_tracks"]');
+    if (!option) return;
+    const available = preserveNativeAudioAvailable();
+    option.disabled = !available;
+    option.textContent = available
+        ? 'Preserve native tracks'
+        : 'Preserve native tracks (backend unavailable)';
+}
+
 async function refreshRuntime() {
     const payload = await panelClient.command('cgen.get', {}, 10000);
+    if (!editorDirty) {
+        cgenRevision = String(payload.revision || payload.config_revision || payload.hash || cgenRevision);
+    }
     const latest = Array.isArray(payload.feeds) ? payload.feeds : [];
     for (const next of latest) {
         const index = feeds.findIndex((feed) => feed.id === next.id);
@@ -1066,9 +1810,15 @@ async function refreshRuntime() {
 }
 
 async function saveCgen() {
+    validatePipelineEditor(readEditor());
     upsertEditor();
-    const payload = await panelClient.command('cgen.save', { enabled: globalEnabled.checked, feeds }, 12000);
+    const payload = await panelClient.command('cgen.save', {
+        enabled: globalEnabled.checked,
+        feeds,
+        expected_revision: cgenRevision,
+    }, 12000);
     cgenEnabled = payload.enabled !== false;
+    cgenRevision = String(payload.revision || payload.config_revision || payload.hash || cgenRevision);
     feeds = Array.isArray(payload.feeds) ? payload.feeds : feeds;
     globalEnabled.checked = cgenEnabled;
     renderInstances();
@@ -1082,15 +1832,37 @@ function defaultFeed() {
         name: 'CFSP/CAP CGEN',
         enabled: true,
         mode: 'release',
-        program_input_type: 'stream',
+        program_input_type: 'uri_or_file',
         program_input_url: 'udp://239.0.0.1:9000?fifo_size=2000000&overrun_nonfatal=1&reuse=1&buffer_size=1048576',
         program_input_format: 'mpegts',
         hardware_decoder_enabled: false,
         hardware_decoder: '',
-        priority_feed_id: '*',
+        decoder_preference: 'auto',
+        device_backend: 'v4l2',
+        device_id: '',
+        dummy_width: '720',
+        dummy_height: '480',
+        dummy_fps: '30000/1001',
+        dummy_scan_mode: 'progressive',
+        dummy_background: '#000000FF',
+        priority_feed_id: 'CFSP-CAP',
+        alert_feed_id: 'CFSP-CAP',
         audio_source: 'priority',
         audio_idle: 'source',
         mute_standby_routine: true,
+        ancillary_captions: 'drop',
+        ancillary_scte35: 'drop',
+        ancillary_scte104: 'drop',
+        audio_topology: 'force_layout',
+        audio_force_layout: 'stereo',
+        audio_idle_program_gain_db: '0',
+        audio_alert_program_gain_db: 'muted',
+        audio_alert_gain_db: '0',
+        audio_transition_ms: '20',
+        compositor_engine: 'scene_v2',
+        alert_scene_id: 'Standard_Crawl',
+        pid_assignment: 'auto',
+        generated_alert_cues: true,
         program_output_url: 'udp://239.0.0.2:9001?pkt_size=1316&buffer_size=1048576&reuse=1',
         program_output_format: 'mpegts',
         vcodec: 'avenc_mpeg2video',
@@ -1157,7 +1929,7 @@ function defaultFeed() {
         fixed_repeats: '1',
         banner_height: '128',
         standby_mode: 'banner',
-        standby_text: 'EAS Details Channel',
+        standby_text: 'Emergency Alert Details Channel',
         standby_font_size: '58',
         standby_y_percent: '10',
         font: 'Arial',
@@ -1168,6 +1940,19 @@ function defaultFeed() {
         clock_y: '48',
         clock_font_size: '30',
         sunny_cat: false,
+        outputs: [{
+            id: 'main',
+            enabled: true,
+            destination: 'mpeg_ts_udp',
+            url: 'udp://239.0.0.2:9001?pkt_size=1316&buffer_size=1048576&reuse=1',
+            video_codec: 'mpeg2',
+            audio_codec: 'ac3',
+            video_bitrate_kbps: '12000',
+            audio_bitrate_kbps: '192',
+            sample_rate: '48000',
+            gop_frames: '15',
+            rate_control: 'cbr',
+        }],
     };
 }
 
@@ -1220,6 +2005,8 @@ function addInstance() {
     const next = defaultFeed();
     next.id = sanitizeID(`cgen-${feeds.length + 1}`);
     next.name = `CGEN ${feeds.length + 1}`;
+    next.priority_feed_id = next.id;
+    next.alert_feed_id = next.id;
     feeds.push(next);
     selectedID = next.id;
     renderInstances();
@@ -1231,6 +2018,7 @@ export function initCgenView() {
     if (bound) return;
     bound = true;
     bindCgenTabs();
+    renderSceneState('Scene catalog not loaded.');
     addButton.addEventListener('click', addInstance);
     saveButton.addEventListener('click', () => saveCgen().catch((error) => setStatus(error.message || 'Unable to save CGEN config.', 'err')));
     instanceSelect.addEventListener('change', () => {
@@ -1245,6 +2033,9 @@ export function initCgenView() {
             if (field === fields.font) updateFontPreview();
             if (field === fields.vcodec || field === fields.acodec) updateEncoderControlVisibility();
             if (field === fields.programInputType || field === fields.hardwareDecoderEnabled) updateProgramInputVisibility();
+            if (field === fields.audioTopology) updateAudioTopologyVisibility();
+            if (field === fields.pidAssignment) updatePidAssignmentVisibility();
+            if (field === fields.deviceBackend) populateDeviceSelector();
             if (field === fields.programInputFormat) {
                 populateCatalogSelect(fields.hardwareDecoder, streamVideoDecoderEntries(), [
                     { id: 'nvh264dec', label: 'H.264 / AVC - NVIDIA NVDEC (nvh264dec)', element: 'nvh264dec' },
@@ -1260,6 +2051,9 @@ export function initCgenView() {
             if (field === fields.font) updateFontPreview();
             if (field === fields.vcodec || field === fields.acodec) updateEncoderControlVisibility();
             if (field === fields.programInputType || field === fields.hardwareDecoderEnabled) updateProgramInputVisibility();
+            if (field === fields.audioTopology) updateAudioTopologyVisibility();
+            if (field === fields.pidAssignment) updatePidAssignmentVisibility();
+            if (field === fields.deviceBackend) populateDeviceSelector();
             if (field === fields.programInputFormat) {
                 populateCatalogSelect(fields.hardwareDecoder, streamVideoDecoderEntries(), [
                     { id: 'nvh264dec', label: 'H.264 / AVC - NVIDIA NVDEC (nvh264dec)', element: 'nvh264dec' },
@@ -1270,6 +2064,50 @@ export function initCgenView() {
             }
         });
     });
+    outputsBody?.addEventListener('input', () => {
+        editorDirty = true;
+        scheduleRender({ preview: false, meta: true });
+    });
+    outputsBody?.addEventListener('change', () => {
+        editorDirty = true;
+        scheduleRender({ preview: false, meta: true });
+    });
+    addOutputButton?.addEventListener('click', () => {
+        const index = outputsBody?.querySelectorAll('[data-output-row]').length || 0;
+        outputsBody?.append(outputRow({
+            id: `output-${index + 1}`,
+            enabled: true,
+            destination: 'mpeg_ts_udp',
+            video_codec: 'h264',
+            audio_codec: fields.audioTopology?.value === 'preserve_native_tracks' ? 'match_input' : 'aac',
+            video_bitrate_kbps: '8000',
+            audio_bitrate_kbps: '192',
+            sample_rate: '48000',
+            gop_frames: '60',
+            rate_control: 'cbr',
+        }));
+        updateAudioTopologyVisibility();
+        editorDirty = true;
+    });
+    sceneXML?.addEventListener('input', () => {
+        sceneDirty = true;
+        renderSceneState('Unsaved scene changes.');
+    });
+    sceneSelect?.addEventListener('change', () => {
+        const nextID = sceneSelect.value;
+        if (sceneDirty && !window.confirm('Discard unsaved scene XML?')) {
+            sceneSelect.value = activeScene?.id || '';
+            return;
+        }
+        loadScene(nextID).catch((error) => setStatus(error.message || 'Unable to load scene.', 'err'));
+    });
+    sceneRefreshButton?.addEventListener('click', () => {
+        if (sceneDirty && !window.confirm('Discard unsaved scene XML and refresh?')) return;
+        loadScenes({ announce: true }).catch((error) => setStatus(error.message || 'Unable to refresh scenes.', 'err'));
+    });
+    sceneNewButton?.addEventListener('click', beginNewScene);
+    sceneSaveButton?.addEventListener('click', () => saveScene().catch((error) => setStatus(error.message || 'Unable to save scene.', 'err')));
+    sceneDeleteButton?.addEventListener('click', () => deleteScene().catch((error) => setStatus(error.message || 'Unable to delete scene.', 'err')));
     refreshFontsButton?.addEventListener('click', () => {
         refreshFontsButton.disabled = true;
         loadCgenCatalog({ announce: true })
@@ -1332,5 +2170,9 @@ export function initCgenView() {
         })
         .finally(() => {
             loadCgen().catch((error) => setStatus(error.message || 'Unable to load CGEN config.', 'err'));
+            loadScenes().catch((error) => {
+                renderSceneState('Scene catalog is unavailable.');
+                setStatus(error.message || 'Unable to load CGEN scenes.', 'err');
+            });
         });
 }

@@ -22,6 +22,10 @@ services:
       enabled: true
       addr: "127.0.0.1:8097"
       backend: "auto" # auto, gstreamer, or legacy
+      webrtc:
+        public_ip: "" # Public IPv4 address advertised to internet listeners behind NAT.
+        udp_port_min: 0 # Set both ports and forward the same UDP range through the gateway.
+        udp_port_max: 0
       audio_processing:
         loudness_enabled: true
         gain_db: 3
@@ -408,15 +412,32 @@ webpanel:
       preemphasis: none
   authentication:
     enabled: true # protect the operator panel and WebSocket commands.
+    mode: accounts # accounts uses PASETO v4.local, peppered Argon2id, MFA, and stateful revocation.
     session_ttl_seconds: 43200
-    login_rate_limit: 8
-    login_rate_window_seconds: 300
-    secure_cookies: true # set true when the admin panel is served only over HTTPS.
+    idle_timeout_seconds: 900
+    persistent_session_ttl_seconds: 2592000
+    login_rate_limit: 5
+    login_rate_window_seconds: 900
+    origination_rate_per_second: 2
+    enforce_mfa: false # Optional by default. Enrolled accounts still require their current TOTP code.
+    redis_required: true
+    redis_url_env: HAZE_REDIS_URL
+    redis_key_prefix: haze:auth
+    paseto_key_env: HAZE_PASETO_V4_LOCAL_KEY
+    password_pepper_env: HAZE_PASSWORD_PEPPER
+    mfa_key_env: HAZE_MFA_ENCRYPTION_KEY
+    audit_key_env: HAZE_AUDIT_HMAC_KEY
+    audit_dir: logs
+    bootstrap_username_env: HAZE_BOOTSTRAP_ADMIN_USERNAME
+    bootstrap_password_env: HAZE_BOOTSTRAP_ADMIN_PASSWORD
+    trusted_proxy_cidrs:
+      - 127.0.0.0/8
+      - ::1/128
+      - 172.16.1.31/32 # Servinor Zoraxy reverse proxy.
+    login_cidr_allowlist: [] # Empty allows any source. Add operator networks when their public ranges are stable.
+    secure_cookies: true # Account mode always enforces Secure cookies and HTTPS.
     max_audio_upload_bytes: 52428800
-    # !! PASSWORD IS NOW CONFIGURED IN THE .env FILE !!
-    # Prefer ADMIN_PASSWD_HASH with an Argon2id PHC string.
-    # Plain ADMIN_PASSWD remains supported for local/development deployments.
-    # blank to autogenerate a random one time password on startup and print it in the logs.
+    # Required keys and the one-time bootstrap password are configured in the private service environment.
 
 feeds_file: ./managed/configs/feeds.xml
 outputs_file: ./managed/configs/output.xml

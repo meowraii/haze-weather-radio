@@ -25,8 +25,23 @@
             </header>
 
             <form id="loginForm" class="login-form">
+                <label for="usernameInput">Username</label>
+                <input id="usernameInput" name="username" type="text" autocomplete="username" maxlength="50" autofocus required>
                 <label for="passwordInput">Password</label>
-                <input id="passwordInput" name="password" type="password" autocomplete="current-password" autofocus required>
+                <input id="passwordInput" name="password" type="password" autocomplete="current-password" required>
+                <div id="mfaFields" class="login-mfa-fields" hidden>
+                    <label for="totpInput">Authentication code</label>
+                    <input id="totpInput" name="totp" type="text" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6">
+                    <div id="mfaEnrollment" class="login-enrollment" hidden>
+                        <strong>MFA enrollment required</strong>
+                        <p>Add this secret to your authenticator, then enter its current six-digit code.</p>
+                        <code id="mfaEnrollmentSecret"></code>
+                    </div>
+                </div>
+                <label class="login-persistent-option">
+                    <input id="persistentInput" name="persistent" type="checkbox">
+                    <span>Keep this session signed in</span>
+                </label>
                 <button type="submit" id="loginButton">
                     <span>Sign in</span>
                 </button>

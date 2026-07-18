@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +73,9 @@ func run() error {
 	service := flag.Bool("service", false, "run as a host-bridge TTS service")
 	bridge := flag.String("bridge", os.Getenv("HAZE_HOST_BRIDGE_ADDR"), "host bridge address")
 	outDir := flag.String("out-dir", filepath.Join("managed", "audio", "tts"), "default service output directory")
+	cacheDir := flag.String("cache-dir", "", "persistent synthesis cache directory; empty disables the persistent cache")
+	cacheMaxBytes := flag.Int64("cache-max-bytes", 0, "maximum persistent synthesis cache size in bytes; 0 is unlimited")
+	cacheMaxEntries := flag.Int("cache-max-entries", synthesisCacheMaxEntries, "maximum persistent synthesis cache entries; 0 is unlimited")
 	timeout := flag.Duration("timeout", 60*time.Second, "synthesis timeout")
 	flag.Parse()
 	setTTSRuntimeEnv(ttsRuntimeEnv{
@@ -88,17 +93,20 @@ func run() error {
 		defer stop()
 		ctx = processguard.WithParent(ctx)
 		return runService(ctx, serviceConfig{
-			BridgeAddr:   *bridge,
-			Readers:      *readersPath,
-			Dictionary:   *dictionaryPath,
-			Provider:     *providerID,
-			Language:     *lang,
-			Timezone:     *timezone,
-			OutDir:       *outDir,
-			Timeout:      *timeout,
-			Workers:      1,
-			SpeakyAPIURL: *speakyAPIURL,
-			RuntimeIdle:  *runtimeIdleTimeout,
+			BridgeAddr:      *bridge,
+			Readers:         *readersPath,
+			Dictionary:      *dictionaryPath,
+			Provider:        *providerID,
+			Language:        *lang,
+			Timezone:        *timezone,
+			OutDir:          *outDir,
+			CacheDir:        *cacheDir,
+			CacheMaxBytes:   *cacheMaxBytes,
+			CacheMaxEntries: *cacheMaxEntries,
+			Timeout:         *timeout,
+			Workers:         1,
+			SpeakyAPIURL:    *speakyAPIURL,
+			RuntimeIdle:     *runtimeIdleTimeout,
 		})
 	}
 
@@ -160,17 +168,20 @@ func run() error {
 }
 
 type serviceConfig struct {
-	BridgeAddr   string
-	Readers      string
-	Dictionary   string
-	Provider     string
-	Language     string
-	Timezone     string
-	OutDir       string
-	Timeout      time.Duration
-	Workers      int
-	SpeakyAPIURL string
-	RuntimeIdle  time.Duration
+	BridgeAddr      string
+	Readers         string
+	Dictionary      string
+	Provider        string
+	Language        string
+	Timezone        string
+	OutDir          string
+	CacheDir        string
+	CacheMaxBytes   int64
+	CacheMaxEntries int
+	Timeout         time.Duration
+	Workers         int
+	SpeakyAPIURL    string
+	RuntimeIdle     time.Duration
 }
 
 type serviceState struct {
@@ -202,6 +213,18 @@ type synthesisCacheEntry struct {
 	LastUsed   time.Time
 }
 
+type persistentSynthesisEntry struct {
+	Format     tts.AudioFormat `json:"format"`
+	SampleRate int             `json:"sample_rate"`
+	Channels   int             `json:"channels"`
+	Bytes      int64           `json:"bytes"`
+	ProviderID string          `json:"provider_id"`
+	ReaderID   string          `json:"reader_id"`
+	VoiceID    string          `json:"voice_id"`
+	Language   string          `json:"language"`
+	LastUsed   time.Time       `json:"last_used"`
+}
+
 func runService(ctx context.Context, cfg serviceConfig) error {
 	if strings.TrimSpace(cfg.BridgeAddr) == "" {
 		return errors.New("missing host bridge address")
@@ -214,6 +237,18 @@ func runService(ctx context.Context, cfg serviceConfig) error {
 	}
 	if strings.TrimSpace(cfg.Timezone) == "" {
 		cfg.Timezone = "Local"
+	}
+	if cfg.CacheMaxBytes < 0 {
+		return errors.New("cache max bytes cannot be negative")
+	}
+	if cfg.CacheMaxEntries < 0 {
+		return errors.New("cache max entries cannot be negative")
+	}
+	if strings.TrimSpace(cfg.CacheDir) != "" {
+		cfg.CacheDir = filepath.Clean(cfg.CacheDir)
+		if err := os.MkdirAll(cfg.CacheDir, 0o755); err != nil {
+			return fmt.Errorf("create synthesis cache directory: %w", err)
+		}
 	}
 	state, err := newServiceState(ctx, cfg)
 	if err != nil {
@@ -513,9 +548,14 @@ func (s *serviceState) cachedSynthesis(key [sha256.Size]byte) (synthesisCacheEnt
 			delete(s.synthesisCache, key)
 		}
 		s.mu.Unlock()
-		return synthesisCacheEntry{}, false
+		entry, ok = s.loadPersistentSynthesis(key)
+		if !ok {
+			return synthesisCacheEntry{}, false
+		}
+		s.storeSynthesis(key, entry)
+	} else {
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 
 	info, err := os.Stat(entry.OutputPath)
 	if err != nil || !info.Mode().IsRegular() || info.Size() != entry.Bytes {
@@ -528,6 +568,11 @@ func (s *serviceState) cachedSynthesis(key [sha256.Size]byte) (synthesisCacheEnt
 	}
 
 	entry.LastUsed = time.Now()
+	if strings.TrimSpace(s.cfg.CacheDir) != "" {
+		if err := s.writePersistentMetadata(key, entry); err != nil {
+			log.Printf("synthesis cache metadata update failed: %v", err)
+		}
+	}
 	s.mu.Lock()
 	if s.synthesisCache == nil {
 		s.synthesisCache = make(map[[sha256.Size]byte]synthesisCacheEntry)
@@ -545,7 +590,11 @@ func (s *serviceState) storeSynthesis(key [sha256.Size]byte, entry synthesisCach
 		s.synthesisCache = make(map[[sha256.Size]byte]synthesisCacheEntry)
 	}
 	s.synthesisCache[key] = entry
-	for len(s.synthesisCache) > synthesisCacheMaxEntries {
+	maxEntries := s.cfg.CacheMaxEntries
+	if maxEntries == 0 && strings.TrimSpace(s.cfg.CacheDir) == "" {
+		maxEntries = synthesisCacheMaxEntries
+	}
+	for maxEntries > 0 && len(s.synthesisCache) > maxEntries {
 		var oldestKey [sha256.Size]byte
 		oldestAt := time.Now()
 		for candidateKey, candidate := range s.synthesisCache {
@@ -555,6 +604,134 @@ func (s *serviceState) storeSynthesis(key [sha256.Size]byte, entry synthesisCach
 			}
 		}
 		delete(s.synthesisCache, oldestKey)
+	}
+}
+
+func (s *serviceState) persistSynthesis(key [sha256.Size]byte, entry synthesisCacheEntry, data []byte) (synthesisCacheEntry, error) {
+	if strings.TrimSpace(s.cfg.CacheDir) == "" {
+		return entry, nil
+	}
+	audioPath, _ := s.persistentCachePaths(key)
+	if err := writeFileAtomic(audioPath, data, 0o644); err != nil {
+		return synthesisCacheEntry{}, err
+	}
+	entry.OutputPath = audioPath
+	entry.LastUsed = time.Now()
+	if err := s.writePersistentMetadata(key, entry); err != nil {
+		_ = os.Remove(audioPath)
+		return synthesisCacheEntry{}, err
+	}
+	s.prunePersistentCache()
+	return entry, nil
+}
+
+func (s *serviceState) loadPersistentSynthesis(key [sha256.Size]byte) (synthesisCacheEntry, bool) {
+	if strings.TrimSpace(s.cfg.CacheDir) == "" {
+		return synthesisCacheEntry{}, false
+	}
+	audioPath, metadataPath := s.persistentCachePaths(key)
+	raw, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return synthesisCacheEntry{}, false
+	}
+	var record persistentSynthesisEntry
+	if err := json.Unmarshal(raw, &record); err != nil {
+		_ = os.Remove(metadataPath)
+		return synthesisCacheEntry{}, false
+	}
+	info, err := os.Stat(audioPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != record.Bytes {
+		_ = os.Remove(audioPath)
+		_ = os.Remove(metadataPath)
+		return synthesisCacheEntry{}, false
+	}
+	return synthesisCacheEntry{
+		OutputPath: audioPath,
+		Format:     record.Format,
+		SampleRate: record.SampleRate,
+		Channels:   record.Channels,
+		Bytes:      record.Bytes,
+		ProviderID: record.ProviderID,
+		ReaderID:   record.ReaderID,
+		VoiceID:    record.VoiceID,
+		Language:   record.Language,
+		LastUsed:   record.LastUsed,
+	}, true
+}
+
+func (s *serviceState) writePersistentMetadata(key [sha256.Size]byte, entry synthesisCacheEntry) error {
+	_, metadataPath := s.persistentCachePaths(key)
+	record := persistentSynthesisEntry{
+		Format:     entry.Format,
+		SampleRate: entry.SampleRate,
+		Channels:   entry.Channels,
+		Bytes:      entry.Bytes,
+		ProviderID: entry.ProviderID,
+		ReaderID:   entry.ReaderID,
+		VoiceID:    entry.VoiceID,
+		Language:   entry.Language,
+		LastUsed:   entry.LastUsed,
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(metadataPath, raw, 0o644)
+}
+
+func (s *serviceState) persistentCachePaths(key [sha256.Size]byte) (string, string) {
+	stem := hex.EncodeToString(key[:])
+	return filepath.Join(s.cfg.CacheDir, stem+".audio"), filepath.Join(s.cfg.CacheDir, stem+".json")
+}
+
+type persistentCacheFile struct {
+	audioPath    string
+	metadataPath string
+	bytes        int64
+	lastUsed     time.Time
+}
+
+func (s *serviceState) prunePersistentCache() {
+	if strings.TrimSpace(s.cfg.CacheDir) == "" || (s.cfg.CacheMaxEntries == 0 && s.cfg.CacheMaxBytes == 0) {
+		return
+	}
+	metadataFiles, err := filepath.Glob(filepath.Join(s.cfg.CacheDir, "*.json"))
+	if err != nil {
+		return
+	}
+	entries := make([]persistentCacheFile, 0, len(metadataFiles))
+	var totalBytes int64
+	for _, metadataPath := range metadataFiles {
+		raw, readErr := os.ReadFile(metadataPath)
+		var record persistentSynthesisEntry
+		if readErr != nil || json.Unmarshal(raw, &record) != nil || record.Bytes < 0 {
+			_ = os.Remove(metadataPath)
+			continue
+		}
+		stem := strings.TrimSuffix(filepath.Base(metadataPath), filepath.Ext(metadataPath))
+		audioPath := filepath.Join(s.cfg.CacheDir, stem+".audio")
+		info, statErr := os.Stat(audioPath)
+		if statErr != nil || !info.Mode().IsRegular() || info.Size() != record.Bytes {
+			_ = os.Remove(audioPath)
+			_ = os.Remove(metadataPath)
+			continue
+		}
+		entries = append(entries, persistentCacheFile{
+			audioPath:    audioPath,
+			metadataPath: metadataPath,
+			bytes:        record.Bytes,
+			lastUsed:     record.LastUsed,
+		})
+		totalBytes += record.Bytes
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].lastUsed.Before(entries[j].lastUsed) })
+	for len(entries) > 0 && ((s.cfg.CacheMaxEntries > 0 && len(entries) > s.cfg.CacheMaxEntries) ||
+		(s.cfg.CacheMaxBytes > 0 && totalBytes > s.cfg.CacheMaxBytes)) {
+		oldest := entries[0]
+		entries = entries[1:]
+		_ = os.Remove(oldest.audioPath)
+		_ = os.Remove(oldest.metadataPath)
+		totalBytes -= oldest.bytes
 	}
 }
 
@@ -653,7 +830,6 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 	cacheKey := synthesisKey(providerID, reader.ID, targetSampleRate, targetChannels, request)
 	if cached, ok := state.cachedSynthesis(cacheKey); ok {
 		if err := materializeCachedAudio(cached.OutputPath, outputPath); err == nil {
-			cached.OutputPath = outputPath
 			state.storeSynthesis(cacheKey, cached)
 			_ = state.publishServiceEvent(conn, "tts.synthesized", jobID, map[string]any{
 				"job_id":      jobID,
@@ -690,7 +866,7 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 		state.publishTTSError(conn, jobID, err.Error())
 		return
 	}
-	state.storeSynthesis(cacheKey, synthesisCacheEntry{
+	cacheEntry := synthesisCacheEntry{
 		OutputPath: outputPath,
 		Format:     audio.Format,
 		SampleRate: audio.SampleRate,
@@ -700,7 +876,14 @@ func handleSynthesisJob(ctx context.Context, conn net.Conn, state *serviceState,
 		ReaderID:   reader.ID,
 		VoiceID:    voiceID,
 		Language:   language,
-	})
+		LastUsed:   time.Now(),
+	}
+	if persisted, persistErr := state.persistSynthesis(cacheKey, cacheEntry, audio.Data); persistErr != nil {
+		log.Printf("synthesis cache write failed: %v", persistErr)
+	} else {
+		cacheEntry = persisted
+	}
+	state.storeSynthesis(cacheKey, cacheEntry)
 	_ = state.publishServiceEvent(conn, "tts.synthesized", jobID, map[string]any{
 		"job_id":      jobID,
 		"output_path": outputPath,

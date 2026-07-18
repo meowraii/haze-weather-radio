@@ -1310,6 +1310,12 @@ func TestHTTPAudioFormatByID(t *testing.T) {
 			t.Fatalf("%q => %#v", tc.raw, got)
 		}
 	}
+	for _, id := range []string{"opus", "webm_opus"} {
+		format, ok := httpAudioFormatByID(id)
+		if !ok || format.Bitrate != "16k" {
+			t.Fatalf("%s bitrate = %q, want 16k", id, format.Bitrate)
+		}
+	}
 	if _, ok := httpAudioFormatByID("definitely-not-real"); ok {
 		t.Fatal("unknown HTTP audio format should be rejected")
 	}

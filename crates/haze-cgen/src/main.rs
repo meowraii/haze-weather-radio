@@ -1,18 +1,34 @@
+mod ancillary;
+mod architecture;
+mod atomic_file;
+mod audio_routing;
 mod bridge;
 mod config;
 mod graphics;
 mod gst_backend;
+mod gst_output_sink;
+mod media_pcm;
+mod migration;
+mod output_workers;
 mod pipeline;
+// The SCTE-35 section encoder is retained behind explicit output capability gates.
+#[allow(dead_code)]
+mod program_mapping;
+mod scene;
+mod scene_layout;
+mod scene_runtime;
+mod source_caps;
 mod state;
 mod sunny_cat;
 mod wgpu_renderer;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use serde_json::json;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
@@ -30,8 +46,23 @@ struct Args {
     cgen: PathBuf,
     #[arg(long, env = "HAZE_HOST_BRIDGE_ADDR")]
     bridge: Option<String>,
+    #[arg(long, env = "HAZE_MEDIA_BRIDGE_ADDR")]
+    media_bridge: Option<String>,
     #[arg(long)]
     gst_catalog: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Explicitly migrate managed CGEN configuration to schema version 2.
+    MigrateConfig {
+        #[arg(long, conflicts_with = "apply")]
+        dry_run: bool,
+        #[arg(long, conflicts_with = "dry_run")]
+        apply: bool,
+    },
 }
 
 #[tokio::main]
@@ -49,12 +80,6 @@ async fn main() -> Result<()> {
         println!("{}", serde_json::to_string(&catalog)?);
         return Ok(());
     }
-    let bridge_addr = args
-        .bridge
-        .as_deref()
-        .context("--bridge or HAZE_HOST_BRIDGE_ADDR is required")?;
-    spawn_parent_watcher();
-
     let base_dir = args
         .config
         .parent()
@@ -62,9 +87,45 @@ async fn main() -> Result<()> {
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| PathBuf::from("."));
     let cgen_path = config::resolve_path(&base_dir, &args.cgen);
+    if let Some(Command::MigrateConfig { dry_run, apply }) = &args.command {
+        if !*dry_run && !*apply {
+            anyhow::bail!("migrate-config requires either --dry-run or --apply");
+        }
+        let mode = if *apply {
+            migration::MigrationMode::Apply
+        } else {
+            migration::MigrationMode::DryRun
+        };
+        let outcome = migration::migrate_config(&cgen_path, &base_dir, mode)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&migration_report_value(&outcome.report))?
+        );
+        return Ok(());
+    }
+
+    let bridge_addr = args
+        .bridge
+        .as_deref()
+        .context("--bridge or HAZE_HOST_BRIDGE_ADDR is required")?;
+    spawn_parent_watcher();
+
+    let scene_directory = base_dir.join("managed").join("cgen").join("scenes");
+    let scene_catalog = Arc::new(scene::load_scene_directory(&scene_directory));
+    for warning in scene_catalog.warnings() {
+        warn!(
+            scene_id = warning.scene_id.as_ref().map(ToString::to_string),
+            "cgen scene catalog degraded: {}", warning.message
+        );
+    }
     let root = config::load_config(&cgen_path)
         .with_context(|| format!("failed to load cgen config {}", cgen_path.display()))?;
     let feeds = root.enabled_feeds()?;
+    let media_pcm_hub = media_pcm::MediaPcmHub::new();
+    let media_bridge_configured = args
+        .media_bridge
+        .as_deref()
+        .is_some_and(|addr| !addr.trim().is_empty());
     info!(
         feeds = feeds.len(),
         config = %cgen_path.display(),
@@ -90,13 +151,31 @@ async fn main() -> Result<()> {
                 "feeds": feeds.len(),
                 "config": cgen_path,
                 "media_pipeline": "gstreamer-rs",
-                "sunny_cat_available": sunny_cat::available()
+                "sunny_cat_available": sunny_cat::available(),
+                "scene_count": scene_catalog.scenes().count(),
+                "scene_catalog_degraded": scene_catalog.is_degraded(),
+                "scene_warning_count": scene_catalog.warnings().len(),
+                "media_bridge_configured": media_bridge_configured
             }
         }))
         .await?;
 
     let (state_tx, state_rx) = watch::channel(state::RuntimeState::default());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    if let Some(media_bridge_addr) = args
+        .media_bridge
+        .as_deref()
+        .map(str::trim)
+        .filter(|addr| !addr.is_empty())
+    {
+        tokio::spawn(media_pcm::run_bridge(
+            media_bridge_addr.to_string(),
+            media_pcm_hub.clone(),
+            shutdown_rx.clone(),
+        ));
+    } else {
+        warn!("HAZE_MEDIA_BRIDGE_ADDR is not configured; CGEN alert audio will remain silent");
+    }
     let (queue_tx, queue_rx) = mpsc::channel::<serde_json::Value>(64);
     tokio::spawn(active_queue_poll_loop(
         base_dir.clone(),
@@ -110,6 +189,8 @@ async fn main() -> Result<()> {
             shutdown_rx.clone(),
             base_dir.clone(),
             Some(bridge.client.clone()),
+            Arc::clone(&scene_catalog),
+            media_pcm_hub.clone(),
         );
         tokio::spawn(async move {
             if let Err(err) = worker.run().await {
@@ -119,6 +200,28 @@ async fn main() -> Result<()> {
     }
 
     run_event_loop(bridge.events, queue_rx, state_tx, shutdown_tx).await
+}
+
+fn migration_report_value(report: &migration::MigrationReport) -> serde_json::Value {
+    json!({
+        "source_schema_version": report.source_schema_version,
+        "target_schema_version": report.target_schema_version,
+        "config_changed": report.config_changed,
+        "feeds_examined": report.feeds_examined,
+        "feeds_changed": report.feeds_changed,
+        "alert_routes_added": report.alert_routes_added,
+        "alert_routes_normalized": report.alert_routes_normalized,
+        "ancillary_sections_added": report.ancillary_sections_added,
+        "ancillary_sections_augmented": report.ancillary_sections_augmented,
+        "compositor_sections_added": report.compositor_sections_added,
+        "compositor_sections_augmented": report.compositor_sections_augmented,
+        "audio_sections_added": report.audio_sections_added,
+        "audio_sections_augmented": report.audio_sections_augmented,
+        "protected_scenes_missing_before_apply": report.protected_scenes_missing_before_apply,
+        "protected_scenes_seeded": report.protected_scenes_seeded,
+        "backup_created": report.backup_path.is_some(),
+        "backup_file": report.backup_path.as_ref().and_then(|path| path.file_name()).and_then(|name| name.to_str()),
+    })
 }
 
 async fn run_event_loop(
@@ -137,10 +240,20 @@ async fn run_event_loop(
                 };
                 if runtime.apply_event(&event) {
                     let _ = state_tx.send(runtime.clone());
-                } else if event.get("type").and_then(serde_json::Value::as_str) == Some("cgen.config.updated") {
-                    info!("cgen config update received; exiting for daemon restart");
-                    let _ = shutdown_tx.send(true);
-                    return Ok(());
+                } else {
+                    match event.get("type").and_then(serde_json::Value::as_str) {
+                        Some("cgen.config.updated") => {
+                            info!("cgen config update received; exiting for daemon restart");
+                            let _ = shutdown_tx.send(true);
+                            return Ok(());
+                        }
+                        Some("cgen.scenes.updated") => {
+                            info!("cgen scene update received; exiting for daemon restart");
+                            let _ = shutdown_tx.send(true);
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
                 }
             }
             event = queue_events.recv() => {

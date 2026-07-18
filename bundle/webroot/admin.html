@@ -171,6 +171,24 @@
         .cgen-font-option-name { margin-right: 8px; }
         .cgen-font-option-preview { opacity: .82; }
         .cgen-font-preview { display: flex; align-items: center; min-width: 0; min-height: 31px; padding: 6px 8px; border: 1px solid var(--border-deep); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg) 54%, transparent); box-shadow: var(--bevel-sunken); color: var(--text); font-size: 17px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+        .cgen-stage-note { grid-column: 1 / -1; margin: 0; padding: 8px 9px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--surface) 84%, var(--bg)); color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+        .cgen-stage-note code { color: var(--text); }
+        .cgen-conditional[hidden] { display: none !important; }
+        .cgen-scene-toolbar { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(180px, 1fr) auto auto auto; gap: 6px; align-items: end; }
+        .cgen-scene-state { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 24px; color: var(--muted); font-size: 11.5px; }
+        .cgen-scene-badge { display: inline-flex; align-items: center; min-height: 21px; padding: 2px 7px; border: 1px solid var(--border-subtle); border-radius: 999px; background: color-mix(in srgb, var(--surface) 82%, var(--bg)); color: var(--text); font-family: var(--mono-font); font-size: 10.5px; }
+        .cgen-scene-editor { grid-column: 1 / -1; min-height: 360px; resize: vertical; tab-size: 2; font-family: var(--mono-font); font-size: 11.5px; line-height: 1.45; white-space: pre; }
+        .cgen-scene-editor:disabled { opacity: .72; cursor: not-allowed; }
+        .cgen-output-table { min-width: 1040px; }
+        .cgen-output-table th:nth-child(1) { width: 54px; }
+        .cgen-output-table th:nth-child(2) { width: 110px; }
+        .cgen-output-table th:nth-child(3) { width: 150px; }
+        .cgen-output-table th:nth-child(5),
+        .cgen-output-table th:nth-child(6) { width: 120px; }
+        .cgen-output-table th:last-child { width: 76px; }
+        .cgen-output-table .btn-danger { min-height: 28px; padding: 3px 7px; }
+        .cgen-subsection { grid-column: 1 / -1; margin: 2px 0 0; padding-top: 8px; border-top: 1px solid var(--border-subtle); color: var(--text); font-size: 12px; font-weight: 700; }
+        .cgen-secret-hint { color: var(--muted); font-size: 10.75px; }
         .tts-page { padding: 10px 14px 34px; }
         .tts-layout { display: grid; grid-template-columns: minmax(280px, .72fr) minmax(440px, 1.28fr); gap: 10px; align-items: start; }
         .tts-reader-list { min-height: 460px; max-height: calc(100vh - 250px); overflow: auto; }
@@ -239,6 +257,7 @@
             .cgen-editor-grid,
             .cgen-font-row,
             .cgen-instance-bar,
+            .cgen-scene-toolbar,
             .tts-layout,
             .tts-editor-grid,
             .feeds-layout,
@@ -325,9 +344,17 @@
                     <i data-lucide="bell-ring" width="15" height="15"></i>
                     Alert Archive
                 </a>
+                <a class="sidebar-link" href="#/logs" data-view="logs">
+                    <i data-lucide="file-terminal" width="15" height="15"></i>
+                    Logs
+                </a>
                 <a class="sidebar-link" href="#/dictionary" data-view="dictionary">
                     <i data-lucide="book-open-text" width="15" height="15"></i>
                     Dictionary
+                </a>
+                <a class="sidebar-link" href="#/accounts" data-view="accounts" id="accountsNavLink">
+                    <i data-lucide="users" width="15" height="15"></i>
+                    Accounts
                 </a>
                 <a class="sidebar-link" href="#/daemon" data-view="daemon">
                     <i data-lucide="settings" width="15" height="15"></i>
@@ -437,7 +464,7 @@
                             <h1>Automations</h1>
                             <p>Schedule alert templates by month, week, day, hour, minute, and second.</p>
                         </div>
-                        <div class="metric-strip">
+						<div class="metric-strip">
                             <article class="metric-card">
                                 <p>Loaded</p>
                                 <strong id="automationCountMetric">0</strong>
@@ -552,7 +579,7 @@
                             <h1>WX On-Demand</h1>
                             <p>Render configured weather packages through the Haze event pipeline.</p>
                         </div>
-                        <div class="metric-strip">
+                        <div class="metric-strip" id="accountsAdminMetrics" hidden>
                             <article class="metric-card">
                                 <p>Status</p>
                                 <strong id="healthPill">Checking</strong>
@@ -1018,7 +1045,7 @@
                         <div class="topbar-title">
                             <p class="topbar-eyebrow">Character Generator</p>
                             <h1>CGEN Control</h1>
-                            <p>Manage broadcast video overlay instances backed by managed/configs/cgen.xml.</p>
+                            <p>Manage decoder, compositor scene, program mapping, and isolated encoder output stages.</p>
                         </div>
                         <div class="metric-strip">
                             <article class="metric-card">
@@ -1061,13 +1088,15 @@
                     <div class="cgen-layout">
                         <div class="cgen-main">
                             <div class="cgen-tabs" role="tablist" aria-label="CGEN configuration">
-                                <button class="cgen-tab active" id="cgenTabButtonProgramInput" type="button" role="tab" aria-selected="true" aria-controls="cgenTabProgramInput" data-cgen-tab="program-input">Program Input</button>
-                                <button class="cgen-tab" id="cgenTabButtonEncoder" type="button" role="tab" aria-selected="false" aria-controls="cgenTabEncoder" data-cgen-tab="encoder">Encoder</button>
-                                <button class="cgen-tab" id="cgenTabButtonRouting" type="button" role="tab" aria-selected="false" aria-controls="cgenTabRouting" data-cgen-tab="routing">Routing</button>
+                                <button class="cgen-tab active" id="cgenTabButtonDecoder" type="button" role="tab" aria-selected="true" aria-controls="cgenTabDecoder" data-cgen-tab="decoder">1. Decoder</button>
+                                <button class="cgen-tab" id="cgenTabButtonCompositor" type="button" role="tab" aria-selected="false" aria-controls="cgenTabCompositor" data-cgen-tab="compositor">2. Compositor Scenes</button>
+                                <button class="cgen-tab" id="cgenTabButtonMapping" type="button" role="tab" aria-selected="false" aria-controls="cgenTabMapping" data-cgen-tab="mapping">3. Program Mapping</button>
+                                <button class="cgen-tab" id="cgenTabButtonOutputs" type="button" role="tab" aria-selected="false" aria-controls="cgenTabOutputs" data-cgen-tab="outputs">4. Encoder Outputs</button>
                             </div>
-                            <section class="section-block cgen-tab-panel" id="cgenTabProgramInput" role="tabpanel" aria-labelledby="cgenTabButtonProgramInput" data-cgen-panel="program-input">
-                                <div class="section-hd"><span>Program Input</span></div>
+                            <section class="section-block cgen-tab-panel" id="cgenTabDecoder" role="tabpanel" aria-labelledby="cgenTabButtonDecoder" data-cgen-panel="decoder">
+                                <div class="section-hd"><span>Decoder, Program Input, and Alert Audio</span></div>
                                 <div class="section-body cgen-editor-grid">
+                                    <p class="cgen-stage-note">One program source and one concrete alert feed are configured per pipeline. URL values are stored as entered. Use environment references for credentials, and do not paste expanded secrets.</p>
                                     <label class="daemon-field">
                                         <span>ID</span>
                                         <input id="cgenID" type="text" placeholder="CFSP-CAP">
@@ -1090,29 +1119,72 @@
                                     <label class="daemon-field">
                                         <span>Input type</span>
                                         <select id="cgenProgramInputType">
-                                            <option value="stream">Stream</option>
+                                            <option value="uri_or_file">URL or file</option>
+                                            <option value="device">Capture device</option>
+                                            <option value="dummy">Dummy fallback</option>
+                                            <option value="stream">Legacy stream</option>
                                         </select>
                                     </label>
-                                    <label class="daemon-field cgen-wide" data-cgen-input-option="stream">
-                                        <span>Program input</span>
-                                        <input id="cgenProgramInput" type="text" placeholder="udp://239.0.0.1:9000">
+                                    <label class="daemon-field cgen-wide cgen-conditional" data-cgen-input-option="uri_or_file stream">
+                                        <span>Program URL or file reference</span>
+                                        <input id="cgenProgramInput" type="text" autocomplete="off" spellcheck="false" placeholder="udp://239.0.0.1:9000 or ${PROGRAM_INPUT_URL}">
+                                        <small class="cgen-secret-hint">Environment references remain unexpanded in the managed configuration.</small>
                                     </label>
-                                    <label class="daemon-field" data-cgen-input-option="stream">
+                                    <label class="daemon-field cgen-conditional" data-cgen-input-option="uri_or_file stream">
                                         <span>Program input format</span>
                                         <select id="cgenProgramInputFormat">
+                                            <option value="auto">Auto detect</option>
                                             <option value="mpegts">MPEG-TS</option>
+                                            <option value="rtp">RTP</option>
+                                            <option value="srt">SRT</option>
+                                            <option value="file">File</option>
                                         </select>
                                     </label>
-                                    <label class="daemon-field check-row" data-cgen-input-option="stream">
+                                    <label class="daemon-field check-row cgen-conditional" data-cgen-input-option="uri_or_file stream device">
                                         <input id="cgenHardwareDecoderEnabled" type="checkbox">
-                                        <span>Use hardware decoder</span>
+                                        <span>Use selected decoder</span>
                                     </label>
-                                    <label class="daemon-field" data-cgen-input-option="stream">
-                                        <span>Hardware decoder</span>
+                                    <label class="daemon-field cgen-conditional" data-cgen-input-option="uri_or_file stream device">
+                                        <span>Decoder</span>
                                         <select id="cgenHardwareDecoder"></select>
                                     </label>
+                                    <label class="daemon-field cgen-conditional" data-cgen-input-option="device" hidden>
+                                        <span>Device backend</span>
+                                        <select id="cgenDeviceBackend">
+                                            <option value="v4l2">V4L2</option>
+                                            <option value="directshow">DirectShow</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field cgen-wide cgen-conditional" data-cgen-input-option="device" hidden>
+                                        <span>Capture device</span>
+                                        <select id="cgenDeviceID"></select>
+                                    </label>
+                                    <label class="daemon-field cgen-conditional" data-cgen-input-option="dummy" hidden>
+                                        <span>Dummy width</span>
+                                        <input id="cgenDummyWidth" type="number" min="16" max="7680" step="1" value="720">
+                                    </label>
+                                    <label class="daemon-field cgen-conditional" data-cgen-input-option="dummy" hidden>
+                                        <span>Dummy height</span>
+                                        <input id="cgenDummyHeight" type="number" min="16" max="4320" step="1" value="480">
+                                    </label>
+                                    <label class="daemon-field cgen-conditional" data-cgen-input-option="dummy" hidden>
+                                        <span>Dummy frame rate</span>
+                                        <input id="cgenDummyFPS" type="text" value="30000/1001" pattern="[0-9]+/[1-9][0-9]*">
+                                    </label>
+                                    <label class="daemon-field cgen-conditional" data-cgen-input-option="dummy" hidden>
+                                        <span>Dummy scan mode</span>
+                                        <select id="cgenDummyScanMode">
+                                            <option value="progressive">Progressive</option>
+                                            <option value="interlaced_tff">Interlaced, top field first</option>
+                                            <option value="interlaced_bff">Interlaced, bottom field first</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field cgen-conditional" data-cgen-input-option="dummy" hidden>
+                                        <span>Dummy background</span>
+                                        <input id="cgenDummyBackground" type="text" value="#000000FF" pattern="#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?">
+                                    </label>
                                     <label class="daemon-field">
-                                        <span>Priority feed input</span>
+                                        <span>Concrete alert feed</span>
                                         <input id="cgenPriorityFeed" type="text" placeholder="CFSP-CAP">
                                     </label>
                                     <label class="daemon-field">
@@ -1134,12 +1206,87 @@
                                         <input id="cgenMuteStandbyRoutine" type="checkbox" checked>
                                         <span>Mute routine audio during standby</span>
                                     </label>
+                                    <p class="cgen-subsection">Ancillary passthrough</p>
+                                    <label class="ba-switch bulletin-enabled-row">
+                                        <input id="cgenCaptionsPass" type="checkbox">
+                                        <span>Pass EIA-608/708 captions</span>
+                                    </label>
+                                    <label class="ba-switch bulletin-enabled-row">
+                                        <input id="cgenScte35Pass" type="checkbox">
+                                        <span>Pass SCTE-35</span>
+                                    </label>
+                                    <label class="ba-switch bulletin-enabled-row">
+                                        <input id="cgenScte104Pass" type="checkbox">
+                                        <span>Request SCTE-104 passthrough</span>
+                                    </label>
+                                    <p class="cgen-subsection">Audio routing matrix</p>
+                                    <label class="daemon-field">
+                                        <span>Track topology</span>
+                                        <select id="cgenAudioTopology">
+                                            <option value="force_layout">Force layout</option>
+                                            <option value="preserve_native_tracks" disabled>Preserve native tracks (backend unavailable)</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field cgen-conditional" data-cgen-audio-option="force_layout">
+                                        <span>Forced output layout</span>
+                                        <select id="cgenForcedLayout">
+                                            <option value="mono">Mono</option>
+                                            <option value="stereo" selected>Stereo</option>
+                                            <option value="surround_51">5.1 surround</option>
+                                        </select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Idle program gain</span>
+                                        <input id="cgenIdleProgramGain" type="text" list="cgenGainOptions" value="0" inputmode="decimal">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Alert program gain</span>
+                                        <input id="cgenAlertProgramGain" type="text" list="cgenGainOptions" value="muted" inputmode="decimal">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Alert audio gain</span>
+                                        <input id="cgenAlertGain" type="number" min="-60" max="12" step="0.5" value="0">
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Gain transition (ms)</span>
+                                        <input id="cgenAudioTransition" type="number" min="1" max="1000" step="1" value="20">
+                                    </label>
+                                    <datalist id="cgenGainOptions">
+                                        <option value="muted"></option>
+                                        <option value="-60"></option>
+                                        <option value="-12"></option>
+                                        <option value="-6"></option>
+                                        <option value="0"></option>
+                                        <option value="6"></option>
+                                        <option value="12"></option>
+                                    </datalist>
                                 </div>
                             </section>
 
-                            <section class="section-block cgen-tab-panel" id="cgenTabEncoder" role="tabpanel" aria-labelledby="cgenTabButtonEncoder" data-cgen-panel="encoder" hidden>
-                                <div class="section-hd"><span>Encoder</span></div>
+                            <section class="section-block cgen-tab-panel" id="cgenTabOutputs" role="tabpanel" aria-labelledby="cgenTabButtonOutputs" data-cgen-panel="outputs" hidden>
+                                <div class="section-hd"><span>Encoder Outputs</span></div>
                                 <div class="section-body cgen-editor-grid">
+                                    <p class="cgen-stage-note">Each destination has its own encoder, bounded frame queue, reconnect state, and failure boundary. Unsupported codec and protocol combinations are rejected before activation.</p>
+                                    <div class="cgen-table-wrap">
+                                        <table class="cgen-stream-table cgen-output-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>On</th>
+                                                    <th>Output ID</th>
+                                                    <th>Destination</th>
+                                                    <th>Endpoint reference</th>
+                                                    <th>Video profile</th>
+                                                    <th>Audio profile</th>
+                                                    <th>Remove</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="cgenOutputsBody"></tbody>
+                                        </table>
+                                    </div>
+                                    <div class="cgen-wide cgen-actions">
+                                        <button id="cgenAddOutputButton" class="btn-action" type="button">Add destination</button>
+                                    </div>
+                                    <p class="cgen-subsection">Legacy encoder profile adapter</p>
                                     <label class="daemon-field">
                                         <span>Video codec</span>
                                         <select id="cgenVCodec">
@@ -1275,12 +1422,24 @@
                                 </div>
                             </section>
 
-                            <section class="section-block cgen-tab-panel" id="cgenTabRouting" role="tabpanel" aria-labelledby="cgenTabButtonRouting" data-cgen-panel="routing" hidden>
-                                <div class="section-hd"><span>Routing</span></div>
+                            <section class="section-block cgen-tab-panel" id="cgenTabMapping" role="tabpanel" aria-labelledby="cgenTabButtonMapping" data-cgen-panel="mapping" hidden>
+                                <div class="section-hd"><span>Program Mapping</span></div>
                                 <div class="section-body cgen-editor-grid">
+                                    <p class="cgen-stage-note">Program maps apply only to MPEG-TS destinations. PAT remains on PID 0. Auto assignment is deterministic and skips reserved or manually assigned PIDs.</p>
+                                    <label class="daemon-field">
+                                        <span>PID assignment</span>
+                                        <select id="cgenPidAssignment">
+                                            <option value="auto">Auto</option>
+                                            <option value="manual">Manual</option>
+                                        </select>
+                                    </label>
+                                    <label class="ba-switch bulletin-enabled-row">
+                                        <input id="cgenGeneratedAlertCues" type="checkbox">
+                                        <span>Generate SCTE-35 alert cues</span>
+                                    </label>
                                     <label class="daemon-field cgen-wide">
-                                        <span>Program output</span>
-                                        <input id="cgenProgramOutput" type="text" placeholder="udp://239.0.0.2:9001?pkt_size=1316">
+                                        <span>Legacy program output reference</span>
+                                        <input id="cgenProgramOutput" type="text" autocomplete="off" spellcheck="false" placeholder="udp://239.0.0.2:9001?pkt_size=1316">
                                     </label>
                                     <label class="daemon-field">
                                         <span>Output format</span>
@@ -1365,8 +1524,43 @@
                                 </div>
                             </section>
 
-                            <section class="section-block">
-                                <div class="section-hd"><span>Graphics</span></div>
+                            <section class="section-block cgen-tab-panel" id="cgenTabCompositor" role="tabpanel" aria-labelledby="cgenTabButtonCompositor" data-cgen-panel="compositor" hidden>
+                                <div class="section-hd"><span>Scene Documents</span></div>
+                                <div class="section-body cgen-editor-grid">
+                                    <p class="cgen-stage-note">Scenes are independent, revisioned XML documents under <code>managed/cgen/scenes</code>. Protected scenes cannot be deleted or renamed. <code>Program_Passthrough</code> is locked. Scene XML is displayed as text and is never interpreted by the browser.</p>
+                                    <label class="daemon-field">
+                                        <span>Alert scene</span>
+                                        <select id="cgenAlertScene"></select>
+                                    </label>
+                                    <label class="daemon-field">
+                                        <span>Compositor engine</span>
+                                        <select id="cgenCompositorEngine">
+                                            <option value="scene_v2">Scene graph</option>
+                                            <option value="legacy">Legacy renderer</option>
+                                        </select>
+                                    </label>
+                                    <div class="cgen-scene-toolbar">
+                                        <label class="daemon-field">
+                                            <span>Scene document</span>
+                                            <select id="cgenSceneSelect"></select>
+                                        </label>
+                                        <button id="cgenSceneRefreshButton" class="btn-action" type="button">Refresh</button>
+                                        <button id="cgenSceneNewButton" class="btn-action" type="button">New scene</button>
+                                        <button id="cgenSceneDeleteButton" class="btn-danger" type="button">Delete</button>
+                                    </div>
+                                    <div id="cgenSceneState" class="cgen-scene-state" aria-live="polite">Scene catalog not loaded.</div>
+                                    <label class="daemon-field cgen-wide">
+                                        <span>Scene XML</span>
+                                        <textarea id="cgenSceneXML" class="cgen-scene-editor" rows="24" autocomplete="off" spellcheck="false" aria-describedby="cgenSceneState"></textarea>
+                                    </label>
+                                    <div class="cgen-wide cgen-actions">
+                                        <button id="cgenSceneSaveButton" class="btn-primary" type="button">Save scene</button>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="section-block cgen-tab-panel" role="tabpanel" aria-label="Legacy compositor graphics adapter" data-cgen-panel="compositor" hidden>
+                                <div class="section-hd"><span>Legacy Graphics Adapter</span></div>
                                 <div class="section-body cgen-editor-grid">
                                     <label class="daemon-field">
                                         <span>Width</span>
@@ -1482,7 +1676,7 @@
                                     </label>
                                     <label class="daemon-field cgen-wide">
                                         <span>Standby text</span>
-                                        <input id="cgenStandbyText" type="text" value="EAS Details Channel">
+                                        <input id="cgenStandbyText" type="text" value="Emergency Alert Details Channel">
                                     </label>
                                     <label class="daemon-field">
                                         <span>Standby text size</span>
@@ -1495,8 +1689,8 @@
                                 </div>
                             </section>
 
-                            <section class="section-block">
-                                <div class="section-hd"><span>Text and Clock</span></div>
+                            <section class="section-block cgen-tab-panel" role="tabpanel" aria-label="Legacy text and clock adapter" data-cgen-panel="compositor" hidden>
+                                <div class="section-hd"><span>Legacy Text and Clock Adapter</span></div>
                                 <div class="section-body cgen-editor-grid">
                                     <label class="daemon-field cgen-wide">
                                         <span>Inserted text</span>
@@ -1570,7 +1764,7 @@
                                     <dl class="cgen-meta-list">
                                         <div><dt>Program Input</dt><dd id="cgenProgramInputMeta">-</dd></div>
                                         <div><dt>Priority Source</dt><dd id="cgenPriorityMeta">-</dd></div>
-                                        <div><dt>UDP Output</dt><dd id="cgenOutputMeta">-</dd></div>
+                                        <div><dt>Encoder Outputs</dt><dd id="cgenOutputMeta">-</dd></div>
                                         <div><dt>Runtime</dt><dd id="cgenRuntimeMeta">-</dd></div>
                                         <div><dt>Pipeline</dt><dd id="cgenDriftMeta">-</dd></div>
                                         <div><dt>Visual</dt><dd id="cgenVisualMeta">-</dd></div>
@@ -1791,6 +1985,56 @@
                                 </label>
                             </div>
                             <div id="alertsArchiveList" class="alert-archive-list"></div>
+                        </div>
+                    </section>
+                </main>
+            </div>
+
+            <div class="view" data-view="logs">
+                <header class="topbar">
+                    <div class="topbar-inner">
+                        <div class="topbar-title">
+                            <p class="topbar-eyebrow">Runtime Diagnostics</p>
+                            <h1>Logs</h1>
+                            <p>Follow every available log file without leaving the panel.</p>
+                        </div>
+                        <div class="metric-strip">
+                            <article class="metric-card">
+                                <p>Files</p>
+                                <strong id="logsFileCount">0</strong>
+                            </article>
+                            <article class="metric-card">
+                                <p>Selected</p>
+                                <strong id="logsSelectedMetric">None</strong>
+                            </article>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="dashboard logs-page">
+                    <p id="logsStatus" class="status-banner">Loading log files...</p>
+                    <section class="section-block">
+                        <div class="section-hd">
+                            <span>Live tail</span>
+                            <span class="section-hd-sub">Only regular log files inside the active logs folder are available.</span>
+                        </div>
+                        <div class="section-body logs-viewer">
+                            <div class="logs-toolbar">
+                                <label class="daemon-field logs-file-field">
+                                    <span>Log file</span>
+                                    <select id="logsFileSelect" disabled></select>
+                                </label>
+                                <button id="logsRefreshButton" class="btn-ghost" type="button">Refresh files</button>
+                                <button id="logsPauseButton" class="btn-ghost" type="button">Pause</button>
+                                <button id="logsClearButton" class="btn-ghost" type="button">Clear view</button>
+                                <button id="logsBottomButton" class="btn-ghost" type="button">Jump to bottom</button>
+                                <label class="check-row logs-auto-scroll">
+                                    <input id="logsAutoScroll" type="checkbox" checked>
+                                    <span>Auto-scroll</span>
+                                </label>
+                            </div>
+                            <p id="logsTailMeta" class="logs-tail-meta">Select a log file.</p>
+                            <pre id="logsTailOutput" class="logs-tail-output" tabindex="0" aria-label="Selected log tail"></pre>
                         </div>
                     </section>
                 </main>
@@ -2076,6 +2320,142 @@
                 </main>
             </div>
 
+            <div class="view" data-view="accounts">
+                <header class="topbar">
+                    <div class="topbar-inner">
+                        <div class="topbar-title">
+                            <p class="topbar-eyebrow">Security Administration</p>
+                            <h1>Accounts</h1>
+                            <p>Manage authenticated operators, alert origination permissions, MFA, password policy, and active sessions.</p>
+                        </div>
+                        <div class="metric-strip">
+                            <article class="metric-card"><p>Accounts</p><strong id="accountsCount">0</strong></article>
+                            <article class="metric-card"><p>Locked</p><strong id="accountsLockedCount">0</strong></article>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="dashboard accounts-page">
+                    <p id="accountsStatus" class="status-banner">Loading account security state...</p>
+					<div id="accountsAdminSurface" class="accounts-layout" hidden>
+                        <section class="section-block accounts-directory">
+                            <div class="section-hd"><span>Account Directory</span></div>
+                            <div class="section-body accounts-directory-tools">
+                                <input id="accountsSearch" type="search" placeholder="Search username or sender ID" autocomplete="off">
+                                <button id="accountsCreateButton" class="btn-action" type="button">Create account</button>
+                            </div>
+                            <div class="accounts-table-wrap">
+                                <table class="accounts-table">
+                                    <thead><tr><th>Name</th><th>Sender ID</th><th>Last public IP</th><th>Last sign-in</th></tr></thead>
+                                    <tbody id="accountsTableBody"></tbody>
+                                </table>
+                            </div>
+                        </section>
+
+						<section class="section-block accounts-editor" id="accountsEditor">
+							<div class="section-hd"><span id="accountsEditorTitle">Select an account</span></div>
+							<div class="section-body accounts-policy-form">
+								<input id="accountID" type="hidden">
+								<details class="accounts-policy-section cgen-wide" open>
+									<summary>Global security enforcement (config.yaml)</summary>
+									<div class="accounts-global-security">
+										<label class="check-row"><input id="accountsGlobalMFA" type="checkbox" disabled><span>Require MFA/TOTP</span></label>
+										<label class="check-row"><input id="accountsGlobalRedis" type="checkbox" disabled><span>Require Redis session registry</span></label>
+										<label class="daemon-field"><span>Maximum session</span><input id="accountsGlobalSessionTTL" readonly></label>
+										<label class="daemon-field"><span>Persistent session maximum</span><input id="accountsGlobalPersistentTTL" readonly></label>
+										<label class="daemon-field"><span>Browser-close idle timeout</span><input id="accountsGlobalIdleTTL" readonly></label>
+										<label class="daemon-field"><span>Login failures</span><input id="accountsGlobalLoginLimit" readonly></label>
+										<label class="daemon-field"><span>Origination rate</span><input id="accountsGlobalOriginationRate" readonly></label>
+										<label class="daemon-field cgen-wide"><span>Global login CIDR allowlist</span><textarea id="accountsGlobalCIDRs" rows="2" readonly></textarea></label>
+									</div>
+								</details>
+								<div class="accounts-username-row cgen-wide">
+									<label class="daemon-field"><span>Username</span><input id="accountUsername" maxlength="50" autocomplete="off"></label>
+									<button id="accountRenameButton" class="btn-ghost" type="button">Rename</button>
+								</div>
+                                <label class="check-row accounts-admin-toggle cgen-wide" title="Grants access to account management and administrator-only panel controls."><input id="accountIsAdmin" type="checkbox"><span>Full administrator access</span></label>
+                                <p class="accounts-field-help cgen-wide">Administrators can manage accounts and use administrator-only controls. This does not grant alert origination by itself.</p>
+                                <label class="daemon-field cgen-wide" id="accountInitialPasswordRow" hidden><span id="accountInitialPasswordLabel">Initial password</span><input id="accountInitialPassword" type="password" minlength="12" autocomplete="new-password"></label>
+
+                                <div class="accounts-policy-section cgen-wide">
+                                    <h3>Alert origination rules</h3>
+                                    <label class="check-row"><input id="accountAllowOrigination" type="checkbox"><span>Allow alert originations</span></label>
+                                    <div id="accountOriginationOptions">
+                                        <p class="accounts-field-label">Allowed originators</p>
+                                        <div class="accounts-originators">
+                                            <label><input type="checkbox" name="accountOriginator" value="EAS"> EAS, broadcast or cable</label>
+                                            <label><input type="checkbox" name="accountOriginator" value="WXR"> WXR, weather service</label>
+                                            <label><input type="checkbox" name="accountOriginator" value="PEP"> PEP, primary entry point</label>
+                                            <label><input type="checkbox" name="accountOriginator" value="CIV"> CIV, civil authority</label>
+                                        </div>
+                                        <p class="accounts-field-label">Blocked national alert events</p>
+                                        <label class="check-row accounts-national-toggle">
+                                            <input id="accountBlockNationalAlerts" type="checkbox">
+                                            <span>Block national alerts (EAN, NPT, EAT, NAT, NIC)</span>
+                                        </label>
+                                        <p class="accounts-field-label">Other blocked event codes</p>
+                                        <div class="accounts-event-code-picker">
+                                            <label class="daemon-field"><span>Event code</span><select id="accountBlockedEventSelect"></select></label>
+                                            <button id="accountBlockedEventAdd" class="btn-ghost" type="button">Add</button>
+                                        </div>
+                                        <div id="accountBlockedEventList" class="accounts-blocked-event-list" aria-live="polite"></div>
+                                        <label class="check-row"><input id="accountForceOriginatorName" type="checkbox"><span>Force originator name</span></label>
+                                        <label class="daemon-field" id="accountOriginatorNameRow"><span>Custom sender name</span><input id="accountOriginatorName" maxlength="100"></label>
+                                        <label class="check-row" id="accountIncludeIPRow"><input id="accountIncludeIP" type="checkbox"><span>Append public IP in brackets</span></label>
+                                        <label class="check-row"><input id="accountForceSenderID" type="checkbox"><span>Force SAME sender ID</span></label>
+                                        <label class="daemon-field" id="accountSenderIDRow"><span>Eight-character sender ID</span><input id="accountSenderID" maxlength="8" pattern="[A-Za-z0-9/]{8}" title="Enter exactly eight letters, numbers, or slashes. A dash is converted to a slash."></label>
+                                    </div>
+                                </div>
+
+                                <div class="accounts-policy-section cgen-wide">
+                                    <h3>Security and authentication</h3>
+                                    <label class="check-row"><input id="accountAllowPasswordChange" type="checkbox"><span>Allow user to change password</span></label>
+                                    <label class="daemon-field"><span>Password expiry, days (Never, 30, 90, 180, or custom)</span><input id="accountPasswordExpiry" type="number" min="0" max="3650" value="90" list="accountPasswordExpiryOptions"></label>
+                                    <datalist id="accountPasswordExpiryOptions"><option value="0" label="Never"></option><option value="30"></option><option value="90"></option><option value="180"></option></datalist>
+                                    <label class="check-row"><input id="accountAllowPersistent" type="checkbox"><span>Allow persistent 30-day sessions</span></label>
+                                    <label class="check-row"><input id="accountLoggingEnabled" type="checkbox"><span>Enable tamper-evident file logging</span></label>
+                                    <label class="check-row"><input id="accountCanViewLogs" type="checkbox"><span>Allow access to operational logs</span></label>
+                                    <label class="daemon-field cgen-wide"><span>Login CIDR allowlist, one per line</span><textarea id="accountCIDRAllowlist" rows="3" placeholder="172.16.1.0/24"></textarea></label>
+                                    <div class="accounts-security-state cgen-wide" id="accountSecurityState"></div>
+                                    <div class="daemon-actions cgen-wide">
+                                        <button id="accountPasswordResetButton" class="btn-ghost" type="button">Change password</button>
+                                        <button id="accountMFAResetButton" class="btn-ghost" type="button">Reset MFA enrollment</button>
+                                        <button id="accountUnlockButton" class="btn-ghost" type="button">Unlock account</button>
+                                    </div>
+                                </div>
+
+                                <div class="accounts-policy-section cgen-wide">
+                                    <h3>Active sessions</h3>
+                                    <div id="accountSessions" class="accounts-session-list"></div>
+                                    <button id="accountRevokeAllButton" class="btn-ghost" type="button">Revoke all active sessions</button>
+                                </div>
+
+                                <div class="daemon-actions accounts-save-actions cgen-wide">
+                                    <button id="accountSaveButton" class="btn-primary" type="button">Save account</button>
+                                    <span id="accountSaveStatus" class="account-save-feedback" aria-live="polite" hidden></span>
+                                </div>
+
+                                <div class="accounts-danger-zone cgen-wide">
+                                    <h3>Danger zone</h3>
+                                    <label class="daemon-field"><span>Type DELETE to confirm</span><input id="accountDeleteConfirmation" autocomplete="off"></label>
+                                    <button id="accountDeleteButton" class="btn-danger" type="button">Delete account</button>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+
+					<section class="section-block accounts-profile-security" id="accountsProfilePassword">
+                        <div class="section-hd"><span>My password</span></div>
+                        <div class="section-body accounts-password-form">
+                            <label class="daemon-field"><span>Current password</span><input id="profileCurrentPassword" type="password" autocomplete="current-password"></label>
+                            <label class="daemon-field"><span>New password</span><input id="profileNewPassword" type="password" minlength="12" autocomplete="new-password"></label>
+                            <label class="daemon-field"><span>Confirm new password</span><input id="profileConfirmPassword" type="password" minlength="12" autocomplete="new-password"></label>
+                            <button id="profileChangePasswordButton" class="btn-primary" type="button">Change my password</button>
+                        </div>
+                    </section>
+                </main>
+            </div>
+
             <div class="view" data-view="daemon">
                 <header class="topbar">
                     <div class="topbar-inner">
@@ -2155,6 +2535,6 @@
     </div>
 
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script type="module" src="/assets/js/app.js"></script>
+    <script type="module" src="/assets/js/app.js?v=account-origination-20260717-1"></script>
 </body>
 </html>

@@ -1,15 +1,18 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
 use crate::bridge::BridgeClient;
 use crate::config::FeedConfig;
+use crate::media_pcm::{MediaPcmHub, MediaPcmSubscription};
+use crate::scene::{SceneCatalog, SceneId, STANDARD_CRAWL_ID};
 use crate::state::RuntimeState;
 
 const STATUS_MIN_PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
@@ -21,6 +24,8 @@ pub(crate) struct PipelineWorker {
     shutdown_rx: watch::Receiver<bool>,
     base_dir: PathBuf,
     bridge: Option<BridgeClient>,
+    scene_catalog: Arc<SceneCatalog>,
+    media_pcm: MediaPcmSubscription,
 }
 
 impl PipelineWorker {
@@ -30,13 +35,18 @@ impl PipelineWorker {
         shutdown_rx: watch::Receiver<bool>,
         base_dir: PathBuf,
         bridge: Option<BridgeClient>,
+        scene_catalog: Arc<SceneCatalog>,
+        media_pcm_hub: MediaPcmHub,
     ) -> Self {
+        let media_pcm = media_pcm_hub.subscribe(configured_alert_feed_id(&feed));
         Self {
             feed,
             state_rx,
             shutdown_rx,
             base_dir,
             bridge,
+            scene_catalog,
+            media_pcm,
         }
     }
 
@@ -87,6 +97,7 @@ impl PipelineWorker {
             self.shutdown_rx,
             self.base_dir,
             status_tx,
+            self.media_pcm,
         )
         .await
     }
@@ -94,6 +105,12 @@ impl PipelineWorker {
     fn spawn_status_publisher(&self) -> Option<mpsc::Sender<Value>> {
         let bridge = self.bridge.clone()?;
         let feed_id = self.feed.id.clone();
+        let alert_feed_id = configured_alert_feed_id(&self.feed);
+        let alert_scene_id = SceneId::new(&self.feed.compositor.alert_scene_id)
+            .unwrap_or_else(|_| SceneId::new(STANDARD_CRAWL_ID).expect("protected scene ID"));
+        let ancillary_capabilities = ancillary_capabilities_status(&self.feed);
+        let scene_catalog = Arc::clone(&self.scene_catalog);
+        let state_rx = self.state_rx.clone();
         let status_path = self
             .base_dir
             .join("runtime")
@@ -110,7 +127,7 @@ impl PipelineWorker {
             loop {
                 tokio::select! {
                     data = rx.recv() => {
-                        let Some(data) = data else {
+                        let Some(mut data) = data else {
                             if pending.is_some() {
                                 let _ = flush_cgen_status(
                                     &feed_id,
@@ -123,6 +140,19 @@ impl PipelineWorker {
                             }
                             break;
                         };
+                        augment_scene_status(
+                            &mut data,
+                            &state_rx.borrow(),
+                            &alert_feed_id,
+                            &alert_scene_id,
+                            &scene_catalog,
+                        );
+                        if let Some(object) = data.as_object_mut() {
+                            object.insert(
+                                "ancillary_capabilities".to_string(),
+                                ancillary_capabilities.clone(),
+                            );
+                        }
                         pending = Some(data);
                         if status_flush_due(pending.as_ref(), last_sent.as_ref(), last_sent_at, Instant::now())
                             && !flush_cgen_status(
@@ -155,6 +185,105 @@ impl PipelineWorker {
             }
         });
         Some(tx)
+    }
+}
+
+fn ancillary_capabilities_status(feed: &FeedConfig) -> Value {
+    let Ok(spec) = feed.pipeline_spec() else {
+        return json!({
+            "degraded": true,
+            "outputs": [],
+        });
+    };
+    let backend = crate::ancillary::AncillaryBackendCapabilities::current_gstreamer();
+    let mut degraded = false;
+    let outputs = spec
+        .outputs
+        .iter()
+        .filter(|output| output.enabled)
+        .map(|output| {
+            let eia608 = crate::ancillary::OutputAncillaryPolicy::resolve(
+                spec.ancillary,
+                output,
+                crate::ancillary::CaptionFormat::Eia608,
+                backend,
+            );
+            let eia708 = crate::ancillary::OutputAncillaryPolicy::resolve(
+                spec.ancillary,
+                output,
+                crate::ancillary::CaptionFormat::Eia708,
+                backend,
+            );
+            degraded |= eia608.is_degraded() || eia708.is_degraded();
+            json!({
+                "output_id": output.id.as_str(),
+                "destination": output.destination.kind(),
+                "eia608": eia608.status_value(),
+                "eia708": eia708.status_value(),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "degraded": degraded,
+        "backend": "gstreamer",
+        "backend_capabilities": backend.status_value(),
+        "outputs": outputs,
+    })
+}
+
+fn configured_alert_feed_id(feed: &FeedConfig) -> String {
+    let configured = if !feed.alert.feed_id.trim().is_empty() {
+        feed.alert.feed_id.trim()
+    } else {
+        feed.priority_input.feed_id.trim()
+    };
+    if configured.is_empty() || configured == "*" {
+        feed.id.clone()
+    } else {
+        configured.to_string()
+    }
+}
+
+fn augment_scene_status(
+    data: &mut Value,
+    runtime: &RuntimeState,
+    alert_feed_id: &str,
+    alert_scene_id: &SceneId,
+    catalog: &SceneCatalog,
+) {
+    let input_healthy = data
+        .get("input_video_connected")
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            data.get("no_signal")
+                .and_then(Value::as_bool)
+                .map(|no_signal| !no_signal)
+        })
+        .unwrap_or(false);
+    let resolved = crate::scene_runtime::resolve_scene_state(
+        runtime,
+        alert_feed_id,
+        alert_scene_id,
+        input_healthy,
+        catalog,
+    );
+    let status = resolved.status_value();
+    if let Some(object) = data.as_object_mut() {
+        object.insert("scene_graph".to_string(), status.clone());
+        object.insert(
+            "active_scene".to_string(),
+            status
+                .get("active_scene_id")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "active_queue_id".to_string(),
+            status
+                .get("active_queue_id")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
     }
 }
 
@@ -230,10 +359,7 @@ fn write_cgen_status_file(path: &Path, data: &Value) -> Result<()> {
         );
     }
     let raw = serde_json::to_vec_pretty(&data).context("failed to encode cgen status")?;
-    let tmp = path.with_extension("status.json.tmp");
-    fs::write(&tmp, raw).context("failed to write cgen status temp file")?;
-    fs::rename(&tmp, path).context("failed to replace cgen status file")?;
-    Ok(())
+    crate::atomic_file::write(path, &raw).context("failed to replace cgen status file")
 }
 
 fn safe_file_id(id: &str) -> String {
@@ -251,7 +377,8 @@ fn safe_file_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        safe_file_id, status_flush_due, STATUS_HEARTBEAT_INTERVAL, STATUS_MIN_PUBLISH_INTERVAL,
+        safe_file_id, status_flush_due, write_cgen_status_file, STATUS_HEARTBEAT_INTERVAL,
+        STATUS_MIN_PUBLISH_INTERVAL,
     };
     use serde_json::json;
     use std::time::{Duration, Instant};
@@ -259,6 +386,19 @@ mod tests {
     #[test]
     fn safe_file_id_replaces_pathish_chars() {
         assert_eq!(safe_file_id("CAP/IT:ALL"), "CAP_IT_ALL");
+    }
+
+    #[test]
+    fn status_file_atomically_replaces_an_existing_snapshot() {
+        let directory = tempfile::tempdir().expect("temporary status directory");
+        let path = directory.path().join("feed.status.json");
+        write_cgen_status_file(&path, &json!({"sequence": 1})).expect("first status write");
+        write_cgen_status_file(&path, &json!({"sequence": 2})).expect("replacement status write");
+        let status: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&path).expect("read replacement status snapshot"),
+        )
+        .expect("parse status snapshot");
+        assert_eq!(status["sequence"], 2);
     }
 
     #[test]

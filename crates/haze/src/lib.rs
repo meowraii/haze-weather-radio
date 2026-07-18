@@ -209,7 +209,8 @@ fn init_tracing(log_level: Option<&str>, runtime_dir: &Path) -> Option<WorkerGua
     let fallback = log_level.unwrap_or("info");
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(fallback));
     let log_dir = runtime_dir.join("logs");
-    let file_appender = tracing_appender::rolling::daily(log_dir, "haze.log");
+    migrate_legacy_log_names(&log_dir);
+    let file_appender = daily_log_appender(&log_dir)?;
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
     let console_layer = tracing_subscriber::fmt::layer()
@@ -230,6 +231,42 @@ fn init_tracing(log_level: Option<&str>, runtime_dir: &Path) -> Option<WorkerGua
     {
         Ok(()) => Some(guard),
         Err(_) => None,
+    }
+}
+
+fn daily_log_appender(log_dir: &Path) -> Option<tracing_appender::rolling::RollingFileAppender> {
+    tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("haze")
+        .filename_suffix("log")
+        .build(log_dir)
+        .ok()
+}
+
+fn migrate_legacy_log_names(log_dir: &Path) {
+    let Ok(entries) = fs::read_dir(log_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(date) = name.strip_prefix("haze.log.") else {
+            continue;
+        };
+        if chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() {
+            continue;
+        }
+        let destination = log_dir.join(format!("haze.{date}.log"));
+        if !destination.exists() {
+            let _ = fs::rename(entry.path(), destination);
+        }
     }
 }
 
@@ -553,6 +590,46 @@ mod tests {
         assert_eq!(parse_lock_pid("1234\nextra"), Some(1234));
         assert_eq!(parse_lock_pid(" nope "), None);
         assert_eq!(parse_lock_pid(""), None);
+    }
+
+    #[test]
+    fn daily_logs_keep_log_as_the_filename_extension() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut appender = daily_log_appender(temp.path()).expect("daily log appender");
+        writeln!(appender, "test log line").expect("write log line");
+        let names = fs::read_dir(temp.path())
+            .expect("read logs")
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+
+        assert!(names
+            .iter()
+            .any(|name| name.starts_with("haze.") && name.ends_with(".log")));
+        assert!(!names.iter().any(|name| name.starts_with("haze.log.")));
+    }
+
+    #[test]
+    fn legacy_dated_logs_are_migrated_without_overwriting() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("haze.log.2026-07-15"), "legacy").expect("legacy log");
+        fs::write(temp.path().join("haze.log.2026-07-16"), "do not replace").expect("old log");
+        fs::write(temp.path().join("haze.2026-07-16.log"), "current").expect("new log");
+        fs::write(temp.path().join("haze.log.not-a-date"), "keep").expect("unrelated log");
+
+        migrate_legacy_log_names(temp.path());
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join("haze.2026-07-15.log")).expect("migrated log"),
+            "legacy"
+        );
+        assert!(!temp.path().join("haze.log.2026-07-15").exists());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("haze.2026-07-16.log")).expect("new log"),
+            "current"
+        );
+        assert!(temp.path().join("haze.log.2026-07-16").exists());
+        assert!(temp.path().join("haze.log.not-a-date").exists());
     }
 
     #[test]

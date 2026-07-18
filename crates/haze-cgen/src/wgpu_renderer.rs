@@ -2,6 +2,9 @@
 use anyhow::Context;
 use anyhow::Result;
 use serde_json::{json, Value};
+
+#[path = "msdf_text.rs"]
+mod msdf_text;
 #[cfg(feature = "gpu-wgpu")]
 use std::{
     fs,
@@ -95,6 +98,7 @@ pub(crate) struct WgpuFrameRenderer {
     ticker_start_pts_ns: Option<u64>,
     text_strip_cache: std::collections::BTreeMap<String, RenderedTextStrip>,
     text_strip_cache_bytes: usize,
+    scene_text_shadow: msdf_text::SceneTextShadowPreview,
     rendered_frames: u64,
     dropped_frames: u64,
     last_error: Option<String>,
@@ -201,6 +205,7 @@ impl WgpuFrameRenderer {
             .max_texture_dimension_2d
             .min(65_535)
             .max(width.max(1));
+        let scene_text_shadow = msdf_text::SceneTextShadowPreview::spawn(managed_font_dir);
         Ok(Self {
             id,
             width,
@@ -222,6 +227,7 @@ impl WgpuFrameRenderer {
             ticker_start_pts_ns: None,
             text_strip_cache: std::collections::BTreeMap::new(),
             text_strip_cache_bytes: 0,
+            scene_text_shadow,
             rendered_frames: 0,
             dropped_frames: 0,
             last_error: None,
@@ -234,6 +240,7 @@ impl WgpuFrameRenderer {
         frame_pts_ns: Option<u64>,
         state: Option<&OverlayRenderState>,
     ) -> Result<()> {
+        self.scene_text_shadow.poll_results();
         let expected = usize::try_from(self.width)
             .unwrap_or(0)
             .saturating_mul(usize::try_from(self.height).unwrap_or(0))
@@ -251,12 +258,14 @@ impl WgpuFrameRenderer {
                 || (!state.silent && !state.text.trim().is_empty())
                 || !state.clock_text.trim().is_empty()
         }) else {
+            self.scene_text_shadow.set_inactive();
             self.ticker_key = None;
             self.ticker_start_pts_ns = None;
             self.clear_text_strip_cache();
             self.rendered_frames = self.rendered_frames.saturating_add(1);
             return Ok(());
         };
+        self.prepare_scene_text_shadow(state);
         if let Err(err) = self.composite_overlay(frame, frame_pts_ns, state) {
             self.dropped_frames = self.dropped_frames.saturating_add(1);
             self.last_error = Some(err.to_string());
@@ -274,6 +283,15 @@ impl WgpuFrameRenderer {
             "adapter": self.adapter_name,
             "backend": self.backend,
             "text_renderer": "glyphon",
+            "legacy_text_renderer_active": true,
+            "scene_text_renderer": {
+                "backend": "msdfgen",
+                "rollout": "shadow_preview",
+                "active": false,
+                "draw_active": false,
+                "atlas_format": msdf_text::ATLAS_TEXTURE_FORMAT,
+                "shadow_preparation": self.scene_text_shadow.status_value(),
+            },
             "width": self.width,
             "height": self.height,
             "interlaced": self.interlaced,
@@ -284,6 +302,29 @@ impl WgpuFrameRenderer {
             "last_error": self.last_error,
             "sunny_cat_available": crate::sunny_cat::available(),
         })
+    }
+
+    fn prepare_scene_text_shadow(&mut self, state: &OverlayRenderState) {
+        let kind = match state.visual_mode.as_str() {
+            "ticker_alert" => crate::scene::ProtectedSceneKind::StandardCrawl,
+            "fullscreen_alert" => crate::scene::ProtectedSceneKind::FullscreenTakeover,
+            _ => {
+                self.scene_text_shadow.set_inactive();
+                return;
+            }
+        };
+        let bound_text = if state.source_text.trim().is_empty() {
+            state.text.trim()
+        } else {
+            state.source_text.trim()
+        };
+        self.scene_text_shadow.observe_alert_scene(
+            kind,
+            self.width,
+            self.height,
+            &state.visual_id,
+            bound_text,
+        );
     }
 
     fn composite_overlay(

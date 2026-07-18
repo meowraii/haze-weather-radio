@@ -1,4 +1,6 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -7,9 +9,24 @@ use quick_xml::Reader;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::architecture::{
+    AncillaryPolicy, AudioCodec, AudioCodecPolicy, AudioEncoderSpec, AudioRoutingSpec,
+    AudioStreamMap, AudioTopologyMode, AudioTrackId, ChannelLayout, CompositorSpec,
+    DecoderPreference, DemuxHint, DeviceBackend, DeviceInput, DummyInput, EncoderOutputSpec,
+    FeedId, FieldOrder, GainDb, MpegTsPid, MpegTsProgramSpec, OutputDestination, OutputId,
+    PassPolicy, PidAssignment, PipelineSpec, ProgramInput, ProgramMapSpec, RateControl, Rational,
+    Rgba8, ScanMode, SceneId, Scte35Map, ServiceMetadata, UriInput, VideoCodec, VideoEncoderSpec,
+    VideoFormat,
+};
+
+const MAX_CGEN_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_CGEN_ENCODERS_BYTES: u64 = 2 * 1024 * 1024;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename = "cgen")]
 pub(crate) struct CgenConfig {
+    #[serde(rename = "@schema_version", default = "default_schema_version")]
+    pub(crate) schema_version: u16,
     #[serde(rename = "@enabled", default = "default_true")]
     pub(crate) enabled: bool,
     #[serde(rename = "feed", default)]
@@ -58,8 +75,20 @@ pub(crate) struct FeedConfig {
     pub(crate) standby: StandbyConfig,
     #[serde(default)]
     pub(crate) sync: SyncConfig,
+    #[serde(default)]
+    pub(crate) alert: AlertRouteConfig,
+    #[serde(default)]
+    pub(crate) ancillary: AncillaryConfig,
+    #[serde(default)]
+    pub(crate) compositor: CompositorConfig,
+    #[serde(rename = "programMapping", default)]
+    pub(crate) program_mapping: ProgramMappingConfig,
+    #[serde(default)]
+    pub(crate) outputs: OutputsConfig,
     #[serde(skip)]
     pub(crate) encoder: FeedEncoderSettings,
+    #[serde(skip)]
+    pub(crate) output_encoders: BTreeMap<String, FeedEncoderSettings>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -82,6 +111,30 @@ pub(crate) struct EndpointConfig {
     pub(crate) hardware_decoder_enabled: String,
     #[serde(rename = "@hardware_decoder", default)]
     pub(crate) hardware_decoder: String,
+    #[serde(rename = "@device_backend", default)]
+    pub(crate) device_backend: String,
+    #[serde(rename = "@device_id", default)]
+    pub(crate) device_id: String,
+    #[serde(rename = "@width", default)]
+    pub(crate) width: u32,
+    #[serde(rename = "@height", default)]
+    pub(crate) height: u32,
+    #[serde(rename = "@fps", default)]
+    pub(crate) fps: String,
+    #[serde(rename = "@interlaced", default)]
+    pub(crate) interlaced: bool,
+    #[serde(rename = "@field_order", default)]
+    pub(crate) field_order: String,
+    #[serde(rename = "@background", default)]
+    pub(crate) background: String,
+    #[serde(rename = "@service_name", default)]
+    pub(crate) service_name: String,
+    #[serde(rename = "@provider_name", default)]
+    pub(crate) provider_name: String,
+    #[serde(rename = "@service_id", default)]
+    pub(crate) service_id: u16,
+    #[serde(rename = "@transport_stream_id", default)]
+    pub(crate) transport_stream_id: u16,
 }
 
 impl EndpointConfig {
@@ -95,6 +148,18 @@ impl EndpointConfig {
             || self.audio_bitrate_kbps.is_some()
             || !self.hardware_decoder_enabled.trim().is_empty()
             || !self.hardware_decoder.trim().is_empty()
+            || !self.device_backend.trim().is_empty()
+            || !self.device_id.trim().is_empty()
+            || self.width > 0
+            || self.height > 0
+            || !self.fps.trim().is_empty()
+            || self.interlaced
+            || !self.field_order.trim().is_empty()
+            || !self.background.trim().is_empty()
+            || !self.service_name.trim().is_empty()
+            || !self.provider_name.trim().is_empty()
+            || self.service_id > 0
+            || self.transport_stream_id > 0
     }
 
     pub(crate) fn hardware_decoder(&self) -> Option<&str> {
@@ -163,6 +228,134 @@ pub(crate) struct AudioConfig {
     pub(crate) alert_mode: String,
     #[serde(rename = "@mute_standby_routine", default = "default_true")]
     pub(crate) mute_standby_routine: bool,
+    #[serde(rename = "@topology", default = "default_audio_topology")]
+    pub(crate) topology: String,
+    #[serde(rename = "@force_layout", default = "default_forced_audio_layout")]
+    pub(crate) force_layout: String,
+    #[serde(
+        rename = "@idle_program_gain_db",
+        default = "default_idle_program_gain"
+    )]
+    pub(crate) idle_program_gain_db: String,
+    #[serde(
+        rename = "@alert_program_gain_db",
+        default = "default_alert_program_gain"
+    )]
+    pub(crate) alert_program_gain_db: String,
+    #[serde(rename = "@alert_gain_db", default = "default_alert_gain")]
+    pub(crate) alert_gain_db: String,
+    #[serde(rename = "@transition_ms", default = "default_audio_transition_ms")]
+    pub(crate) transition_ms: u16,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct AlertRouteConfig {
+    #[serde(rename = "@feed_id", default)]
+    pub(crate) feed_id: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct AncillaryConfig {
+    #[serde(rename = "@captions", default)]
+    pub(crate) captions: String,
+    #[serde(rename = "@scte35", default)]
+    pub(crate) scte35: String,
+    #[serde(rename = "@scte104", default)]
+    pub(crate) scte104: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct CompositorConfig {
+    #[serde(rename = "@alert_scene_id", default = "default_alert_scene_id")]
+    pub(crate) alert_scene_id: String,
+    #[serde(rename = "@engine", default = "default_compositor_engine")]
+    pub(crate) engine: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct ProgramMappingConfig {
+    #[serde(rename = "@transport_stream_id", default)]
+    pub(crate) transport_stream_id: u16,
+    #[serde(rename = "program", default)]
+    pub(crate) programs: Vec<ProgramMapEntryConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct ProgramMapEntryConfig {
+    #[serde(rename = "@number", default)]
+    pub(crate) number: u16,
+    #[serde(rename = "@service_name", default)]
+    pub(crate) service_name: String,
+    #[serde(rename = "@provider_name", default)]
+    pub(crate) provider_name: String,
+    #[serde(rename = "@pmt_pid", default)]
+    pub(crate) pmt_pid: String,
+    #[serde(rename = "@video_pid", default)]
+    pub(crate) video_pid: String,
+    #[serde(rename = "audio", default)]
+    pub(crate) audio: Vec<ProgramAudioMapConfig>,
+    #[serde(default)]
+    pub(crate) scte35: Option<ProgramScte35Config>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct ProgramAudioMapConfig {
+    #[serde(rename = "@track_id", default)]
+    pub(crate) track_id: String,
+    #[serde(rename = "@pid", default)]
+    pub(crate) pid: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct ProgramScte35Config {
+    #[serde(rename = "@input", default)]
+    pub(crate) input: String,
+    #[serde(rename = "@generated_alert_cues", default)]
+    pub(crate) generated_alert_cues: bool,
+    #[serde(rename = "@pid", default)]
+    pub(crate) pid: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct OutputsConfig {
+    #[serde(rename = "output", default)]
+    pub(crate) outputs: Vec<OutputConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct OutputConfig {
+    #[serde(rename = "@id", default)]
+    pub(crate) id: String,
+    #[serde(rename = "@enabled", default = "default_true")]
+    pub(crate) enabled: bool,
+    #[serde(rename = "@destination", default)]
+    pub(crate) destination: String,
+    #[serde(rename = "@url", default)]
+    pub(crate) url: String,
+    #[serde(rename = "@video_url", default)]
+    pub(crate) video_url: String,
+    #[serde(rename = "@audio_urls", default)]
+    pub(crate) audio_urls: String,
+    #[serde(rename = "@container", default)]
+    pub(crate) container: String,
+    #[serde(rename = "@latency_ms", default)]
+    pub(crate) latency_ms: u32,
+    #[serde(rename = "@video_codec", default)]
+    pub(crate) video_codec: String,
+    #[serde(rename = "@rate_control", default)]
+    pub(crate) rate_control: String,
+    #[serde(rename = "@video_bitrate_kbps", default)]
+    pub(crate) video_bitrate_kbps: u32,
+    #[serde(rename = "@video_max_bitrate_kbps", default)]
+    pub(crate) video_max_bitrate_kbps: u32,
+    #[serde(rename = "@gop_frames", default)]
+    pub(crate) gop_frames: u32,
+    #[serde(rename = "@audio_codec", default)]
+    pub(crate) audio_codec: String,
+    #[serde(rename = "@audio_bitrate_kbps", default)]
+    pub(crate) audio_bitrate_kbps: u32,
+    #[serde(rename = "@sample_rate", default)]
+    pub(crate) sample_rate: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -195,12 +388,26 @@ pub(crate) struct EncoderOptionConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename = "cgenEncoders")]
 struct CgenEncodersConfig {
+    #[serde(rename = "@schema_version", default = "default_schema_version")]
+    schema_version: u16,
     #[serde(rename = "feed", default)]
     feeds: Vec<FeedEncoderConfig>,
+    #[serde(rename = "output", default)]
+    outputs: Vec<OutputEncoderConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct FeedEncoderConfig {
+    #[serde(rename = "@id", default)]
+    id: String,
+    #[serde(default)]
+    video: EncoderCodecConfig,
+    #[serde(default)]
+    audio: EncoderCodecConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct OutputEncoderConfig {
     #[serde(rename = "@id", default)]
     id: String,
     #[serde(default)]
@@ -283,6 +490,12 @@ pub(crate) struct AudioRenditionConfig {
     pub(crate) bitrate_kbps: Option<u32>,
     #[serde(rename = "@language", default = "default_audio_language")]
     pub(crate) language: String,
+    #[serde(rename = "@program", default)]
+    pub(crate) program: Option<i32>,
+    #[serde(rename = "@audio_pid", default)]
+    pub(crate) audio_pid: Option<i32>,
+    #[serde(rename = "@pmt_pid", default)]
+    pub(crate) pmt_pid: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -494,7 +707,13 @@ impl CgenConfig {
         }
     }
 
-    fn apply_encoder_settings(&mut self, encoders: CgenEncodersConfig) {
+    fn apply_encoder_settings(&mut self, encoders: CgenEncodersConfig) -> Result<()> {
+        if !matches!(encoders.schema_version, 1 | 2) {
+            bail!(
+                "unsupported cgen encoder schema version {}, expected 1 or 2",
+                encoders.schema_version
+            );
+        }
         for encoder_feed in encoders.feeds {
             if encoder_feed.id.trim().is_empty() {
                 continue;
@@ -507,16 +726,50 @@ impl CgenConfig {
                 feed.encoder = FeedEncoderSettings::from_config(encoder_feed);
             }
         }
+        let mut output_ids = BTreeSet::new();
+        for encoder_output in encoders.outputs {
+            let output_id = encoder_output.id.trim();
+            if output_id.is_empty() {
+                bail!("cgen encoder output id is required");
+            }
+            let parsed_id = OutputId::parse(output_id)?;
+            if !output_ids.insert(parsed_id.as_str().to_ascii_lowercase()) {
+                bail!("duplicate cgen encoder output id {}", parsed_id);
+            }
+            let settings = FeedEncoderSettings::from_output_config(encoder_output);
+            for feed in &mut self.feeds {
+                if feed
+                    .outputs
+                    .outputs
+                    .iter()
+                    .any(|output| output.id.eq_ignore_ascii_case(parsed_id.as_str()))
+                {
+                    feed.output_encoders
+                        .insert(parsed_id.as_str().to_ascii_lowercase(), settings.clone());
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn enabled_feeds(&self) -> Result<Vec<FeedConfig>> {
+        if !matches!(self.schema_version, 1 | 2) {
+            bail!(
+                "unsupported cgen schema version {}, expected 1 or 2",
+                self.schema_version
+            );
+        }
         if !self.enabled {
             return Ok(Vec::new());
         }
         let mut out = Vec::new();
+        let mut feed_ids = BTreeSet::new();
         for feed in &self.feeds {
             if !feed.enabled {
                 continue;
+            }
+            if !feed_ids.insert(feed.id.trim().to_ascii_lowercase()) {
+                bail!("duplicate enabled cgen feed id {}", feed.id);
             }
             feed.validate()?;
             out.push(feed.clone());
@@ -527,6 +780,13 @@ impl CgenConfig {
 
 impl FeedEncoderSettings {
     fn from_config(config: FeedEncoderConfig) -> Self {
+        Self {
+            video: EncoderCodecSettings::from_config(config.video),
+            audio: EncoderCodecSettings::from_config(config.audio),
+        }
+    }
+
+    fn from_output_config(config: OutputEncoderConfig) -> Self {
         Self {
             video: EncoderCodecSettings::from_config(config.video),
             audio: EncoderCodecSettings::from_config(config.audio),
@@ -567,6 +827,14 @@ impl EncoderCodecSettings {
 }
 
 impl FeedConfig {
+    pub(crate) fn encoder_settings_for_output(
+        &self,
+        output_id: &str,
+    ) -> Option<&FeedEncoderSettings> {
+        self.output_encoders
+            .get(&output_id.trim().to_ascii_lowercase())
+    }
+
     fn apply_nested_sections(&mut self) {
         for program in &self.program {
             if program.input.has_values() {
@@ -662,21 +930,27 @@ impl FeedConfig {
         if self.id.trim().is_empty() {
             bail!("cgen feed id is required");
         }
-        if self.program_input_url().trim().is_empty() {
+        let input_type = self.program_input.input_type.trim();
+        let input_requires_url = !matches!(
+            input_type.to_ascii_lowercase().as_str(),
+            "dummy" | "none" | "no_input" | "device" | "v4l2" | "directshow" | "dshow"
+        );
+        if input_requires_url && self.program_input_url().trim().is_empty() {
             bail!("cgen feed {} input url is required", self.id);
         }
-        if self.program_output_url().trim().is_empty() {
+        if self.program_output_url().trim().is_empty() && self.outputs.outputs.is_empty() {
             bail!("cgen feed {} output url is required", self.id);
         }
-        if !allowed_video_size(self.video.width, self.video.height) {
+        let (source_width, source_height) = self.configured_canvas_size();
+        if !allowed_video_size(source_width, source_height) {
             bail!(
                 "cgen feed {} video size {}x{} is not supported",
                 self.id,
-                self.video.width,
-                self.video.height
+                source_width,
+                source_height
             );
         }
-        let enabled_videos = self.enabled_video_renditions(self.video.width, self.video.height);
+        let enabled_videos = self.enabled_video_renditions(source_width, source_height);
         if enabled_videos.is_empty() {
             bail!("cgen feed {} has no enabled video renditions", self.id);
         }
@@ -694,10 +968,267 @@ impl FeedConfig {
         if self.enabled_audio_renditions().is_empty() {
             bail!("cgen feed {} has no enabled audio renditions", self.id);
         }
-        if !self.audio.alert_mode.eq_ignore_ascii_case("replace") {
-            bail!("cgen feed {} audio alert_mode must be replace", self.id);
+        if !matches!(
+            self.audio.alert_mode.trim().to_ascii_lowercase().as_str(),
+            "replace" | "mix" | "duck"
+        ) {
+            bail!(
+                "cgen feed {} audio alert_mode must be replace, mix, or duck",
+                self.id
+            );
         }
+        if !matches!(
+            self.compositor.engine.trim().to_ascii_lowercase().as_str(),
+            "" | "legacy" | "scene_v2" | "scene" | "wgpu"
+        ) {
+            bail!("cgen feed {} compositor engine is unsupported", self.id);
+        }
+        self.pipeline_spec()?.validate().map_err(|error| {
+            anyhow::anyhow!(
+                "cgen feed {} pipeline configuration is invalid: {error}",
+                self.id
+            )
+        })?;
         Ok(())
+    }
+
+    pub(crate) fn configured_canvas_size(&self) -> (u32, u32) {
+        let width = self.program_input.width.max(self.video.width).max(720);
+        let height = self.program_input.height.max(self.video.height).max(480);
+        (width, height)
+    }
+
+    pub(crate) fn pipeline_spec(&self) -> Result<PipelineSpec> {
+        let feed_id = FeedId::parse(&self.id)?;
+        let alert_feed_raw = non_empty(self.alert.feed_id.as_str())
+            .or_else(|| non_empty(self.priority_input.feed_id.as_str()))
+            .filter(|feed_id| *feed_id != "*")
+            .unwrap_or(self.id.as_str());
+        let alert_feed_id = FeedId::parse(alert_feed_raw)?;
+        let outputs = self.output_specs()?;
+        let has_transport_stream = outputs
+            .iter()
+            .any(|output| output.enabled && output.destination.is_mpeg_ts());
+        let program_map = if has_transport_stream {
+            Some(self.program_map_spec()?)
+        } else {
+            None
+        };
+        let spec = PipelineSpec {
+            feed_id,
+            input: self.program_input_spec()?,
+            alert_feed_id,
+            ancillary: AncillaryPolicy {
+                captions: pass_policy(&self.ancillary.captions)?,
+                scte35: pass_policy(&self.ancillary.scte35)?,
+                scte104: pass_policy(&self.ancillary.scte104)?,
+            },
+            audio: self.audio_routing_spec()?,
+            compositor: CompositorSpec {
+                alert_scene_id: SceneId::new(&self.compositor.alert_scene_id)?,
+            },
+            program_map,
+            outputs,
+        };
+        Ok(spec)
+    }
+
+    fn program_input_spec(&self) -> Result<ProgramInput> {
+        let input_type = self.program_input.input_type.trim().to_ascii_lowercase();
+        let decoder = decoder_preference(&self.program_input)?;
+        match input_type.as_str() {
+            "device" | "v4l2" | "directshow" | "dshow" => {
+                let backend = match input_type.as_str() {
+                    "v4l2" => DeviceBackend::V4l2,
+                    "directshow" | "dshow" => DeviceBackend::DirectShow,
+                    _ => match self
+                        .program_input
+                        .device_backend
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str()
+                    {
+                        "v4l2" => DeviceBackend::V4l2,
+                        "directshow" | "dshow" => DeviceBackend::DirectShow,
+                        other => bail!("unsupported program input device backend {other:?}"),
+                    },
+                };
+                Ok(ProgramInput::Device(DeviceInput {
+                    backend,
+                    persistent_id: self.program_input.device_id.trim().to_string(),
+                    decoder,
+                }))
+            }
+            "dummy" | "none" | "no_input" => {
+                let (width, height) = self.configured_canvas_size();
+                let frame_rate = Rational::parse(
+                    non_empty(&self.program_input.fps)
+                        .unwrap_or_else(|| non_empty(&self.video.fps).unwrap_or("30000/1001")),
+                )?;
+                let scan = scan_mode(
+                    self.program_input.interlaced || self.video.interlaced,
+                    non_empty(&self.program_input.field_order).unwrap_or(&self.video.field_order),
+                )?;
+                let background = if self.program_input.background.trim().is_empty() {
+                    Rgba8::BLACK
+                } else {
+                    parse_rgba(&self.program_input.background).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "dummy program input background must be #RRGGBB or #RRGGBBAA"
+                        )
+                    })?
+                };
+                Ok(ProgramInput::Dummy(DummyInput {
+                    format: VideoFormat::new(width, height, frame_rate, scan)?,
+                    background,
+                }))
+            }
+            "" | "uri_or_file" | "stream" | "uri" | "file" => {
+                Ok(ProgramInput::UriOrFile(UriInput {
+                    location: self.program_input.url.trim().to_string(),
+                    demux_hint: demux_hint(&self.program_input.format)?,
+                    decoder,
+                }))
+            }
+            other => bail!("unsupported program input type {other:?}"),
+        }
+    }
+
+    pub(crate) fn audio_routing_spec(&self) -> Result<AudioRoutingSpec> {
+        let topology = match self.audio.topology.trim().to_ascii_lowercase().as_str() {
+            "preserve" | "preserve_native" | "preserve_native_tracks" => {
+                AudioTopologyMode::PreserveNativeTracks
+            }
+            "" | "force" | "forced" | "force_layout" => {
+                AudioTopologyMode::ForceLayout(channel_layout(&self.audio.force_layout)?)
+            }
+            other => bail!("unsupported audio topology {other:?}"),
+        };
+        Ok(AudioRoutingSpec {
+            topology,
+            idle_program_gain: GainDb::parse(&self.audio.idle_program_gain_db)?,
+            alert_program_gain: GainDb::parse(&self.audio.alert_program_gain_db)?,
+            alert_gain: GainDb::parse(&self.audio.alert_gain_db)?,
+            transition_ms: self.audio.transition_ms,
+        })
+    }
+
+    fn program_map_spec(&self) -> Result<ProgramMapSpec> {
+        if !self.program_mapping.programs.is_empty() {
+            let programs = self
+                .program_mapping
+                .programs
+                .iter()
+                .map(program_map_entry)
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(ProgramMapSpec {
+                transport_stream_id: self.program_mapping.transport_stream_id.max(1),
+                programs,
+            });
+        }
+
+        let enabled_videos = self.enabled_video_renditions(
+            self.configured_canvas_size().0,
+            self.configured_canvas_size().1,
+        );
+        if enabled_videos.is_empty() {
+            bail!("MPEG-TS CGEN output requires at least one enabled video rendition");
+        }
+        let enabled_audio = self.enabled_audio_renditions();
+        let mut programs = Vec::with_capacity(enabled_videos.len());
+        for (video_index, video) in enabled_videos.iter().enumerate() {
+            let fallback_program = u16::try_from(video_index + 1).unwrap_or(u16::MAX);
+            let program_number = video
+                .program
+                .and_then(|value| u16::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .or_else(|| {
+                    (video_index == 0 && self.program_output.service_id > 0)
+                        .then_some(self.program_output.service_id)
+                })
+                .unwrap_or(fallback_program.max(1));
+            let audio_for_program = enabled_audio
+                .iter()
+                .filter(|audio| audio.program == Some(i32::from(program_number)))
+                .collect::<Vec<_>>();
+            // Legacy ladder configurations applied all enabled audio renditions
+            // to every enabled video program. Preserve that behavior only when
+            // no track explicitly targets this program.
+            let audio_for_program = if audio_for_program.is_empty() {
+                enabled_audio.iter().collect::<Vec<_>>()
+            } else {
+                audio_for_program
+            };
+            let audio = audio_for_program
+                .into_iter()
+                .map(|stream| {
+                    let explicitly_routed = stream.program == Some(i32::from(program_number));
+                    Ok(AudioStreamMap {
+                        track_id: AudioTrackId::parse(&stream.id)?,
+                        // A legacy audio PID belongs to the program declared by
+                        // that rendition. Replicated compatibility tracks use
+                        // deterministic auto allocation so PIDs cannot collide.
+                        pid: if explicitly_routed {
+                            stream
+                                .audio_pid
+                                .map(pid_assignment_i32)
+                                .transpose()?
+                                .unwrap_or(PidAssignment::Auto)
+                        } else {
+                            PidAssignment::Auto
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            programs.push(MpegTsProgramSpec {
+                program_number: NonZeroU16::new(program_number)
+                    .ok_or_else(|| anyhow::anyhow!("program number must be non-zero"))?,
+                service: ServiceMetadata {
+                    service_name: fallback_text(&self.program_output.service_name, &self.name),
+                    provider_name: fallback_text(&self.program_output.provider_name, "Haze"),
+                },
+                pmt_pid: video
+                    .pmt_pid
+                    .map(pid_assignment_i32)
+                    .transpose()?
+                    .unwrap_or(PidAssignment::Auto),
+                video_pid: Some(
+                    video
+                        .video_pid
+                        .map(pid_assignment_i32)
+                        .transpose()?
+                        .unwrap_or(PidAssignment::Auto),
+                ),
+                audio,
+                scte35: (video_index == 0
+                    && pass_policy(&self.ancillary.scte35)? == PassPolicy::Pass)
+                    .then_some(Scte35Map {
+                        input: PassPolicy::Pass,
+                        generated_alert_cues: true,
+                        pid: PidAssignment::Auto,
+                    }),
+            });
+        }
+        Ok(ProgramMapSpec {
+            transport_stream_id: self.program_output.transport_stream_id.max(1),
+            programs,
+        })
+    }
+
+    fn output_specs(&self) -> Result<Vec<EncoderOutputSpec>> {
+        if !self.outputs.outputs.is_empty() {
+            return self
+                .outputs
+                .outputs
+                .iter()
+                .map(|output| {
+                    output_spec(output).with_context(|| {
+                        format!("invalid cgen encoder output {:?}", output.id.trim())
+                    })
+                })
+                .collect::<Result<Vec<_>>>();
+        }
+        Ok(vec![legacy_output_spec(self)?])
     }
 
     pub(crate) fn program_input_url(&self) -> &str {
@@ -708,16 +1239,30 @@ impl FeedConfig {
         &self.program_output.url
     }
 
+    pub(crate) fn resolved_program_input_url(&self) -> String {
+        expand_env_vars(self.program_input_url())
+    }
+
+    pub(crate) fn resolved_program_output_url(&self) -> String {
+        expand_env_vars(self.program_output_url())
+    }
+
     pub(crate) fn output(&self) -> &EndpointConfig {
         &self.program_output
     }
 
+    /// Explicit schema-v2 destinations use the isolated output-worker path.
+    /// An empty section retains the legacy single-sink pipeline for one release.
+    pub(crate) fn has_explicit_outputs(&self) -> bool {
+        !self.outputs.outputs.is_empty()
+    }
+
     pub(crate) fn redacted_program_input_url(&self) -> String {
-        redact_endpoint_url(self.program_input_url())
+        redact_endpoint_url(&self.resolved_program_input_url())
     }
 
     pub(crate) fn redacted_program_output_url(&self) -> String {
-        redact_endpoint_url(self.program_output_url())
+        redact_endpoint_url(&self.resolved_program_output_url())
     }
 
     pub(crate) fn enabled_video_renditions(
@@ -758,17 +1303,436 @@ impl FeedConfig {
     }
 }
 
+fn pass_policy(raw: &str) -> Result<PassPolicy> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "pass" | "true" | "1" => Ok(PassPolicy::Pass),
+        "" | "drop" | "false" | "0" => Ok(PassPolicy::Drop),
+        other => bail!("unsupported ancillary pass policy {other:?}"),
+    }
+}
+
+fn decoder_preference(endpoint: &EndpointConfig) -> Result<DecoderPreference> {
+    let raw = endpoint.hardware_decoder.trim();
+    if !xml_bool_text(&endpoint.hardware_decoder_enabled, false) || raw.is_empty() {
+        return Ok(DecoderPreference::Auto);
+    }
+    let preference = match raw.to_ascii_lowercase().as_str() {
+        "auto" => DecoderPreference::Auto,
+        "software" | "cpu" => DecoderPreference::Software,
+        "nvdec" | "nvidia" => DecoderPreference::Nvdec,
+        "qsv" | "quicksync" | "quick_sync" => DecoderPreference::QuickSync,
+        "vaapi" => DecoderPreference::Vaapi,
+        _ => DecoderPreference::Named(raw.to_string()),
+    };
+    Ok(preference)
+}
+
+fn demux_hint(raw: &str) -> Result<DemuxHint> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "auto" => Ok(DemuxHint::Auto),
+        "mpegts" | "mpeg-ts" | "ts" => Ok(DemuxHint::MpegTs),
+        "rtp" => Ok(DemuxHint::Rtp),
+        "srt" => Ok(DemuxHint::Srt),
+        "file" => Ok(DemuxHint::File),
+        other => bail!("unsupported program input format hint {other:?}"),
+    }
+}
+
+fn scan_mode(interlaced: bool, field_order: &str) -> Result<ScanMode> {
+    if !interlaced {
+        return Ok(ScanMode::Progressive);
+    }
+    let field_order = match field_order.trim().to_ascii_lowercase().as_str() {
+        "" | "tff" | "top" | "top_first" => FieldOrder::TopFirst,
+        "bff" | "bottom" | "bottom_first" => FieldOrder::BottomFirst,
+        other => bail!("unsupported interlaced field order {other:?}"),
+    };
+    Ok(ScanMode::Interlaced { field_order })
+}
+
+fn parse_rgba(raw: &str) -> Option<Rgba8> {
+    let value = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
+    let parse = |range: std::ops::Range<usize>| u8::from_str_radix(value.get(range)?, 16).ok();
+    match value.len() {
+        6 => Some(Rgba8 {
+            red: parse(0..2)?,
+            green: parse(2..4)?,
+            blue: parse(4..6)?,
+            alpha: 255,
+        }),
+        8 => Some(Rgba8 {
+            red: parse(0..2)?,
+            green: parse(2..4)?,
+            blue: parse(4..6)?,
+            alpha: parse(6..8)?,
+        }),
+        _ => None,
+    }
+}
+
+fn channel_layout(raw: &str) -> Result<ChannelLayout> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "mono" | "1" | "1.0" => Ok(ChannelLayout::Mono),
+        "" | "stereo" | "2" | "2.0" => Ok(ChannelLayout::Stereo),
+        "5.1" | "surround51" | "surround_51" | "6" => Ok(ChannelLayout::Surround51),
+        other => bail!("unsupported forced audio channel layout {other:?}"),
+    }
+}
+
+fn program_map_entry(raw: &ProgramMapEntryConfig) -> Result<MpegTsProgramSpec> {
+    let program_number = NonZeroU16::new(raw.number)
+        .ok_or_else(|| anyhow::anyhow!("program number must be non-zero"))?;
+    let audio = raw
+        .audio
+        .iter()
+        .map(|stream| {
+            Ok(AudioStreamMap {
+                track_id: AudioTrackId::parse(&stream.track_id)?,
+                pid: pid_assignment(&stream.pid)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let scte35 = raw
+        .scte35
+        .as_ref()
+        .map(|map| -> Result<Scte35Map> {
+            Ok(Scte35Map {
+                input: pass_policy(&map.input)?,
+                generated_alert_cues: map.generated_alert_cues,
+                pid: pid_assignment(&map.pid)?,
+            })
+        })
+        .transpose()?;
+    Ok(MpegTsProgramSpec {
+        program_number,
+        service: ServiceMetadata {
+            service_name: fallback_text(&raw.service_name, "Haze CGEN"),
+            provider_name: fallback_text(&raw.provider_name, "Haze"),
+        },
+        pmt_pid: pid_assignment(&raw.pmt_pid)?,
+        video_pid: Some(pid_assignment(&raw.video_pid)?),
+        audio,
+        scte35,
+    })
+}
+
+fn pid_assignment(raw: &str) -> Result<PidAssignment> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.eq_ignore_ascii_case("auto") {
+        return Ok(PidAssignment::Auto);
+    }
+    let value = if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        u16::from_str_radix(hex, 16)
+    } else {
+        raw.parse::<u16>()
+    }
+    .map_err(|_| anyhow::anyhow!("invalid MPEG-TS PID {raw:?}"))?;
+    Ok(PidAssignment::Manual(MpegTsPid::new(value)?))
+}
+
+fn pid_assignment_i32(raw: i32) -> Result<PidAssignment> {
+    let value = u16::try_from(raw).map_err(|_| anyhow::anyhow!("invalid MPEG-TS PID {raw}"))?;
+    Ok(PidAssignment::Manual(MpegTsPid::new(value)?))
+}
+
+fn output_spec(raw: &OutputConfig) -> Result<EncoderOutputSpec> {
+    let video_bitrate = NonZeroU32::new(raw.video_bitrate_kbps)
+        .ok_or_else(|| anyhow::anyhow!("video bitrate must be non-zero"))?;
+    let rate_control = match raw.rate_control.trim().to_ascii_lowercase().as_str() {
+        "" | "cbr" => RateControl::Cbr {
+            bitrate_kbps: video_bitrate,
+        },
+        "vbr" => RateControl::Vbr {
+            target_kbps: video_bitrate,
+            max_kbps: NonZeroU32::new(raw.video_max_bitrate_kbps)
+                .ok_or_else(|| anyhow::anyhow!("VBR maximum bitrate must be non-zero"))?,
+        },
+        other => bail!("unsupported output rate control {other:?}"),
+    };
+    if let RateControl::Vbr {
+        target_kbps,
+        max_kbps,
+    } = &rate_control
+    {
+        if max_kbps.get() < target_kbps.get() {
+            bail!("VBR maximum bitrate must be at least the target bitrate");
+        }
+    }
+    Ok(EncoderOutputSpec {
+        id: OutputId::parse(&raw.id)?,
+        enabled: raw.enabled,
+        destination: configured_output_destination(
+            &raw.destination,
+            &raw.url,
+            &raw.video_url,
+            &raw.audio_urls,
+            &raw.container,
+            raw.latency_ms,
+        )?,
+        video: VideoEncoderSpec {
+            codec: configured_video_codec(&raw.video_codec)?,
+            rate_control,
+            gop_frames: NonZeroU32::new(raw.gop_frames)
+                .ok_or_else(|| anyhow::anyhow!("GOP frames must be non-zero"))?,
+        },
+        audio: AudioEncoderSpec {
+            codec: configured_audio_codec_policy(&raw.audio_codec)?,
+            bitrate_kbps: NonZeroU32::new(raw.audio_bitrate_kbps)
+                .ok_or_else(|| anyhow::anyhow!("audio bitrate must be non-zero"))?,
+            sample_rate: NonZeroU32::new(raw.sample_rate)
+                .ok_or_else(|| anyhow::anyhow!("audio sample rate must be non-zero"))?,
+        },
+    })
+}
+
+fn configured_output_destination(
+    kind: &str,
+    url: &str,
+    video_url: &str,
+    audio_urls: &str,
+    container: &str,
+    latency_ms: u32,
+) -> Result<OutputDestination> {
+    let destination = match kind.trim().to_ascii_lowercase().as_str() {
+        "mpeg_ts_udp" | "mpegts_udp" => OutputDestination::MpegTsUdp {
+            location: url.trim().to_string(),
+        },
+        "mpeg_ts_srt" | "mpegts_srt" => OutputDestination::MpegTsSrt {
+            location: url.trim().to_string(),
+            latency_ms,
+        },
+        "rtp" => OutputDestination::Rtp {
+            video_location: fallback_text(video_url, url),
+            audio_locations: audio_urls
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect(),
+        },
+        "rtmp" => OutputDestination::Rtmp {
+            location: url.trim().to_string(),
+        },
+        "file" => OutputDestination::File {
+            location: url.trim().to_string(),
+            container: fallback_text(container, "mpegts"),
+        },
+        other => bail!("unsupported output destination {other:?}"),
+    };
+    Ok(destination)
+}
+
+fn configured_video_codec(raw: &str) -> Result<VideoCodec> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "h264" | "h.264" | "avc" | "x264" | "x264enc" | "libx264" => Ok(VideoCodec::H264),
+        "h265" | "h.265" | "hevc" | "x265" | "x265enc" | "libx265" => Ok(VideoCodec::H265),
+        "mpeg2" | "mpeg-2" | "mpeg2video" | "avenc_mpeg2video" => Ok(VideoCodec::Mpeg2),
+        other => bail!("unsupported output video codec {other:?}"),
+    }
+}
+
+fn configured_audio_codec_policy(raw: &str) -> Result<AudioCodecPolicy> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "match" | "match_input" | "native" => Ok(AudioCodecPolicy::MatchInput),
+        "aac" | "avenc_aac" | "fdkaac" | "fdkaacenc" => {
+            Ok(AudioCodecPolicy::Encode(AudioCodec::Aac))
+        }
+        "ac3" | "ac-3" | "avenc_ac3" => Ok(AudioCodecPolicy::Encode(AudioCodec::Ac3)),
+        "mp2" | "mpeg2audio" | "avenc_mp2" | "twolame" => {
+            Ok(AudioCodecPolicy::Encode(AudioCodec::Mp2))
+        }
+        other => bail!("unsupported output audio codec {other:?}"),
+    }
+}
+
+fn legacy_output_spec(feed: &FeedConfig) -> Result<EncoderOutputSpec> {
+    let output = feed.output();
+    let video_codec_name = non_empty(&output.vcodec)
+        .or_else(|| non_empty(&feed.encoder.video.codec))
+        .or_else(|| {
+            feed.ladder
+                .videos
+                .first()
+                .map(|video| video.vcodec.as_str())
+        })
+        .unwrap_or("x264enc");
+    let audio_codec_name = non_empty(&output.acodec)
+        .or_else(|| non_empty(&feed.encoder.audio.codec))
+        .or_else(|| {
+            feed.ladder
+                .audios
+                .first()
+                .map(|audio| audio.acodec.as_str())
+        })
+        .unwrap_or("avenc_aac");
+    let video_bitrate = output
+        .video_bitrate_kbps
+        .or(feed.encoder.video.bitrate_kbps)
+        .unwrap_or(8_000)
+        .max(1);
+    let audio_bitrate = output
+        .audio_bitrate_kbps
+        .or(feed.encoder.audio.bitrate_kbps)
+        .unwrap_or(192)
+        .max(1);
+    let preserve = matches!(
+        feed.audio.topology.trim().to_ascii_lowercase().as_str(),
+        "preserve" | "preserve_native" | "preserve_native_tracks"
+    );
+    Ok(EncoderOutputSpec {
+        id: OutputId::parse("primary")?,
+        enabled: true,
+        destination: output_destination(&output.format, &output.url, "", "", &output.format, 120),
+        video: VideoEncoderSpec {
+            codec: video_codec(video_codec_name),
+            rate_control: RateControl::Cbr {
+                bitrate_kbps: NonZeroU32::new(video_bitrate)
+                    .ok_or_else(|| anyhow::anyhow!("video bitrate must be non-zero"))?,
+            },
+            gop_frames: NonZeroU32::new(feed.encoder.video.gop.unwrap_or(60).max(1))
+                .ok_or_else(|| anyhow::anyhow!("GOP frames must be non-zero"))?,
+        },
+        audio: AudioEncoderSpec {
+            codec: if preserve {
+                AudioCodecPolicy::MatchInput
+            } else {
+                AudioCodecPolicy::Encode(audio_codec(audio_codec_name))
+            },
+            bitrate_kbps: NonZeroU32::new(audio_bitrate)
+                .ok_or_else(|| anyhow::anyhow!("audio bitrate must be non-zero"))?,
+            sample_rate: NonZeroU32::new(48_000)
+                .ok_or_else(|| anyhow::anyhow!("audio sample rate must be non-zero"))?,
+        },
+    })
+}
+
+fn output_destination(
+    kind: &str,
+    url: &str,
+    video_url: &str,
+    audio_urls: &str,
+    container: &str,
+    latency_ms: u32,
+) -> OutputDestination {
+    let kind = kind.trim().to_ascii_lowercase();
+    let url_lower = url.trim().to_ascii_lowercase();
+    match kind.as_str() {
+        "mpeg_ts_srt" | "mpegts_srt" | "srt" => OutputDestination::MpegTsSrt {
+            location: url.trim().to_string(),
+            latency_ms,
+        },
+        "mpeg_ts_udp" | "mpegts_udp" | "udp" | "mpegts" | "mpeg-ts"
+            if url_lower.starts_with("srt://") =>
+        {
+            OutputDestination::MpegTsSrt {
+                location: url.trim().to_string(),
+                latency_ms,
+            }
+        }
+        "mpeg_ts_udp" | "mpegts_udp" | "udp" | "mpegts" | "mpeg-ts" => {
+            OutputDestination::MpegTsUdp {
+                location: url.trim().to_string(),
+            }
+        }
+        "rtp" => OutputDestination::Rtp {
+            video_location: fallback_text(video_url, url),
+            audio_locations: audio_urls
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect(),
+        },
+        "rtmp" | "flv" => OutputDestination::Rtmp {
+            location: url.trim().to_string(),
+        },
+        "file" => OutputDestination::File {
+            location: url.trim().to_string(),
+            container: fallback_text(container, "mpegts"),
+        },
+        _ if url_lower.starts_with("rtmp://") || url_lower.starts_with("rtmps://") => {
+            OutputDestination::Rtmp {
+                location: url.trim().to_string(),
+            }
+        }
+        _ if url_lower.starts_with("srt://") => OutputDestination::MpegTsSrt {
+            location: url.trim().to_string(),
+            latency_ms,
+        },
+        _ if url_lower.starts_with("udp://") => OutputDestination::MpegTsUdp {
+            location: url.trim().to_string(),
+        },
+        _ => OutputDestination::File {
+            location: url.trim().to_string(),
+            container: fallback_text(container, "mpegts"),
+        },
+    }
+}
+
+fn video_codec(raw: &str) -> VideoCodec {
+    let raw = raw.trim().to_ascii_lowercase();
+    if raw.contains("265") || raw.contains("hevc") {
+        VideoCodec::H265
+    } else if raw.contains("mpeg2") || raw.contains("mpeg-2") {
+        VideoCodec::Mpeg2
+    } else {
+        VideoCodec::H264
+    }
+}
+
+fn audio_codec(raw: &str) -> AudioCodec {
+    let raw = raw.trim().to_ascii_lowercase();
+    if raw.contains("ac3") || raw.contains("ac-3") {
+        AudioCodec::Ac3
+    } else if raw.contains("mp2") || raw.contains("twolame") || raw.contains("layer2") {
+        AudioCodec::Mp2
+    } else {
+        AudioCodec::Aac
+    }
+}
+
+fn audio_codec_policy(raw: &str) -> AudioCodecPolicy {
+    if matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "match" | "match_input" | "native"
+    ) {
+        AudioCodecPolicy::MatchInput
+    } else {
+        AudioCodecPolicy::Encode(audio_codec(raw))
+    }
+}
+
 pub(crate) fn redact_feed_endpoint_status(feed: &FeedConfig, value: &mut Value) {
-    let replacements = [
+    let resolved_input = feed.resolved_program_input_url();
+    let resolved_output = feed.resolved_program_output_url();
+    let mut replacements = vec![
         (
-            feed.program_input_url().trim(),
+            feed.program_input_url().trim().to_string(),
+            redact_endpoint_url(feed.program_input_url()),
+        ),
+        (
+            feed.program_output_url().trim().to_string(),
+            redact_endpoint_url(feed.program_output_url()),
+        ),
+        (
+            resolved_input.trim().to_string(),
             feed.redacted_program_input_url(),
         ),
         (
-            feed.program_output_url().trim(),
+            resolved_output.trim().to_string(),
             feed.redacted_program_output_url(),
         ),
     ];
+    for output in &feed.outputs.outputs {
+        for location in [&output.url, &output.video_url, &output.audio_urls] {
+            if location.trim().is_empty() {
+                continue;
+            }
+            replacements.push((location.trim().to_string(), redact_endpoint_url(location)));
+            let resolved = expand_env_vars(location);
+            replacements.push((resolved.clone(), redact_endpoint_url(&resolved)));
+        }
+    }
     redact_status_value(value, &replacements);
 }
 
@@ -778,11 +1742,11 @@ pub(crate) fn redacted_pipeline_description(feed: &FeedConfig, text: &str) -> St
     value.as_str().unwrap_or(text).to_string()
 }
 
-fn redact_status_value(value: &mut Value, replacements: &[(&str, String); 2]) {
+fn redact_status_value(value: &mut Value, replacements: &[(String, String)]) {
     match value {
         Value::String(text) => {
             for (raw, redacted) in replacements {
-                if !raw.is_empty() && *raw != redacted {
+                if !raw.is_empty() && raw != redacted {
                     *text = text.replace(raw, redacted);
                     let quoted = format!("\"{}\"", raw.replace('\\', "\\\\").replace('"', "\\\""));
                     let redacted_quoted = format!(
@@ -888,15 +1852,13 @@ impl AudioRenditionConfig {
 }
 
 pub(crate) fn load_config(path: &Path) -> Result<CgenConfig> {
-    let raw =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let expanded = expand_env_vars(&raw);
-    reject_legacy_cgen_xml(path, &expanded)?;
-    let mut config: CgenConfig = quick_xml::de::from_str(&expanded)
+    let raw = read_bounded_utf8(path, MAX_CGEN_CONFIG_BYTES, "cgen configuration")?;
+    reject_legacy_cgen_xml(path, &raw)?;
+    let mut config: CgenConfig = quick_xml::de::from_str(&raw)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     config.apply_nested_sections();
     if let Some(encoders) = load_encoder_settings(path)? {
-        config.apply_encoder_settings(encoders);
+        config.apply_encoder_settings(encoders)?;
     }
     Ok(config)
 }
@@ -906,53 +1868,107 @@ fn load_encoder_settings(cgen_path: &Path) -> Result<Option<CgenEncodersConfig>>
         return Ok(None);
     };
     let path = parent.join("cgen-encoders.xml");
-    let raw = match fs::read_to_string(&path) {
+    let raw = match read_bounded_utf8(&path, MAX_CGEN_ENCODERS_BYTES, "cgen encoder configuration")
+    {
         Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err).with_context(|| format!("failed to read {}", path.display())),
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
     };
-    let expanded = expand_env_vars(&raw);
-    let encoders: CgenEncodersConfig = quick_xml::de::from_str(&expanded)
+    let encoders: CgenEncodersConfig = quick_xml::de::from_str(&raw)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(Some(encoders))
 }
 
-fn expand_env_vars(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut chars = raw.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '$' {
-            out.push(ch);
-            continue;
-        }
-        if chars.peek() == Some(&'{') {
-            chars.next();
-            let mut name = String::new();
-            for next in chars.by_ref() {
-                if next == '}' {
-                    break;
-                }
-                name.push(next);
-            }
-            out.push_str(&std::env::var(name).unwrap_or_default());
-            continue;
-        }
-        let mut name = String::new();
-        while let Some(next) = chars.peek().copied() {
-            if next == '_' || next.is_ascii_alphanumeric() {
-                name.push(next);
-                chars.next();
-            } else {
-                break;
-            }
-        }
-        if name.is_empty() {
-            out.push('$');
-        } else {
-            out.push_str(&std::env::var(name).unwrap_or_default());
-        }
+fn read_bounded_utf8(path: &Path, maximum_bytes: u64, description: &str) -> Result<String> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to inspect {}", path.display()))?;
+    if metadata.len() > maximum_bytes {
+        bail!(
+            "{} exceeds the {} byte safety limit: {}",
+            description,
+            maximum_bytes,
+            path.display()
+        );
     }
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes {
+        bail!(
+            "{} exceeds the {} byte safety limit: {}",
+            description,
+            maximum_bytes,
+            path.display()
+        );
+    }
+    String::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))
+}
+
+fn expand_env_vars(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut cursor = 0usize;
+    let mut literal_start = 0usize;
+
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'$' {
+            cursor += 1;
+            continue;
+        }
+
+        out.push_str(&raw[literal_start..cursor]);
+        if bytes.get(cursor + 1) == Some(&b'{') {
+            let name_start = cursor + 2;
+            let Some(relative_end) = bytes[name_start..].iter().position(|byte| *byte == b'}')
+            else {
+                out.push_str(&raw[cursor..]);
+                return out;
+            };
+            let name_end = name_start + relative_end;
+            let name = &raw[name_start..name_end];
+            if valid_env_name(name) {
+                out.push_str(&std::env::var(name).unwrap_or_default());
+            } else {
+                out.push_str(&raw[cursor..=name_end]);
+            }
+            cursor = name_end + 1;
+            literal_start = cursor;
+            continue;
+        }
+
+        let name_start = cursor + 1;
+        let mut name_end = name_start;
+        while name_end < bytes.len()
+            && (bytes[name_end] == b'_' || bytes[name_end].is_ascii_alphanumeric())
+        {
+            name_end += 1;
+        }
+        let name = &raw[name_start..name_end];
+        if valid_env_name(name) {
+            out.push_str(&std::env::var(name).unwrap_or_default());
+            cursor = name_end;
+        } else {
+            out.push('$');
+            cursor += 1;
+        }
+        literal_start = cursor;
+    }
+
+    out.push_str(&raw[literal_start..]);
     out
+}
+
+fn valid_env_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first == b'_' || first.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
 }
 
 fn reject_legacy_cgen_xml(path: &Path, raw: &str) -> Result<()> {
@@ -1026,7 +2042,7 @@ fn reject_legacy_attrs<'a>(
 }
 
 fn legacy_element(parent: &str, element: &str) -> bool {
-    (element == "output" && parent != "program")
+    (element == "output" && !matches!(parent, "program" | "outputs"))
         || element == "alertOutput"
         || (element == "input" && !matches!(parent, "program" | "priority"))
 }
@@ -1064,6 +2080,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_schema_version() -> u16 {
+    1
+}
+
 fn default_true_text() -> String {
     "true".to_string()
 }
@@ -1086,6 +2106,38 @@ fn priority_audio_source() -> String {
 
 fn replace_audio() -> String {
     "replace".to_string()
+}
+
+fn default_audio_topology() -> String {
+    "force_layout".to_string()
+}
+
+fn default_forced_audio_layout() -> String {
+    "stereo".to_string()
+}
+
+fn default_idle_program_gain() -> String {
+    "0".to_string()
+}
+
+fn default_alert_program_gain() -> String {
+    "muted".to_string()
+}
+
+fn default_alert_gain() -> String {
+    "0".to_string()
+}
+
+fn default_audio_transition_ms() -> u16 {
+    20
+}
+
+fn default_alert_scene_id() -> String {
+    "Standard_Crawl".to_string()
+}
+
+fn default_compositor_engine() -> String {
+    "legacy".to_string()
 }
 
 fn auto_mode() -> String {
@@ -1149,7 +2201,7 @@ fn standby_banner_mode() -> String {
 }
 
 fn default_standby_text() -> String {
-    "EAS Details Channel".to_string()
+    "Emergency Alert Details Channel".to_string()
 }
 
 fn default_standby_y_percent() -> u32 {
@@ -1194,6 +2246,10 @@ fn xml_bool_text(value: &str, default: bool) -> bool {
 fn non_empty(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
+}
+
+fn fallback_text(value: &str, fallback: &str) -> String {
+    non_empty(value).unwrap_or(fallback).to_string()
 }
 
 #[cfg(test)]
@@ -1341,6 +2397,40 @@ mod tests {
     }
 
     #[test]
+    fn load_config_indexes_versioned_encoder_profiles_by_output_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cgen.xml");
+        std::fs::write(
+            &path,
+            r#"<cgen schema_version="2" enabled="true">
+  <feed id="CAP" enabled="true">
+    <programInput type="dummy" width="720" height="480" fps="30000/1001"/>
+    <priorityInput feed_id="CAP"/>
+    <programOutput url="udp://239.0.0.1:9000" format="mpegts"/>
+    <video width="720" height="480" fps="30000/1001"/>
+    <audio topology="force_layout" force_layout="stereo"/>
+    <ladder><video id="sd" enabled="true" width="720" height="480"/><audio id="stereo" enabled="true" channels="2"/></ladder>
+    <outputs><output id="Primary" enabled="true" destination="rtmp" url="rtmp://example.invalid/live" video_codec="h264" audio_codec="aac" video_bitrate_kbps="4000" audio_bitrate_kbps="192" sample_rate="48000" gop_frames="60"/></outputs>
+  </feed>
+</cgen>"#,
+        )
+        .expect("write config");
+        std::fs::write(
+            dir.path().join("cgen-encoders.xml"),
+            r#"<cgenEncoders schema_version="2"><output id="primary"><video codec="x264enc" preset="veryfast"/><audio codec="avenc_aac"/></output></cgenEncoders>"#,
+        )
+        .expect("write encoders");
+
+        let config = load_config(&path).expect("config");
+        let settings = config.feeds[0]
+            .encoder_settings_for_output("PRIMARY")
+            .expect("output profile");
+        assert_eq!(settings.video.codec, "x264enc");
+        assert_eq!(settings.video.preset, "veryfast");
+        assert_eq!(settings.audio.codec, "avenc_aac");
+    }
+
+    #[test]
     fn load_config_accepts_nested_cgen_shape() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("cgen.xml");
@@ -1417,10 +2507,35 @@ mod tests {
 
         let config = load_config(&path).expect("config");
         let feeds = config.enabled_feeds().expect("feeds");
+        assert_eq!(feeds[0].program_output_url(), "${HAZE_CGEN_TEST_OUTPUT}");
         assert_eq!(
-            feeds[0].program_output_url(),
+            feeds[0].resolved_program_output_url(),
             "rtmp://example.invalid/live/super-secret-key"
         );
+        std::env::remove_var("HAZE_CGEN_TEST_OUTPUT");
+    }
+
+    #[test]
+    fn malformed_environment_references_remain_literal() {
+        assert_eq!(expand_env_vars("udp://${UNCLOSED"), "udp://${UNCLOSED");
+        assert_eq!(expand_env_vars("udp://${}"), "udp://${}");
+        assert_eq!(expand_env_vars("udp://${BAD-NAME}"), "udp://${BAD-NAME}");
+        assert_eq!(expand_env_vars("udp://$9INVALID"), "udp://$9INVALID");
+        assert_eq!(expand_env_vars("price-$"), "price-$");
+    }
+
+    #[test]
+    fn oversized_managed_configuration_is_rejected_before_parsing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cgen.xml");
+        std::fs::write(
+            &path,
+            vec![b' '; usize::try_from(MAX_CGEN_CONFIG_BYTES + 1).expect("test size")],
+        )
+        .expect("write oversized config");
+
+        let error = load_config(&path).expect_err("oversized config must fail");
+        assert!(error.to_string().contains("safety limit"));
     }
 
     #[test]
@@ -1561,6 +2676,7 @@ mod tests {
                 idle: "source".to_string(),
                 alert_mode: "replace".to_string(),
                 mute_standby_routine: true,
+                ..Default::default()
             },
             ladder: LadderConfig {
                 videos: vec![VideoRenditionConfig {
@@ -1585,6 +2701,9 @@ mod tests {
                     acodec: "ac3".to_string(),
                     bitrate_kbps: Some(192),
                     language: "eng".to_string(),
+                    program: Some(1),
+                    audio_pid: Some(0x101),
+                    pmt_pid: Some(0x1000),
                 }],
             },
             banner: BannerConfig::default(),
@@ -1594,6 +2713,11 @@ mod tests {
             state: StateConfig::default(),
             standby: StandbyConfig::default(),
             sync: SyncConfig::default(),
+            alert: Default::default(),
+            ancillary: Default::default(),
+            compositor: Default::default(),
+            program_mapping: Default::default(),
+            outputs: Default::default(),
             encoder: Default::default(),
         };
         assert!(feed.matches_feed("sk-0001"));
@@ -1675,6 +2799,90 @@ mod tests {
 
         assert!(err.to_string().contains("no enabled video renditions"));
     }
+
+    #[test]
+    fn explicit_outputs_reject_unsupported_codec_and_destination_tokens() {
+        let mut output = valid_explicit_output();
+        output.video_codec = "vp9".to_string();
+        assert!(output_spec(&output)
+            .expect_err("unsupported video codec")
+            .to_string()
+            .contains("unsupported output video codec"));
+
+        output = valid_explicit_output();
+        output.destination = "websocket".to_string();
+        assert!(output_spec(&output)
+            .expect_err("unsupported destination")
+            .to_string()
+            .contains("unsupported output destination"));
+    }
+
+    #[test]
+    fn explicit_outputs_reject_invalid_rate_control_values() {
+        let mut output = valid_explicit_output();
+        output.rate_control = "vbr".to_string();
+        output.video_max_bitrate_kbps = output.video_bitrate_kbps - 1;
+        assert!(output_spec(&output)
+            .expect_err("VBR maximum below target")
+            .to_string()
+            .contains("at least the target"));
+
+        output = valid_explicit_output();
+        output.rate_control = "constant-quality".to_string();
+        assert!(output_spec(&output)
+            .expect_err("unsupported rate control")
+            .to_string()
+            .contains("unsupported output rate control"));
+    }
+
+    #[test]
+    fn domain_token_parsers_reject_unknown_values() {
+        assert!(pass_policy("maybe").is_err());
+        assert!(demux_hint("dash").is_err());
+        assert!(scan_mode(true, "sideways").is_err());
+        assert!(channel_layout("7.1").is_err());
+    }
+
+    #[test]
+    fn enabled_feed_rejects_unknown_program_input_type() {
+        let xml = r#"<cgen schema_version="2" enabled="true">
+  <feed id="CAP" enabled="true">
+    <programInput type="mystery" url="udp://239.0.0.1:9000" format="mpegts"/>
+    <priorityInput feed_id="CAP"/>
+    <programOutput url="udp://239.0.0.2:9000" format="mpegts" vcodec="h264" acodec="aac"/>
+    <video width="720" height="480" fps="30000/1001"/>
+    <audio topology="force_layout" force_layout="stereo"/>
+    <ladder>
+      <video id="sd" enabled="true" width="720" height="480" bitrate_kbps="4000" program="1"/>
+      <audio id="main" enabled="true" channels="2" bitrate_kbps="192" program="1"/>
+    </ladder>
+  </feed>
+</cgen>"#;
+        let parsed: CgenConfig = quick_xml::de::from_str(xml).expect("parse config");
+        assert!(parsed
+            .enabled_feeds()
+            .expect_err("unknown program input type")
+            .to_string()
+            .contains("unsupported program input type"));
+    }
+
+    fn valid_explicit_output() -> OutputConfig {
+        OutputConfig {
+            id: "primary".to_string(),
+            enabled: true,
+            destination: "rtmp".to_string(),
+            url: "rtmp://example.invalid/live".to_string(),
+            video_codec: "h264".to_string(),
+            rate_control: "cbr".to_string(),
+            video_bitrate_kbps: 4_000,
+            video_max_bitrate_kbps: 4_000,
+            gop_frames: 60,
+            audio_codec: "aac".to_string(),
+            audio_bitrate_kbps: 192,
+            sample_rate: 48_000,
+            ..OutputConfig::default()
+        }
+    }
 }
 
 impl Default for SyncConfig {
@@ -1713,6 +2921,21 @@ impl Default for AudioConfig {
             idle: source_audio(),
             alert_mode: replace_audio(),
             mute_standby_routine: true,
+            topology: default_audio_topology(),
+            force_layout: default_forced_audio_layout(),
+            idle_program_gain_db: default_idle_program_gain(),
+            alert_program_gain_db: default_alert_program_gain(),
+            alert_gain_db: default_alert_gain(),
+            transition_ms: default_audio_transition_ms(),
+        }
+    }
+}
+
+impl Default for CompositorConfig {
+    fn default() -> Self {
+        Self {
+            alert_scene_id: default_alert_scene_id(),
+            engine: default_compositor_engine(),
         }
     }
 }

@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+const cgenPreserveNativeTracksAvailable = false
+
 type cgenCatalogEntry struct {
 	ID      string `json:"id"`
 	Label   string `json:"label"`
@@ -34,10 +36,37 @@ type cgenCatalogBuilder struct {
 }
 
 type cgenRuntimeCatalog struct {
-	Formats       []cgenCatalogEntry `json:"formats"`
-	VideoCodecs   []cgenCatalogEntry `json:"video_codecs"`
-	AudioCodecs   []cgenCatalogEntry `json:"audio_codecs"`
-	VideoDecoders []cgenCatalogEntry `json:"video_decoders"`
+	Formats       []cgenCatalogEntry      `json:"formats"`
+	VideoCodecs   []cgenCatalogEntry      `json:"video_codecs"`
+	AudioCodecs   []cgenCatalogEntry      `json:"audio_codecs"`
+	VideoDecoders []cgenCatalogEntry      `json:"video_decoders"`
+	InputDevices  []cgenInputDevice       `json:"input_devices"`
+	Capabilities  cgenRuntimeCapabilities `json:"capabilities"`
+}
+
+type cgenRuntimeCapabilities struct {
+	AudioTopologies cgenAudioTopologyCapabilities `json:"audio_topologies"`
+	Ancillary       cgenAncillaryCapabilities     `json:"ancillary"`
+}
+
+type cgenAudioTopologyCapabilities struct {
+	ForceLayout          bool `json:"force_layout"`
+	PreserveNativeTracks bool `json:"preserve_native_tracks"`
+}
+
+type cgenAncillaryCapabilities struct {
+	CaptionReinsertion bool `json:"caption_reinsertion"`
+	SCTE35Passthrough  bool `json:"scte35_passthrough"`
+	SCTE104Passthrough bool `json:"scte104_passthrough"`
+}
+
+type cgenInputDevice struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Backend string `json:"backend"`
+	Element string `json:"element,omitempty"`
+	Class   string `json:"class,omitempty"`
+	Caps    string `json:"caps,omitempty"`
 }
 
 func cgenCatalogPayload(configPath string) (map[string]any, error) {
@@ -64,7 +93,19 @@ func cgenCatalogPayload(configPath string) (map[string]any, error) {
 		"video_codecs":   builder.sorted(builder.video),
 		"audio_codecs":   builder.sorted(builder.audio),
 		"video_decoders": builder.sorted(builder.videoDecoders),
+		"devices":        cgenInputDevicePayload(runtimeCatalog.InputDevices),
 		"fonts":          discoverFonts(configPath),
+		"capabilities": map[string]any{
+			"audio_topologies": map[string]bool{
+				"force_layout":           true,
+				"preserve_native_tracks": cgenPreserveNativeTracksAvailable && runtimeCatalog.Capabilities.AudioTopologies.PreserveNativeTracks,
+			},
+			"ancillary": map[string]bool{
+				"caption_reinsertion": runtimeCatalog.Capabilities.Ancillary.CaptionReinsertion,
+				"scte35_passthrough":  runtimeCatalog.Capabilities.Ancillary.SCTE35Passthrough,
+				"scte104_passthrough": runtimeCatalog.Capabilities.Ancillary.SCTE104Passthrough,
+			},
+		},
 		"gstreamer": map[string]any{
 			"inspect":      inspectPath,
 			"plugin_count": len(plugins),
@@ -102,10 +143,61 @@ func loadCgenRuntimeCatalog(configPath string) (cgenRuntimeCatalog, string) {
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return cgenRuntimeCatalog{}, ""
 	}
-	if len(payload.Formats)+len(payload.VideoCodecs)+len(payload.AudioCodecs)+len(payload.VideoDecoders) == 0 {
+	if len(payload.Formats)+len(payload.VideoCodecs)+len(payload.AudioCodecs)+len(payload.VideoDecoders)+len(payload.InputDevices) == 0 {
 		return cgenRuntimeCatalog{}, ""
 	}
 	return payload, "haze-cgen-registry"
+}
+
+func cgenInputDevicePayload(devices []cgenInputDevice) []map[string]any {
+	seen := make(map[string]struct{}, len(devices))
+	result := make([]map[string]any, 0, len(devices))
+	for _, device := range devices {
+		id := cleanCgenText(device.ID, "", 512)
+		label := cleanCgenText(device.Label, id, 512)
+		backend := strings.ToLower(strings.TrimSpace(device.Backend))
+		switch {
+		case strings.Contains(backend, "v4l2"), strings.Contains(backend, "video4linux"):
+			backend = "v4l2"
+		case strings.Contains(backend, "directshow"), strings.Contains(backend, "dshow"):
+			backend = "directshow"
+		default:
+			continue
+		}
+		if id == "" || label == "" {
+			continue
+		}
+		key := backend + "\x00" + strings.ToLower(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		item := map[string]any{
+			"id":      id,
+			"label":   label,
+			"backend": backend,
+			"source":  "haze-cgen-registry",
+		}
+		if element := cleanCgenToken(device.Element); element != "" {
+			item["element"] = element
+		}
+		if class := cleanCgenText(device.Class, "", 256); class != "" {
+			item["class"] = class
+		}
+		if caps := cleanCgenText(device.Caps, "", 4096); caps != "" {
+			item["caps"] = caps
+		}
+		result = append(result, item)
+	}
+	sort.Slice(result, func(i int, j int) bool {
+		left := strings.ToLower(stringValue(result[i], "label"))
+		right := strings.ToLower(stringValue(result[j], "label"))
+		if left == right {
+			return stringValue(result[i], "id") < stringValue(result[j], "id")
+		}
+		return left < right
+	})
+	return result
 }
 
 func prependPathEnv(dir string) string {

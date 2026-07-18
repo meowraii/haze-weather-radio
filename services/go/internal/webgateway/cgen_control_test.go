@@ -294,3 +294,321 @@ func TestCgenReadRejectsLegacyXML(t *testing.T) {
 		t.Fatalf("expected legacy XML error, got %v", err)
 	}
 }
+
+func TestCgenV2RoundTripRevisionAndActionPreserveSections(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("version: test\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	feed := map[string]any{
+		"id":      "CGEN_MAIN",
+		"name":    "CGEN Main",
+		"enabled": true,
+		"program_input": map[string]any{
+			"type":        "dummy",
+			"width":       720,
+			"height":      480,
+			"fps":         "30000/1001",
+			"interlaced":  false,
+			"field_order": "tff",
+			"background":  "#102030ff",
+		},
+		"alert": map[string]any{"feed_id": "CAP_MAIN"},
+		"ancillary": map[string]any{
+			"captions": "pass",
+			"scte35":   "pass",
+			"scte104":  "drop",
+		},
+		"audio_routing": map[string]any{
+			"topology":              "force_layout",
+			"force_layout":          "stereo",
+			"idle_program_gain_db":  "0",
+			"alert_program_gain_db": "muted",
+			"alert_gain_db":         "0",
+			"transition_ms":         20,
+		},
+		"compositor": map[string]any{
+			"alert_scene_id": "Standard_Crawl",
+			"engine":         "scene_v2",
+		},
+		"program_mapping": map[string]any{
+			"transport_stream_id": 1,
+			"programs": []any{
+				map[string]any{
+					"number":        1,
+					"service_name":  "Haze CGEN",
+					"provider_name": "Haze",
+					"pmt_pid":       "0x1000",
+					"video_pid":     "0x0100",
+					"audio": []any{
+						map[string]any{"track_id": "main", "pid": "0x0101"},
+					},
+					"scte35": map[string]any{
+						"input":                "pass",
+						"generated_alert_cues": true,
+						"pid":                  "0x0102",
+					},
+				},
+			},
+		},
+		"outputs": []any{
+			map[string]any{
+				"id":                     "primary_ts",
+				"enabled":                true,
+				"destination":            "mpeg_ts_udp",
+				"url":                    "${CGEN_PRIMARY_URL}",
+				"video_codec":            "h264",
+				"rate_control":           "vbr",
+				"video_bitrate_kbps":     8000,
+				"video_max_bitrate_kbps": 10000,
+				"gop_frames":             60,
+				"audio_codec":            "aac",
+				"audio_bitrate_kbps":     192,
+				"sample_rate":            48000,
+				"encoder": map[string]any{
+					"video": map[string]any{"preset": "veryfast"},
+				},
+			},
+		},
+	}
+	payload := map[string]any{"enabled": true, "feeds": []any{feed}}
+	audioRouting := feed["audio_routing"].(map[string]any)
+	primaryOutput := feed["outputs"].([]any)[0].(map[string]any)
+	audioRouting["topology"] = "preserve_native_tracks"
+	primaryOutput["audio_codec"] = "match_input"
+	if _, err := saveCgenPayload(configPath, payload); err == nil || !strings.Contains(err.Error(), "preserve-native audio is unavailable") {
+		t.Fatalf("expected unavailable audio topology error, got %v", err)
+	}
+	audioRouting["topology"] = "force_layout"
+	primaryOutput["audio_codec"] = "aac"
+	saved, err := saveCgenPayload(configPath, payload)
+	if err != nil {
+		t.Fatalf("save v2 cgen: %v", err)
+	}
+	revision := stringValue(saved, "revision")
+	if len(revision) != 64 || stringValue(saved, "hash") != revision {
+		t.Fatalf("revision fields = %#v", saved)
+	}
+	if saved["schema_version"] != 2 {
+		t.Fatalf("schema version = %#v", saved["schema_version"])
+	}
+	if saved["encoder_schema_version"] != 2 {
+		t.Fatalf("encoder schema version = %#v", saved["encoder_schema_version"])
+	}
+	feeds := saved["feeds"].([]map[string]any)
+	got := feeds[0]
+	if got["alert_feed_id"] != "CAP_MAIN" || got["audio_topology"] != "force_layout" || got["alert_scene_id"] != "Standard_Crawl" {
+		t.Fatalf("v2 feed fields = %#v", got)
+	}
+	outputs := got["outputs"].([]map[string]any)
+	if len(outputs) != 1 || outputs[0]["url"] != "${CGEN_PRIMARY_URL}" {
+		t.Fatalf("outputs = %#v", outputs)
+	}
+	if _, err := saveCgenPayload(configPath, payload); err == nil || !strings.Contains(err.Error(), "expected_revision is required") {
+		t.Fatalf("expected revision requirement, got %v", err)
+	}
+
+	rawXML, err := os.ReadFile(filepath.Join(dir, defaultCgenFile))
+	if err != nil {
+		t.Fatalf("read v2 XML: %v", err)
+	}
+	for _, want := range []string{
+		`schema_version="2"`,
+		`<alert feed_id="CAP_MAIN"></alert>`,
+		`<ancillary captions="pass" scte35="pass" scte104="drop"></ancillary>`,
+		`<compositor alert_scene_id="Standard_Crawl" engine="scene_v2"></compositor>`,
+		`<programMapping transport_stream_id="1">`,
+		`<output id="primary_ts" enabled="true" destination="mpeg_ts_udp" url="${CGEN_PRIMARY_URL}"`,
+	} {
+		if !strings.Contains(string(rawXML), want) {
+			t.Fatalf("v2 XML missing %q:\n%s", want, rawXML)
+		}
+	}
+	rawEncoders, err := os.ReadFile(filepath.Join(dir, defaultCgenEncodersFile))
+	if err != nil {
+		t.Fatalf("read v2 encoders: %v", err)
+	}
+	if !strings.Contains(string(rawEncoders), `schema_version="2"`) || !strings.Contains(string(rawEncoders), `<output id="primary_ts"`) {
+		t.Fatalf("output encoder profile missing:\n%s", rawEncoders)
+	}
+
+	acted, err := cgenActionPayload(configPath, map[string]any{
+		"feed_id": "CGEN_MAIN",
+		"action":  "insert_text",
+		"text":    "Revision test",
+	})
+	if err != nil {
+		t.Fatalf("cgen action: %v", err)
+	}
+	if stringValue(acted, "revision") == revision {
+		t.Fatal("action did not advance the content revision")
+	}
+	actedFeed := acted["feeds"].([]map[string]any)[0]
+	if actedFeed["alert_feed_id"] != "CAP_MAIN" || len(actedFeed["outputs"].([]map[string]any)) != 1 {
+		t.Fatalf("action dropped v2 sections: %#v", actedFeed)
+	}
+
+	payload["expected_revision"] = revision
+	if _, err := saveCgenPayload(configPath, payload); err == nil || !strings.Contains(err.Error(), "revision conflict") {
+		t.Fatalf("expected stale revision conflict, got %v", err)
+	}
+	payload["expected_revision"] = stringValue(acted, "revision")
+	feed["name"] = "CGEN Main Updated"
+	if _, err := saveCgenPayload(configPath, payload); err != nil {
+		t.Fatalf("save with current revision: %v", err)
+	}
+}
+
+func TestCgenManagedFilesAreBoundedAndEncoderSchemaIsVersioned(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("version: test\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	managed := filepath.Join(dir, "managed", "configs")
+	if err := os.MkdirAll(managed, 0o755); err != nil {
+		t.Fatalf("create managed directory: %v", err)
+	}
+	cgenFile := filepath.Join(managed, "cgen.xml")
+	if err := os.WriteFile(cgenFile, make([]byte, maxCgenConfigBytes+1), 0o600); err != nil {
+		t.Fatalf("write oversized config: %v", err)
+	}
+	if _, err := loadCgenPayload(configPath); err == nil || !strings.Contains(err.Error(), "safety limit") {
+		t.Fatalf("expected bounded config error, got %v", err)
+	}
+
+	if err := os.WriteFile(cgenFile, []byte(`<cgen schema_version="2" enabled="true"></cgen>`), 0o600); err != nil {
+		t.Fatalf("write cgen config: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(managed, "cgen-encoders.xml"),
+		[]byte(`<cgenEncoders schema_version="99"></cgenEncoders>`),
+		0o600,
+	); err != nil {
+		t.Fatalf("write encoder config: %v", err)
+	}
+	if _, err := loadCgenPayload(configPath); err == nil || !strings.Contains(err.Error(), "encoder schema_version") {
+		t.Fatalf("expected encoder schema error, got %v", err)
+	}
+}
+
+func TestCgenV2RejectsDuplicateIDsPIDsAndUnsupportedRTMP(t *testing.T) {
+	baseFeed := func() map[string]any {
+		return map[string]any{
+			"id":            "CGEN_MAIN",
+			"program_input": map[string]any{"type": "dummy"},
+			"audio_routing": map[string]any{"topology": "force_layout"},
+		}
+	}
+	tests := []struct {
+		name string
+		feed map[string]any
+		want string
+	}{
+		{
+			name: "invalid feed id",
+			feed: func() map[string]any {
+				feed := baseFeed()
+				feed["id"] = "../CGEN_MAIN"
+				return feed
+			}(),
+			want: "feed id",
+		},
+		{
+			name: "duplicate output ids",
+			feed: func() map[string]any {
+				feed := baseFeed()
+				feed["outputs"] = []any{
+					map[string]any{"id": "same", "destination": "file", "url": "one.ts", "video_codec": "h264", "audio_codec": "aac"},
+					map[string]any{"id": "SAME", "destination": "file", "url": "two.ts", "video_codec": "h264", "audio_codec": "aac"},
+				}
+				return feed
+			}(),
+			want: "duplicate output id",
+		},
+		{
+			name: "PID collision",
+			feed: func() map[string]any {
+				feed := baseFeed()
+				feed["program_mapping"] = map[string]any{"programs": []any{
+					map[string]any{
+						"number": 1, "pmt_pid": 4096, "video_pid": 256,
+						"audio": []any{map[string]any{"track_id": "main", "pid": 256}},
+					},
+				}}
+				return feed
+			}(),
+			want: "collides",
+		},
+		{
+			name: "unsupported RTMP codecs",
+			feed: func() map[string]any {
+				feed := baseFeed()
+				feed["outputs"] = []any{
+					map[string]any{"id": "rtmp", "destination": "rtmp", "url": "rtmp://example/live", "video_codec": "h265", "audio_codec": "ac3"},
+				}
+				return feed
+			}(),
+			want: "RTMP requires",
+		},
+		{
+			name: "unsupported MP4 codecs",
+			feed: func() map[string]any {
+				feed := baseFeed()
+				feed["outputs"] = []any{
+					map[string]any{"id": "archive", "destination": "file", "url": "archive.mp4", "container": "mp4", "video_codec": "mpeg2", "audio_codec": "ac3"},
+				}
+				return feed
+			}(),
+			want: "MP4 and MOV require",
+		},
+		{
+			name: "unsupported file container",
+			feed: func() map[string]any {
+				feed := baseFeed()
+				feed["outputs"] = []any{
+					map[string]any{"id": "archive", "destination": "file", "url": "archive.bin", "container": "raw", "video_codec": "h264", "audio_codec": "aac"},
+				}
+				return feed
+			}(),
+			want: "file container",
+		},
+		{
+			name: "unsupported destination",
+			feed: func() map[string]any {
+				feed := baseFeed()
+				feed["outputs"] = []any{
+					map[string]any{"id": "http", "destination": "http", "url": "https://example.test/live", "video_codec": "h264", "audio_codec": "aac"},
+				}
+				return feed
+			}(),
+			want: "destination is unsupported",
+		},
+		{
+			name: "invalid output location",
+			feed: func() map[string]any {
+				feed := baseFeed()
+				feed["outputs"] = []any{
+					map[string]any{"id": "udp", "destination": "mpeg_ts_udp", "url": "udp://239.0.0.1:9000\ninvalid", "video_codec": "h264", "audio_codec": "aac"},
+				}
+				return feed
+			}(),
+			want: "url is invalid",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(configPath, []byte("version: test\n"), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			_, err := saveCgenPayload(configPath, map[string]any{"feeds": []any{test.feed}})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %q, got %v", test.want, err)
+			}
+		})
+	}
+}

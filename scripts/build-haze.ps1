@@ -129,11 +129,20 @@ function Initialize-Clang64BuildEnvironment {
             throw "required MSYS2 CLANG64 tool not found: $RequiredPath"
         }
     }
-    foreach ($RequiredRuntime in @("libunwind.dll")) {
+    foreach ($RequiredRuntime in @("libc++.dll", "libunwind.dll")) {
         $RequiredPath = Join-Path $Clang64Bin $RequiredRuntime
         if (-not (Test-Path -LiteralPath $RequiredPath -PathType Leaf)) {
-            throw "required MSYS2 CLANG64 runtime DLL not found: $RequiredPath. Install mingw-w64-clang-x86_64-libunwind."
+            $RuntimePackage = if ($RequiredRuntime -eq "libc++.dll") { "mingw-w64-clang-x86_64-libc++" } else { "mingw-w64-clang-x86_64-libunwind" }
+            throw "required MSYS2 CLANG64 runtime DLL not found: $RequiredPath. Install $RuntimePackage."
         }
+    }
+    $Libclang = Join-Path $Clang64Bin "libclang.dll"
+    if (-not (Test-Path -LiteralPath $Libclang -PathType Leaf)) {
+        throw "required MSDF build dependency not found: $Libclang. Install mingw-w64-clang-x86_64-clang."
+    }
+    $LibcxxImport = Join-Path $Clang64Lib "libc++.dll.a"
+    if (-not (Test-Path -LiteralPath $LibcxxImport -PathType Leaf)) {
+        throw "required MSDF C++ import library not found: $LibcxxImport. Install mingw-w64-clang-x86_64-libc++."
     }
 
     $Clang = Join-Path $Clang64Bin "x86_64-w64-mingw32-clang.exe"
@@ -144,6 +153,10 @@ function Initialize-Clang64BuildEnvironment {
     $env:CXX_x86_64_pc_windows_gnullvm = $Clangxx
     $env:AR_x86_64_pc_windows_gnullvm = Join-Path $Clang64Bin "llvm-ar.exe"
     $env:LIBCLANG_PATH = $Clang64Bin
+    # msdfgen-sys consumes this exact variable while generating its bindings.
+    $env:CXX_STDLIB = "c++"
+    $env:CXXSTDLIB_x86_64_pc_windows_gnullvm = "c++"
+    $env:BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnullvm = "--target=x86_64-w64-windows-gnu"
     $env:PKG_CONFIG = Join-Path $Clang64Bin "pkg-config.exe"
     $env:PKG_CONFIG_PATH = "$(Join-Path $Clang64Lib "pkgconfig");$(Join-Path $Clang64Root "share\pkgconfig")"
     $env:PKG_CONFIG_ALLOW_CROSS = "1"

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene schema_version="1" id="Standby" name="Standby">
+  <node id="root" name="Standby" enabled="true">
+    <transform x="0" y="0" width="0" height="0" z_index="0" opacity="1" clip_children="false">
+      <anchors left="0" top="0" right="1" bottom="1"/>
+    </transform>
+    <group/>
+    <node id="standby_background" name="Standby Background" enabled="true">
+      <transform x="0" y="0" width="0" height="0" z_index="0" opacity="1" clip_children="false">
+        <anchors left="0" top="0" right="1" bottom="1"/>
+      </transform>
+      <color>
+        <source value="#000000FF"/>
+      </color>
+    </node>
+    <node id="standby_title" name="Standby Title" enabled="true">
+      <transform x="64" y="64" width="-128" height="-128" z_index="10" opacity="1" clip_children="false">
+        <anchors left="0" top="0" right="1" bottom="1"/>
+      </transform>
+      <text>
+        <source value="Emergency Alert Details Channel"/>
+        <style font_family="" weight="400" size="56" color="#FFFFFFFF"/>
+        <layout horizontal="center" vertical="center" auto_wrap="true" clip="true"/>
+        <scroll enabled="false" direction="left" pixels_per_second="0" gap="0" repeat="true"/>
+      </text>
+    </node>
+  </node>
+</scene>

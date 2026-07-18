@@ -315,6 +315,42 @@ func archiveRecordPayloadWithQueue(record archiveCAPRecord, bucket string, baseD
 	}
 }
 
+func archiveRecordOriginator(record archiveCAPRecord) string {
+	info := chooseArchiveInfo(record.Alert)
+	candidates := append([]capmodel.AlertInfo{info}, record.Alert.Infos...)
+	for _, candidate := range candidates {
+		for _, parameter := range candidate.Parameters {
+			if !strings.EqualFold(strings.TrimSpace(parameter.Name), "eas-org") {
+				continue
+			}
+			code := strings.ToUpper(strings.TrimSpace(parameter.Value))
+			if _, ok := allowedOriginatorCodes[code]; ok {
+				return code
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		for _, parameter := range candidate.Parameters {
+			name := strings.ToLower(strings.TrimSpace(parameter.Name))
+			if strings.HasPrefix(name, "layer:ec-msc-smc") || strings.Contains(name, "cap-cp") {
+				return "WXR"
+			}
+		}
+	}
+	sender := strings.ToLower(strings.TrimSpace(record.Alert.Sender))
+	if strings.Contains(sender, "canada") || strings.Contains(sender, "cap-pac") ||
+		strings.Contains(sender, "weather.gov") || strings.Contains(sender, "nws") || strings.Contains(sender, "noaa") {
+		return "WXR"
+	}
+	return "CIV"
+}
+
+func archiveRecordEvent(configPath string, record archiveCAPRecord) string {
+	info := chooseArchiveInfo(record.Alert)
+	resolution := capsame.ResolveEvent(record.Alert, info, filepath.Dir(filepath.Clean(configPath)))
+	return strings.ToUpper(strings.TrimSpace(resolution.Event))
+}
+
 func archiveBroadcastActionLabel(relayed bool) string {
 	if relayed {
 		return "Rebroadcast"
@@ -386,6 +422,7 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 		return nil, fmt.Errorf("alert %s was not found", id)
 	}
 	data, withSAME, audio := archiveRebroadcastEventData(configPath, record, withSAME, force, time.Now().UTC())
+	data = applyArchiveAccountPolicy(data, payload, withSAME)
 	if withSAME {
 		if strings.TrimSpace(stringPayload(data, "same_event", "")) == "" || len(stringSlicePayload(data, "same_locations")) == 0 {
 			return nil, fmt.Errorf("alert cannot be mapped to SAME cleanly")
@@ -405,7 +442,59 @@ func rebroadcastArchivedAlert(configPath string, payload map[string]any, withSAM
 	}); err != nil {
 		return nil, err
 	}
-	return map[string]any{"accepted": true, "same": withSAME, "audio_url": audio.URL}, nil
+	return map[string]any{
+		"accepted": true, "same": withSAME, "audio_url": audio.URL,
+		"alert_id": id, "feed_id": feedID,
+		"event_type": firstNonBlank(stringValue(data, "same_event"), stringValue(data, "event")),
+		"originator": firstNonBlank(stringValue(data, "same_originator"), stringValue(data, "originator")),
+		"sender_id":  firstNonBlank(stringValue(data, "same_callsign"), stringValue(data, "sender_id")),
+	}, nil
+}
+
+func applyArchiveAccountPolicy(data map[string]any, policy map[string]any, withSAME bool) map[string]any {
+	if data == nil {
+		data = map[string]any{}
+	}
+	delete(data, "alert_packet")
+	for _, key := range []string{"originated_by_user_id", "originated_by_username", "originated_by_session_id", "originated_from_ip"} {
+		if value, ok := policy[key]; ok {
+			data[key] = value
+		}
+	}
+	originator := firstNonBlank(stringValue(policy, "same_originator"), stringValue(policy, "originator"))
+	if originator != "" {
+		data["originator"] = originator
+		if withSAME {
+			data["same_originator"] = originator
+		}
+	}
+	originatorName := firstNonBlank(stringValue(policy, "same_originator_name"), stringValue(policy, "originator_name"))
+	if originatorName != "" {
+		data["originator_name"] = originatorName
+		if withSAME {
+			data["same_originator_name"] = originatorName
+		}
+		for _, key := range []string{"alert_text", "description", "instruction", "banner_text"} {
+			if text := stringValue(data, key); text != "" {
+				data[key] = replaceBroadcastOriginatorName(text, originatorName)
+			}
+		}
+	}
+	if withSAME {
+		senderID := firstNonBlank(stringValue(policy, "same_callsign"), stringValue(policy, "sender_id"))
+		if senderID != "" {
+			data["sender_id"] = senderID
+			data["same_callsign"] = senderID
+		}
+	}
+	packet := alertmodel.LegacyFromMap(data)
+	packet.Meta = map[string]any{
+		"originated_by_user_id":    data["originated_by_user_id"],
+		"originated_by_username":   data["originated_by_username"],
+		"originated_by_session_id": data["originated_by_session_id"],
+		"originated_from_ip":       data["originated_from_ip"],
+	}
+	return alertmodel.WithLegacyFields(packet, data)
 }
 
 func archiveRebroadcastEventData(configPath string, record archiveCAPRecord, withSAME bool, force bool, now time.Time) (map[string]any, bool, archiveAudio) {
@@ -558,12 +647,13 @@ func previewArchivedAlertSAME(configPath string, payload map[string]any) (map[st
 		return nil, fmt.Errorf("alert cannot be mapped to SAME cleanly")
 	}
 	request := sameGenerateRequest{
-		Originator: "WXR",
-		Event:      event,
-		Locations:  locations,
-		Duration:   sameDurationFromCAP(info),
-		Callsign:   sameCallsignFromConfig(configPath, record.FeedID),
-		Tone:       "WXR",
+		Originator:     firstNonBlank(stringValue(payload, "same_originator"), stringValue(payload, "originator"), "WXR"),
+		OriginatorName: firstNonBlank(stringValue(payload, "same_originator_name"), stringValue(payload, "originator_name")),
+		Event:          event,
+		Locations:      locations,
+		Duration:       sameDurationFromCAP(info),
+		Callsign:       firstNonBlank(stringValue(payload, "same_callsign"), stringValue(payload, "sender_id"), sameCallsignFromConfig(configPath, record.FeedID)),
+		Tone:           "WXR",
 	}
 	result, err := runSameGenerator(configPath, request)
 	if err != nil {

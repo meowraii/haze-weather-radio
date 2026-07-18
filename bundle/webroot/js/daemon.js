@@ -108,7 +108,7 @@ const SECTIONS = [
             ['webpanel.public.enabled', 'Public site', 'Serve the public status site.'],
             ['webpanel.public.feeds.webrtc.enabled', 'Public WebRTC', 'Allow direct public feed playback when feed access permits it.'],
             ['webpanel.admin.enabled', 'Admin panel', 'Serve the protected operator panel.'],
-            ['webpanel.tls.enabled', 'HTTPS / ACME', 'Serve the web panel with TLS. ACME uses Let\'s Encrypt with whitelisted domains.'],
+            ['webpanel.tls.enabled', 'HTTPS / ACME', 'Serve the web panel with TLS. ACME uses Let\'s Encrypt with approved domains.'],
             ['webpanel.tls.redirect_http', 'Redirect HTTP', 'Redirect normal HTTP requests on the challenge listener to HTTPS.'],
             ['webpanel.tls.hsts', 'HSTS header', 'Only enable after the domain works reliably over HTTPS.'],
             ['webpanel.tls.staging', 'ACME staging', 'Use the Let\'s Encrypt staging directory while testing.'],

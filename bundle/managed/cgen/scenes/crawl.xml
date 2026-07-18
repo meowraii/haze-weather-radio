@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene schema_version="1" id="Standard_Crawl" name="Standard_Crawl">
+  <node id="root" name="Standard Crawl" enabled="true">
+    <transform x="0" y="0" width="0" height="0" z_index="0" opacity="1" clip_children="false">
+      <anchors left="0" top="0" right="1" bottom="1"/>
+    </transform>
+    <group/>
+    <node id="program_video" name="Program Video" enabled="true">
+      <transform x="0" y="0" width="0" height="0" z_index="0" opacity="1" clip_children="false">
+        <anchors left="0" top="0" right="1" bottom="1"/>
+      </transform>
+      <programVideo fit="stretch" background="#000000FF"/>
+    </node>
+    <node id="crawl_background" name="Crawl Background" enabled="true">
+      <transform x="0" y="-120" width="0" height="120" z_index="10" opacity="1" clip_children="false">
+        <anchors left="0" top="1" right="1" bottom="1"/>
+      </transform>
+      <colorGradient angle_degrees="0">
+        <source binding="Color_EAS_Warning_Gradient"/>
+      </colorGradient>
+    </node>
+    <node id="crawl_text" name="Alert Text" enabled="true">
+      <transform x="0" y="-120" width="0" height="120" z_index="20" opacity="1" clip_children="false">
+        <anchors left="0" top="1" right="1" bottom="1"/>
+      </transform>
+      <text>
+        <source binding="Text_Alert_Full"/>
+        <style font_family="" weight="400" size="48" color="#FFFFFFFF"/>
+        <layout horizontal="left" vertical="center" auto_wrap="false" clip="true"/>
+        <scroll enabled="true" direction="left" pixels_per_second="120" gap="80" repeat="true"/>
+      </text>
+    </node>
+  </node>
+</scene>

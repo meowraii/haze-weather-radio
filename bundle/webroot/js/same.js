@@ -27,6 +27,7 @@ let alertTemplates = {};
 let ttsReaders = [];
 let breakInPrerolls = [];
 let configuredCallsign = 'HAZE';
+let accountPolicy = null;
 let selectedFeedIds = new Set();
 let selectedLocationCodes = new Set();
 let customLocations = [];
@@ -436,8 +437,16 @@ function applyTemplate(key) {
     const content = same.content || {};
     const duration = same.duration || {};
     const event = String(same.event || template.sameEvent || key || '').toUpperCase();
+    if (blockedEventCodes().has(event)) {
+        setStatus(`Template event ${event} is blocked for this account.`, 'err');
+        return;
+    }
     if (event) eventSelect.value = event;
-    if (same.originator) originator.value = String(same.originator).toUpperCase();
+	if (same.originator) {
+		const requestedOriginator = String(same.originator).toUpperCase();
+		const allowed = allowedOriginators();
+		originator.value = allowed.includes(requestedOriginator) ? requestedOriginator : (allowed[0] || requestedOriginator);
+	}
     hoursInput.value = Number(duration.hr ?? String(template.sameExpire || '0015').slice(0, 2)) || 0;
     minutesInput.value = Number(duration.min ?? String(template.sameExpire || '0015').slice(2, 4)) || 15;
     const tone = String(content.attention_tone || same.tone || 'WXR').toUpperCase();
@@ -672,6 +681,58 @@ function headerText() {
     return `ZCZC-${originator.value}-${eventSelect.value}-${locText}+${durationCode()}-${day}${utcHour}${utcMinute}-${callsign}-`;
 }
 
+function allowedOriginators() {
+	if (!accountPolicy) return ORIGINATORS.map((item) => item.value);
+	const configured = accountPolicy?.allowed_originators;
+	if (!Array.isArray(configured)) return [];
+	return configured.map((value) => String(value || '').toUpperCase()).filter((value) => ORIGINATORS.some((item) => item.value === value));
+}
+
+function blockedEventCodes() {
+	if (!accountPolicy || !Array.isArray(accountPolicy.blocked_event_codes)) return new Set();
+	return new Set(accountPolicy.blocked_event_codes.map((value) => String(value || '').trim().toUpperCase()).filter(Boolean));
+}
+
+function applyOriginationPolicyUI() {
+	const allowed = allowedOriginators();
+	for (const option of originator.options) {
+		const permitted = allowed.includes(option.value);
+		option.hidden = !permitted;
+		option.disabled = !permitted;
+	}
+	if (!allowed.includes(originator.value)) originator.value = allowed[0] || '';
+	originator.disabled = allowed.length <= 1;
+	const blocked = blockedEventCodes();
+	for (const option of eventSelect.options) {
+		const permitted = !blocked.has(option.value);
+		option.hidden = !permitted;
+		option.disabled = !permitted;
+	}
+	if (blocked.has(eventSelect.value)) {
+		const firstAllowed = [...eventSelect.options].find((option) => !option.disabled);
+		eventSelect.value = firstAllowed?.value || '';
+	}
+	const eventsLoaded = eventSelect.options.length > 0;
+	const hasAllowedEvent = [...eventSelect.options].some((option) => !option.disabled);
+	const accountCanOriginate = !accountPolicy || accountPolicy.allow_origination === true;
+	const canOriginate = accountCanOriginate && allowed.length > 0 && eventsLoaded && hasAllowedEvent;
+	queueButton.disabled = !canOriginate;
+	previewSame.disabled = !canOriginate;
+	if (!accountCanOriginate) {
+		setOriginationPolicyStatus('This account is not permitted to originate alerts.');
+	} else if (!allowed.length) {
+		setOriginationPolicyStatus('This account has no permitted SAME originators.');
+	} else if (eventsLoaded && !hasAllowedEvent) {
+		setOriginationPolicyStatus('All SAME event codes are blocked for this account.');
+	} else {
+		clearOriginationPolicyStatus();
+	}
+	if (accountPolicy?.force_sender_id && accountPolicy.sender_id) {
+		configuredCallsign = String(accountPolicy.sender_id).toUpperCase();
+	}
+	updateAll();
+}
+
 function scheduleISOString() {
     if (!scheduleEnabled.checked || !scheduleAt.value) return '';
     const date = new Date(scheduleAt.value);
@@ -715,7 +776,11 @@ function payload() {
         alert_text: messageBox.value.trim(),
         feed_ids: feedIds,
         feed_id: feedIds[0] || '',
-        callsign: configuredCallsign,
+		callsign: configuredCallsign,
+		sender_id: accountPolicy?.force_sender_id ? String(accountPolicy.sender_id || '').toUpperCase() : '',
+		same_callsign: accountPolicy?.force_sender_id ? String(accountPolicy.sender_id || '').toUpperCase() : '',
+		originator_name: accountPolicy?.force_originator_name ? String(accountPolicy.originator_name_text || '') : '',
+		same_originator_name: accountPolicy?.force_originator_name ? String(accountPolicy.originator_name_text || '') : '',
         schedule_at: scheduleISOString(),
         mimic_endec: 'SAGE',
         audio_mode: audioMode(),
@@ -736,8 +801,18 @@ function payload() {
 }
 
 function setStatus(message, kind = '') {
+    delete statusBanner.dataset.policyStatus;
     statusBanner.textContent = message || '';
     statusBanner.className = `status-banner ba-status ${kind}`.trim();
+}
+
+function setOriginationPolicyStatus(message) {
+	setStatus(message, 'err');
+	statusBanner.dataset.policyStatus = 'true';
+}
+
+function clearOriginationPolicyStatus() {
+	if (statusBanner.dataset.policyStatus === 'true') setStatus('');
 }
 
 function fallbackIntro() {
@@ -1179,7 +1254,9 @@ function applyPanelState(panelState) {
     const summary = panelState?.summary || {};
     const config = panelState?.config || {};
     allFeedsData = summary.feeds || [];
-    configuredCallsign = config.same?.sender || configuredCallsign || 'HAZE';
+	configuredCallsign = accountPolicy?.force_sender_id && accountPolicy.sender_id
+		? String(accountPolicy.sender_id).toUpperCase()
+		: (config.same?.sender || configuredCallsign || 'HAZE');
     if (!selectedFeedIds.size && allFeedsData.length) {
         const firstFeed = allFeedsData.find((feed) => feed.enabled !== false) || allFeedsData[0];
         selectedFeedIds.add(firstFeed.id);
@@ -1316,7 +1393,7 @@ export function initSameView() {
                 return null;
             }
         })(),
-    ]).then(([, , , , , panelState]) => {
+	]).then(([, , , , , panelState]) => {
         populateEventSelect();
         populateTemplateSelect();
         populateReaderSelect();
@@ -1327,7 +1404,13 @@ export function initSameView() {
             renderLocations();
             updateAll();
         }
-        updateAudioPanels();
-        window.lucide?.createIcons();
-    });
+		updateAudioPanels();
+		applyOriginationPolicyUI();
+		window.lucide?.createIcons();
+	});
+}
+
+export function setAccountPolicy(account) {
+	accountPolicy = account || null;
+	applyOriginationPolicyUI();
 }

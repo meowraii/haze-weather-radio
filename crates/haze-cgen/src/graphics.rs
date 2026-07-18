@@ -49,7 +49,7 @@ pub(crate) fn presentation_snapshot(
     let banner_feed_id = banner_feed_id(feed, priority_feed_id);
     let banner = state.banner_for(banner_feed_id);
     let audio = state.priority_audio_for(priority_feed_id);
-    let has_visual_input = banner.is_some();
+    let has_visual_input = banner.is_some() || audio.is_some();
     let overlay_text = if has_visual_input {
         overlay_text(&effective, banner, audio)
     } else if no_signal && effective.standby_mode.eq_ignore_ascii_case("banner") {
@@ -182,8 +182,23 @@ impl EffectivePresentation {
             state_mode: string_override(control, "mode").unwrap_or_else(|| feed.state.mode.clone()),
             smpte_bars: bool_override(control, "smpte_bars").unwrap_or(feed.state.smpte_bars),
             sunny_cat: bool_override(control, "sunny_cat").unwrap_or(feed.state.sunny_cat),
-            banner_mode: string_override(control, "banner_mode")
-                .unwrap_or_else(|| feed.banner.mode.clone()),
+            banner_mode: string_override(control, "banner_mode").unwrap_or_else(|| {
+                if feed
+                    .compositor
+                    .alert_scene_id
+                    .eq_ignore_ascii_case("Fullscreen_Takeover")
+                {
+                    "fullscreen".to_string()
+                } else if feed
+                    .compositor
+                    .alert_scene_id
+                    .eq_ignore_ascii_case("Standard_Crawl")
+                {
+                    "ticker".to_string()
+                } else {
+                    feed.banner.mode.clone()
+                }
+            }),
             ticker_height: u32_override(control, "ticker_height")
                 .or_else(|| u32_override(control, "banner_height"))
                 .unwrap_or_else(|| feed.banner.ticker_height.max(feed.graphics.banner_height)),
@@ -231,7 +246,11 @@ impl EffectivePresentation {
 }
 
 fn priority_feed_id(feed: &FeedConfig) -> &str {
-    if feed.priority_input.feed_id.trim().is_empty() {
+    if !feed.alert.feed_id.trim().is_empty() {
+        feed.alert.feed_id.as_str()
+    } else if feed.priority_input.feed_id.trim().is_empty()
+        || feed.priority_input.feed_id.trim() == "*"
+    {
         feed.id.as_str()
     } else {
         feed.priority_input.feed_id.as_str()
@@ -239,11 +258,8 @@ fn priority_feed_id(feed: &FeedConfig) -> &str {
 }
 
 fn banner_feed_id<'a>(feed: &'a FeedConfig, priority_feed_id: &'a str) -> &'a str {
-    if feed.id.trim().is_empty() {
-        priority_feed_id
-    } else {
-        feed.id.as_str()
-    }
+    let _ = feed;
+    priority_feed_id
 }
 
 fn banner_visual_id(banner: &BannerPayload) -> String {
@@ -303,6 +319,14 @@ fn overlay_text(
     let mut parts = Vec::new();
     if let Some(text) = audio.and_then(|audio| audio.banner_text.as_deref()) {
         push_text_part(&mut parts, text);
+    }
+    if let Some(audio) = audio {
+        push_text_part(&mut parts, &audio.presentation.full_text);
+        if parts.is_empty() {
+            push_text_part(&mut parts, &audio.presentation.organization);
+            push_text_part(&mut parts, &audio.presentation.action);
+            push_text_part(&mut parts, &audio.presentation.event);
+        }
     }
     if let Some(banner) = banner {
         for alert in &banner.alerts {
@@ -583,6 +607,7 @@ mod tests {
             banner_text: Some("Audio banner".to_string()),
             background_color: None,
             priority: None,
+            presentation: Default::default(),
             started_at: chrono::Utc::now(),
         };
         let banner = BannerPayload {
@@ -732,6 +757,11 @@ mod tests {
             state: StateConfig::default(),
             standby: StandbyConfig::default(),
             sync: SyncConfig::default(),
+            alert: Default::default(),
+            ancillary: Default::default(),
+            compositor: Default::default(),
+            program_mapping: Default::default(),
+            outputs: Default::default(),
             encoder: Default::default(),
         }
     }

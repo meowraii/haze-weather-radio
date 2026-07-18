@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/meowraii/haze-weather-radio/services/go/internal/alertmodel"
 	"github.com/meowraii/haze-weather-radio/services/go/internal/events"
 )
+
+var broadcastOriginatorNamePattern = regexp.MustCompile(`(?i)\bA Broadcast Station or Cable System\b`)
 
 func (s *wsSession) broadcastAlert(payload map[string]any) (map[string]any, error) {
 	targets, err := alertTargetFeedIDs(s.configPath, payload)
@@ -81,37 +84,61 @@ func (s *wsSession) broadcastAlertData(payload map[string]any, targets []string,
 		stringPayload(payload, "voice_message", ""),
 		stringPayload(payload, "text", ""),
 	))
+	description := stringPayload(payload, "description", "")
+	instruction := stringPayload(payload, "instruction", "")
+	originatorName := strings.TrimSpace(firstNonBlank(
+		stringPayload(payload, "same_originator_name", ""),
+		stringPayload(payload, "originator_name", ""),
+	))
+	if originatorName != "" {
+		customText = replaceBroadcastOriginatorName(customText, originatorName)
+		description = replaceBroadcastOriginatorName(description, originatorName)
+		instruction = replaceBroadcastOriginatorName(instruction, originatorName)
+	}
 	prependIntro := boolPayload(payload, "prepend_same_translation", false)
-	baseSpeech := manualAlertSpeechText(customText, stringPayload(payload, "description", ""), stringPayload(payload, "instruction", ""), title, introRequest.EventName)
+	baseSpeech := manualAlertSpeechText(customText, description, instruction, title, introRequest.EventName)
 	alertText := baseSpeech
 	if prependIntro {
 		alertText = strings.TrimSpace(strings.Join(nonEmptyManualAlertParts(intro, baseSpeech), " "))
 	}
-	bannerText := bannerTextFromManualAlert(intro, customText, stringPayload(payload, "description", ""), stringPayload(payload, "instruction", ""))
+	bannerText := bannerTextFromManualAlert(intro, customText, description, instruction)
 	audioMode := normalizeBroadcastAudioMode(stringPayload(payload, "audio_mode", "tts"))
 	data := map[string]any{
-		"feed_ids":                 targets,
-		"alert_id":                 alertID,
-		"message_type":             "Alert",
-		"title":                    title,
-		"event":                    event,
-		"alert_text":               alertText,
-		"banner_text":              bannerText,
-		"description":              stringPayload(payload, "description", ""),
-		"instruction":              stringPayload(payload, "instruction", ""),
-		"include_same":             includeSame,
-		"same_intro":               intro,
-		"same_translation":         intro,
-		"same_event":               event,
-		"same_originator":          strings.ToUpper(stringPayload(payload, "originator", "EAS")),
-		"same_locations":           sameLocations,
-		"same_duration":            sameDuration(payload),
-		"same_tone":                strings.ToUpper(stringPayload(payload, "tone_type", "WXR")),
-		"same_callsign":            sameCallsignFromConfig(s.configPath, primaryFeed),
+		"feed_ids":         targets,
+		"alert_id":         alertID,
+		"message_type":     "Alert",
+		"title":            title,
+		"event":            event,
+		"alert_text":       alertText,
+		"banner_text":      bannerText,
+		"description":      description,
+		"instruction":      instruction,
+		"include_same":     includeSame,
+		"same_intro":       intro,
+		"same_translation": intro,
+		"same_event":       event,
+		"same_originator":  strings.ToUpper(stringPayload(payload, "originator", "EAS")),
+		"same_locations":   sameLocations,
+		"same_duration":    sameDuration(payload),
+		"same_tone":        strings.ToUpper(stringPayload(payload, "tone_type", "WXR")),
+		"same_callsign": firstNonBlank(
+			stringPayload(payload, "sender_id", ""),
+			stringPayload(payload, "same_callsign", ""),
+			sameCallsignFromConfig(s.configPath, primaryFeed),
+		),
 		"alert_sent_at":            time.Now().UTC().Format(time.RFC3339Nano),
 		"source":                   "webpanel",
 		"audio_mode":               audioMode,
 		"prepend_same_translation": prependIntro,
+	}
+	if originatorName != "" {
+		data["originator_name"] = originatorName
+		data["same_originator_name"] = originatorName
+	}
+	for _, key := range []string{"originated_by_user_id", "originated_by_username", "originated_by_session_id", "originated_from_ip"} {
+		if value, ok := payload[key]; ok {
+			data[key] = value
+		}
 	}
 	if readerID := cleanReaderID(firstNonBlank(stringPayload(payload, "reader_id", ""), stringPayload(payload, "tts_reader_id", ""))); readerID != "" {
 		data["reader_id"] = readerID
@@ -131,7 +158,21 @@ func (s *wsSession) broadcastAlertData(payload map[string]any, targets []string,
 		data["scheduled_for"] = scheduleAt.UTC().Format(time.RFC3339Nano)
 	}
 	packet, _ := alertmodel.FromMap(data)
+	packet.Meta = map[string]any{
+		"originated_by_user_id":    data["originated_by_user_id"],
+		"originated_by_username":   data["originated_by_username"],
+		"originated_by_session_id": data["originated_by_session_id"],
+		"originated_from_ip":       data["originated_from_ip"],
+	}
 	return alertmodel.WithLegacyFields(packet, data)
+}
+
+func replaceBroadcastOriginatorName(text string, replacement string) string {
+	replacement = strings.TrimSpace(replacement)
+	if replacement == "" {
+		return text
+	}
+	return broadcastOriginatorNamePattern.ReplaceAllStringFunc(text, func(string) string { return replacement })
 }
 
 func manualAlertSpeechText(customText string, description string, instruction string, fallbackValues ...string) string {

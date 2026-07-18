@@ -43,7 +43,8 @@ func (s *wsSession) generateSameTest(payload map[string]any) (map[string]any, er
 		if err != nil {
 			return nil, err
 		}
-		item, err := persistSameQueueItem(s.configPath, request, targets, result, bannerTextFromTemplate(template))
+		bannerText := replaceBroadcastOriginatorName(bannerTextFromTemplate(template), request.OriginatorName)
+		item, err := persistSameQueueItem(s.configPath, request, targets, result, bannerText)
 		if err != nil {
 			return nil, err
 		}
@@ -85,12 +86,17 @@ func (s *wsSession) generateSameTest(payload map[string]any) (map[string]any, er
 		return nil, fmt.Errorf("no configured feed locations are available for SAME test generation")
 	}
 	request := sameGenerateRequest{
-		Originator: "WXR",
-		Event:      event,
-		Locations:  uniqueStrings(locations),
-		Duration:   "0015",
-		Callsign:   s.sameCallsign(feedID),
-		Tone:       "WXR",
+		Originator:         strings.ToUpper(stringPayload(payload, "originator", "WXR")),
+		OriginatorName:     firstNonBlank(stringPayload(payload, "originator_name", ""), stringPayload(payload, "same_originator_name", "")),
+		Event:              event,
+		Locations:          uniqueStrings(locations),
+		Duration:           "0015",
+		Callsign:           firstNonBlank(stringPayload(payload, "sender_id", ""), s.sameCallsign(feedID)),
+		Tone:               "WXR",
+		OriginatedByUserID: stringPayload(payload, "originated_by_user_id", ""),
+		OriginatedByUser:   stringPayload(payload, "originated_by_username", ""),
+		OriginatedSession:  stringPayload(payload, "originated_by_session_id", ""),
+		OriginatedFromIP:   stringPayload(payload, "originated_from_ip", ""),
 	}
 	result, err := runSameGenerator(s.configPath, request)
 	if err != nil {
@@ -123,7 +129,9 @@ func (s *wsSession) airSame(payload map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	item, err := persistSameQueueItem(s.configPath, request, targets, result, bannerTextFromManualAlert("", stringPayload(payload, "alert_text", ""), stringPayload(payload, "description", ""), stringPayload(payload, "instruction", "")))
+	bannerText := bannerTextFromManualAlert("", stringPayload(payload, "alert_text", ""), stringPayload(payload, "description", ""), stringPayload(payload, "instruction", ""))
+	bannerText = replaceBroadcastOriginatorName(bannerText, request.OriginatorName)
+	item, err := persistSameQueueItem(s.configPath, request, targets, result, bannerText)
 	if err != nil {
 		return nil, err
 	}
@@ -142,13 +150,18 @@ func (s *wsSession) airSame(payload map[string]any) (map[string]any, error) {
 }
 
 type sameGenerateRequest struct {
-	Originator string
-	Event      string
-	Locations  []string
-	Duration   string
-	Callsign   string
-	Tone       string
-	Sequence   string
+	Originator         string
+	OriginatorName     string
+	Event              string
+	Locations          []string
+	Duration           string
+	Callsign           string
+	Tone               string
+	Sequence           string
+	OriginatedByUserID string
+	OriginatedByUser   string
+	OriginatedSession  string
+	OriginatedFromIP   string
 }
 
 type sameQueueItem struct {
@@ -177,6 +190,10 @@ type sameQueueItem struct {
 	Channels           int                `json:"channels"`
 	AudioBytes         int                `json:"audio_bytes"`
 	Source             string             `json:"source"`
+	OriginatedByUserID string             `json:"originated_by_user_id,omitempty"`
+	OriginatedByUser   string             `json:"originated_by_username,omitempty"`
+	OriginatedSession  string             `json:"originated_by_session_id,omitempty"`
+	OriginatedFromIP   string             `json:"originated_from_ip,omitempty"`
 	Priority           string             `json:"priority"`
 	Outputs            []sameOutputTarget `json:"outputs"`
 	ClaimedAt          string             `json:"claimed_at,omitempty"`
@@ -221,17 +238,26 @@ func buildTemplateSameRequest(configPath string, template map[string]any, payloa
 	}
 	content := mapFromAny(same["content"])
 	tone := strings.ToUpper(firstNonBlank(stringPayload(payload, "tone_type", ""), stringFromMap(content, "attention_tone"), "WXR"))
-	senderID := stringFromMap(same, "sender_id")
+	senderID := firstNonBlank(
+		stringPayload(payload, "sender_id", ""),
+		stringPayload(payload, "same_callsign", ""),
+		stringFromMap(same, "sender_id"),
+	)
 	if senderID == "" {
 		senderID = sameCallsignFromConfig(configPath, stringPayload(payload, "feed_id", ""))
 	}
 	return sameGenerateRequest{
-		Originator: strings.ToUpper(strings.TrimSpace(stringPayload(payload, "originator", "WXR"))),
-		Event:      event,
-		Locations:  uniqueStrings(locations),
-		Duration:   normalizeSAMEDuration(duration),
-		Callsign:   senderID,
-		Tone:       tone,
+		Originator:         strings.ToUpper(strings.TrimSpace(stringPayload(payload, "originator", "WXR"))),
+		OriginatorName:     firstNonBlank(stringPayload(payload, "originator_name", ""), stringPayload(payload, "same_originator_name", "")),
+		Event:              event,
+		Locations:          uniqueStrings(locations),
+		Duration:           normalizeSAMEDuration(duration),
+		Callsign:           senderID,
+		Tone:               tone,
+		OriginatedByUserID: stringPayload(payload, "originated_by_user_id", ""),
+		OriginatedByUser:   stringPayload(payload, "originated_by_username", ""),
+		OriginatedSession:  stringPayload(payload, "originated_by_session_id", ""),
+		OriginatedFromIP:   stringPayload(payload, "originated_from_ip", ""),
 	}, nil
 }
 
@@ -262,12 +288,21 @@ func buildSameRequest(configPath string, payload map[string]any) (sameGenerateRe
 	}
 	locations = expandSameLocationsForFeeds(configPath, sameFeedIDsFromPayload(payload), locations)
 	request := sameGenerateRequest{
-		Originator: originator,
-		Event:      event,
-		Locations:  locations,
-		Duration:   sameDuration(payload),
-		Callsign:   sameCallsignFromConfig(configPath, feedID),
-		Tone:       strings.ToUpper(strings.TrimSpace(stringPayload(payload, "tone_type", "WXR"))),
+		Originator:     originator,
+		OriginatorName: firstNonBlank(stringPayload(payload, "originator_name", ""), stringPayload(payload, "same_originator_name", "")),
+		Event:          event,
+		Locations:      locations,
+		Duration:       sameDuration(payload),
+		Callsign: firstNonBlank(
+			stringPayload(payload, "sender_id", ""),
+			stringPayload(payload, "same_callsign", ""),
+			sameCallsignFromConfig(configPath, feedID),
+		),
+		Tone:               strings.ToUpper(strings.TrimSpace(stringPayload(payload, "tone_type", "WXR"))),
+		OriginatedByUserID: stringPayload(payload, "originated_by_user_id", ""),
+		OriginatedByUser:   stringPayload(payload, "originated_by_username", ""),
+		OriginatedSession:  stringPayload(payload, "originated_by_session_id", ""),
+		OriginatedFromIP:   stringPayload(payload, "originated_from_ip", ""),
 	}
 	if request.Tone == "" {
 		request.Tone = "WXR"
@@ -519,6 +554,7 @@ func persistSameQueueItem(configPath string, request sameGenerateRequest, feedID
 }
 
 func persistSameQueueItemWithID(configPath string, forcedID string, request sameGenerateRequest, feedIDs []string, result map[string]any, bannerText string) (sameQueueItem, error) {
+	bannerText = replaceBroadcastOriginatorName(bannerText, request.OriginatorName)
 	audioBase64, _ := result["audio_base64"].(string)
 	if audioBase64 == "" {
 		return sameQueueItem{}, fmt.Errorf("SAME generator returned no audio payload")
@@ -566,14 +602,15 @@ func persistSameQueueItemWithID(configPath string, forcedID string, request same
 				Event: request.Event,
 			},
 			SAME: &alertmodel.SAME{
-				Include:    true,
-				Event:      request.Event,
-				Originator: request.Originator,
-				Locations:  request.Locations,
-				Duration:   request.Duration,
-				Callsign:   request.Callsign,
-				Tone:       request.Tone,
-				Header:     header,
+				Include:        true,
+				Event:          request.Event,
+				Originator:     request.Originator,
+				OriginatorName: request.OriginatorName,
+				Locations:      request.Locations,
+				Duration:       request.Duration,
+				Callsign:       request.Callsign,
+				Tone:           request.Tone,
+				Header:         header,
 			},
 			Audio: &alertmodel.Audio{
 				Path:       audioRel,
@@ -586,28 +623,38 @@ func persistSameQueueItemWithID(configPath string, forcedID string, request same
 			Presentation: alertmodel.Presentation{
 				BannerText: strings.TrimSpace(bannerText),
 			},
+			Meta: map[string]any{
+				"originated_by_user_id":    request.OriginatedByUserID,
+				"originated_by_username":   request.OriginatedByUser,
+				"originated_by_session_id": request.OriginatedSession,
+				"originated_from_ip":       request.OriginatedFromIP,
+			},
 		},
-		Type:         "same_alert",
-		Status:       "pending",
-		CreatedAt:    time.Now().UTC(),
-		FeedIDs:      feedIDs,
-		Header:       header,
-		Originator:   request.Originator,
-		Event:        request.Event,
-		BannerText:   strings.TrimSpace(bannerText),
-		Locations:    request.Locations,
-		Duration:     request.Duration,
-		Callsign:     request.Callsign,
-		Tone:         request.Tone,
-		AudioPath:    audioRel,
-		ManifestPath: manifestRel,
-		Format:       stringPayload(result, "format", "raw"),
-		SampleRate:   intPayload(result, "sample_rate", 48000),
-		Channels:     intPayload(result, "channels", 1),
-		AudioBytes:   len(audio),
-		Source:       "webpanel",
-		Priority:     "alert",
-		Outputs:      outputs,
+		Type:               "same_alert",
+		Status:             "pending",
+		CreatedAt:          time.Now().UTC(),
+		FeedIDs:            feedIDs,
+		Header:             header,
+		Originator:         request.Originator,
+		Event:              request.Event,
+		BannerText:         strings.TrimSpace(bannerText),
+		Locations:          request.Locations,
+		Duration:           request.Duration,
+		Callsign:           request.Callsign,
+		Tone:               request.Tone,
+		AudioPath:          audioRel,
+		ManifestPath:       manifestRel,
+		Format:             stringPayload(result, "format", "raw"),
+		SampleRate:         intPayload(result, "sample_rate", 48000),
+		Channels:           intPayload(result, "channels", 1),
+		AudioBytes:         len(audio),
+		Source:             "webpanel",
+		OriginatedByUserID: request.OriginatedByUserID,
+		OriginatedByUser:   request.OriginatedByUser,
+		OriginatedSession:  request.OriginatedSession,
+		OriginatedFromIP:   request.OriginatedFromIP,
+		Priority:           "alert",
+		Outputs:            outputs,
 	}
 	raw, err := json.MarshalIndent(item, "", "  ")
 	if err != nil {

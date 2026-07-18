@@ -99,8 +99,7 @@ func (s *Server) wxOnDemandPackages(writer http.ResponseWriter, request *http.Re
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+	if _, ok := s.requireAdminRequest(writer, request); !ok {
 		return
 	}
 	packages, err := loadWxOnDemandPackageIDs(s.configPath)
@@ -116,8 +115,7 @@ func (s *Server) wxOnDemandReaders(writer http.ResponseWriter, request *http.Req
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+	if _, ok := s.requireAdminRequest(writer, request); !ok {
 		return
 	}
 	readers, err := loadReaderCatalog(s.configPath)
@@ -133,8 +131,7 @@ func (s *Server) wxOnDemandGenerate(writer http.ResponseWriter, request *http.Re
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+	if _, ok := s.requireAdminRequest(writer, request); !ok {
 		return
 	}
 	defer request.Body.Close()

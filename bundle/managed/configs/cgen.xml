@@ -1,16 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<cgen enabled="true">
+<cgen schema_version="2" enabled="true">
   <feed id="CFSP-CAP" name="CFSP/CAP CGEN" enabled="true" updated_at="2026-07-03T17:43:17Z">
     <program>
       <input url="udp://172.16.1.30:9098?fifo_size=2000000&amp;overrun_nonfatal=1&amp;reuse=1&amp;buffer_size=1048576" format="mpegts"></input>
       <output url="${MIST_RTMP_SSPWXR01}" format="rtmp" vcodec="x264enc" acodec="avenc_aac" video_bitrate_kbps="12000" audio_bitrate_kbps="192" service_id="1" transport_stream_id="1"></output>
     </program>
     <priority>
-      <input feed_id="*" audio_source="both" format="priority-audio"></input>
+      <input feed_id="CFSP-CAP" audio_source="both" format="priority-audio"></input>
     </priority>
+    <alert feed_id="CFSP-CAP"></alert>
+    <ancillary captions="drop" scte35="drop" scte104="drop"></ancillary>
+    <compositor alert_scene_id="Standard_Crawl" engine="legacy"></compositor>
     <media>
       <video width="1920" height="1080" fps="60000/1001" interlaced="false" field_order="tff" standard="atsc"></video>
-      <audio idle="source" alert_mode="replace" mute_standby_routine="true"></audio>
+      <audio idle="source" alert_mode="replace" mute_standby_routine="true" topology="force_layout" force_layout="stereo" idle_program_gain_db="0" alert_program_gain_db="muted" alert_gain_db="0" transition_ms="20"></audio>
     </media>
     <ladder>
       <video id="hd" enabled="auto" width="1920" height="1080" fps="60000/1001" interlaced="false" field_order="tff" standard="atsc" vcodec="x264enc" bitrate_kbps="12000" program="1" video_pid="256" pmt_pid="4096"></video>
@@ -19,6 +22,9 @@
       <audio id="stereo" enabled="true" channels="2" acodec="avenc_aac" bitrate_kbps="192" language="eng" program="1" audio_pid="257" pmt_pid="4096"></audio>
       <audio id="surround_51" enabled="false" channels="6" acodec="avenc_aac" bitrate_kbps="384" language="eng" program="1" audio_pid="258" pmt_pid="4096"></audio>
     </ladder>
+    <outputs>
+      <output id="primary" enabled="true" destination="rtmp" url="${MIST_RTMP_SSPWXR01}" video_codec="h264" rate_control="cbr" video_bitrate_kbps="12000" video_max_bitrate_kbps="12000" gop_frames="15" audio_codec="aac" audio_bitrate_kbps="192" sample_rate="48000"></output>
+    </outputs>
     <presentation>
       <banner mode="ticker" background_enabled="true">
         <font family="Arial" weight="regular" size="48"></font>
@@ -30,7 +36,7 @@
       <clock enabled="false" format="Jan 02 15:04:05" x="48" y="48" font_size="30" color="#ffffff"></clock>
       <text enabled="false" font_size="58" color="#ffffff"></text>
       <state mode="overlay" smpte_bars="false" sunny_cat="false"></state>
-      <standby mode="banner" text="EAS Details Channel" font_size="54" y_percent="10"></standby>
+      <standby mode="banner" text="Emergency Alert Details Channel" font_size="54" y_percent="10"></standby>
     </presentation>
     <sync hard_reset_ms="250" max_audio_frames_per_video="8" source_buffer_ms="240" reconnect_initial_ms="500" reconnect_max_ms="10000" status_interval_ms="750"></sync>
   </feed>

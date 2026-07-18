@@ -26,9 +26,18 @@ func (s *Server) serveArchiveCAPXML(writer http.ResponseWriter, request *http.Re
 	if !requestMethodGETOrHEAD(writer, request) {
 		return
 	}
-	if requireAuth && !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
-		return
+	if requireAuth {
+		identity, ok := s.requireRequestIdentity(writer, request)
+		if !ok {
+			return
+		}
+		if s.auth.Hardened() && !identity.Account.IsAdmin && !identity.Account.CanViewLogs {
+			err := &AuthError{Code: "logs_forbidden", Detail: "This account is not allowed to view alert logs.", HTTPStatus: http.StatusForbidden}
+			status, response := commandErrorResponse(err)
+			response["type"] = "auth_error"
+			writeJSONStatus(writer, status, response)
+			return
+		}
 	}
 	id := strings.TrimSpace(request.URL.Query().Get("id"))
 	feedID := strings.TrimSpace(request.URL.Query().Get("feed_id"))

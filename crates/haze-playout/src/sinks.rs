@@ -19,6 +19,7 @@ use haze_media::{pcm16_samples, read_i16};
 const ENCODER_WORKER_QUEUE_CAPACITY: usize = 16;
 const AUDIO_DEVICE_MAX_BUFFER_MS: usize = 120;
 const AUDIO_DEVICE_MAX_PENDING_MS: usize = 60;
+const OPUS_BITRATE_KBPS: u32 = 16;
 
 pub(crate) trait Sink: Send {
     fn name(&self) -> &str;
@@ -106,12 +107,13 @@ fn udp_sink(
         "playout UDP encoded sink using external encoder backend"
     );
     let address = socket_addr(node, 8898)?;
+    let bitrate_kbps = encoded_bitrate_kbps(&node.bitrate_kbps, &codec);
     let sink = EncoderUdpSink::new(
         format!("udp-encoded:{address}"),
         address,
         format,
         codec,
-        int_text(&node.bitrate_kbps, 32),
+        bitrate_kbps,
         fallback_text(&cfg.root.services.rust.playout.ffmpeg, "ffmpeg"),
         cfg.root.playout.sample_rate,
         cfg.root.playout.channels,
@@ -737,6 +739,15 @@ fn int_text(raw: &str, fallback: u32) -> u32 {
     raw.trim().parse::<u32>().unwrap_or(fallback)
 }
 
+fn encoded_bitrate_kbps(raw: &str, codec: &str) -> u32 {
+    let fallback = if normalize_codec(codec) == "opus" {
+        OPUS_BITRATE_KBPS
+    } else {
+        32
+    };
+    int_text(raw, fallback)
+}
+
 fn fallback_text(value: &str, fallback: &str) -> String {
     let value = value.trim();
     if value.is_empty() {
@@ -897,6 +908,13 @@ mod tests {
             ..OutputNodeConfig::default()
         };
         assert!(!is_raw_pcm(&node.format, &normalize_codec(&node.acodec)));
+    }
+
+    #[test]
+    fn opus_encoded_output_defaults_to_16_kbps() {
+        assert_eq!(encoded_bitrate_kbps("", "libopus"), 16);
+        assert_eq!(encoded_bitrate_kbps("24", "libopus"), 24);
+        assert_eq!(encoded_bitrate_kbps("", "aac"), 32);
     }
 
     #[test]

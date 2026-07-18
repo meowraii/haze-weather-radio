@@ -692,6 +692,7 @@ func (s *Service) recordCAPAlert(alert capmodel.Alert, now time.Time) ([]capRegi
 				UpdatedAt: now,
 				Alert:     alert,
 				RawXML:    alert.RawXML,
+				Locations: currentLocations,
 			}, *info, feed, feedLanguage(feed), s.cfg.BaseDir, s.cfg.ForecastNames, now)
 			headline = alerttext.NormalizeHeadline(firstNonBlank(info.Headline, info.Event, "Weather Alert"))
 			eventName = firstNonBlank(info.Event, alertSubject(*info), "CAP")

@@ -2,7 +2,7 @@ import { session, token } from './lib/api.js';
 import { initTheme } from './lib/theme.js';
 import { createControlClient } from './lib/ws-client.js';
 import { initDashboard } from './dashboard.js';
-import { initSameView } from './same.js';
+import { initSameView, setAccountPolicy } from './same.js?v=account-origination-20260717-1';
 import { initWxView } from './wx.js';
 import { initDaemonView } from './daemon.js';
 import { initBreakInView } from './breakin.js';
@@ -13,6 +13,8 @@ import { initBulletinsView } from './bulletins.js';
 import { initCgenView } from './cgen.js';
 import { initTTSView } from './tts.js';
 import { initFeedsView } from './feeds.js';
+import { initAccountsView } from './accounts.js?v=accounts-20260717-2';
+import { initLogsView } from './logs.js';
 
 const authPill = document.getElementById('authPill');
 const healthPill = document.getElementById('healthPill');
@@ -22,9 +24,10 @@ const themeToggle = document.getElementById('themeToggle');
 const logoutButton = document.getElementById('logoutButton');
 const refreshButton = document.getElementById('refreshButton');
 
-let healthState = { auth_required: true };
+let healthState = { auth_required: true, auth_enabled: true };
 let dashboardInitialized = false;
-const viewInit = { same: false, automations: false, wx: false, feeds: false, tts: false, daemon: false, breakin: false, cgen: false, bulletins: false, alerts: false, dictionary: false };
+let allowedViews = null;
+const viewInit = { same: false, automations: false, wx: false, feeds: false, tts: false, daemon: false, breakin: false, cgen: false, bulletins: false, alerts: false, dictionary: false, accounts: false, logs: false };
 
 session.importUrlToken();
 initTheme(themeToggle);
@@ -60,6 +63,37 @@ function setLastConnected(lastConnected) {
     el.textContent = `Last connected from ${ip} at ${formatDateTime(lastConnected?.at)}`;
 }
 
+function applyAccountNavigation(account, passwordChangeRequired = false) {
+	if (!account) return;
+	setAccountPolicy(account);
+	refreshButton.hidden = passwordChangeRequired;
+	const originators = Array.isArray(account.allowed_originators) ? account.allowed_originators : [];
+	const canOriginate = !passwordChangeRequired && account.allow_origination === true && originators.length > 0;
+	if (passwordChangeRequired) {
+		allowedViews = new Set(['accounts']);
+	} else if (account.is_admin) {
+		allowedViews = new Set([...document.querySelectorAll('.sidebar-link[data-view]')].map((link) => link.dataset.view));
+		if (!canOriginate) allowedViews.delete('same');
+	} else {
+		allowedViews = new Set(['home', 'accounts']);
+		if (canOriginate) allowedViews.add('same');
+		if (account.can_view_logs) {
+			allowedViews.add('alerts');
+			allowedViews.add('logs');
+		}
+	}
+	document.querySelectorAll('.sidebar-link[data-view]').forEach((link) => {
+		link.hidden = !allowedViews.has(link.dataset.view);
+	});
+	document.querySelectorAll('a[href="#/same"]').forEach((link) => {
+		link.hidden = !canOriginate;
+	});
+	const rwtButton = document.getElementById('rwtButton');
+	if (rwtButton) rwtButton.hidden = !canOriginate;
+	const sameView = document.querySelector('.view[data-view="same"]');
+	if (sameView) sameView.hidden = !canOriginate;
+}
+
 function loginUrl() {
     return `/login?next=${encodeURIComponent(`${window.location.pathname}${window.location.hash || ''}`)}`;
 }
@@ -78,6 +112,10 @@ async function readAuthState() {
     setHealthState(true, `API healthy · ${Math.round(healthState.uptime_seconds || 0)}s uptime`);
     setLastConnected(healthState.last_connected);
     setAuthState(Boolean(healthState.authenticated));
+	applyAccountNavigation(healthState.account, Boolean(healthState.password_change_required));
+	if (healthState.password_change_required && window.location.hash !== '#/accounts') {
+		window.location.hash = '#/accounts';
+	}
     return healthState;
 }
 
@@ -85,10 +123,12 @@ async function loadHealth() {
     try {
         for (let attempt = 0; attempt < 3; attempt += 1) {
             const state = await readAuthState();
-            if (!state.auth_required || state.authenticated) return true;
+			const authRequired = state.auth_required ?? state.auth_enabled ?? true;
+			if (!authRequired || state.authenticated) return true;
             await delay(250);
         }
-        if (healthState.auth_required && !healthState.authenticated) {
+		const authRequired = healthState.auth_required ?? healthState.auth_enabled ?? true;
+		if (authRequired && !healthState.authenticated) {
             if (!token.get()) {
                 token.clear();
                 window.location.href = loginUrl();
@@ -162,17 +202,29 @@ function navigate(view) {
         viewInit.dictionary = true;
         initDictionaryView();
     }
+    if (view === 'accounts' && !viewInit.accounts) {
+        viewInit.accounts = true;
+        initAccountsView();
+    }
+    if (view === 'logs' && !viewInit.logs) {
+        viewInit.logs = true;
+        initLogsView();
+    }
 
     window.lucide?.createIcons();
 }
 
 function handleHash() {
     const hash = window.location.hash.replace('#', '') || '/';
-    navigate(hash.replace(/^\//, '') || 'home');
+    const requested = hash.replace(/^\//, '') || 'home';
+    const link = document.querySelector(`.sidebar-link[data-view="${CSS.escape(requested)}"]`);
+	const permitted = link && !link.hidden && (!allowedViews || allowedViews.has(requested));
+	const fallback = allowedViews?.has('home') ? 'home' : 'accounts';
+	navigate(permitted ? requested : fallback);
 }
 
 function bootstrap() {
-    if (!dashboardInitialized) {
+    if (!healthState.password_change_required && !dashboardInitialized) {
         dashboardInitialized = true;
         initDashboard();
     }
@@ -189,16 +241,20 @@ async function logout() {
 }
 
 logoutButton.addEventListener('click', async () => {
-    let publicUrl = healthState.public_url || 'http://127.0.0.1:6444/';
-    try {
-        const payload = await logout();
-        publicUrl = payload.public_url || publicUrl;
-    } catch {
-        // Local token cleanup and redirect still happen if the server is already gone.
-    }
-    token.clear();
-    setAuthState(false);
-    window.location.href = publicUrl;
+	let publicUrl = healthState.public_url || 'http://127.0.0.1:6444/';
+	try {
+		const payload = await logout();
+		publicUrl = payload.public_url || publicUrl;
+	} catch (error) {
+		setHealthState(false, `Logout failed: ${error.message || 'session revocation was not confirmed'}`);
+		return;
+	}
+	setAuthState(false);
+	window.location.href = publicUrl;
+});
+
+window.addEventListener('haze:session-invalid', () => {
+	window.location.href = loginUrl();
 });
 
 window.addEventListener('hashchange', handleHash);

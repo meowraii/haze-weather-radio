@@ -33,7 +33,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libasound2-dev libopus-dev pkg-config \
+          sudo apt-get install -y ffmpeg g++ libasound2-dev libopus-dev pkg-config \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
             libswresample-dev libswscale-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
@@ -42,6 +42,7 @@ jobs:
             gstreamer1.0-plugins-ugly
           pkg-config --exists libavcodec opus gstreamer-1.0 gstreamer-app-1.0
           ffmpeg -hide_banner -version
+          c++ --version
 
       - name: Install Windows native build dependencies
         if: runner.os == 'Windows'
@@ -59,6 +60,7 @@ jobs:
             mingw-w64-clang-x86_64-gst-plugins-good
             mingw-w64-clang-x86_64-gst-plugins-bad
             mingw-w64-clang-x86_64-gst-plugins-ugly
+            mingw-w64-clang-x86_64-libc++
             mingw-w64-clang-x86_64-libunwind
             mingw-w64-clang-x86_64-opus
             mingw-w64-clang-x86_64-opusfile
@@ -93,6 +95,9 @@ jobs:
           Set-CiEnv "PKG_CONFIG_ALLOW_CROSS" "1"
           Set-CiEnv "FFMPEG_PKG_CONFIG_PATH" $ffmpegPkgConfigPath
           Set-CiEnv "LIBCLANG_PATH" $bin
+          Set-CiEnv "CXX_STDLIB" "c++"
+          Set-CiEnv "CXXSTDLIB_x86_64_pc_windows_gnullvm" "c++"
+          Set-CiEnv "BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnullvm" "--target=x86_64-w64-windows-gnu"
           Set-CiEnv "CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER" "x86_64-w64-mingw32-clang.exe"
           Set-CiEnv "CC_x86_64_pc_windows_gnullvm" "x86_64-w64-mingw32-clang.exe"
           Set-CiEnv "CXX_x86_64_pc_windows_gnullvm" "x86_64-w64-mingw32-clang++.exe"
@@ -106,6 +111,17 @@ jobs:
           & (Join-Path $bin "ffmpeg.exe") -hide_banner -version
           if ($LASTEXITCODE -ne 0) {
             throw "MSYS2 CLANG64 ffmpeg failed its version check"
+          }
+          foreach ($nativeTool in @("x86_64-w64-mingw32-clang++.exe", "libclang.dll")) {
+            $nativePath = Join-Path $bin $nativeTool
+            if (-not (Test-Path -LiteralPath $nativePath -PathType Leaf)) {
+              throw "Missing MSDF native build dependency: $nativePath"
+            }
+          }
+          foreach ($nativePath in @((Join-Path $clang64 "lib\libc++.dll.a"), (Join-Path $bin "libc++.dll"))) {
+            if (-not (Test-Path -LiteralPath $nativePath -PathType Leaf)) {
+              throw "Missing MSDF C++ runtime dependency: $nativePath"
+            }
           }
 
       - name: Set up Go
@@ -144,6 +160,9 @@ jobs:
       - name: Test Rust workspace
         run: cargo test --workspace --locked ${{ runner.os == 'Windows' && '--target x86_64-pc-windows-gnullvm' || '' }}
 
+      - name: Test CGEN GPU and MSDF path
+        run: cargo test -p haze-cgen --features gpu-wgpu --locked ${{ runner.os == 'Windows' && '--target x86_64-pc-windows-gnullvm' || '' }}
+
   windows-bundle:
     name: Build Windows Bundle
     runs-on: windows-latest
@@ -168,6 +187,7 @@ jobs:
             mingw-w64-clang-x86_64-gst-plugins-good
             mingw-w64-clang-x86_64-gst-plugins-bad
             mingw-w64-clang-x86_64-gst-plugins-ugly
+            mingw-w64-clang-x86_64-libc++
             mingw-w64-clang-x86_64-libunwind
             mingw-w64-clang-x86_64-opus
             mingw-w64-clang-x86_64-opusfile
@@ -242,7 +262,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libasound2-dev libopus-dev pkg-config \
+          sudo apt-get install -y ffmpeg g++ libasound2-dev libopus-dev pkg-config \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
             libswresample-dev libswscale-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
@@ -251,6 +271,7 @@ jobs:
             gstreamer1.0-plugins-ugly
           pkg-config --exists libavcodec opus gstreamer-1.0 gstreamer-app-1.0
           ffmpeg -hide_banner -version
+          c++ --version
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -306,7 +327,11 @@ jobs:
           release: "14.2"
           usesh: true
           prepare: |
-            pkg install -y bash ca_root_nss curl rust pkgconf ffmpeg opus gstreamer1 gstreamer1-plugins gstreamer1-libav
+            pkg update -f
+            LLVM_PACKAGE="$(pkg search -q -x '^llvm[0-9]+-[0-9].*' | sort -V | tail -n 1)"
+            test -n "${LLVM_PACKAGE}" || { echo "No versioned LLVM package is available" >&2; exit 1; }
+            pkg install -y bash ca_root_nss curl rust pkgconf ffmpeg opus gstreamer1 gstreamer1-plugins gstreamer1-libav "${LLVM_PACKAGE}"
+            pkg info -l "${LLVM_PACKAGE}" | grep -Eq '/libclang\.so([.]|$)' || { echo "${LLVM_PACKAGE} does not provide libclang" >&2; exit 1; }
             pkgconf --exists libavcodec opus gstreamer-1.0 gstreamer-app-1.0
             GO_VERSION="$(awk '/^go / { print $2; exit }' services/go/go.mod)"
             fetch -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.freebsd-amd64.tar.gz"
@@ -314,13 +339,20 @@ jobs:
             tar -C /usr/local -xzf /tmp/go.tar.gz
           run: |
             export PATH="/usr/local/go/bin:${PATH}"
+            LIBCLANG_FILE="$(find /usr/local -maxdepth 3 -type f -name 'libclang.so*' -print -quit)"
+            test -n "${LIBCLANG_FILE}" || { echo "libclang is required for the FreeBSD MSDF build" >&2; exit 1; }
+            export LIBCLANG_PATH="$(dirname "${LIBCLANG_FILE}")"
+            export CXX="${CXX:-c++}"
+            export CXX_STDLIB=c++
             go version
             rustc --version
             cargo --version
+            "${CXX}" --version
             cd services/go
             go test ./...
             cd ../..
             cargo test --workspace
+            cargo test -p haze-cgen --features gpu-wgpu
             bash scripts/build-haze.sh --profile release
 
       - name: Upload FreeBSD Haze bundle

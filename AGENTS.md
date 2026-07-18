@@ -53,9 +53,11 @@ Its structure is defined as an Event-Driven Architecture (EDA), a highly asynchr
 ## Native dependencies and packaging
 
 - Prefer native bindings for long-running services instead of shelling out to subprocesses, especially for FFmpeg/rsmpeg, GStreamer, ONNX, TTS, CAP, and media paths.
-- Portable Windows and Linux bundles must include the runtime DLLs/shared libraries they actually need, but should not include large downloaded voice/model data unless explicitly intended.
+- Portable Windows, Linux, and FreeBSD bundles must include the runtime DLLs/shared libraries they actually need, but should not include large downloaded voice/model data unless explicitly intended.
 - Build scripts should validate missing runtime DLLs/shared libraries and fail with actionable messages.
-- GitHub Actions should build portable archives for Windows and Linux and sync bundled `audio`, `managed`, and `webroot` assets into the portable package.
+- GitHub Actions should build portable archives for Windows, Linux, and FreeBSD and sync bundled `audio`, `managed`, and `webroot` assets into the portable package.
+- Windows CI builds and tests use MSYS2 `CLANG64` with the `x86_64-pc-windows-gnullvm` Rust target. Keep the test job and Windows bundle build on the same CLANG64 toolchain, GStreamer, FFmpeg, Opus, and pkg-config package set.
+- For the Windows CI environment, add both `C:\\msys64\\clang64\\bin` and `C:\\msys64\\usr\\bin` to `PATH`. Set `PKG_CONFIG_PATH` to the CLANG64 pkg-config directories, but do not set `PKG_CONFIG_LIBDIR`, which can hide transitive dependency metadata.
 
 ## Live instances
 

@@ -56,7 +56,23 @@ pub(crate) struct PriorityAudio {
     pub(crate) banner_text: Option<String>,
     pub(crate) background_color: Option<String>,
     pub(crate) priority: Option<String>,
+    #[serde(default)]
+    pub(crate) presentation: AlertPresentation,
     pub(crate) started_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct AlertPresentation {
+    #[serde(default)]
+    pub(crate) organization: String,
+    #[serde(default)]
+    pub(crate) action: String,
+    #[serde(default)]
+    pub(crate) event: String,
+    #[serde(default)]
+    pub(crate) full_text: String,
+    #[serde(default)]
+    pub(crate) alert_class: String,
 }
 
 impl RuntimeState {
@@ -84,10 +100,10 @@ impl RuntimeState {
         if feed_id.trim() == "*" {
             return self.banners.values().find(|payload| payload.active);
         }
-        self.banners
-            .get(feed_id)
-            .or_else(|| self.banners.get("*"))
-            .filter(|payload| payload.active)
+        // CGEN pipelines bind to one concrete alert feed. A legacy wildcard
+        // broker event remains inspectable through the explicit wildcard
+        // query, but must never present on every concrete CGEN pipeline.
+        self.banners.get(feed_id).filter(|payload| payload.active)
     }
 
     pub(crate) fn priority_audio_for(&self, feed_id: &str) -> Option<&PriorityAudio> {
@@ -99,9 +115,12 @@ impl RuntimeState {
                 .filter(|audio| audio.is_active_at(now))
                 .min_by_key(|audio| audio.started_at);
         }
+        // The configured pipeline feed is always concrete after migration.
+        // Do not fall back to a wildcard alert or later alert from another
+        // feed, because that would violate playout ownership and queue-ID
+        // correlation for this pipeline.
         self.active_audio
             .get(feed_id)
-            .or_else(|| self.active_audio.get("*"))
             .filter(|audio| audio.is_active_at(now))
     }
 
@@ -124,8 +143,11 @@ impl RuntimeState {
         let queue_id = fallback_text(
             &text_at(data, &["queue_id"]),
             &text_at(event, &["queue_id"]),
-            "priority-alert",
+            "",
         );
+        if queue_id.trim().is_empty() {
+            return false;
+        }
         let audio = PriorityAudio {
             queue_id,
             audio_path: non_empty(fallback_text(
@@ -160,6 +182,7 @@ impl RuntimeState {
                 &text_at(event, &["priority"]),
                 "",
             )),
+            presentation: alert_presentation(data),
             started_at: Utc::now(),
         };
         let now = Utc::now();
@@ -251,6 +274,73 @@ impl RuntimeState {
         self.active_audio.retain(|_, audio| audio.is_active_at(now));
         self.active_audio.len() != before
     }
+}
+
+fn alert_presentation(data: &Value) -> AlertPresentation {
+    let organization = first_text_at(
+        data,
+        &[
+            &["presentation", "organization"],
+            &["alert_packet", "presentation", "organization"],
+            &["organization"],
+            &["issuer"],
+            &["sender_name"],
+        ],
+    );
+    let action = first_text_at(
+        data,
+        &[
+            &["presentation", "action"],
+            &["presentation", "action_phrase"],
+            &["alert_packet", "presentation", "action"],
+            &["action"],
+            &["action_phrase"],
+        ],
+    );
+    let event = first_text_at(
+        data,
+        &[
+            &["presentation", "event"],
+            &["alert_packet", "presentation", "event"],
+            &["event_name"],
+            &["event"],
+            &["headline"],
+        ],
+    );
+    let full_text = first_text_at(
+        data,
+        &[
+            &["presentation", "full_text"],
+            &["alert_packet", "presentation", "full_text"],
+            &["banner_text"],
+            &["message"],
+            &["description"],
+        ],
+    );
+    let alert_class = first_text_at(
+        data,
+        &[
+            &["presentation", "alert_class"],
+            &["alert_packet", "presentation", "alert_class"],
+            &["alert_class"],
+            &["priority"],
+        ],
+    );
+    AlertPresentation {
+        organization,
+        action,
+        event,
+        full_text,
+        alert_class,
+    }
+}
+
+fn first_text_at(value: &Value, paths: &[&[&str]]) -> String {
+    paths
+        .iter()
+        .map(|path| text_at(value, path))
+        .find(|text| !text.is_empty())
+        .unwrap_or_default()
 }
 
 fn compact_banner_payload(payload: &mut BannerPayload) {
@@ -598,7 +688,18 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_priority_audio_applies_to_any_feed() {
+    fn playout_start_without_queue_id_is_not_activated() {
+        let mut state = RuntimeState::default();
+        assert!(!state.apply_event(&json!({
+            "type": "alert.playout.started",
+            "feed_ids": ["CAP-IT-ALL"],
+            "data": {"banner_text": "uncorrelated"}
+        })));
+        assert!(state.priority_audio_for("CAP-IT-ALL").is_none());
+    }
+
+    #[test]
+    fn wildcard_priority_audio_does_not_cross_concrete_feed_boundaries() {
         let mut state = RuntimeState::default();
         assert!(state.apply_event(&json!({
             "type": "alert.playout.started",
@@ -608,7 +709,13 @@ mod tests {
                 "audio_path": "runtime/audio/alerts/all.raw"
             }
         })));
-        assert!(state.priority_audio_for("CAP-IT-ALL").is_some());
+        assert!(state.priority_audio_for("CAP-IT-ALL").is_none());
+        assert_eq!(
+            state
+                .priority_audio_for("*")
+                .map(|audio| audio.queue_id.as_str()),
+            Some("alert-all")
+        );
     }
 
     #[test]
@@ -720,6 +827,7 @@ mod tests {
 
         let banner = state.banner_for("*").expect("wildcard banner");
         assert_eq!(banner.signature, "wildcard-visual");
+        assert!(state.banner_for("CAP-IT-ALL").is_none());
     }
 
     #[test]

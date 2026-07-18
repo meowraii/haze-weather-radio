@@ -27,8 +27,7 @@ func (s *Server) alertAudioUpload(writer http.ResponseWriter, request *http.Requ
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+	if _, ok := s.requireOriginationRequest(writer, request); !ok {
 		return
 	}
 	maxBytes := broadcastAlertMediaUploadBytes(s.config)

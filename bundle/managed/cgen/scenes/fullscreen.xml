@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene schema_version="1" id="Fullscreen_Takeover" name="Fullscreen_Takeover">
+  <node id="root" name="Fullscreen Takeover" enabled="true">
+    <transform x="0" y="0" width="0" height="0" z_index="0" opacity="1" clip_children="false">
+      <anchors left="0" top="0" right="1" bottom="1"/>
+    </transform>
+    <group/>
+    <node id="takeover_background" name="Takeover Background" enabled="true">
+      <transform x="0" y="0" width="0" height="0" z_index="0" opacity="1" clip_children="false">
+        <anchors left="0" top="0" right="1" bottom="1"/>
+      </transform>
+      <colorGradient angle_degrees="90">
+        <source binding="Color_EAS_Warning_Gradient"/>
+      </colorGradient>
+    </node>
+    <node id="takeover_text" name="Alert Text" enabled="true">
+      <transform x="80" y="80" width="-160" height="-160" z_index="10" opacity="1" clip_children="false">
+        <anchors left="0" top="0" right="1" bottom="1"/>
+      </transform>
+      <text>
+        <source binding="Text_Alert_Full"/>
+        <style font_family="" weight="400" size="64" color="#FFFFFFFF"/>
+        <layout horizontal="center" vertical="center" auto_wrap="true" clip="true"/>
+        <scroll enabled="false" direction="left" pixels_per_second="0" gap="0" repeat="true"/>
+      </text>
+    </node>
+  </node>
+</scene>

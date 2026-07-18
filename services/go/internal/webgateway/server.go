@@ -3,6 +3,7 @@ package webgateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -30,6 +31,13 @@ type Server struct {
 	bannerHub  *BannerHub
 	breakIn    *OperatorBreakInManager
 	listeners  *ListenerTracker
+}
+
+// Close releases long-lived authentication and storage resources.
+func (s *Server) Close() {
+	if s != nil && s.auth != nil {
+		s.auth.Close()
+	}
 }
 
 // WebSurface controls which routes a gateway instance exposes.
@@ -67,7 +75,7 @@ func NewServerWithSurface(config Config, configPath string, webroot string, surf
 		configPath: filepath.Clean(configPath),
 		webroot:    webroot,
 		surface:    normalizeSurface(surface),
-		auth:       NewAuthManager(config),
+		auth:       NewAuthManagerWithPath(config, configPath),
 		receiver:   NewReceiverManager(config, configPath, mediaHub),
 		media:      mediaHub,
 		bannerHub:  bannerHub,
@@ -173,14 +181,16 @@ func (s *Server) admin(writer http.ResponseWriter, request *http.Request) {
 	if !requestMethodGETOrHEAD(writer, request) {
 		return
 	}
-	if token := strings.TrimSpace(request.URL.Query().Get("token")); token != "" && s.auth.ValidToken(token) {
-		s.auth.SetCookieForRequest(writer, request, token)
-		cleanURL := *request.URL
-		query := cleanURL.Query()
-		query.Del("token")
-		cleanURL.RawQuery = query.Encode()
-		http.Redirect(writer, request, cleanURL.RequestURI(), http.StatusSeeOther)
-		return
+	if !s.auth.Hardened() {
+		if token := strings.TrimSpace(request.URL.Query().Get("token")); token != "" && s.auth.ValidToken(token) {
+			s.auth.SetCookieForRequest(writer, request, token)
+			cleanURL := *request.URL
+			query := cleanURL.Query()
+			query.Del("token")
+			cleanURL.RawQuery = query.Encode()
+			http.Redirect(writer, request, cleanURL.RequestURI(), http.StatusSeeOther)
+			return
+		}
 	}
 	if !s.auth.Authenticated(request) {
 		target := "/login?next=" + request.URL.EscapedPath()
@@ -214,26 +224,52 @@ func (s *Server) loginAPI(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Content-Type", "application/json")
 	request.Body = http.MaxBytesReader(writer, request.Body, 8*1024)
 	var payload struct {
-		Password string `json:"password"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`
+		TOTP       string `json:"totp"`
+		Persistent bool   `json:"persistent"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 		http.Error(writer, `{"type":"auth_error","detail":"invalid login request"}`, http.StatusBadRequest)
 		return
 	}
-	token, err := s.auth.Login(payload.Password)
+	result, err := s.auth.LoginWithRequest(request.Context(), LoginInput{
+		Username: payload.Username, Password: payload.Password, TOTP: payload.TOTP,
+		Persistent: payload.Persistent, Request: request,
+	})
 	if err != nil {
-		writer.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(writer).Encode(map[string]any{
+		status := http.StatusUnauthorized
+		code := "auth_error"
+		detail := "Sign in failed."
+		if authErr, ok := err.(*AuthError); ok {
+			status = authErr.HTTPStatus
+			code = authErr.Code
+			detail = authErr.Detail
+		}
+		response := map[string]any{
 			"type":   "auth_error",
-			"detail": err.Error(),
-		})
+			"code":   code,
+			"detail": detail,
+		}
+		if result.MFAEnrollmentRequired {
+			response["mfa_enrollment_required"] = true
+			response["mfa_enrollment_secret"] = result.MFAEnrollmentSecret
+			response["mfa_enrollment_uri"] = result.MFAEnrollmentURI
+		}
+		writer.WriteHeader(status)
+		_ = json.NewEncoder(writer).Encode(response)
 		return
 	}
-	s.auth.SetCookieForRequest(writer, request, token)
-	_ = json.NewEncoder(writer).Encode(map[string]any{
-		"type":  "auth_ok",
-		"token": token,
-	})
+	s.auth.SetLoginCookie(writer, request, result)
+	response := map[string]any{
+		"type":                     "auth_ok",
+		"password_change_required": result.PasswordChangeRequired,
+		"persistent":               result.Persistent,
+	}
+	if !s.auth.Hardened() {
+		response["token"] = result.Token
+	}
+	_ = json.NewEncoder(writer).Encode(response)
 }
 
 func (s *Server) authCheckAPI(writer http.ResponseWriter, request *http.Request) {
@@ -242,16 +278,22 @@ func (s *Server) authCheckAPI(writer http.ResponseWriter, request *http.Request)
 	}
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(writer).Encode(map[string]any{
+	response := map[string]any{
 		"type":          "auth_state",
 		"authenticated": s.auth.Authenticated(request),
 		"auth_enabled":  s.auth.Enabled(),
+		"auth_required": s.auth.Enabled(),
 		"auth_ready":    s.auth.Configured(),
 		"site_name":     siteName(s.config),
 		"on_air_name":   displayText(s.config.Operator.OnAirName),
 		"version":       s.config.Version,
 		"git_commit":    "unknown",
-	})
+	}
+	if identity, err := s.auth.Identity(request); err == nil {
+		response["account"] = identity.Account
+		response["password_change_required"] = identity.PasswordChangeRequired
+	}
+	_ = json.NewEncoder(writer).Encode(response)
 }
 
 func (s *Server) logoutAPI(writer http.ResponseWriter, request *http.Request) {
@@ -260,11 +302,11 @@ func (s *Server) logoutAPI(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	token := explicitAdminTokenFromRequest(request)
-	if token == "" {
-		token = tokenFromRequest(request)
+	if err := s.auth.LogoutRequest(request); err != nil {
+		status, response := commandErrorResponse(err)
+		writeJSONStatus(writer, status, response)
+		return
 	}
-	s.auth.Logout(token)
 	http.SetCookie(writer, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -345,8 +387,7 @@ func (s *Server) cgenFontAsset(writer http.ResponseWriter, request *http.Request
 	if !requestMethodGETOrHEAD(writer, request) {
 		return
 	}
-	if !s.auth.Authenticated(request) {
-		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+	if _, ok := s.requireAdminRequest(writer, request); !ok {
 		return
 	}
 	fontPath := strings.TrimPrefix(request.URL.Path, "/api/v1/cgen/fonts/")
@@ -380,7 +421,9 @@ func staticAssetCacheControl(ext string) string {
 	switch strings.ToLower(ext) {
 	case ".gif", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico", ".woff", ".woff2":
 		return "public, max-age=86400"
-	case ".js", ".css", ".webmanifest", ".json":
+	case ".js", ".css":
+		return "no-cache, must-revalidate"
+	case ".webmanifest", ".json":
 		return "public, max-age=3600, must-revalidate"
 	default:
 		return "public, max-age=3600"
@@ -464,7 +507,7 @@ func (s *Server) adminHealth(writer http.ResponseWriter, request *http.Request) 
 	if !requestMethodGETOrHEAD(writer, request) {
 		return
 	}
-	if !s.auth.Authenticated(request) {
+	if !s.auth.FullyAuthenticated(request) {
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -530,9 +573,9 @@ func publicMediaServiceHealth(health map[string]any) map[string]any {
 }
 
 func (s *Server) websocket(writer http.ResponseWriter, request *http.Request) {
-	connection, err := websocket.Accept(writer, request, &websocket.AcceptOptions{
-		OriginPatterns: allOriginPatterns(),
-	})
+	// The authenticated panel WebSocket is same-origin only. Public audio and
+	// receiver sockets have separate handlers and origin policies.
+	connection, err := websocket.Accept(writer, request, nil)
 	if err != nil {
 		return
 	}
@@ -628,7 +671,7 @@ func (s *Server) adminPanelState(writer http.ResponseWriter, request *http.Reque
 	if !requestMethodGETOrHEAD(writer, request) {
 		return
 	}
-	if !s.auth.Authenticated(request) {
+	if !s.auth.FullyAuthenticated(request) {
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -660,7 +703,7 @@ func (s *Server) adminPanelEvents(writer http.ResponseWriter, request *http.Requ
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.auth.Authenticated(request) {
+	if !s.auth.FullyAuthenticated(request) {
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -754,10 +797,106 @@ func (s *Server) panelCommand(writer http.ResponseWriter, request *http.Request)
 	session := s.newPanelHTTPSession(request)
 	result, err := session.handleCommand(command, payload.Payload)
 	if err != nil {
-		writeJSON(writer, map[string]any{"type": "command_error", "detail": err.Error()})
+		status, response := commandErrorResponse(err)
+		writeJSONStatus(writer, status, response)
 		return
 	}
 	writeJSON(writer, map[string]any{"type": "command_result", "result": result})
+}
+
+func commandErrorResponse(err error) (int, map[string]any) {
+	status := http.StatusBadRequest
+	code := "command_failed"
+	detail := err.Error()
+	var authErr *AuthError
+	if errors.As(err, &authErr) {
+		code = authErr.Code
+		if authErr.HTTPStatus >= 400 && authErr.HTTPStatus <= 599 {
+			status = authErr.HTTPStatus
+		}
+	} else if errors.Is(err, errAccountNotFound) {
+		status = http.StatusNotFound
+		code = "account_not_found"
+		detail = "The requested account was not found."
+	} else {
+		lower := strings.ToLower(detail)
+		if strings.Contains(lower, "unique constraint") || strings.Contains(lower, "duplicate key") {
+			status = http.StatusConflict
+			code = "account_conflict"
+			detail = "An account with that username already exists."
+		} else if commandInfrastructureError(lower) {
+			status = http.StatusServiceUnavailable
+			code = "service_unavailable"
+			detail = "The command could not be completed because a required service or secure store is unavailable."
+		}
+	}
+	return status, map[string]any{
+		"type":   "command_error",
+		"code":   code,
+		"detail": detail,
+	}
+}
+
+func commandInfrastructureError(detail string) bool {
+	for _, marker := range []string{
+		"audit integrity", "audit log", "account store", "session registry", "redis", "database",
+		"context deadline", "temporarily unavailable", "event bridge", "connect session",
+		"open audit", "read audit", "write audit", "sync audit", "publish ",
+	} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) requireRequestIdentity(writer http.ResponseWriter, request *http.Request) (Identity, bool) {
+	identity, err := s.auth.Identity(request)
+	if err != nil {
+		status, response := commandErrorResponse(err)
+		response["type"] = "auth_error"
+		writeJSONStatus(writer, status, response)
+		return Identity{}, false
+	}
+	if identity.PasswordChangeRequired {
+		err := &AuthError{Code: "password_change_required", Detail: "Password change is required before using this endpoint.", HTTPStatus: http.StatusForbidden}
+		status, response := commandErrorResponse(err)
+		response["type"] = "auth_error"
+		writeJSONStatus(writer, status, response)
+		return Identity{}, false
+	}
+	return identity, true
+}
+
+func (s *Server) requireAdminRequest(writer http.ResponseWriter, request *http.Request) (Identity, bool) {
+	identity, ok := s.requireRequestIdentity(writer, request)
+	if !ok {
+		return Identity{}, false
+	}
+	if s.auth.Hardened() && !identity.Account.IsAdmin {
+		err := &AuthError{Code: "administrator_required", Detail: "Administrator permission is required.", HTTPStatus: http.StatusForbidden}
+		status, response := commandErrorResponse(err)
+		response["type"] = "auth_error"
+		writeJSONStatus(writer, status, response)
+		return Identity{}, false
+	}
+	return identity, true
+}
+
+func (s *Server) requireOriginationRequest(writer http.ResponseWriter, request *http.Request) (Identity, bool) {
+	identity, ok := s.requireRequestIdentity(writer, request)
+	if !ok {
+		return Identity{}, false
+	}
+	if s.auth.Hardened() {
+		if err := s.auth.hardened.AllowOrigination(request.Context(), identity); err != nil {
+			status, response := commandErrorResponse(err)
+			response["type"] = "auth_error"
+			writeJSONStatus(writer, status, response)
+			return Identity{}, false
+		}
+	}
+	return identity, true
 }
 
 func (s *Server) publicFeedWebRTCOffer(writer http.ResponseWriter, request *http.Request) {
@@ -794,7 +933,7 @@ func (s *Server) publicFeedWebRTCOffer(writer http.ResponseWriter, request *http
 		writeJSONStatus(writer, http.StatusForbidden, map[string]any{"type": "webrtc_error", "detail": "public feeds are disabled"})
 		return
 	}
-	if access == "auth_required" && !s.auth.Authenticated(request) {
+	if access == "auth_required" && !s.auth.FullyAuthenticated(request) {
 		writeJSONStatus(writer, http.StatusUnauthorized, map[string]any{"type": "auth_error", "detail": "not authenticated"})
 		return
 	}
@@ -969,15 +1108,21 @@ func (s *wsSession) handle(ctx context.Context, raw []byte) error {
 	}
 	switch msgType {
 	case "auth_check":
-		return s.reply(ctx, message, "auth_state", map[string]any{
+		state := map[string]any{
 			"authenticated": s.auth.Authenticated(s.request),
 			"auth_enabled":  s.auth.Enabled(),
+			"auth_required": s.auth.Enabled(),
 			"auth_ready":    s.auth.Configured(),
 			"site_name":     siteName(s.config),
 			"on_air_name":   displayText(s.config.Operator.OnAirName),
 			"version":       s.config.Version,
 			"git_commit":    "unknown",
-		})
+		}
+		if identity, err := s.auth.Identity(s.request); err == nil {
+			state["account"] = identity.Account
+			state["password_change_required"] = identity.PasswordChangeRequired
+		}
+		return s.reply(ctx, message, "auth_state", state)
 	case "login":
 		token, err := s.auth.Login(stringValue(message, "password"))
 		if err != nil {
@@ -985,7 +1130,9 @@ func (s *wsSession) handle(ctx context.Context, raw []byte) error {
 		}
 		return s.reply(ctx, message, "auth_ok", map[string]any{"token": token})
 	case "logout":
-		s.auth.Logout(tokenFromRequest(s.request))
+		if err := s.auth.LogoutRequest(s.request); err != nil {
+			return s.reply(ctx, message, "auth_error", map[string]any{"detail": err.Error()})
+		}
 		return s.reply(ctx, message, "logout_ok", map[string]any{})
 	case "ping":
 		return s.reply(ctx, message, "pong", map[string]any{})
@@ -1043,10 +1190,10 @@ func (s *wsSession) handleWebRTCOffer(ctx context.Context, message map[string]an
 		if access == "disabled" {
 			return s.reply(ctx, message, "webrtc_error", map[string]any{"detail": "public feeds are disabled"})
 		}
-		if access == "auth_required" && !s.auth.Authenticated(s.request) {
+		if access == "auth_required" && !s.auth.FullyAuthenticated(s.request) {
 			return s.reply(ctx, message, "auth_error", map[string]any{"detail": "not authenticated"})
 		}
-	} else if !s.auth.Authenticated(s.request) {
+	} else if !s.auth.FullyAuthenticated(s.request) {
 		return s.reply(ctx, message, "auth_error", map[string]any{"detail": "not authenticated"})
 	}
 	if !s.feedWebRTCEnabled(feedID) {
@@ -1137,6 +1284,75 @@ func normalizeWebRTCOfferSDP(sdp string) string {
 }
 
 func (s *wsSession) handleCommand(command string, payload map[string]any) (any, error) {
+	identity, err := s.auth.Identity(s.request)
+	if err != nil {
+		return nil, err
+	}
+	if identity.PasswordChangeRequired && command != "profile.password.change" && command != "profile.get" {
+		return nil, &AuthError{Code: "password_change_required", Detail: "Password change is required before using the panel.", HTTPStatus: http.StatusForbidden}
+	}
+	if s.auth.Hardened() && !identity.Account.IsAdmin && !nonAdminCommandAllowed(command, payload, identity.Account) {
+		return nil, &AuthError{Code: "command_forbidden", Detail: fmt.Sprintf("Account is not authorized for command %q.", command), HTTPStatus: http.StatusForbidden}
+	}
+	if usesOriginationPolicy(command, payload) {
+		payload, err = prepareAccountOriginationPolicyPayload(s.configPath, command, payload)
+		if err != nil {
+			return nil, err
+		}
+		if s.auth.Hardened() {
+			if err := s.auth.hardened.AllowOrigination(s.request.Context(), identity); err != nil {
+				return nil, err
+			}
+		}
+		payload, err = applyAccountOriginationPolicy(payload, identity)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.auth.Hardened() && isOriginationExecution(command, payload) {
+		if err := s.auditOrigination(identity, command, "ALERT_ORIGINATION_REQUESTED", payload, nil); err != nil {
+			return nil, err
+		}
+	}
+	webpanelMutation := s.auth.Hardened() && auditedWebpanelMutation(command, payload)
+	if webpanelMutation {
+		if err := s.auditGenericWebpanelMutation(identity, command, "REQUESTED", payload); err != nil {
+			return nil, err
+		}
+	}
+	result, err := s.executeCommand(command, payload)
+	if err != nil {
+		if s.auth.Hardened() && isOriginationExecution(command, payload) {
+			_ = s.auditOrigination(identity, command, "ALERT_ORIGINATION_FAILED", payload, map[string]any{"error": err.Error()})
+		}
+		if webpanelMutation {
+			_ = s.auditGenericWebpanelMutation(identity, command, "FAILED", payload)
+		}
+		return nil, err
+	}
+	if s.auth.Hardened() && isOriginationExecution(command, payload) {
+		resultMap, _ := result.(map[string]any)
+		if err := s.auditOrigination(identity, command, "ALERT_ORIGINATION_ACCEPTED", payload, resultMap); err != nil {
+			if resultMap != nil {
+				resultMap["audit_status"] = "completion_record_failed"
+			}
+			return result, nil
+		}
+	}
+	if webpanelMutation {
+		if err := s.auditGenericWebpanelMutation(identity, command, "COMPLETED", payload); err != nil {
+			if resultMap, ok := result.(map[string]any); ok {
+				resultMap["audit_status"] = "completion_record_failed"
+			}
+		}
+	}
+	return result, nil
+}
+
+func (s *wsSession) executeCommand(command string, payload map[string]any) (any, error) {
+	if accountCommandName(command) {
+		return s.accountCommand(command, payload)
+	}
 	switch command {
 	case "daemon.settings.get":
 		return daemonSettingsPayload(s.configPath)
@@ -1178,6 +1394,24 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 		return loadCgenPayload(s.configPath)
 	case "cgen.catalog":
 		return cgenCatalogPayload(s.configPath)
+	case "cgen.scenes.list":
+		return listCgenScenesPayload(s.configPath)
+	case "cgen.scenes.get":
+		return getCgenScenePayload(s.configPath, payload)
+	case "cgen.scenes.save":
+		result, err := saveCgenScenePayload(s.configPath, payload)
+		if err != nil {
+			return nil, err
+		}
+		_ = s.publishCgenScenesUpdated(result)
+		return result, nil
+	case "cgen.scenes.delete":
+		result, err := deleteCgenScenePayload(s.configPath, payload)
+		if err != nil {
+			return nil, err
+		}
+		_ = s.publishCgenScenesUpdated(result)
+		return result, nil
 	case "cgen.save":
 		result, err := saveCgenPayload(s.configPath, payload)
 		if err != nil {
@@ -1221,6 +1455,10 @@ func (s *wsSession) handleCommand(command string, payload map[string]any) (any, 
 		return s.publishPlaylistCommand("playlist.insert", payload)
 	case "alerts.archive.get":
 		return alertsArchivePayload(s.configPath)
+	case "logs.list":
+		return listLogViewerFiles(logsViewerRoot(s.configPath))
+	case "logs.tail":
+		return tailLogViewerFile(logsViewerRoot(s.configPath), payload)
 	case "alerts.archive.action":
 		return handleAlertsArchiveAction(s.configPath, payload)
 	case "same.event_codes":
@@ -1293,10 +1531,18 @@ func (s *wsSession) publishCgenConfigUpdated(payload map[string]any) error {
 	}
 	publisher := events.NewHostBridgePublisher(bridgeAddr)
 	defer publisher.Close()
+	data := map[string]any{
+		"revision":               payload["revision"],
+		"hash":                   payload["hash"],
+		"schema_version":         payload["schema_version"],
+		"encoder_schema_version": payload["encoder_schema_version"],
+		"enabled":                payload["enabled"],
+		"summary":                payload["summary"],
+	}
 	return publisher.Publish(events.Event{
 		Type:   "cgen.config.updated",
 		Source: "haze-web",
-		Data:   payload,
+		Data:   data,
 	})
 }
 
@@ -1424,7 +1670,30 @@ func (s *wsSession) publishServiceControl(payload map[string]any) (any, error) {
 }
 
 func (s *wsSession) panelState() (map[string]any, error) {
-	return panelStatePayload(s.config, s.configPath, s.startedAt, s.request, s.media.Available())
+	identity, identityErr := s.auth.Identity(s.request)
+	if identityErr != nil {
+		return nil, identityErr
+	}
+	if identity.PasswordChangeRequired {
+		return map[string]any{
+			"account": identity.Account,
+			"summary": map[string]any{"password_change_required": true},
+		}, nil
+	}
+	state, err := panelStatePayload(s.config, s.configPath, s.startedAt, s.request, s.media.Available())
+	if err != nil {
+		return nil, err
+	}
+	state["account"] = identity.Account
+	if s.auth.Hardened() && !identity.Account.IsAdmin {
+		delete(state, "config")
+		delete(state, "datapool")
+		delete(state, "events")
+		if !identity.Account.CanViewLogs {
+			delete(state, "logs")
+		}
+	}
+	return state, nil
 }
 
 func (s *wsSession) publicState() (map[string]any, error) {

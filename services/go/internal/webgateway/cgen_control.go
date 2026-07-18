@@ -2,8 +2,11 @@ package webgateway
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,36 +14,47 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const defaultCgenFile = "managed/configs/cgen.xml"
 const defaultCgenEncodersFile = "managed/configs/cgen-encoders.xml"
+const maxCgenConfigBytes int64 = 4 * 1024 * 1024
+const maxCgenEncodersBytes int64 = 2 * 1024 * 1024
+
+var cgenConfigMu sync.RWMutex
 
 type cgenXML struct {
-	XMLName xml.Name      `xml:"cgen"`
-	Enabled string        `xml:"enabled,attr,omitempty"`
-	Feeds   []cgenFeedXML `xml:"feed"`
+	XMLName       xml.Name      `xml:"cgen"`
+	SchemaVersion string        `xml:"schema_version,attr,omitempty"`
+	Enabled       string        `xml:"enabled,attr,omitempty"`
+	Feeds         []cgenFeedXML `xml:"feed"`
 }
 
 type cgenFeedXML struct {
-	ID            string               `xml:"id,attr"`
-	Name          string               `xml:"name,attr,omitempty"`
-	Enabled       string               `xml:"enabled,attr,omitempty"`
-	ProgramInput  cgenEndpointXML      `xml:"program>input"`
-	PriorityInput cgenPriorityInputXML `xml:"priority>input"`
-	ProgramOutput cgenEndpointXML      `xml:"program>output"`
-	Video         cgenVideoXML         `xml:"media>video"`
-	Audio         cgenAudioXML         `xml:"media>audio"`
-	Ladder        cgenLadderXML        `xml:"ladder"`
-	Banner        cgenBannerXML        `xml:"presentation>banner"`
-	Graphics      cgenGraphicsXML      `xml:"presentation>graphics"`
-	Clock         cgenClockXML         `xml:"presentation>clock"`
-	Text          cgenTextXML          `xml:"presentation>text"`
-	State         cgenStateXML         `xml:"presentation>state"`
-	Standby       cgenStandbyXML       `xml:"presentation>standby"`
-	Sync          cgenSyncXML          `xml:"sync"`
-	UpdatedAt     string               `xml:"updated_at,attr,omitempty"`
+	ID            string                `xml:"id,attr"`
+	Name          string                `xml:"name,attr,omitempty"`
+	Enabled       string                `xml:"enabled,attr,omitempty"`
+	ProgramInput  cgenEndpointXML       `xml:"program>input"`
+	PriorityInput cgenPriorityInputXML  `xml:"priority>input"`
+	ProgramOutput cgenEndpointXML       `xml:"program>output"`
+	Video         cgenVideoXML          `xml:"media>video"`
+	Audio         cgenAudioXML          `xml:"media>audio"`
+	Ladder        cgenLadderXML         `xml:"ladder"`
+	Banner        cgenBannerXML         `xml:"presentation>banner"`
+	Graphics      cgenGraphicsXML       `xml:"presentation>graphics"`
+	Clock         cgenClockXML          `xml:"presentation>clock"`
+	Text          cgenTextXML           `xml:"presentation>text"`
+	State         cgenStateXML          `xml:"presentation>state"`
+	Standby       cgenStandbyXML        `xml:"presentation>standby"`
+	Sync          cgenSyncXML           `xml:"sync"`
+	Alert         cgenAlertXML          `xml:"alert"`
+	Ancillary     cgenAncillaryXML      `xml:"ancillary"`
+	Compositor    cgenCompositorXML     `xml:"compositor"`
+	ProgramMap    cgenProgramMappingXML `xml:"programMapping"`
+	Outputs       cgenOutputsXML        `xml:"outputs"`
+	UpdatedAt     string                `xml:"updated_at,attr,omitempty"`
 }
 
 type cgenEndpointXML struct {
@@ -53,6 +67,14 @@ type cgenEndpointXML struct {
 	AudioBitrateKbps  string `xml:"audio_bitrate_kbps,attr,omitempty"`
 	HardwareDecoder   string `xml:"hardware_decoder,attr,omitempty"`
 	HardwareDecoderOn string `xml:"hardware_decoder_enabled,attr,omitempty"`
+	DeviceBackend     string `xml:"device_backend,attr,omitempty"`
+	DeviceID          string `xml:"device_id,attr,omitempty"`
+	Width             string `xml:"width,attr,omitempty"`
+	Height            string `xml:"height,attr,omitempty"`
+	FPS               string `xml:"fps,attr,omitempty"`
+	Interlaced        string `xml:"interlaced,attr,omitempty"`
+	FieldOrder        string `xml:"field_order,attr,omitempty"`
+	Background        string `xml:"background,attr,omitempty"`
 	ServiceName       string `xml:"service_name,attr,omitempty"`
 	ProviderName      string `xml:"provider_name,attr,omitempty"`
 	ServiceID         string `xml:"service_id,attr,omitempty"`
@@ -93,12 +115,21 @@ type cgenAudioRenditionXML struct {
 }
 
 type cgenEncodersXML struct {
-	XMLName   xml.Name             `xml:"cgenEncoders"`
-	UpdatedAt string               `xml:"updated_at,attr,omitempty"`
-	Feeds     []cgenEncoderFeedXML `xml:"feed"`
+	XMLName       xml.Name               `xml:"cgenEncoders"`
+	SchemaVersion string                 `xml:"schema_version,attr,omitempty"`
+	UpdatedAt     string                 `xml:"updated_at,attr,omitempty"`
+	Feeds         []cgenEncoderFeedXML   `xml:"feed"`
+	Outputs       []cgenEncoderOutputXML `xml:"output"`
 }
 
 type cgenEncoderFeedXML struct {
+	ID        string              `xml:"id,attr"`
+	Video     cgenEncoderCodecXML `xml:"video"`
+	Audio     cgenEncoderCodecXML `xml:"audio"`
+	UpdatedAt string              `xml:"updated_at,attr,omitempty"`
+}
+
+type cgenEncoderOutputXML struct {
 	ID        string              `xml:"id,attr"`
 	Video     cgenEncoderCodecXML `xml:"video"`
 	Audio     cgenEncoderCodecXML `xml:"audio"`
@@ -191,6 +222,21 @@ func (f cgenFeedXML) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 	if err := e.EncodeElement(f.Sync, xml.StartElement{Name: xml.Name{Local: "sync"}}); err != nil {
 		return err
 	}
+	if err := e.EncodeElement(f.Alert, xml.StartElement{Name: xml.Name{Local: "alert"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(f.Ancillary, xml.StartElement{Name: xml.Name{Local: "ancillary"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(f.Compositor, xml.StartElement{Name: xml.Name{Local: "compositor"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(f.ProgramMap, xml.StartElement{Name: xml.Name{Local: "programMapping"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeElement(f.Outputs, xml.StartElement{Name: xml.Name{Local: "outputs"}}); err != nil {
+		return err
+	}
 	return e.EncodeToken(start.End())
 }
 
@@ -207,6 +253,76 @@ type cgenAudioXML struct {
 	Idle               string `xml:"idle,attr,omitempty"`
 	AlertMode          string `xml:"alert_mode,attr,omitempty"`
 	MuteStandbyRoutine string `xml:"mute_standby_routine,attr,omitempty"`
+	Topology           string `xml:"topology,attr,omitempty"`
+	ForceLayout        string `xml:"force_layout,attr,omitempty"`
+	IdleProgramGainDB  string `xml:"idle_program_gain_db,attr,omitempty"`
+	AlertProgramGainDB string `xml:"alert_program_gain_db,attr,omitempty"`
+	AlertGainDB        string `xml:"alert_gain_db,attr,omitempty"`
+	TransitionMS       string `xml:"transition_ms,attr,omitempty"`
+}
+
+type cgenAlertXML struct {
+	FeedID string `xml:"feed_id,attr,omitempty"`
+}
+
+type cgenAncillaryXML struct {
+	Captions string `xml:"captions,attr,omitempty"`
+	SCTE35   string `xml:"scte35,attr,omitempty"`
+	SCTE104  string `xml:"scte104,attr,omitempty"`
+}
+
+type cgenCompositorXML struct {
+	AlertSceneID string `xml:"alert_scene_id,attr,omitempty"`
+	Engine       string `xml:"engine,attr,omitempty"`
+}
+
+type cgenProgramMappingXML struct {
+	TransportStreamID string                   `xml:"transport_stream_id,attr,omitempty"`
+	Programs          []cgenProgramMapEntryXML `xml:"program"`
+}
+
+type cgenProgramMapEntryXML struct {
+	Number       string                   `xml:"number,attr,omitempty"`
+	ServiceName  string                   `xml:"service_name,attr,omitempty"`
+	ProviderName string                   `xml:"provider_name,attr,omitempty"`
+	PMTPID       string                   `xml:"pmt_pid,attr,omitempty"`
+	VideoPID     string                   `xml:"video_pid,attr,omitempty"`
+	Audio        []cgenProgramAudioMapXML `xml:"audio"`
+	SCTE35       *cgenProgramSCTE35XML    `xml:"scte35,omitempty"`
+}
+
+type cgenProgramAudioMapXML struct {
+	TrackID string `xml:"track_id,attr,omitempty"`
+	PID     string `xml:"pid,attr,omitempty"`
+}
+
+type cgenProgramSCTE35XML struct {
+	Input              string `xml:"input,attr,omitempty"`
+	GeneratedAlertCues string `xml:"generated_alert_cues,attr,omitempty"`
+	PID                string `xml:"pid,attr,omitempty"`
+}
+
+type cgenOutputsXML struct {
+	Outputs []cgenOutputXML `xml:"output"`
+}
+
+type cgenOutputXML struct {
+	ID                  string `xml:"id,attr,omitempty"`
+	Enabled             string `xml:"enabled,attr,omitempty"`
+	Destination         string `xml:"destination,attr,omitempty"`
+	URL                 string `xml:"url,attr,omitempty"`
+	VideoURL            string `xml:"video_url,attr,omitempty"`
+	AudioURLs           string `xml:"audio_urls,attr,omitempty"`
+	Container           string `xml:"container,attr,omitempty"`
+	LatencyMS           string `xml:"latency_ms,attr,omitempty"`
+	VideoCodec          string `xml:"video_codec,attr,omitempty"`
+	RateControl         string `xml:"rate_control,attr,omitempty"`
+	VideoBitrateKbps    string `xml:"video_bitrate_kbps,attr,omitempty"`
+	VideoMaxBitrateKbps string `xml:"video_max_bitrate_kbps,attr,omitempty"`
+	GOPFrames           string `xml:"gop_frames,attr,omitempty"`
+	AudioCodec          string `xml:"audio_codec,attr,omitempty"`
+	AudioBitrateKbps    string `xml:"audio_bitrate_kbps,attr,omitempty"`
+	SampleRate          string `xml:"sample_rate,attr,omitempty"`
 }
 
 type cgenBannerXML struct {
@@ -379,6 +495,12 @@ type cgenSyncXML struct {
 }
 
 func loadCgenPayload(configPath string) (map[string]any, error) {
+	cgenConfigMu.RLock()
+	defer cgenConfigMu.RUnlock()
+	return loadCgenPayloadUnlocked(configPath)
+}
+
+func loadCgenPayloadUnlocked(configPath string) (map[string]any, error) {
 	path := cgenPath(configPath)
 	config, err := readCgenXML(path)
 	if err != nil {
@@ -393,16 +515,27 @@ func loadCgenPayload(configPath string) (map[string]any, error) {
 }
 
 func saveCgenPayload(configPath string, payload map[string]any) (map[string]any, error) {
-	rawFeeds, ok := payload["feeds"].([]any)
-	if !ok {
-		return nil, fmt.Errorf("cgen feeds payload is required")
+	cgenConfigMu.Lock()
+	defer cgenConfigMu.Unlock()
+
+	path := cgenPath(configPath)
+	encoderPath := cgenEncodersPath(configPath)
+	if err := checkCgenExpectedRevision(path, encoderPath, payload); err != nil {
+		return nil, err
 	}
-	config := cgenXML{Enabled: boolText(boolFromAny(payload["enabled"], true))}
-	encoders := cgenEncodersXML{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	rawFeeds, err := cgenObjectSlice(payload["feeds"], "cgen feeds")
+	if err != nil || rawFeeds == nil {
+		return nil, errors.New("cgen feeds payload is required and must be an array")
+	}
+	config := cgenXML{SchemaVersion: "2", Enabled: boolText(boolFromAny(payload["enabled"], true))}
+	encoders := cgenEncodersXML{SchemaVersion: "2", UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	for _, raw := range rawFeeds {
 		feed, err := cgenFeedFromMap(raw)
 		if err != nil {
 			return nil, err
+		}
+		if normalizeCgenAudioTopology(feed.Audio.Topology) == "preserve_native_tracks" && !cgenPreserveNativeTracksAvailable {
+			return nil, fmt.Errorf("cgen feed %q preserve-native audio is unavailable in the current media backend; select force_layout", feed.ID)
 		}
 		config.Feeds = append(config.Feeds, feed)
 		encoderFeed, err := cgenEncoderFeedFromMap(raw, feed)
@@ -410,18 +543,25 @@ func saveCgenPayload(configPath string, payload map[string]any) (map[string]any,
 			return nil, err
 		}
 		encoders.Feeds = append(encoders.Feeds, encoderFeed)
+		outputEncoders, err := cgenEncoderOutputsFromMap(raw, feed)
+		if err != nil {
+			return nil, err
+		}
+		encoders.Outputs = append(encoders.Outputs, outputEncoders...)
 	}
-	path := cgenPath(configPath)
 	if err := writeCgenXML(path, config); err != nil {
 		return nil, err
 	}
-	if err := writeCgenEncodersXML(cgenEncodersPath(configPath), encoders); err != nil {
+	if err := writeCgenEncodersXML(encoderPath, encoders); err != nil {
 		return nil, err
 	}
-	return loadCgenPayload(configPath)
+	return loadCgenPayloadUnlocked(configPath)
 }
 
 func cgenActionPayload(configPath string, payload map[string]any) (map[string]any, error) {
+	cgenConfigMu.Lock()
+	defer cgenConfigMu.Unlock()
+
 	feedID := strings.TrimSpace(stringValue(payload, "feed_id"))
 	action := strings.ToLower(strings.TrimSpace(stringValue(payload, "action")))
 	if feedID == "" {
@@ -483,7 +623,69 @@ func cgenActionPayload(configPath string, payload map[string]any) (map[string]an
 	if err := writeCgenXML(path, config); err != nil {
 		return nil, err
 	}
-	return loadCgenPayload(configPath)
+	return loadCgenPayloadUnlocked(configPath)
+}
+
+func checkCgenExpectedRevision(path string, encoderPath string, payload map[string]any) error {
+	_, err := os.Stat(filepath.Clean(path))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect cgen config: %w", err)
+	}
+	if os.IsNotExist(err) {
+		return nil
+	}
+	raw, ok := payload["expected_revision"]
+	if !ok {
+		return errors.New("expected_revision is required when cgen config exists")
+	}
+	expected, ok := raw.(string)
+	if !ok {
+		return errors.New("expected_revision must be a string")
+	}
+	expected = strings.TrimSpace(expected)
+	if len(expected) != sha256.Size*2 {
+		return errors.New("expected_revision is invalid")
+	}
+	if _, err := hex.DecodeString(expected); err != nil {
+		return errors.New("expected_revision is invalid")
+	}
+	current, err := cgenConfigRevision(path, encoderPath)
+	if err != nil {
+		return err
+	}
+	if expected != current {
+		return errors.New("cgen configuration revision conflict")
+	}
+	return nil
+}
+
+func cgenConfigRevision(path string, encoderPath string) (string, error) {
+	hash := sha256.New()
+	for _, entry := range []struct {
+		label string
+		path  string
+	}{
+		{label: "cgen", path: path},
+		{label: "encoders", path: encoderPath},
+	} {
+		_, _ = io.WriteString(hash, entry.label)
+		_, _ = hash.Write([]byte{0})
+		maximum := maxCgenConfigBytes
+		if entry.label == "encoders" {
+			maximum = maxCgenEncodersBytes
+		}
+		raw, err := readCgenManagedFile(entry.path, maximum)
+		if err != nil {
+			if os.IsNotExist(err) {
+				_, _ = hash.Write([]byte{0})
+				continue
+			}
+			return "", fmt.Errorf("read cgen configuration revision: %w", err)
+		}
+		_, _ = hash.Write(raw)
+		_, _ = hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func applyCgenRuntimeFields(feed *cgenFeedXML, source map[string]any) {
@@ -541,10 +743,10 @@ func cgenEncodersPath(configPath string) string {
 }
 
 func readCgenXML(path string) (cgenXML, error) {
-	raw, err := os.ReadFile(filepath.Clean(path))
+	raw, err := readCgenManagedFile(path, maxCgenConfigBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cgenXML{Enabled: "true"}, nil
+			return cgenXML{SchemaVersion: "2", Enabled: "true"}, nil
 		}
 		return cgenXML{}, err
 	}
@@ -559,10 +761,10 @@ func readCgenXML(path string) (cgenXML, error) {
 }
 
 func readCgenEncodersXML(path string) (cgenEncodersXML, error) {
-	raw, err := os.ReadFile(filepath.Clean(path))
+	raw, err := readCgenManagedFile(path, maxCgenEncodersBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cgenEncodersXML{}, nil
+			return cgenEncodersXML{SchemaVersion: "2"}, nil
 		}
 		return cgenEncodersXML{}, err
 	}
@@ -570,27 +772,20 @@ func readCgenEncodersXML(path string) (cgenEncodersXML, error) {
 	if err := xml.Unmarshal(raw, &config); err != nil {
 		return cgenEncodersXML{}, fmt.Errorf("parse cgen encoders XML: %w", err)
 	}
-	return normalizeCgenEncoders(config), nil
+	return normalizeCgenEncoders(config)
 }
 
 func writeCgenEncodersXML(path string, config cgenEncodersXML) error {
-	config = normalizeCgenEncoders(config)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	var err error
+	config, err = normalizeCgenEncoders(config)
+	if err != nil {
 		return err
 	}
 	raw, err := xml.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(xml.Header+string(raw)+"\n"), 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return writeCgenManagedFileAtomic(path, []byte(xml.Header+string(raw)+"\n"), maxCgenEncodersBytes)
 }
 
 func rejectLegacyCgenXML(raw []byte, path string) error {
@@ -631,7 +826,7 @@ func rejectLegacyCgenXML(raw []byte, path string) error {
 }
 
 func legacyCgenElement(parent string, element string) bool {
-	return (element == "output" && parent != "program") ||
+	return (element == "output" && parent != "program" && parent != "outputs") ||
 		element == "alertOutput" ||
 		(element == "input" && parent != "program" && parent != "priority")
 }
@@ -660,44 +855,161 @@ func writeCgenXML(path string, config cgenXML) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	raw, err := xml.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(xml.Header+string(raw)+"\n"), 0o600); err != nil {
+	return writeCgenManagedFileAtomic(path, []byte(xml.Header+string(raw)+"\n"), maxCgenConfigBytes)
+}
+
+func readCgenManagedFile(path string, maximum int64) ([]byte, error) {
+	clean := filepath.Clean(path)
+	info, err := os.Lstat(clean)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("cgen managed configuration must be a regular file")
+	}
+	if info.Size() > maximum {
+		return nil, errors.New("cgen managed configuration exceeds its safety limit")
+	}
+	file, err := os.Open(clean)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > maximum {
+		return nil, errors.New("cgen managed configuration exceeds its safety limit")
+	}
+	return raw, nil
+}
+
+func writeCgenManagedFileAtomic(path string, raw []byte, maximum int64) error {
+	if int64(len(raw)) > maximum {
+		return errors.New("cgen managed configuration exceeds its safety limit")
+	}
+	clean := filepath.Clean(path)
+	directory := filepath.Dir(clean)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if info, err := os.Lstat(clean); err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("cgen managed configuration target must be a regular file")
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return nil
+	temporary, err := os.CreateTemp(directory, ".cgen-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	keepTemporary := true
+	defer func() {
+		if keepTemporary {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(raw); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := replaceCgenFileAtomically(temporaryPath, clean); err != nil {
+		return err
+	}
+	keepTemporary = false
+	return syncCgenDirectory(directory)
 }
 
 func normalizeCgen(config cgenXML) (cgenXML, error) {
+	config.SchemaVersion = strings.TrimSpace(config.SchemaVersion)
+	if config.SchemaVersion == "" {
+		config.SchemaVersion = "1"
+	}
+	if config.SchemaVersion != "1" && config.SchemaVersion != "2" {
+		return cgenXML{}, fmt.Errorf("unsupported cgen schema_version %q", config.SchemaVersion)
+	}
 	config.Enabled = boolText(xmlBool(config.Enabled, true))
 	seen := map[string]struct{}{}
+	seenOutputs := map[string]string{}
 	for i := range config.Feeds {
 		feed := &config.Feeds[i]
-		feed.ID = cleanCgenID(feed.ID)
-		if feed.ID == "" {
-			return cgenXML{}, fmt.Errorf("cgen feed id is required")
+		feed.ID = strings.TrimSpace(feed.ID)
+		if !validCgenIdentifier(feed.ID) {
+			return cgenXML{}, fmt.Errorf("cgen feed id %q is invalid", feed.ID)
 		}
-		if _, ok := seen[feed.ID]; ok {
+		feedKey := strings.ToLower(feed.ID)
+		if _, ok := seen[feedKey]; ok {
 			return cgenXML{}, fmt.Errorf("duplicate cgen feed id %q", feed.ID)
 		}
-		seen[feed.ID] = struct{}{}
+		seen[feedKey] = struct{}{}
 		feed.Name = strings.TrimSpace(feed.Name)
 		if feed.Name == "" {
 			feed.Name = feed.ID
 		}
 		feed.Enabled = boolText(xmlBool(feed.Enabled, false))
+		rawDecoder := strings.TrimSpace(feed.ProgramInput.HardwareDecoder)
+		rawInput := feed.ProgramInput
+		if !validCgenInputTypeToken(rawInput.Type) {
+			return cgenXML{}, fmt.Errorf("cgen feed %q input type is unsupported", feed.ID)
+		}
 		feed.ProgramInput = cleanCgenEndpoint(feed.ProgramInput)
 		feed.ProgramOutput = cleanCgenEndpoint(feed.ProgramOutput)
+		if rawDecoder != "" && feed.ProgramInput.HardwareDecoder == "" {
+			return cgenXML{}, fmt.Errorf("cgen feed %q hardware decoder id is invalid", feed.ID)
+		}
+		var formatErr error
+		feed.ProgramInput.Format, formatErr = normalizeCgenInputFormat(feed.ProgramInput.Format)
+		if formatErr != nil {
+			return cgenXML{}, fmt.Errorf("cgen feed %q: %w", feed.ID, formatErr)
+		}
+		if feed.ProgramInput.URL != "" && !validCgenLocation(feed.ProgramInput.URL) {
+			return cgenXML{}, fmt.Errorf("cgen feed %q input location is invalid", feed.ID)
+		}
+		if feed.ProgramInput.DeviceID != "" && !validCgenLocation(feed.ProgramInput.DeviceID) {
+			return cgenXML{}, fmt.Errorf("cgen feed %q device id is invalid", feed.ID)
+		}
+		inputType := normalizeCgenInputType(feed.ProgramInput.Type)
+		if inputType == "dummy" {
+			if strings.TrimSpace(rawInput.Width) != "" && cleanOptionalBoundedUint(rawInput.Width, 1, 16384) == "" {
+				return cgenXML{}, fmt.Errorf("cgen feed %q dummy width is invalid", feed.ID)
+			}
+			if strings.TrimSpace(rawInput.Height) != "" && cleanOptionalBoundedUint(rawInput.Height, 1, 16384) == "" {
+				return cgenXML{}, fmt.Errorf("cgen feed %q dummy height is invalid", feed.ID)
+			}
+			if strings.TrimSpace(rawInput.FPS) != "" && !validCgenRational(rawInput.FPS) {
+				return cgenXML{}, fmt.Errorf("cgen feed %q dummy frame rate is invalid", feed.ID)
+			}
+			if strings.TrimSpace(rawInput.Background) != "" && !validCgenRGBA(rawInput.Background) {
+				return cgenXML{}, fmt.Errorf("cgen feed %q dummy background is invalid", feed.ID)
+			}
+		}
+		if inputType == "device" && feed.ProgramInput.DeviceID == "" {
+			return cgenXML{}, fmt.Errorf("cgen feed %q device id is required", feed.ID)
+		}
+		if inputType == "device" && strings.TrimSpace(rawInput.DeviceBackend) != "" && feed.ProgramInput.DeviceBackend == "" {
+			return cgenXML{}, fmt.Errorf("cgen feed %q device backend is unsupported", feed.ID)
+		}
+		if inputType == "uri_or_file" && feed.ProgramInput.URL == "" {
+			return cgenXML{}, fmt.Errorf("cgen feed %q input URL or file is required", feed.ID)
+		}
 		feed.PriorityInput.FeedID = fallbackText(cleanCgenID(feed.PriorityInput.FeedID), feed.ID)
 		feed.PriorityInput.AudioSource = normalizeCgenAudioSource(feed.PriorityInput.AudioSource)
 		feed.PriorityInput.Format = fallbackText(strings.TrimSpace(feed.PriorityInput.Format), "priority-audio")
@@ -710,7 +1022,37 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Audio.Idle = fallbackText(strings.TrimSpace(feed.Audio.Idle), "source")
 		feed.Audio.AlertMode = fallbackText(strings.TrimSpace(feed.Audio.AlertMode), "replace")
 		feed.Audio.MuteStandbyRoutine = boolText(xmlBool(feed.Audio.MuteStandbyRoutine, true))
+		if !validCgenAudioTopologyToken(feed.Audio.Topology) {
+			return cgenXML{}, fmt.Errorf("cgen feed %q audio topology is invalid", feed.ID)
+		}
+		if !validCgenForceLayoutToken(feed.Audio.ForceLayout) {
+			return cgenXML{}, fmt.Errorf("cgen feed %q forced audio layout is invalid", feed.ID)
+		}
+		for _, gain := range []struct {
+			name  string
+			value string
+		}{
+			{name: "idle program", value: feed.Audio.IdleProgramGainDB},
+			{name: "alert program", value: feed.Audio.AlertProgramGainDB},
+			{name: "alert", value: feed.Audio.AlertGainDB},
+		} {
+			if !validCgenGain(gain.value) {
+				return cgenXML{}, fmt.Errorf("cgen feed %q %s gain is invalid", feed.ID, gain.name)
+			}
+		}
+		feed.Audio.Topology = normalizeCgenAudioTopology(feed.Audio.Topology)
+		feed.Audio.ForceLayout = normalizeCgenForceLayout(feed.Audio.ForceLayout)
+		feed.Audio.IdleProgramGainDB = normalizeCgenGain(feed.Audio.IdleProgramGainDB, "0")
+		feed.Audio.AlertProgramGainDB = normalizeCgenGain(feed.Audio.AlertProgramGainDB, "muted")
+		feed.Audio.AlertGainDB = normalizeCgenGain(feed.Audio.AlertGainDB, "0")
+		feed.Audio.TransitionMS = cleanBoundedUint(feed.Audio.TransitionMS, "20", 1, 5000)
+		if feed.Audio.TransitionMS == "" {
+			return cgenXML{}, fmt.Errorf("cgen feed %q audio transition is invalid", feed.ID)
+		}
 		normalizeCgenLadder(feed)
+		if err := validateCgenLegacyPIDAssignments(feed); err != nil {
+			return cgenXML{}, fmt.Errorf("cgen feed %q ladder: %w", feed.ID, err)
+		}
 		feed.Banner.Mode = fallbackText(strings.TrimSpace(feed.Banner.Mode), "auto")
 		feed.Banner.TickerHeight = cleanPositive(feed.Banner.TickerHeight, "128")
 		feed.Banner.Font = fallbackText(strings.TrimSpace(feed.Banner.Font), "Arial")
@@ -740,7 +1082,11 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.State.SunnyCat = boolText(xmlBool(feed.State.SunnyCat, false))
 		feed.State.UpdatedAt = strings.TrimSpace(feed.State.UpdatedAt)
 		feed.Standby.Mode = normalizeCgenStandbyMode(feed.Standby.Mode)
-		feed.Standby.Text = fallbackText(strings.TrimSpace(feed.Standby.Text), "EAS Details Channel")
+		standbyText := "EAS Details Channel"
+		if config.SchemaVersion == "2" {
+			standbyText = "Emergency Alert Details Channel"
+		}
+		feed.Standby.Text = fallbackText(strings.TrimSpace(feed.Standby.Text), standbyText)
 		feed.Standby.FontSize = cleanPositive(feed.Standby.FontSize, feed.Banner.FontSize)
 		feed.Standby.YPercent = cleanPercent(feed.Standby.YPercent, "10")
 		feed.Sync.HardResetMS = cleanPositive(feed.Sync.HardResetMS, "250")
@@ -749,34 +1095,624 @@ func normalizeCgen(config cgenXML) (cgenXML, error) {
 		feed.Sync.ReconnectInitialMS = cleanPositive(feed.Sync.ReconnectInitialMS, "500")
 		feed.Sync.ReconnectMaxMS = cleanPositive(feed.Sync.ReconnectMaxMS, "10000")
 		feed.Sync.StatusIntervalMS = cleanPositive(feed.Sync.StatusIntervalMS, "750")
+		feed.Alert.FeedID = strings.TrimSpace(feed.Alert.FeedID)
+		if feed.Alert.FeedID != "" && feed.Alert.FeedID != "*" && !validCgenIdentifier(feed.Alert.FeedID) {
+			return cgenXML{}, fmt.Errorf("cgen feed %q alert feed id is invalid", feed.ID)
+		}
+		if feed.Alert.FeedID == "" || feed.Alert.FeedID == "*" {
+			feed.Alert.FeedID = feed.ID
+		}
+		for _, policy := range []struct {
+			name  string
+			value string
+		}{
+			{name: "captions", value: feed.Ancillary.Captions},
+			{name: "scte35", value: feed.Ancillary.SCTE35},
+			{name: "scte104", value: feed.Ancillary.SCTE104},
+		} {
+			if !validPassPolicyToken(policy.value) {
+				return cgenXML{}, fmt.Errorf("cgen feed %q ancillary %s policy is invalid", feed.ID, policy.name)
+			}
+		}
+		feed.Ancillary.Captions = normalizePassPolicy(feed.Ancillary.Captions)
+		feed.Ancillary.SCTE35 = normalizePassPolicy(feed.Ancillary.SCTE35)
+		feed.Ancillary.SCTE104 = normalizePassPolicy(feed.Ancillary.SCTE104)
+		feed.Compositor.AlertSceneID = fallbackText(strings.TrimSpace(feed.Compositor.AlertSceneID), "Standard_Crawl")
+		if !validCgenIdentifier(feed.Compositor.AlertSceneID) {
+			return cgenXML{}, fmt.Errorf("cgen feed %q alert scene id is invalid", feed.ID)
+		}
+		if strings.EqualFold(feed.Compositor.AlertSceneID, "Program_Passthrough") || strings.EqualFold(feed.Compositor.AlertSceneID, "Standby") {
+			return cgenXML{}, fmt.Errorf("cgen feed %q alert scene is not selectable", feed.ID)
+		}
+		if !validCgenCompositorEngine(feed.Compositor.Engine) {
+			return cgenXML{}, fmt.Errorf("cgen feed %q compositor engine is invalid", feed.ID)
+		}
+		feed.Compositor.Engine = normalizeCgenCompositorEngine(feed.Compositor.Engine)
+		if err := normalizeCgenProgramMapping(feed); err != nil {
+			return cgenXML{}, fmt.Errorf("cgen feed %q program mapping: %w", feed.ID, err)
+		}
+		if err := normalizeCgenOutputs(feed); err != nil {
+			return cgenXML{}, fmt.Errorf("cgen feed %q outputs: %w", feed.ID, err)
+		}
+		for _, output := range feed.Outputs.Outputs {
+			key := strings.ToLower(output.ID)
+			if otherFeed, exists := seenOutputs[key]; exists {
+				return cgenXML{}, fmt.Errorf("duplicate output id %q in feeds %q and %q", output.ID, otherFeed, feed.ID)
+			}
+			seenOutputs[key] = feed.ID
+		}
 		feed.UpdatedAt = strings.TrimSpace(feed.UpdatedAt)
 	}
 	sort.SliceStable(config.Feeds, func(i, j int) bool { return strings.ToLower(config.Feeds[i].ID) < strings.ToLower(config.Feeds[j].ID) })
 	return config, nil
 }
 
-func normalizeCgenEncoders(config cgenEncodersXML) cgenEncodersXML {
+func validateCgenLegacyPIDAssignments(feed *cgenFeedXML) error {
+	type streamPID struct {
+		kind    string
+		program string
+		pid     string
+		pmtPID  string
+	}
+	streams := make([]streamPID, 0, len(feed.Ladder.Videos)+len(feed.Ladder.Audios))
+	for _, video := range feed.Ladder.Videos {
+		streams = append(streams, streamPID{kind: "video " + video.ID, program: video.Program, pid: video.VideoPID, pmtPID: video.PMTPID})
+	}
+	for _, audio := range feed.Ladder.Audios {
+		streams = append(streams, streamPID{kind: "audio " + audio.ID, program: audio.Program, pid: audio.AudioPID, pmtPID: audio.PMTPID})
+	}
+	pmtByProgram := map[uint16]uint16{}
+	pmtOwners := map[uint16]uint16{}
+	elementaryOwners := map[uint16]string{}
+	for _, stream := range streams {
+		programValue, err := strconv.ParseUint(strings.TrimSpace(stream.program), 10, 16)
+		if err != nil || programValue == 0 {
+			return fmt.Errorf("%s program number is invalid", stream.kind)
+		}
+		program := uint16(programValue)
+		pmt, err := parseAssignableCgenPID(stream.pmtPID)
+		if err != nil {
+			return fmt.Errorf("%s PMT PID is invalid", stream.kind)
+		}
+		if previous, exists := pmtByProgram[program]; exists && previous != pmt {
+			return fmt.Errorf("program %d has conflicting PMT PIDs", program)
+		}
+		if owner, exists := pmtOwners[pmt]; exists && owner != program {
+			return fmt.Errorf("PMT PID %d is shared by programs %d and %d", pmt, owner, program)
+		}
+		pmtByProgram[program] = pmt
+		pmtOwners[pmt] = program
+		pid, err := parseAssignableCgenPID(stream.pid)
+		if err != nil {
+			return fmt.Errorf("%s elementary PID is invalid", stream.kind)
+		}
+		if previous, exists := elementaryOwners[pid]; exists {
+			return fmt.Errorf("elementary PID %d is shared by %s and %s", pid, previous, stream.kind)
+		}
+		elementaryOwners[pid] = stream.kind
+	}
+	for pid, stream := range elementaryOwners {
+		if program, exists := pmtOwners[pid]; exists {
+			return fmt.Errorf("PID %d collides between %s and program %d PMT", pid, stream, program)
+		}
+	}
+	return nil
+}
+
+func parseAssignableCgenPID(value string) (uint16, error) {
+	parsed, err := strconv.ParseUint(strings.TrimSpace(value), 10, 16)
+	if err != nil || parsed < 0x20 || parsed > 0x1ffe {
+		return 0, errors.New("PID is outside the assignable range")
+	}
+	return uint16(parsed), nil
+}
+
+func normalizeCgenAudioTopology(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "preserve", "preserve_native", "preserve_native_tracks":
+		return "preserve_native_tracks"
+	default:
+		return "force_layout"
+	}
+}
+
+func validCgenAudioTopologyToken(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "force", "forced", "force_layout", "preserve", "preserve_native", "preserve_native_tracks":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeCgenForceLayout(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "mono", "1", "1.0":
+		return "mono"
+	case "surround51", "surround_51", "5.1", "6":
+		return "surround51"
+	default:
+		return "stereo"
+	}
+}
+
+func validCgenForceLayoutToken(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "mono", "1", "1.0", "stereo", "2", "2.0", "surround51", "surround_51", "5.1", "6":
+		return true
+	default:
+		return false
+	}
+}
+
+func validCgenGain(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || value == "muted" || value == "mute" || value == "-inf" {
+		return true
+	}
+	n, err := strconv.ParseFloat(value, 64)
+	return err == nil && n >= -60 && n <= 12
+}
+
+func normalizeCgenGain(value string, fallback string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		value = fallback
+	}
+	if value == "muted" || value == "mute" || value == "-inf" {
+		return "muted"
+	}
+	n, err := strconv.ParseFloat(value, 64)
+	if err != nil || n < -60 || n > 12 {
+		return fallback
+	}
+	return strconv.FormatFloat(n, 'f', -1, 64)
+}
+
+func normalizePassPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "pass", "preserve", "true", "on", "enabled":
+		return "pass"
+	default:
+		return "drop"
+	}
+}
+
+func validPassPolicyToken(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "pass", "preserve", "true", "on", "enabled", "drop", "false", "off", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeCgenCompositorEngine(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "scene_v2", "scene", "wgpu":
+		return "scene_v2"
+	default:
+		return "legacy"
+	}
+}
+
+func validCgenCompositorEngine(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "legacy", "scene_v2", "scene", "wgpu":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeCgenProgramMapping(feed *cgenFeedXML) error {
+	if len(feed.ProgramMap.Programs) == 0 {
+		feed.ProgramMap.TransportStreamID = cleanBoundedUint(feed.ProgramMap.TransportStreamID, "1", 1, 65535)
+		if feed.ProgramMap.TransportStreamID == "" {
+			return errors.New("transport_stream_id must be between 1 and 65535")
+		}
+		return nil
+	}
+	feed.ProgramMap.TransportStreamID = cleanBoundedUint(feed.ProgramMap.TransportStreamID, "1", 1, 65535)
+	if feed.ProgramMap.TransportStreamID == "" {
+		return errors.New("transport_stream_id must be between 1 and 65535")
+	}
+	programs := make(map[string]struct{}, len(feed.ProgramMap.Programs))
+	usedPIDs := map[uint16]string{}
+	for index := range feed.ProgramMap.Programs {
+		program := &feed.ProgramMap.Programs[index]
+		program.Number = cleanBoundedUint(program.Number, "", 1, 65535)
+		if program.Number == "" {
+			return errors.New("program number must be between 1 and 65535")
+		}
+		if _, exists := programs[program.Number]; exists {
+			return fmt.Errorf("duplicate program number %s", program.Number)
+		}
+		programs[program.Number] = struct{}{}
+		program.ServiceName = cleanCgenText(program.ServiceName, "Haze CGEN", 128)
+		program.ProviderName = cleanCgenText(program.ProviderName, "Haze", 128)
+		var err error
+		if program.PMTPID, err = normalizeCgenPID(program.PMTPID, "pmt_pid", usedPIDs); err != nil {
+			return err
+		}
+		if program.VideoPID, err = normalizeCgenPID(program.VideoPID, "video_pid", usedPIDs); err != nil {
+			return err
+		}
+		if program.VideoPID == "" && len(program.Audio) == 0 {
+			return fmt.Errorf("program %s has no elementary streams", program.Number)
+		}
+		tracks := map[string]struct{}{}
+		for audioIndex := range program.Audio {
+			audio := &program.Audio[audioIndex]
+			audio.TrackID = strings.TrimSpace(audio.TrackID)
+			if !validCgenIdentifier(audio.TrackID) {
+				return fmt.Errorf("program %s audio track id is invalid", program.Number)
+			}
+			key := strings.ToLower(audio.TrackID)
+			if _, exists := tracks[key]; exists {
+				return fmt.Errorf("program %s has duplicate audio track id %q", program.Number, audio.TrackID)
+			}
+			tracks[key] = struct{}{}
+			if audio.PID, err = normalizeCgenPID(audio.PID, "audio_pid", usedPIDs); err != nil {
+				return err
+			}
+		}
+		if program.SCTE35 != nil {
+			program.SCTE35.Input = normalizePassPolicy(program.SCTE35.Input)
+			program.SCTE35.GeneratedAlertCues = boolText(xmlBool(program.SCTE35.GeneratedAlertCues, false))
+			if program.SCTE35.PID, err = normalizeCgenPID(program.SCTE35.PID, "scte35_pid", usedPIDs); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeCgenPID(value string, field string, used map[uint16]string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "auto") {
+		return "auto", nil
+	}
+	var (
+		parsed uint64
+		err    error
+	)
+	if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
+		parsed, err = strconv.ParseUint(value[2:], 16, 16)
+	} else {
+		parsed, err = strconv.ParseUint(value, 10, 16)
+	}
+	if err != nil || parsed < 0x20 || parsed > 0x1ffe {
+		return "", fmt.Errorf("%s must be auto or an assignable MPEG-TS PID", field)
+	}
+	pid := uint16(parsed)
+	if previous, exists := used[pid]; exists {
+		return "", fmt.Errorf("PID %d collides between %s and %s", pid, previous, field)
+	}
+	used[pid] = field
+	return strconv.FormatUint(parsed, 10), nil
+}
+
+func normalizeCgenOutputs(feed *cgenFeedXML) error {
+	seen := map[string]struct{}{}
+	for index := range feed.Outputs.Outputs {
+		output := &feed.Outputs.Outputs[index]
+		output.ID = strings.TrimSpace(output.ID)
+		if !validCgenIdentifier(output.ID) {
+			return fmt.Errorf("output id %q is invalid", output.ID)
+		}
+		key := strings.ToLower(output.ID)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate output id %q", output.ID)
+		}
+		seen[key] = struct{}{}
+		output.Enabled = boolText(xmlBool(output.Enabled, true))
+		output.Destination = normalizeCgenDestination(output.Destination)
+		if output.Destination == "" {
+			return fmt.Errorf("output %q destination is unsupported", output.ID)
+		}
+		for _, location := range []struct {
+			name  string
+			value *string
+		}{
+			{name: "url", value: &output.URL},
+			{name: "video_url", value: &output.VideoURL},
+			{name: "audio_urls", value: &output.AudioURLs},
+		} {
+			*location.value = strings.TrimSpace(*location.value)
+			if *location.value != "" && !validCgenLocation(*location.value) {
+				return fmt.Errorf("output %q %s is invalid", output.ID, location.name)
+			}
+		}
+		if output.Destination == "rtp" {
+			if output.VideoURL == "" {
+				output.VideoURL = output.URL
+			}
+			if output.VideoURL == "" || output.AudioURLs == "" {
+				return fmt.Errorf("output %q RTP video and audio endpoints are required", output.ID)
+			}
+		} else if output.URL == "" {
+			return fmt.Errorf("output %q URL is required", output.ID)
+		}
+		if err := validateCgenOutputProtocol(*output); err != nil {
+			return fmt.Errorf("output %q: %w", output.ID, err)
+		}
+		output.Container = cleanCgenToken(output.Container)
+		if output.Container == "" {
+			output.Container = "mpegts"
+		}
+		output.LatencyMS = cleanBoundedUint(output.LatencyMS, "120", 0, 60000)
+		if output.LatencyMS == "" {
+			return fmt.Errorf("output %q latency_ms is invalid", output.ID)
+		}
+		output.VideoCodec = normalizeCgenVideoCodec(output.VideoCodec)
+		if output.VideoCodec == "" {
+			return fmt.Errorf("output %q video codec is unsupported", output.ID)
+		}
+		output.RateControl = normalizeCgenRateControl(output.RateControl)
+		output.VideoBitrateKbps = cleanBoundedUint(output.VideoBitrateKbps, "8000", 1, 1000000)
+		if output.VideoBitrateKbps == "" {
+			return fmt.Errorf("output %q video bitrate is invalid", output.ID)
+		}
+		output.VideoMaxBitrateKbps = cleanBoundedUint(output.VideoMaxBitrateKbps, output.VideoBitrateKbps, 1, 1000000)
+		if output.VideoMaxBitrateKbps == "" {
+			return fmt.Errorf("output %q maximum video bitrate is invalid", output.ID)
+		}
+		if output.RateControl == "vbr" {
+			target, _ := strconv.ParseUint(output.VideoBitrateKbps, 10, 64)
+			maximum, _ := strconv.ParseUint(output.VideoMaxBitrateKbps, 10, 64)
+			if maximum < target {
+				return fmt.Errorf("output %q maximum video bitrate is below target", output.ID)
+			}
+		}
+		output.GOPFrames = cleanBoundedUint(output.GOPFrames, "60", 1, 10000)
+		if output.GOPFrames == "" {
+			return fmt.Errorf("output %q GOP interval is invalid", output.ID)
+		}
+		output.AudioCodec = normalizeCgenAudioCodec(output.AudioCodec)
+		if output.AudioCodec == "" {
+			return fmt.Errorf("output %q audio codec is unsupported", output.ID)
+		}
+		if feed.Audio.Topology == "preserve_native_tracks" && output.AudioCodec != "match_input" {
+			return fmt.Errorf("output %q must use match_input audio in preserve mode", output.ID)
+		}
+		if feed.Audio.Topology != "preserve_native_tracks" && output.AudioCodec == "match_input" {
+			return fmt.Errorf("output %q match_input audio requires preserve mode", output.ID)
+		}
+		if output.Destination == "rtmp" && (output.VideoCodec != "h264" || output.AudioCodec != "aac") {
+			return fmt.Errorf("output %q RTMP requires H.264 video and AAC audio", output.ID)
+		}
+		if output.Destination == "file" {
+			switch output.Container {
+			case "mpegts", "mpeg_ts", "ts", "matroska", "mkv":
+			case "flv":
+				if output.VideoCodec != "h264" || output.AudioCodec != "aac" {
+					return fmt.Errorf("output %q FLV requires H.264 video and AAC audio", output.ID)
+				}
+			case "mp4", "mov":
+				if (output.VideoCodec != "h264" && output.VideoCodec != "h265") || output.AudioCodec != "aac" {
+					return fmt.Errorf("output %q MP4 and MOV require H.264 or H.265 video and AAC audio", output.ID)
+				}
+			case "mpegps", "mpeg_ps", "ps":
+				if output.VideoCodec != "mpeg2" || (output.AudioCodec != "ac3" && output.AudioCodec != "mp2") {
+					return fmt.Errorf("output %q MPEG program stream requires MPEG-2 video and AC3 or MP2 audio", output.ID)
+				}
+			default:
+				return fmt.Errorf("output %q file container %q is unsupported", output.ID, output.Container)
+			}
+		}
+		output.AudioBitrateKbps = cleanBoundedUint(output.AudioBitrateKbps, "192", 1, 10000)
+		if output.AudioBitrateKbps == "" {
+			return fmt.Errorf("output %q audio bitrate is invalid", output.ID)
+		}
+		output.SampleRate = cleanBoundedUint(output.SampleRate, "48000", 8000, 384000)
+		if output.SampleRate == "" {
+			return fmt.Errorf("output %q sample rate is invalid", output.ID)
+		}
+	}
+	return nil
+}
+
+func validateCgenOutputProtocol(output cgenOutputXML) error {
+	schemeAllowed := func(value string, schemes ...string) bool {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if strings.Contains(value, "${") {
+			return true
+		}
+		for _, scheme := range schemes {
+			if strings.HasPrefix(value, scheme+"://") {
+				return true
+			}
+		}
+		return false
+	}
+	switch output.Destination {
+	case "mpeg_ts_udp":
+		if !schemeAllowed(output.URL, "udp") {
+			return errors.New("MPEG-TS/UDP URL must use udp://")
+		}
+	case "mpeg_ts_srt":
+		if !schemeAllowed(output.URL, "srt") {
+			return errors.New("MPEG-TS/SRT URL must use srt://")
+		}
+	case "rtmp":
+		if !schemeAllowed(output.URL, "rtmp", "rtmps") {
+			return errors.New("RTMP URL must use rtmp:// or rtmps://")
+		}
+	case "rtp":
+		if !schemeAllowed(output.VideoURL, "rtp", "udp") {
+			return errors.New("RTP video endpoint must use rtp:// or udp://")
+		}
+		for _, location := range splitCgenCommaList(output.AudioURLs) {
+			if !schemeAllowed(location, "rtp", "udp") {
+				return errors.New("RTP audio endpoints must use rtp:// or udp://")
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeCgenDestination(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "mpeg_ts_udp", "mpegts_udp", "udp", "mpegts", "mpeg-ts":
+		return "mpeg_ts_udp"
+	case "mpeg_ts_srt", "mpegts_srt", "srt":
+		return "mpeg_ts_srt"
+	case "rtp":
+		return "rtp"
+	case "rtmp", "flv":
+		return "rtmp"
+	case "file":
+		return "file"
+	default:
+		return ""
+	}
+}
+
+func normalizeCgenVideoCodec(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "h264", "h.264", "avc", "x264", "libx264":
+		return "h264"
+	case "h265", "h.265", "hevc", "x265", "libx265":
+		return "h265"
+	case "mpeg2", "mpeg-2", "mpeg2video":
+		return "mpeg2"
+	default:
+		return ""
+	}
+}
+
+func normalizeCgenAudioCodec(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "match", "match_input", "native":
+		return "match_input"
+	case "aac":
+		return "aac"
+	case "ac3", "ac-3":
+		return "ac3"
+	case "mp2", "mpeg-1-layer-ii", "mpeg1layer2":
+		return "mp2"
+	default:
+		return ""
+	}
+}
+
+func normalizeCgenRateControl(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "vbr") {
+		return "vbr"
+	}
+	return "cbr"
+}
+
+func validCgenIdentifier(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, ch := range value {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validCgenLocation(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 4096 {
+		return false
+	}
+	for _, ch := range value {
+		if ch == 0 || ch == '\r' || ch == '\n' || ch < 0x20 {
+			return false
+		}
+	}
+	return true
+}
+
+func cleanCgenText(value string, fallback string, max int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = fallback
+	}
+	if len(value) > max || !validCgenLocation(value) {
+		return fallback
+	}
+	return value
+}
+
+func cleanCgenToken(value string) string {
+	value = strings.TrimSpace(value)
+	for _, ch := range value {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_' || ch == '.' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func cleanBoundedUint(value string, fallback string, min uint64, max uint64) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = strings.TrimSpace(fallback)
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || parsed < min || parsed > max {
+		return ""
+	}
+	return strconv.FormatUint(parsed, 10)
+}
+
+func normalizeCgenEncoders(config cgenEncodersXML) (cgenEncodersXML, error) {
+	config.SchemaVersion = strings.TrimSpace(config.SchemaVersion)
+	if config.SchemaVersion == "" {
+		config.SchemaVersion = "1"
+	}
+	if config.SchemaVersion != "1" && config.SchemaVersion != "2" {
+		return cgenEncodersXML{}, fmt.Errorf("unsupported cgen encoder schema_version %q", config.SchemaVersion)
+	}
 	config.UpdatedAt = strings.TrimSpace(config.UpdatedAt)
-	seen := map[string]int{}
+	seen := map[string]struct{}{}
 	out := make([]cgenEncoderFeedXML, 0, len(config.Feeds))
 	for _, feed := range config.Feeds {
 		feed.ID = cleanCgenID(feed.ID)
 		if feed.ID == "" {
-			continue
+			return cgenEncodersXML{}, errors.New("cgen encoder feed id is invalid")
 		}
 		feed.Video = normalizeCgenEncoderCodec(feed.Video, true)
 		feed.Audio = normalizeCgenEncoderCodec(feed.Audio, false)
 		feed.UpdatedAt = strings.TrimSpace(feed.UpdatedAt)
-		if index, ok := seen[feed.ID]; ok {
-			out[index] = feed
-			continue
+		key := strings.ToLower(feed.ID)
+		if _, ok := seen[key]; ok {
+			return cgenEncodersXML{}, fmt.Errorf("duplicate cgen encoder feed id %q", feed.ID)
 		}
-		seen[feed.ID] = len(out)
+		seen[key] = struct{}{}
 		out = append(out, feed)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i].ID) < strings.ToLower(out[j].ID) })
 	config.Feeds = out
-	return config
+	seenOutputs := map[string]struct{}{}
+	outputs := make([]cgenEncoderOutputXML, 0, len(config.Outputs))
+	for _, output := range config.Outputs {
+		output.ID = strings.TrimSpace(output.ID)
+		if !validCgenIdentifier(output.ID) {
+			return cgenEncodersXML{}, errors.New("cgen encoder output id is invalid")
+		}
+		output.Video = normalizeCgenEncoderCodec(output.Video, true)
+		output.Audio = normalizeCgenEncoderCodec(output.Audio, false)
+		output.UpdatedAt = strings.TrimSpace(output.UpdatedAt)
+		key := strings.ToLower(output.ID)
+		if _, ok := seenOutputs[key]; ok {
+			return cgenEncodersXML{}, fmt.Errorf("duplicate cgen encoder output id %q", output.ID)
+		}
+		seenOutputs[key] = struct{}{}
+		outputs = append(outputs, output)
+	}
+	sort.SliceStable(outputs, func(i, j int) bool { return strings.ToLower(outputs[i].ID) < strings.ToLower(outputs[j].ID) })
+	config.Outputs = outputs
+	return config, nil
 }
 
 func normalizeCgenEncoderCodec(value cgenEncoderCodecXML, video bool) cgenEncoderCodecXML {
@@ -979,23 +1915,194 @@ func normalizeCgenEnabledText(value string, fallback string) string {
 	return boolText(xmlBool(value, xmlBool(fallback, true)))
 }
 
+func cgenMapFromAny(raw any) map[string]any {
+	value, _ := raw.(map[string]any)
+	return value
+}
+
+func firstNestedString(source map[string]any, nested map[string]any, flatKey string, nestedKey string) string {
+	if value, exists := source[flatKey]; exists {
+		return stringFromAny(value)
+	}
+	return stringFromAny(nested[nestedKey])
+}
+
+func firstNestedBool(source map[string]any, nested map[string]any, flatKey string, nestedKey string, fallback bool) bool {
+	if value, exists := source[flatKey]; exists {
+		return boolFromAny(value, fallback)
+	}
+	return boolFromAny(nested[nestedKey], fallback)
+}
+
+func optionalNestedBoolText(source map[string]any, nested map[string]any, flatKey string, nestedKey string) string {
+	if value, exists := source[flatKey]; exists {
+		return boolText(boolFromAny(value, false))
+	}
+	if value, exists := nested[nestedKey]; exists {
+		return boolText(boolFromAny(value, false))
+	}
+	return ""
+}
+
+func cgenProgramMappingFromAny(raw any) (cgenProgramMappingXML, error) {
+	if raw == nil {
+		return cgenProgramMappingXML{}, nil
+	}
+	source, ok := raw.(map[string]any)
+	if !ok {
+		return cgenProgramMappingXML{}, errors.New("program_mapping must be an object")
+	}
+	result := cgenProgramMappingXML{TransportStreamID: stringFromAny(source["transport_stream_id"])}
+	items, err := cgenObjectSlice(source["programs"], "program_mapping programs")
+	if err != nil {
+		return cgenProgramMappingXML{}, err
+	}
+	for _, program := range items {
+		entry := cgenProgramMapEntryXML{
+			Number:       stringFromAny(program["number"]),
+			ServiceName:  stringFromAny(program["service_name"]),
+			ProviderName: stringFromAny(program["provider_name"]),
+			PMTPID:       stringFromAny(program["pmt_pid"]),
+			VideoPID:     stringFromAny(program["video_pid"]),
+		}
+		audioItems, err := cgenObjectSlice(program["audio"], "program audio mappings")
+		if err != nil {
+			return cgenProgramMappingXML{}, err
+		}
+		for _, audio := range audioItems {
+			entry.Audio = append(entry.Audio, cgenProgramAudioMapXML{
+				TrackID: stringFromAny(audio["track_id"]),
+				PID:     stringFromAny(audio["pid"]),
+			})
+		}
+		if rawSCTE, exists := program["scte35"]; exists && rawSCTE != nil {
+			scte, ok := rawSCTE.(map[string]any)
+			if !ok {
+				return cgenProgramMappingXML{}, errors.New("program scte35 must be an object")
+			}
+			entry.SCTE35 = &cgenProgramSCTE35XML{
+				Input:              stringFromAny(scte["input"]),
+				GeneratedAlertCues: boolText(boolFromAny(scte["generated_alert_cues"], false)),
+				PID:                stringFromAny(scte["pid"]),
+			}
+		}
+		result.Programs = append(result.Programs, entry)
+	}
+	return result, nil
+}
+
+func cgenOutputsFromAny(raw any) ([]cgenOutputXML, error) {
+	items, err := cgenObjectSlice(raw, "outputs")
+	if err != nil {
+		return nil, err
+	}
+	outputs := make([]cgenOutputXML, 0, len(items))
+	for _, source := range items {
+		video := cgenMapFromAny(source["video"])
+		audio := cgenMapFromAny(source["audio"])
+		outputs = append(outputs, cgenOutputXML{
+			ID:                  stringFromAny(source["id"]),
+			Enabled:             boolText(boolFromAny(source["enabled"], true)),
+			Destination:         stringFromAny(source["destination"]),
+			URL:                 stringFromAny(source["url"]),
+			VideoURL:            stringFromAny(source["video_url"]),
+			AudioURLs:           cgenCommaListFromAny(source["audio_urls"]),
+			Container:           stringFromAny(source["container"]),
+			LatencyMS:           stringFromAny(source["latency_ms"]),
+			VideoCodec:          fallbackText(stringFromAny(source["video_codec"]), stringFromAny(video["codec"])),
+			RateControl:         fallbackText(stringFromAny(source["rate_control"]), stringFromAny(video["rate_control"])),
+			VideoBitrateKbps:    fallbackText(stringFromAny(source["video_bitrate_kbps"]), stringFromAny(video["bitrate_kbps"])),
+			VideoMaxBitrateKbps: fallbackText(stringFromAny(source["video_max_bitrate_kbps"]), stringFromAny(video["max_bitrate_kbps"])),
+			GOPFrames:           fallbackText(stringFromAny(source["gop_frames"]), stringFromAny(video["gop_frames"])),
+			AudioCodec:          fallbackText(stringFromAny(source["audio_codec"]), stringFromAny(audio["codec"])),
+			AudioBitrateKbps:    fallbackText(stringFromAny(source["audio_bitrate_kbps"]), stringFromAny(audio["bitrate_kbps"])),
+			SampleRate:          fallbackText(stringFromAny(source["sample_rate"]), stringFromAny(audio["sample_rate"])),
+		})
+	}
+	return outputs, nil
+}
+
+func cgenObjectSlice(raw any, field string) ([]map[string]any, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	switch values := raw.(type) {
+	case []any:
+		out := make([]map[string]any, 0, len(values))
+		for _, value := range values {
+			object, ok := value.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("%s entries must be objects", field)
+			}
+			out = append(out, object)
+		}
+		return out, nil
+	case []map[string]any:
+		return values, nil
+	default:
+		return nil, fmt.Errorf("%s must be an array", field)
+	}
+}
+
+func cgenCommaListFromAny(raw any) string {
+	switch values := raw.(type) {
+	case []any:
+		parts := make([]string, 0, len(values))
+		for _, value := range values {
+			if text := stringFromAny(value); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, ",")
+	case []string:
+		return strings.Join(values, ",")
+	default:
+		return stringFromAny(raw)
+	}
+}
+
 func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 	source, ok := raw.(map[string]any)
 	if !ok {
 		return cgenFeedXML{}, fmt.Errorf("cgen feed entries must be objects")
+	}
+	input := cgenMapFromAny(source["program_input"])
+	alert := cgenMapFromAny(source["alert"])
+	ancillary := cgenMapFromAny(source["ancillary"])
+	audio := cgenMapFromAny(source["audio_routing"])
+	compositor := cgenMapFromAny(source["compositor"])
+	rawProgramMapping := source["program_mapping"]
+	if rawProgramMapping == nil {
+		rawProgramMapping = source["programMapping"]
+	}
+	programMapping, err := cgenProgramMappingFromAny(rawProgramMapping)
+	if err != nil {
+		return cgenFeedXML{}, err
+	}
+	outputs, err := cgenOutputsFromAny(source["outputs"])
+	if err != nil {
+		return cgenFeedXML{}, err
 	}
 	feed := cgenFeedXML{
 		ID:      stringFromAny(source["id"]),
 		Name:    stringFromAny(source["name"]),
 		Enabled: boolText(boolFromAny(source["enabled"], false)),
 		ProgramInput: cgenEndpointXML{
-			URL:             stringFromAny(source["program_input_url"]),
-			Type:            stringFromAny(source["program_input_type"]),
-			Format:          stringFromAny(source["program_input_format"]),
-			HardwareDecoder: stringFromAny(source["hardware_decoder"]),
+			URL:             firstNestedString(source, input, "program_input_url", "url"),
+			Type:            firstNestedString(source, input, "program_input_type", "type"),
+			Format:          firstNestedString(source, input, "program_input_format", "format"),
+			HardwareDecoder: firstNestedString(source, input, "hardware_decoder", "hardware_decoder"),
 			HardwareDecoderOn: boolText(
-				boolFromAny(source["hardware_decoder_enabled"], false),
+				firstNestedBool(source, input, "hardware_decoder_enabled", "hardware_decoder_enabled", false),
 			),
+			DeviceBackend: firstNestedString(source, input, "device_backend", "device_backend"),
+			DeviceID:      firstNestedString(source, input, "device_id", "device_id"),
+			Width:         firstNestedString(source, input, "dummy_width", "width"),
+			Height:        firstNestedString(source, input, "dummy_height", "height"),
+			FPS:           firstNestedString(source, input, "dummy_fps", "fps"),
+			Interlaced:    optionalNestedBoolText(source, input, "dummy_interlaced", "interlaced"),
+			FieldOrder:    firstNestedString(source, input, "dummy_field_order", "field_order"),
+			Background:    firstNestedString(source, input, "dummy_background", "background"),
 		},
 		PriorityInput: cgenPriorityInputXML{
 			FeedID:      stringFromAny(source["priority_feed_id"]),
@@ -1026,6 +2133,12 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			Idle:               stringFromAny(source["audio_idle"]),
 			AlertMode:          stringFromAny(source["audio_alert_mode"]),
 			MuteStandbyRoutine: boolText(boolFromAny(source["mute_standby_routine"], true)),
+			Topology:           firstNestedString(source, audio, "audio_topology", "topology"),
+			ForceLayout:        firstNestedString(source, audio, "audio_force_layout", "force_layout"),
+			IdleProgramGainDB:  firstNestedString(source, audio, "idle_program_gain_db", "idle_program_gain_db"),
+			AlertProgramGainDB: firstNestedString(source, audio, "alert_program_gain_db", "alert_program_gain_db"),
+			AlertGainDB:        firstNestedString(source, audio, "alert_gain_db", "alert_gain_db"),
+			TransitionMS:       firstNestedString(source, audio, "audio_transition_ms", "transition_ms"),
 		},
 		Ladder: cgenLadderXML{
 			Videos: []cgenVideoRenditionXML{
@@ -1151,7 +2264,21 @@ func cgenFeedFromMap(raw any) (cgenFeedXML, error) {
 			ReconnectMaxMS:         stringFromAny(source["sync_reconnect_max_ms"]),
 			StatusIntervalMS:       stringFromAny(source["sync_status_interval_ms"]),
 		},
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Alert: cgenAlertXML{
+			FeedID: fallbackText(firstNestedString(source, alert, "alert_feed_id", "feed_id"), stringFromAny(source["priority_feed_id"])),
+		},
+		Ancillary: cgenAncillaryXML{
+			Captions: firstNestedString(source, ancillary, "ancillary_captions", "captions"),
+			SCTE35:   firstNestedString(source, ancillary, "ancillary_scte35", "scte35"),
+			SCTE104:  firstNestedString(source, ancillary, "ancillary_scte104", "scte104"),
+		},
+		Compositor: cgenCompositorXML{
+			AlertSceneID: firstNestedString(source, compositor, "alert_scene_id", "alert_scene_id"),
+			Engine:       firstNestedString(source, compositor, "compositor_engine", "engine"),
+		},
+		ProgramMap: programMapping,
+		Outputs:    cgenOutputsXML{Outputs: outputs},
+		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
 	}
 	config, err := normalizeCgen(cgenXML{Enabled: "true", Feeds: []cgenFeedXML{feed}})
 	if err != nil {
@@ -1187,7 +2314,57 @@ func cgenEncoderFeedFromMap(raw any, feed cgenFeedXML) (cgenEncoderFeedXML, erro
 			Options:     encoderOptionsFromAny(source["audio_encoder_options"]),
 		},
 	}
-	return normalizeCgenEncoders(cgenEncodersXML{Feeds: []cgenEncoderFeedXML{encoderFeed}}).Feeds[0], nil
+	normalized, err := normalizeCgenEncoders(cgenEncodersXML{SchemaVersion: "2", Feeds: []cgenEncoderFeedXML{encoderFeed}})
+	if err != nil {
+		return cgenEncoderFeedXML{}, err
+	}
+	return normalized.Feeds[0], nil
+}
+
+func cgenEncoderOutputsFromMap(raw any, feed cgenFeedXML) ([]cgenEncoderOutputXML, error) {
+	source, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("cgen feed entries must be objects")
+	}
+	rawOutputs, err := cgenObjectSlice(source["outputs"], "outputs")
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]map[string]any{}
+	for _, output := range rawOutputs {
+		byID[strings.ToLower(strings.TrimSpace(stringFromAny(output["id"])))] = output
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	profiles := make([]cgenEncoderOutputXML, 0, len(feed.Outputs.Outputs))
+	for _, output := range feed.Outputs.Outputs {
+		rawOutput := byID[strings.ToLower(output.ID)]
+		encoder := cgenMapFromAny(rawOutput["encoder"])
+		video := cgenMapFromAny(encoder["video"])
+		audio := cgenMapFromAny(encoder["audio"])
+		profiles = append(profiles, cgenEncoderOutputXML{
+			ID:        output.ID,
+			UpdatedAt: now,
+			Video: cgenEncoderCodecXML{
+				Codec:       fallbackText(stringFromAny(video["codec"]), output.VideoCodec),
+				BitrateKbps: fallbackText(stringFromAny(video["bitrate_kbps"]), output.VideoBitrateKbps),
+				GOP:         fallbackText(stringFromAny(video["gop"]), output.GOPFrames),
+				BFrames:     stringFromAny(video["bframes"]),
+				Preset:      stringFromAny(video["preset"]),
+				Tune:        stringFromAny(video["tune"]),
+				Profile:     stringFromAny(video["profile"]),
+				Level:       stringFromAny(video["level"]),
+				Options:     encoderOptionsFromAny(video["options"]),
+			},
+			Audio: cgenEncoderCodecXML{
+				Codec:       fallbackText(stringFromAny(audio["codec"]), output.AudioCodec),
+				BitrateKbps: fallbackText(stringFromAny(audio["bitrate_kbps"]), output.AudioBitrateKbps),
+				Profile:     stringFromAny(audio["profile"]),
+				Level:       stringFromAny(audio["level"]),
+				Options:     encoderOptionsFromAny(audio["options"]),
+			},
+		})
+	}
+	return profiles, nil
 }
 
 func encoderOptionsFromAny(raw any) []cgenEncoderOptionXML {
@@ -1210,72 +2387,116 @@ func encoderOptionsFromAny(raw any) []cgenEncoderOptionXML {
 }
 
 func cgenPayload(configPath string, path string, config cgenXML, encoderPath string, encoders cgenEncodersXML) map[string]any {
+	revision, _ := cgenConfigRevision(path, encoderPath)
+	schemaVersion, _ := strconv.Atoi(config.SchemaVersion)
+	encoderSchemaVersion, _ := strconv.Atoi(encoders.SchemaVersion)
 	rows := make([]map[string]any, 0, len(config.Feeds))
 	for _, feed := range config.Feeds {
 		runtime := loadCgenRuntimeStatus(configPath, feed.ID)
 		row := map[string]any{
-			"id":                              feed.ID,
-			"name":                            feed.Name,
-			"enabled":                         xmlBool(feed.Enabled, false),
-			"mode":                            feed.State.Mode,
-			"smpte_bars":                      xmlBool(feed.State.SMPTEBars, false),
-			"sunny_cat":                       xmlBool(feed.State.SunnyCat, false),
-			"standby_mode":                    feed.Standby.Mode,
-			"standby_text":                    feed.Standby.Text,
-			"standby_font_size":               feed.Standby.FontSize,
-			"standby_y_percent":               feed.Standby.YPercent,
-			"program_input_url":               feed.ProgramInput.URL,
-			"program_input_type":              normalizeCgenInputType(feed.ProgramInput.Type),
-			"program_input_format":            feed.ProgramInput.Format,
-			"hardware_decoder_enabled":        xmlBool(feed.ProgramInput.HardwareDecoderOn, false),
-			"hardware_decoder":                feed.ProgramInput.HardwareDecoder,
-			"priority_feed_id":                feed.PriorityInput.FeedID,
-			"audio_source":                    feed.PriorityInput.AudioSource,
-			"priority_input_format":           feed.PriorityInput.Format,
-			"program_output_url":              feed.ProgramOutput.URL,
-			"program_output_format":           feed.ProgramOutput.Format,
-			"vcodec":                          feed.ProgramOutput.VCodec,
-			"acodec":                          feed.ProgramOutput.ACodec,
-			"video_bitrate_kbps":              feed.ProgramOutput.VideoBitrateKbps,
-			"audio_bitrate_kbps":              feed.ProgramOutput.AudioBitrateKbps,
-			"service_name":                    feed.ProgramOutput.ServiceName,
-			"provider_name":                   feed.ProgramOutput.ProviderName,
-			"service_id":                      feed.ProgramOutput.ServiceID,
-			"transport_stream_id":             feed.ProgramOutput.TransportStreamID,
-			"hd_enabled":                      videoRendition(feed.Ladder, "hd").Enabled,
-			"hd_bitrate_kbps":                 videoRendition(feed.Ladder, "hd").BitrateKbps,
-			"hd_program":                      videoRendition(feed.Ladder, "hd").Program,
-			"hd_video_pid":                    videoRendition(feed.Ladder, "hd").VideoPID,
-			"hd_pmt_pid":                      videoRendition(feed.Ladder, "hd").PMTPID,
-			"p720_enabled":                    xmlBool(videoRendition(feed.Ladder, "p720").Enabled, false),
-			"p720_bitrate_kbps":               videoRendition(feed.Ladder, "p720").BitrateKbps,
-			"p720_program":                    videoRendition(feed.Ladder, "p720").Program,
-			"p720_video_pid":                  videoRendition(feed.Ladder, "p720").VideoPID,
-			"p720_pmt_pid":                    videoRendition(feed.Ladder, "p720").PMTPID,
-			"sd_enabled":                      xmlBool(videoRendition(feed.Ladder, "sd").Enabled, false),
-			"sd_bitrate_kbps":                 videoRendition(feed.Ladder, "sd").BitrateKbps,
-			"sd_program":                      videoRendition(feed.Ladder, "sd").Program,
-			"sd_video_pid":                    videoRendition(feed.Ladder, "sd").VideoPID,
-			"sd_pmt_pid":                      videoRendition(feed.Ladder, "sd").PMTPID,
-			"surround_enabled":                xmlBool(audioRendition(feed.Ladder, "surround_51").Enabled, true),
-			"surround_bitrate_kbps":           audioRendition(feed.Ladder, "surround_51").BitrateKbps,
-			"surround_program":                audioRendition(feed.Ladder, "surround_51").Program,
-			"surround_audio_pid":              audioRendition(feed.Ladder, "surround_51").AudioPID,
-			"surround_pmt_pid":                audioRendition(feed.Ladder, "surround_51").PMTPID,
-			"stereo_enabled":                  xmlBool(audioRendition(feed.Ladder, "stereo").Enabled, true),
-			"stereo_bitrate_kbps":             audioRendition(feed.Ladder, "stereo").BitrateKbps,
-			"stereo_program":                  audioRendition(feed.Ladder, "stereo").Program,
-			"stereo_audio_pid":                audioRendition(feed.Ladder, "stereo").AudioPID,
-			"stereo_pmt_pid":                  audioRendition(feed.Ladder, "stereo").PMTPID,
-			"width":                           feed.Video.Width,
-			"height":                          feed.Video.Height,
-			"fps":                             feed.Video.FPS,
-			"interlaced":                      xmlBool(feed.Video.Interlaced, false),
-			"field_order":                     feed.Video.FieldOrder,
-			"standard":                        feed.Video.Standard,
-			"audio_idle":                      feed.Audio.Idle,
-			"audio_alert_mode":                feed.Audio.AlertMode,
-			"mute_standby_routine":            xmlBool(feed.Audio.MuteStandbyRoutine, true),
+			"id":                       feed.ID,
+			"name":                     feed.Name,
+			"enabled":                  xmlBool(feed.Enabled, false),
+			"mode":                     feed.State.Mode,
+			"smpte_bars":               xmlBool(feed.State.SMPTEBars, false),
+			"sunny_cat":                xmlBool(feed.State.SunnyCat, false),
+			"standby_mode":             feed.Standby.Mode,
+			"standby_text":             feed.Standby.Text,
+			"standby_font_size":        feed.Standby.FontSize,
+			"standby_y_percent":        feed.Standby.YPercent,
+			"program_input_url":        feed.ProgramInput.URL,
+			"program_input_type":       normalizeCgenInputType(feed.ProgramInput.Type),
+			"program_input_format":     feed.ProgramInput.Format,
+			"device_backend":           feed.ProgramInput.DeviceBackend,
+			"device_id":                feed.ProgramInput.DeviceID,
+			"dummy_width":              feed.ProgramInput.Width,
+			"dummy_height":             feed.ProgramInput.Height,
+			"dummy_fps":                feed.ProgramInput.FPS,
+			"dummy_interlaced":         xmlBool(feed.ProgramInput.Interlaced, false),
+			"dummy_field_order":        feed.ProgramInput.FieldOrder,
+			"dummy_background":         feed.ProgramInput.Background,
+			"hardware_decoder_enabled": xmlBool(feed.ProgramInput.HardwareDecoderOn, false),
+			"hardware_decoder":         feed.ProgramInput.HardwareDecoder,
+			"priority_feed_id":         feed.PriorityInput.FeedID,
+			"audio_source":             feed.PriorityInput.AudioSource,
+			"priority_input_format":    feed.PriorityInput.Format,
+			"program_output_url":       feed.ProgramOutput.URL,
+			"program_output_format":    feed.ProgramOutput.Format,
+			"vcodec":                   feed.ProgramOutput.VCodec,
+			"acodec":                   feed.ProgramOutput.ACodec,
+			"video_bitrate_kbps":       feed.ProgramOutput.VideoBitrateKbps,
+			"audio_bitrate_kbps":       feed.ProgramOutput.AudioBitrateKbps,
+			"service_name":             feed.ProgramOutput.ServiceName,
+			"provider_name":            feed.ProgramOutput.ProviderName,
+			"service_id":               feed.ProgramOutput.ServiceID,
+			"transport_stream_id":      feed.ProgramOutput.TransportStreamID,
+			"hd_enabled":               videoRendition(feed.Ladder, "hd").Enabled,
+			"hd_bitrate_kbps":          videoRendition(feed.Ladder, "hd").BitrateKbps,
+			"hd_program":               videoRendition(feed.Ladder, "hd").Program,
+			"hd_video_pid":             videoRendition(feed.Ladder, "hd").VideoPID,
+			"hd_pmt_pid":               videoRendition(feed.Ladder, "hd").PMTPID,
+			"p720_enabled":             xmlBool(videoRendition(feed.Ladder, "p720").Enabled, false),
+			"p720_bitrate_kbps":        videoRendition(feed.Ladder, "p720").BitrateKbps,
+			"p720_program":             videoRendition(feed.Ladder, "p720").Program,
+			"p720_video_pid":           videoRendition(feed.Ladder, "p720").VideoPID,
+			"p720_pmt_pid":             videoRendition(feed.Ladder, "p720").PMTPID,
+			"sd_enabled":               xmlBool(videoRendition(feed.Ladder, "sd").Enabled, false),
+			"sd_bitrate_kbps":          videoRendition(feed.Ladder, "sd").BitrateKbps,
+			"sd_program":               videoRendition(feed.Ladder, "sd").Program,
+			"sd_video_pid":             videoRendition(feed.Ladder, "sd").VideoPID,
+			"sd_pmt_pid":               videoRendition(feed.Ladder, "sd").PMTPID,
+			"surround_enabled":         xmlBool(audioRendition(feed.Ladder, "surround_51").Enabled, true),
+			"surround_bitrate_kbps":    audioRendition(feed.Ladder, "surround_51").BitrateKbps,
+			"surround_program":         audioRendition(feed.Ladder, "surround_51").Program,
+			"surround_audio_pid":       audioRendition(feed.Ladder, "surround_51").AudioPID,
+			"surround_pmt_pid":         audioRendition(feed.Ladder, "surround_51").PMTPID,
+			"stereo_enabled":           xmlBool(audioRendition(feed.Ladder, "stereo").Enabled, true),
+			"stereo_bitrate_kbps":      audioRendition(feed.Ladder, "stereo").BitrateKbps,
+			"stereo_program":           audioRendition(feed.Ladder, "stereo").Program,
+			"stereo_audio_pid":         audioRendition(feed.Ladder, "stereo").AudioPID,
+			"stereo_pmt_pid":           audioRendition(feed.Ladder, "stereo").PMTPID,
+			"width":                    feed.Video.Width,
+			"height":                   feed.Video.Height,
+			"fps":                      feed.Video.FPS,
+			"interlaced":               xmlBool(feed.Video.Interlaced, false),
+			"field_order":              feed.Video.FieldOrder,
+			"standard":                 feed.Video.Standard,
+			"audio_idle":               feed.Audio.Idle,
+			"audio_alert_mode":         feed.Audio.AlertMode,
+			"mute_standby_routine":     xmlBool(feed.Audio.MuteStandbyRoutine, true),
+			"alert_feed_id":            feed.Alert.FeedID,
+			"ancillary_captions":       feed.Ancillary.Captions,
+			"ancillary_scte35":         feed.Ancillary.SCTE35,
+			"ancillary_scte104":        feed.Ancillary.SCTE104,
+			"audio_topology":           feed.Audio.Topology,
+			"audio_force_layout":       feed.Audio.ForceLayout,
+			"idle_program_gain_db":     feed.Audio.IdleProgramGainDB,
+			"alert_program_gain_db":    feed.Audio.AlertProgramGainDB,
+			"alert_gain_db":            feed.Audio.AlertGainDB,
+			"audio_transition_ms":      feed.Audio.TransitionMS,
+			"alert_scene_id":           feed.Compositor.AlertSceneID,
+			"compositor_engine":        feed.Compositor.Engine,
+			"program_input":            cgenProgramInputPayload(feed.ProgramInput),
+			"alert":                    map[string]any{"feed_id": feed.Alert.FeedID},
+			"ancillary": map[string]any{
+				"captions": feed.Ancillary.Captions,
+				"scte35":   feed.Ancillary.SCTE35,
+				"scte104":  feed.Ancillary.SCTE104,
+			},
+			"audio_routing": map[string]any{
+				"topology":              feed.Audio.Topology,
+				"force_layout":          feed.Audio.ForceLayout,
+				"idle_program_gain_db":  feed.Audio.IdleProgramGainDB,
+				"alert_program_gain_db": feed.Audio.AlertProgramGainDB,
+				"alert_gain_db":         feed.Audio.AlertGainDB,
+				"transition_ms":         feed.Audio.TransitionMS,
+			},
+			"compositor": map[string]any{
+				"alert_scene_id": feed.Compositor.AlertSceneID,
+				"engine":         feed.Compositor.Engine,
+			},
+			"program_mapping":                 cgenProgramMappingPayload(feed.ProgramMap),
+			"outputs":                         cgenOutputsPayload(feed.Outputs.Outputs, encoders),
 			"banner_mode":                     feed.Banner.Mode,
 			"ticker_height":                   feed.Banner.TickerHeight,
 			"scroll_speed":                    feed.Banner.ScrollSpeed,
@@ -1312,10 +2533,14 @@ func cgenPayload(configPath string, path string, config cgenXML, encoderPath str
 		rows = append(rows, row)
 	}
 	return map[string]any{
-		"path":         filepath.ToSlash(path),
-		"encoder_path": filepath.ToSlash(encoderPath),
-		"enabled":      xmlBool(config.Enabled, true),
-		"feeds":        rows,
+		"path":                   filepath.ToSlash(path),
+		"encoder_path":           filepath.ToSlash(encoderPath),
+		"schema_version":         schemaVersion,
+		"encoder_schema_version": encoderSchemaVersion,
+		"revision":               revision,
+		"hash":                   revision,
+		"enabled":                xmlBool(config.Enabled, true),
+		"feeds":                  rows,
 		"summary": map[string]any{
 			"count": len(rows),
 		},
@@ -1341,6 +2566,123 @@ func cgenEncoderPayload(encoders cgenEncodersXML, feedID string) map[string]any 
 		"audio_profile":              feed.Audio.Profile,
 		"audio_level":                feed.Audio.Level,
 		"audio_encoder_options":      audioOptions,
+	}
+}
+
+func cgenProgramInputPayload(input cgenEndpointXML) map[string]any {
+	return map[string]any{
+		"type":                     normalizeCgenInputType(input.Type),
+		"url":                      input.URL,
+		"format":                   input.Format,
+		"hardware_decoder_enabled": xmlBool(input.HardwareDecoderOn, false),
+		"hardware_decoder":         input.HardwareDecoder,
+		"device_backend":           input.DeviceBackend,
+		"device_id":                input.DeviceID,
+		"width":                    input.Width,
+		"height":                   input.Height,
+		"fps":                      input.FPS,
+		"interlaced":               xmlBool(input.Interlaced, false),
+		"field_order":              input.FieldOrder,
+		"background":               input.Background,
+	}
+}
+
+func cgenProgramMappingPayload(mapping cgenProgramMappingXML) map[string]any {
+	programs := make([]map[string]any, 0, len(mapping.Programs))
+	for _, program := range mapping.Programs {
+		audio := make([]map[string]any, 0, len(program.Audio))
+		for _, stream := range program.Audio {
+			audio = append(audio, map[string]any{
+				"track_id": stream.TrackID,
+				"pid":      stream.PID,
+			})
+		}
+		row := map[string]any{
+			"number":        program.Number,
+			"service_name":  program.ServiceName,
+			"provider_name": program.ProviderName,
+			"pmt_pid":       program.PMTPID,
+			"video_pid":     program.VideoPID,
+			"audio":         audio,
+		}
+		if program.SCTE35 != nil {
+			row["scte35"] = map[string]any{
+				"input":                program.SCTE35.Input,
+				"generated_alert_cues": xmlBool(program.SCTE35.GeneratedAlertCues, false),
+				"pid":                  program.SCTE35.PID,
+			}
+		}
+		programs = append(programs, row)
+	}
+	return map[string]any{
+		"transport_stream_id": mapping.TransportStreamID,
+		"programs":            programs,
+	}
+}
+
+func cgenOutputsPayload(outputs []cgenOutputXML, encoders cgenEncodersXML) []map[string]any {
+	rows := make([]map[string]any, 0, len(outputs))
+	for _, output := range outputs {
+		row := map[string]any{
+			"id":                     output.ID,
+			"enabled":                xmlBool(output.Enabled, true),
+			"destination":            output.Destination,
+			"url":                    output.URL,
+			"video_url":              output.VideoURL,
+			"audio_urls":             splitCgenCommaList(output.AudioURLs),
+			"container":              output.Container,
+			"latency_ms":             output.LatencyMS,
+			"video_codec":            output.VideoCodec,
+			"rate_control":           output.RateControl,
+			"video_bitrate_kbps":     output.VideoBitrateKbps,
+			"video_max_bitrate_kbps": output.VideoMaxBitrateKbps,
+			"gop_frames":             output.GOPFrames,
+			"audio_codec":            output.AudioCodec,
+			"audio_bitrate_kbps":     output.AudioBitrateKbps,
+			"sample_rate":            output.SampleRate,
+		}
+		if profile, ok := cgenEncoderOutput(encoders, output.ID); ok {
+			row["encoder"] = map[string]any{
+				"video": cgenEncoderCodecPayload(profile.Video),
+				"audio": cgenEncoderCodecPayload(profile.Audio),
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func splitCgenCommaList(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func cgenEncoderOutput(encoders cgenEncodersXML, outputID string) (cgenEncoderOutputXML, bool) {
+	for _, output := range encoders.Outputs {
+		if strings.EqualFold(output.ID, outputID) {
+			return output, true
+		}
+	}
+	return cgenEncoderOutputXML{}, false
+}
+
+func cgenEncoderCodecPayload(codec cgenEncoderCodecXML) map[string]any {
+	return map[string]any{
+		"codec":        codec.Codec,
+		"bitrate_kbps": codec.BitrateKbps,
+		"gop":          codec.GOP,
+		"bframes":      codec.BFrames,
+		"preset":       codec.Preset,
+		"tune":         codec.Tune,
+		"profile":      codec.Profile,
+		"level":        codec.Level,
+		"options":      encoderOptionsPayload(codec.Options),
 	}
 }
 
@@ -1396,11 +2738,29 @@ func cleanCgenEndpoint(value cgenEndpointXML) cgenEndpointXML {
 	value.AudioBitrateKbps = cleanOptionalPositive(value.AudioBitrateKbps)
 	value.HardwareDecoder = cleanGstElementName(value.HardwareDecoder)
 	value.HardwareDecoderOn = boolText(xmlBool(value.HardwareDecoderOn, false))
+	value.DeviceBackend = normalizeCgenDeviceBackend(value.DeviceBackend)
+	value.DeviceID = strings.TrimSpace(value.DeviceID)
+	value.Width = cleanOptionalBoundedUint(value.Width, 1, 16384)
+	value.Height = cleanOptionalBoundedUint(value.Height, 1, 16384)
+	value.FPS = strings.TrimSpace(value.FPS)
+	if strings.TrimSpace(value.Interlaced) != "" {
+		value.Interlaced = boolText(xmlBool(value.Interlaced, false))
+	}
+	value.FieldOrder = strings.TrimSpace(value.FieldOrder)
+	value.Background = strings.TrimSpace(value.Background)
+	if value.Type == "dummy" {
+		value.Width = fallbackText(value.Width, "720")
+		value.Height = fallbackText(value.Height, "480")
+		value.FPS = fallbackText(value.FPS, "30000/1001")
+		value.Interlaced = fallbackText(value.Interlaced, "false")
+		value.FieldOrder = normalizeCgenFieldOrder(value.FieldOrder)
+		value.Background = fallbackText(value.Background, "#000000ff")
+	}
 	value.ServiceName = strings.TrimSpace(value.ServiceName)
 	value.ProviderName = strings.TrimSpace(value.ProviderName)
 	value.ServiceID = cleanOptionalPositive(value.ServiceID)
 	value.TransportStreamID = cleanOptionalPositive(value.TransportStreamID)
-	if value.Type == "stream" {
+	if value.Type == "uri_or_file" {
 		value.Type = ""
 		if value.HardwareDecoderOn == "false" {
 			value.HardwareDecoderOn = ""
@@ -1408,6 +2768,14 @@ func cleanCgenEndpoint(value cgenEndpointXML) cgenEndpointXML {
 		}
 	}
 	return value
+}
+
+func cleanOptionalBoundedUint(value string, min uint64, max uint64) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return cleanBoundedUint(value, "", min, max)
 }
 
 func cleanGstElementName(value string) string {
@@ -1425,8 +2793,70 @@ func cleanGstElementName(value string) string {
 }
 
 func normalizeCgenInputType(value string) string {
-	_ = value
-	return "stream"
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "device", "v4l2", "directshow", "dshow":
+		return "device"
+	case "dummy", "none", "no_input":
+		return "dummy"
+	default:
+		return "uri_or_file"
+	}
+}
+
+func validCgenInputTypeToken(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto", "stream", "uri", "uri_or_file", "url", "file", "device", "v4l2", "directshow", "dshow", "dummy", "none", "no_input":
+		return true
+	default:
+		return false
+	}
+}
+
+func validCgenRational(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), "/")
+	if len(parts) != 2 {
+		return false
+	}
+	numerator, errNumerator := strconv.ParseUint(parts[0], 10, 32)
+	denominator, errDenominator := strconv.ParseUint(parts[1], 10, 32)
+	return errNumerator == nil && errDenominator == nil && numerator > 0 && denominator > 0
+}
+
+func validCgenRGBA(value string) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "#") || (len(value) != 7 && len(value) != 9) {
+		return false
+	}
+	_, err := hex.DecodeString(value[1:])
+	return err == nil
+}
+
+func normalizeCgenInputFormat(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return "auto", nil
+	case "mpegts", "mpeg-ts", "mpeg_ts", "ts":
+		return "mpegts", nil
+	case "rtp":
+		return "rtp", nil
+	case "srt":
+		return "srt", nil
+	case "file":
+		return "file", nil
+	default:
+		return "", fmt.Errorf("program input format %q is unsupported", value)
+	}
+}
+
+func normalizeCgenDeviceBackend(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "directshow", "dshow":
+		return "directshow"
+	case "v4l2":
+		return "v4l2"
+	default:
+		return ""
+	}
 }
 
 func normalizeCgenFieldOrder(value string) string {

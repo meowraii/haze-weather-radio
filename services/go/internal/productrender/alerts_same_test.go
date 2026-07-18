@@ -433,6 +433,32 @@ func TestCAPUpdateBroadcastRequiresFeedRelevantNewlyActiveArea(t *testing.T) {
 	}
 }
 
+func TestCAPBroadcastTextOnlyNamesFeedMatchedLocations(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	cfg, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Feeds[0].Locations.Coverage.Regions = []coverageRegionXML{{ID: "065522", Source: "eccc"}}
+	service := &Service{cfg: cfg}
+	alert := parseTestAlert(t, testWatchCAP("urn:test:feed-scoped-broadcast-text", "065514,065522"))
+
+	updates, err := service.recordCAPAlert(alert, time.Date(2026, 6, 15, 22, 10, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || !updates[0].Broadcast {
+		t.Fatalf("updates = %#v", updates)
+	}
+	if !strings.Contains(updates[0].AlertText, "R.M. of Rudy") {
+		t.Fatalf("feed-matched location missing from broadcast text: %q", updates[0].AlertText)
+	}
+	if strings.Contains(updates[0].AlertText, "R.M. of Fertile Valley") {
+		t.Fatalf("off-feed location leaked into broadcast text: %q", updates[0].AlertText)
+	}
+}
+
 func TestCatchallFirstSeenCAPUpdateBroadcastsWithoutNewlyActiveAreas(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)

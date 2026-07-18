@@ -79,10 +79,30 @@ type Config struct {
 			} `yaml:"pairing_tokens"`
 		} `yaml:"receiver"`
 		Authentication struct {
-			Enabled             *bool `yaml:"enabled"`
-			SessionTTLSeconds   int   `yaml:"session_ttl_seconds"`
-			SecureCookies       bool  `yaml:"secure_cookies"`
-			MaxAudioUploadBytes int64 `yaml:"max_audio_upload_bytes"`
+			Enabled                     *bool    `yaml:"enabled"`
+			Mode                        string   `yaml:"mode"`
+			SessionTTLSeconds           int      `yaml:"session_ttl_seconds"`
+			IdleTimeoutSeconds          int      `yaml:"idle_timeout_seconds"`
+			PersistentSessionTTLSeconds int      `yaml:"persistent_session_ttl_seconds"`
+			SecureCookies               bool     `yaml:"secure_cookies"`
+			LoginRateLimit              int      `yaml:"login_rate_limit"`
+			LoginRateWindowSeconds      int      `yaml:"login_rate_window_seconds"`
+			OriginationRatePerSecond    int      `yaml:"origination_rate_per_second"`
+			EnforceMFA                  bool     `yaml:"enforce_mfa"`
+			RedisRequired               bool     `yaml:"redis_required"`
+			RedisURLEnv                 string   `yaml:"redis_url_env"`
+			RedisKeyPrefix              string   `yaml:"redis_key_prefix"`
+			PasetoKeyEnv                string   `yaml:"paseto_key_env"`
+			PasswordPepperEnv           string   `yaml:"password_pepper_env"`
+			MFAKeyEnv                   string   `yaml:"mfa_key_env"`
+			AuditKeyEnv                 string   `yaml:"audit_key_env"`
+			AuditDir                    string   `yaml:"audit_dir"`
+			BootstrapUsernameEnv        string   `yaml:"bootstrap_username_env"`
+			BootstrapPasswordEnv        string   `yaml:"bootstrap_password_env"`
+			TrustedProxyCIDRs           []string `yaml:"trusted_proxy_cidrs"`
+			LoginCIDRAllowlist          []string `yaml:"login_cidr_allowlist"`
+			LegacyLoginCIDRWhitelist    []string `yaml:"login_cidr_whitelist"`
+			MaxAudioUploadBytes         int64    `yaml:"max_audio_upload_bytes"`
 		} `yaml:"authentication"`
 	} `yaml:"webpanel"`
 	Operator struct {
@@ -140,6 +160,9 @@ func LoadConfig(path string) (Config, error) {
 	raw = []byte(os.ExpandEnv(string(raw)))
 	if err := yaml.Unmarshal(raw, &config); err != nil {
 		return config, err
+	}
+	if len(config.Webpanel.Authentication.LoginCIDRAllowlist) == 0 && len(config.Webpanel.Authentication.LegacyLoginCIDRWhitelist) > 0 {
+		config.Webpanel.Authentication.LoginCIDRAllowlist = append([]string(nil), config.Webpanel.Authentication.LegacyLoginCIDRWhitelist...)
 	}
 	return config, nil
 }

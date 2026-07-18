@@ -1056,8 +1056,8 @@ func TestAssetsServeStaticFilesButNotHTMLEntrypoints(t *testing.T) {
 		wantType   string
 		wantCache  string
 	}{
-		{path: "/assets/styles.css", wantStatus: http.StatusOK, wantCache: "public, max-age=3600, must-revalidate"},
-		{path: "/assets/js/public.js", wantStatus: http.StatusOK, wantCache: "public, max-age=3600, must-revalidate"},
+		{path: "/assets/styles.css", wantStatus: http.StatusOK, wantCache: "no-cache, must-revalidate"},
+		{path: "/assets/js/public.js", wantStatus: http.StatusOK, wantCache: "no-cache, must-revalidate"},
 		{path: "/assets/site.webmanifest", wantStatus: http.StatusOK, wantType: "application/manifest+json", wantCache: "public, max-age=3600, must-revalidate"},
 		{path: "/assets/haze_banner.gif", wantStatus: http.StatusOK, wantCache: "public, max-age=86400"},
 		{path: "/assets/admin.html", wantStatus: http.StatusNotFound},
@@ -2668,26 +2668,27 @@ func TestPersistSameQueueItemCreatesManifestAndStateDepth(t *testing.T) {
 	configPath := filepath.Join(dir, "config.yaml")
 
 	item, err := persistSameQueueItem(configPath, sameGenerateRequest{
-		Originator: "WXR",
-		Event:      "RWT",
-		Locations:  []string{"065522"},
-		Duration:   "0015",
-		Callsign:   "XLF322",
-		Tone:       "WXR",
+		Originator:     "WXR",
+		OriginatorName: "Emergency Management",
+		Event:          "RWT",
+		Locations:      []string{"065522"},
+		Duration:       "0015",
+		Callsign:       "XLF322",
+		Tone:           "WXR",
 	}, []string{"sk-0001"}, map[string]any{
 		"header":       "ZCZC-WXR-RWT-065522+0015-1661200-XLF322  -",
 		"format":       "raw",
 		"sample_rate":  float64(48000),
 		"channels":     float64(1),
 		"audio_base64": "AQIDBA==",
-	}, "This is only a drill.")
+	}, "A Broadcast Station or Cable System has issued this drill.")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if item.Status != "pending" || item.AudioBytes != 4 {
 		t.Fatalf("item = %#v", item)
 	}
-	if item.BannerText != "This is only a drill." {
+	if item.BannerText != "Emergency Management has issued this drill." {
 		t.Fatalf("banner text = %q", item.BannerText)
 	}
 	if len(item.Outputs) != 1 || item.Outputs[0].Type != "udp" || item.Outputs[0].Address != "127.0.0.1:8898" {

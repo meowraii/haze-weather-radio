@@ -29,6 +29,7 @@ import (
 const (
 	opusSampleRate             = 48000
 	opusFrameSamples           = opusSampleRate / 50
+	opusBitrateBPS             = 16000
 	g722SampleRate             = 16000
 	webrtcRTPClockRate         = 8000
 	pcmuSampleRate             = 8000
