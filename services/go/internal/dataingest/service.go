@@ -29,6 +29,7 @@ import (
 const serviceID = "haze-data-ingest"
 const thunderstormOutlookCoverageToleranceKM = 0.5
 const maxDataIngestCycleTimeout = 10 * time.Minute
+const swobPartnerBaseURL = "https://dd.weather.gc.ca/today/observations/swob-ml/partners/"
 
 type Options struct {
 	ConfigPath string
@@ -708,7 +709,278 @@ func fetchECCCSWOBObservation(ctx context.Context, client *http.Client, id strin
 	if realtimeErr == nil {
 		return realtimeRaw, nil
 	}
-	return nil, err
+	partnerRaw, partnerErr := fetchECCCSWOBPartner(ctx, client, id, stationID)
+	if partnerErr == nil {
+		return partnerRaw, nil
+	}
+	return nil, errors.Join(
+		fmt.Errorf("latest SWOB: %w", err),
+		fmt.Errorf("realtime SWOB: %w", realtimeErr),
+		fmt.Errorf("partner SWOB: %w", partnerErr),
+	)
+}
+
+type swobPartnerDataset struct {
+	ID              string
+	NestedByStation bool
+}
+
+func fetchECCCSWOBPartner(ctx context.Context, client *http.Client, id string, stationID string) (map[string]any, error) {
+	station, err := resolveECCCSWOBPartnerStation(ctx, client, id, stationID)
+	if err != nil {
+		return nil, err
+	}
+	dataset, err := swobPartnerDatasetForStation(station)
+	if err != nil {
+		return nil, err
+	}
+	return fetchECCCSWOBPartnerFile(ctx, client, swobPartnerBaseURL, station, dataset, time.Now().UTC())
+}
+
+func resolveECCCSWOBPartnerStation(ctx context.Context, client *http.Client, id string, stationID string) (map[string]any, error) {
+	candidates := uniqueNonBlankStrings(id, strings.ToUpper(strings.TrimSpace(id)), stationID)
+	for _, candidate := range candidates {
+		requestURL := fmt.Sprintf(
+			"https://api.weather.gc.ca/collections/swob-partner-stations/items/%s?f=json",
+			url.PathEscape(candidate),
+		)
+		var feature map[string]any
+		if err := fetchJSON(ctx, client, requestURL, &feature); err == nil && len(mapAt(feature, "properties")) > 0 {
+			return feature, nil
+		}
+	}
+
+	for _, field := range []string{"msc_id", "iata_id", "wmo_id"} {
+		for _, candidate := range candidates {
+			if field == "wmo_id" && !isDigits(candidate) {
+				continue
+			}
+			query := url.Values{}
+			query.Set("f", "json")
+			query.Set("lang", "en")
+			query.Set("limit", "5")
+			query.Set(field, candidate)
+			requestURL := "https://api.weather.gc.ca/collections/swob-partner-stations/items?" + query.Encode()
+			var collection map[string]any
+			if err := fetchJSON(ctx, client, requestURL, &collection); err != nil {
+				continue
+			}
+			features := anySlice(collection["features"])
+			if len(features) > 0 {
+				return mapValue(features[0]), nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("no SWOB partner station found for %s", strings.TrimSpace(id))
+}
+
+func swobPartnerDatasetForStation(station map[string]any) (swobPartnerDataset, error) {
+	props := mapAt(station, "properties")
+	mscID := strings.ToUpper(textValue(props["msc_id"]))
+	provider := strings.ToUpper(strings.Join([]string{
+		textValue(props["data_provider_en"]),
+		textValue(props["data_provider_fr"]),
+		textValue(props["data_attribution_notice_en"]),
+		textValue(props["data_attribution_notice_fr"]),
+	}, " "))
+
+	switch {
+	case strings.HasPrefix(mscID, "AB-MAI_") ||
+		(strings.Contains(provider, "ALBERTA") && strings.Contains(provider, "AGRICULTURE")):
+		return swobPartnerDataset{ID: "ab_agriculture", NestedByStation: true}, nil
+	case strings.Contains(provider, "CANADIAN COAST GUARD") ||
+		strings.Contains(provider, "NATIONAL DEFENCE") ||
+		strings.Contains(provider, "DÉFENSE NATIONALE"):
+		return swobPartnerDataset{ID: "ccg_lighthouse", NestedByStation: true}, nil
+	case strings.HasPrefix(mscID, "YT-DE-WRB_") ||
+		(strings.Contains(provider, "YUKON") && strings.Contains(provider, "WATER RESOURCES")):
+		return swobPartnerDataset{ID: "yt_water"}, nil
+	default:
+		return swobPartnerDataset{}, fmt.Errorf(
+			"unsupported SWOB partner dataset for %s",
+			firstNonBlank(textValue(props["msc_id"]), textValue(station["id"])),
+		)
+	}
+}
+
+func swobPartnerDatasetDirectories(datasetID string, now time.Time) []string {
+	switch datasetID {
+	case "ab_agriculture":
+		return []string{"ab_agriculture"}
+	case "ccg_lighthouse":
+		cutover := time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)
+		if now.UTC().Before(cutover) {
+			return []string{"dfo-ccg-lighthouse", "dnd-ccg-lighthouse"}
+		}
+		return []string{"dnd-ccg-lighthouse", "dfo-ccg-lighthouse"}
+	case "yt_water":
+		return []string{"yt-water", "yt_water"}
+	default:
+		return nil
+	}
+}
+
+func fetchECCCSWOBPartnerFile(
+	ctx context.Context,
+	client *http.Client,
+	rootURL string,
+	station map[string]any,
+	dataset swobPartnerDataset,
+	now time.Time,
+) (map[string]any, error) {
+	aliases := swobPartnerStationAliases(station)
+	if len(aliases) == 0 {
+		return nil, fmt.Errorf("SWOB partner station has no usable identifiers")
+	}
+	directories := swobPartnerDatasetDirectories(dataset.ID, now)
+	if len(directories) == 0 {
+		return nil, fmt.Errorf("SWOB partner dataset %q has no directory mapping", dataset.ID)
+	}
+	rootURL = strings.TrimRight(rootURL, "/") + "/"
+	for _, observedDay := range []time.Time{now.UTC(), now.UTC().AddDate(0, 0, -1)} {
+		date := observedDay.Format("20060102")
+		for _, directory := range directories {
+			baseURL := rootURL + url.PathEscape(directory) + "/" + date + "/"
+			if dataset.NestedByStation {
+				listing, err := fetchText(ctx, client, baseURL)
+				if err != nil {
+					continue
+				}
+				stationDirectory, ok := swobPartnerStationDirectoryFromListing(listing, aliases)
+				if !ok {
+					continue
+				}
+				baseURL += url.PathEscape(stationDirectory) + "/"
+			}
+
+			listing, err := fetchText(ctx, client, baseURL)
+			if err != nil {
+				continue
+			}
+			name, ok := latestSWOBPartnerFilenameFromListing(listing, aliases)
+			if !ok {
+				continue
+			}
+			raw, err := fetchText(ctx, client, baseURL+url.PathEscape(name))
+			if err != nil {
+				continue
+			}
+			var parsed swobCollection
+			if err := xml.Unmarshal([]byte(raw), &parsed); err != nil {
+				return nil, fmt.Errorf("parse SWOB partner file %s: %w", name, err)
+			}
+			return map[string]any{"_swob": parsed}, nil
+		}
+	}
+	return nil, fmt.Errorf(
+		"no current SWOB partner file found for %s in %s",
+		aliases[0],
+		strings.Join(directories, ", "),
+	)
+}
+
+func swobPartnerStationAliases(station map[string]any) []string {
+	props := mapAt(station, "properties")
+	return uniqueNonBlankStrings(
+		textValue(props["iata_id"]),
+		textValue(props["msc_id"]),
+		textValue(props["wmo_id"]),
+		textValue(station["id"]),
+	)
+}
+
+func swobPartnerStationDirectoryFromListing(listing string, aliases []string) (string, bool) {
+	for _, token := range strings.Split(listing, "\"") {
+		href := strings.TrimSpace(token)
+		pathPart := strings.SplitN(href, "?", 2)[0]
+		if !strings.HasSuffix(pathPart, "/") {
+			continue
+		}
+		name := swobListingEntryName(pathPart)
+		if name == "" {
+			continue
+		}
+		nameKey := swobIdentifierKey(name)
+		for _, alias := range aliases {
+			if nameKey != "" && nameKey == swobIdentifierKey(alias) {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+func latestSWOBPartnerFilenameFromListing(listing string, aliases []string) (string, bool) {
+	candidates := []string{}
+	for _, token := range strings.Split(listing, "\"") {
+		name := swobListingEntryName(strings.TrimSpace(token))
+		upper := strings.ToUpper(name)
+		if name == "" || !strings.HasSuffix(upper, ".XML") || !strings.Contains(upper, "SWOB") {
+			continue
+		}
+		nameKey := swobIdentifierKey(name)
+		for _, alias := range aliases {
+			aliasKey := swobIdentifierKey(alias)
+			if aliasKey != "" && strings.Contains(nameKey, aliasKey) {
+				candidates = append(candidates, name)
+				break
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return "", false
+	}
+	sort.Slice(candidates, func(i int, j int) bool {
+		return strings.ToUpper(candidates[i]) < strings.ToUpper(candidates[j])
+	})
+	return candidates[len(candidates)-1], true
+}
+
+func swobListingEntryName(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	pathPart := strings.TrimSuffix(parsed.Path, "/")
+	if pathPart == "" {
+		return ""
+	}
+	if index := strings.LastIndex(pathPart, "/"); index >= 0 {
+		pathPart = pathPart[index+1:]
+	}
+	name, err := url.PathUnescape(pathPart)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(name)
+}
+
+func swobIdentifierKey(raw string) string {
+	var builder strings.Builder
+	for _, char := range strings.ToUpper(strings.TrimSpace(raw)) {
+		if (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
+			builder.WriteRune(char)
+		}
+	}
+	return builder.String()
+}
+
+func uniqueNonBlankStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToUpper(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func resolveECCCSWOBStationID(ctx context.Context, client *http.Client, id string) (string, error) {

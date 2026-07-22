@@ -38,7 +38,7 @@ var codecExt = map[string]string{
 
 const (
 	maxDiscordAttachmentBytes = 8 * 1024 * 1024
-	opusBitrate               = "16k"
+	opusBitrate               = "24k"
 )
 
 func webhookHTTPClient(timeout time.Duration) *http.Client {

@@ -12,7 +12,7 @@
       <mount></mount>
       <ssl>false</ssl>
       <format>opus</format>
-      <bitrate_kbps>16</bitrate_kbps>
+      <bitrate_kbps>24</bitrate_kbps>
       <acodec>libopus</acodec>
     </icecast>
 

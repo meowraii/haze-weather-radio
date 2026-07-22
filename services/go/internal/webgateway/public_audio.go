@@ -27,7 +27,7 @@ const (
 	httpAudioMaxCodecID     = 64
 	httpAudioDrainLimit     = 64
 	httpAudioProxyBuffer    = httpWAVFrameSamples * httpWAVChannels * (httpWAVBitsPerSample / 8) * 16
-	httpOpusBitrate         = "16k"
+	httpOpusBitrate         = "24k"
 )
 
 type httpAudioFormat struct {

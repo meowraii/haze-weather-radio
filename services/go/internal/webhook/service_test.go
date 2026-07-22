@@ -82,13 +82,13 @@ func TestWebhookHTTPClientUsesReusableTransport(t *testing.T) {
 	}
 }
 
-func TestOpusAudioTranscodeUses16Kbps(t *testing.T) {
+func TestOpusAudioTranscodeUses24Kbps(t *testing.T) {
 	args := ffmpegAudioTranscodeArgs("alert.pcm", "libopus", "ogg", 48000, 1)
-	if !slices.Contains(args, "16k") {
-		t.Fatalf("Opus ffmpeg arguments do not contain 16k: %#v", args)
+	if !slices.Contains(args, "24k") {
+		t.Fatalf("Opus ffmpeg arguments do not contain 24k: %#v", args)
 	}
 	aacArgs := ffmpegAudioTranscodeArgs("alert.pcm", "aac", "aac", 48000, 1)
-	if slices.Contains(aacArgs, "16k") {
+	if slices.Contains(aacArgs, "24k") {
 		t.Fatalf("AAC ffmpeg arguments unexpectedly contain the Opus bitrate: %#v", aacArgs)
 	}
 }

@@ -39,7 +39,7 @@ const DEFAULT_OUTPUTS_FILE: &str = "managed/configs/output.xml";
 const DEFAULT_LISTEN: &str = "127.0.0.1:8097";
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 1;
-const OPUS_BITRATE_BPS: u32 = 16_000;
+const OPUS_BITRATE_BPS: u32 = 24_000;
 const OPUS_BITRATE_KBPS: u32 = OPUS_BITRATE_BPS / 1_000;
 const FRAME_DURATION: Duration = Duration::from_millis(20);
 const FRAME_SAMPLES: usize = SAMPLE_RATE as usize / 50;
@@ -5213,7 +5213,7 @@ mod tests {
     #[test]
     fn gstreamer_opus_pipeline_uses_clean_broadcast_bitrate() {
         let pipeline = gstreamer_audio_pipeline("opus").unwrap();
-        assert!(pipeline.contains("bitrate=16000"));
+        assert!(pipeline.contains("bitrate=24000"));
         assert!(pipeline.contains("frame-size=20"));
         assert!(pipeline.contains("max-size-time=1900000000"));
         assert!(pipeline.contains("max-size-buffers=95"));

@@ -1,7 +1,9 @@
 package dataingest
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -205,6 +207,153 @@ func TestSourceKindKeepsSWOBUnderECCC(t *testing.T) {
 		if got := sourceKind(raw); got != "eccc" {
 			t.Fatalf("sourceKind(%q) = %q, want eccc", raw, got)
 		}
+	}
+}
+
+func TestLatestSWOBPartnerFilenameSupportsProviderTransitions(t *testing.T) {
+	tests := []struct {
+		name    string
+		listing string
+		aliases []string
+		want    string
+	}{
+		{
+			name: "Alberta accepts new ab-mai provider segment",
+			listing: `<a href="2026-08-11-1200-3076366-abee-AUTO-swob.xml">old</a>
+<a href="2026-08-11-1300-ab-mai-abee-AUTO-swob.xml">new</a>`,
+			aliases: []string{"ABEE", "AB-MAI_ABEE"},
+			want:    "2026-08-11-1300-ab-mai-abee-AUTO-swob.xml",
+		},
+		{
+			name:    "Coast Guard accepts DND filename",
+			listing: `<a href="20260811T1430Z_DND-CCG_SWOB_1060080.xml">file</a>`,
+			aliases: []string{"ADDENBROKE", "1060080"},
+			want:    "20260811T1430Z_DND-CCG_SWOB_1060080.xml",
+		},
+		{
+			name:    "Yukon water accepts compound station id",
+			listing: `<a href="2026-08-11-1300-yt-de-wrb-09aa-m1-09aa-m1-AUTO-swob.xml">file</a>`,
+			aliases: []string{"09AA-M1", "YT-DE-WRB_09AA-M1"},
+			want:    "2026-08-11-1300-yt-de-wrb-09aa-m1-09aa-m1-AUTO-swob.xml",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := latestSWOBPartnerFilenameFromListing(test.listing, test.aliases)
+			if !ok || got != test.want {
+				t.Fatalf("filename = %q, found = %t, want %q", got, ok, test.want)
+			}
+		})
+	}
+}
+
+func TestLatestSWOBPartnerFilenameRejectsOtherStations(t *testing.T) {
+	listing := `<a href="2026-08-11-1300-ab-mai-albe-AUTO-swob.xml">other</a>`
+	if got, ok := latestSWOBPartnerFilenameFromListing(listing, []string{"ABEE"}); ok {
+		t.Fatalf("unexpected filename %q", got)
+	}
+}
+
+func TestSWOBPartnerStationDirectoryNormalizesSeparators(t *testing.T) {
+	listing := `<a href="cape_beale/">Cape Beale</a><a href="trial_is/">Trial Island</a>`
+	got, ok := swobPartnerStationDirectoryFromListing(listing, []string{"CAPE BEALE"})
+	if !ok || got != "cape_beale" {
+		t.Fatalf("directory = %q, found = %t", got, ok)
+	}
+}
+
+func TestSWOBPartnerDatasetRecognizesChangedProviders(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties map[string]any
+		wantID     string
+		wantNested bool
+	}{
+		{
+			name:       "Alberta Agriculture",
+			properties: map[string]any{"msc_id": "AB-MAI_ABEE"},
+			wantID:     "ab_agriculture",
+			wantNested: true,
+		},
+		{
+			name:       "legacy Coast Guard provider",
+			properties: map[string]any{"data_provider_en": "Government of Canada: Fisheries and Oceans Canada; Canadian Coast Guard"},
+			wantID:     "ccg_lighthouse",
+			wantNested: true,
+		},
+		{
+			name:       "new National Defence provider",
+			properties: map[string]any{"data_provider_en": "Government of Canada: Department of National Defence"},
+			wantID:     "ccg_lighthouse",
+			wantNested: true,
+		},
+		{
+			name:       "Yukon Water Resources",
+			properties: map[string]any{"msc_id": "YT-DE-WRB_09AA-M1"},
+			wantID:     "yt_water",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dataset, err := swobPartnerDatasetForStation(map[string]any{"properties": test.properties})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dataset.ID != test.wantID || dataset.NestedByStation != test.wantNested {
+				t.Fatalf("dataset = %#v, want id=%q nested=%t", dataset, test.wantID, test.wantNested)
+			}
+		})
+	}
+}
+
+func TestSWOBPartnerDatasetDirectoriesSwitchCCGAtCutover(t *testing.T) {
+	before := swobPartnerDatasetDirectories("ccg_lighthouse", time.Date(2026, time.August, 10, 23, 59, 59, 0, time.UTC))
+	if len(before) != 2 || before[0] != "dfo-ccg-lighthouse" || before[1] != "dnd-ccg-lighthouse" {
+		t.Fatalf("pre-cutover directories = %#v", before)
+	}
+	after := swobPartnerDatasetDirectories("ccg_lighthouse", time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC))
+	if len(after) != 2 || after[0] != "dnd-ccg-lighthouse" || after[1] != "dfo-ccg-lighthouse" {
+		t.Fatalf("post-cutover directories = %#v", after)
+	}
+}
+
+func TestFetchECCCSWOBPartnerFileFollowsNestedAlbertaLayout(t *testing.T) {
+	const filename = "2026-08-11-1300-ab-mai-abee-AUTO-swob.xml"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/ab_agriculture/20260811/":
+			_, _ = writer.Write([]byte(`<a href="abee/">Abee</a>`))
+		case "/ab_agriculture/20260811/abee/":
+			_, _ = writer.Write([]byte(`<a href="` + filename + `">latest</a>`))
+		case "/ab_agriculture/20260811/abee/" + filename:
+			_, _ = writer.Write([]byte(`<ObservationCollection><member><Observation/></member></ObservationCollection>`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	station := map[string]any{
+		"id": "AB-MAI_ABEE",
+		"properties": map[string]any{
+			"iata_id": "ABEE",
+			"msc_id":  "AB-MAI_ABEE",
+		},
+	}
+	raw, err := fetchECCCSWOBPartnerFile(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		station,
+		swobPartnerDataset{ID: "ab_agriculture", NestedByStation: true},
+		time.Date(2026, time.August, 11, 13, 5, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, ok := raw["_swob"].(swobCollection)
+	if !ok || len(collection.Members) != 1 {
+		t.Fatalf("SWOB collection = %#v", raw["_swob"])
 	}
 }
 

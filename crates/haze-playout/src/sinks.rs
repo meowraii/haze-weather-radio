@@ -19,7 +19,7 @@ use haze_media::{pcm16_samples, read_i16};
 const ENCODER_WORKER_QUEUE_CAPACITY: usize = 16;
 const AUDIO_DEVICE_MAX_BUFFER_MS: usize = 120;
 const AUDIO_DEVICE_MAX_PENDING_MS: usize = 60;
-const OPUS_BITRATE_KBPS: u32 = 16;
+const OPUS_BITRATE_KBPS: u32 = 24;
 
 pub(crate) trait Sink: Send {
     fn name(&self) -> &str;
@@ -911,8 +911,8 @@ mod tests {
     }
 
     #[test]
-    fn opus_encoded_output_defaults_to_16_kbps() {
-        assert_eq!(encoded_bitrate_kbps("", "libopus"), 16);
+    fn opus_encoded_output_defaults_to_24_kbps() {
+        assert_eq!(encoded_bitrate_kbps("", "libopus"), 24);
         assert_eq!(encoded_bitrate_kbps("24", "libopus"), 24);
         assert_eq!(encoded_bitrate_kbps("", "aac"), 32);
     }
