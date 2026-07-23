@@ -7,7 +7,7 @@
       <ip>127.0.0.1</ip>
       <port>8898</port>
       <format>mpegts</format>
-      <bitrate_kbps>24</bitrate_kbps>
+      <bitrate_kbps>32</bitrate_kbps>
       <acodec>libopus</acodec>
     </udp>
 
@@ -15,7 +15,7 @@
       <ip>127.0.0.1</ip>
       <port>8899</port>
       <format>rtp_mpegts</format>
-      <bitrate_kbps>24</bitrate_kbps>
+      <bitrate_kbps>32</bitrate_kbps>
       <acodec>libopus</acodec>
     </rtp>
 

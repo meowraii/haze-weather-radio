@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1312,12 +1313,41 @@ func TestHTTPAudioFormatByID(t *testing.T) {
 	}
 	for _, id := range []string{"opus", "webm_opus"} {
 		format, ok := httpAudioFormatByID(id)
-		if !ok || format.Bitrate != "24k" {
-			t.Fatalf("%s bitrate = %q, want 24k", id, format.Bitrate)
+		if !ok || format.Bitrate != "32k" {
+			t.Fatalf("%s bitrate = %q, want 32k", id, format.Bitrate)
 		}
 	}
 	if _, ok := httpAudioFormatByID("definitely-not-real"); ok {
 		t.Fatal("unknown HTTP audio format should be rejected")
+	}
+}
+
+func TestFFmpegHTTPAudioArgsDisableLiveInputAnalysis(t *testing.T) {
+	for _, id := range []string{"webm_opus", "m4a", "mp3", "vorbis", "flac", "ogg_flac", "ulaw", "alaw"} {
+		t.Run(id, func(t *testing.T) {
+			format, ok := httpAudioFormatByID(id)
+			if !ok {
+				t.Fatalf("format %q was not accepted", id)
+			}
+			args := ffmpegHTTPAudioArgs(format)
+			inputIndex := slices.Index(args, "-i")
+			if inputIndex < 0 {
+				t.Fatalf("ffmpeg arguments do not contain an input: %#v", args)
+			}
+			for _, option := range []struct {
+				name  string
+				value string
+			}{
+				{"-fflags", "nobuffer"},
+				{"-probesize", "32"},
+				{"-analyzeduration", "0"},
+			} {
+				optionIndex := slices.Index(args, option.name)
+				if optionIndex < 0 || optionIndex+1 >= inputIndex || args[optionIndex+1] != option.value {
+					t.Fatalf("%s is not configured before the input in %#v", option.name, args)
+				}
+			}
+		})
 	}
 }
 

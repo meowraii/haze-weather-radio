@@ -39,7 +39,7 @@ const DEFAULT_OUTPUTS_FILE: &str = "managed/configs/output.xml";
 const DEFAULT_LISTEN: &str = "127.0.0.1:8097";
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 1;
-const OPUS_BITRATE_BPS: u32 = 24_000;
+const OPUS_BITRATE_BPS: u32 = 32_000;
 const OPUS_BITRATE_KBPS: u32 = OPUS_BITRATE_BPS / 1_000;
 const FRAME_DURATION: Duration = Duration::from_millis(20);
 const FRAME_SAMPLES: usize = SAMPLE_RATE as usize / 50;
@@ -70,9 +70,11 @@ const MAX_WEBRTC_UDP_PORTS: u32 = 4_096;
 #[cfg(feature = "gstreamer-backend")]
 static WEBRTC_UDP_PORT_CURSOR: AtomicU64 = AtomicU64::new(0);
 #[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
-const ENCODED_HTTP_QUEUE_CAPACITY: usize = 64;
+const ENCODED_HTTP_QUEUE_CAPACITY: usize = 8;
+#[cfg_attr(not(feature = "gstreamer-backend"), allow(dead_code))]
+const ENCODED_ICECAST_QUEUE_CAPACITY: usize = 64;
 #[cfg(feature = "gstreamer-backend")]
-const HTTP_AUDIO_GSTREAMER_QUEUE_MS: u64 = 1_900;
+const HTTP_AUDIO_GSTREAMER_QUEUE_MS: u64 = 120;
 #[cfg(feature = "gstreamer-backend")]
 const HTTP_AUDIO_GSTREAMER_QUEUE_BUFFERS: u64 = HTTP_AUDIO_GSTREAMER_QUEUE_MS / 20;
 #[cfg(feature = "gstreamer-backend")]
@@ -3305,8 +3307,10 @@ async fn stream_wav(
     write_stream_headers(stream, "audio/wav").await?;
     stream.write_all(&wav_stream_header()).await?;
     state.record_http_client_write(client_id, 44);
-    let mut rx = feed.subscribe();
     let silence = vec![0u8; FRAME_BYTES];
+    stream.write_all(&silence).await?;
+    state.record_http_client_write(client_id, silence.len());
+    let mut rx = feed.subscribe();
     loop {
         match rx.recv().await {
             Ok(frame) => {
@@ -3334,8 +3338,10 @@ async fn stream_raw_pcm(
     feed: Arc<FeedRuntime>,
 ) -> Result<()> {
     write_stream_headers(stream, "audio/L16; rate=48000; channels=1").await?;
-    let mut rx = feed.subscribe();
     let silence = vec![0u8; FRAME_BYTES];
+    stream.write_all(&silence).await?;
+    state.record_http_client_write(client_id, silence.len());
+    let mut rx = feed.subscribe();
     loop {
         match rx.recv().await {
             Ok(frame) => {
@@ -3441,12 +3447,21 @@ async fn stream_gstreamer_encoded(
         let _ = pipeline.set_state(gst::State::Null);
         return Ok(());
     }
-    write_stream_headers(stream, format.content_type).await?;
-
     let mut rx = feed.subscribe();
     let frame_duration_ns = FRAME_DURATION.as_nanos() as u64;
     let mut next_pts_ns: Option<u64> = None;
     let silence = vec![0u8; FRAME_BYTES];
+    let pts_ns = next_gst_audio_pts(&mut next_pts_ns, frame_duration_ns);
+    let buffer = build_gst_audio_buffer(&silence, pts_ns, frame_duration_ns)?;
+    if let Err(err) = appsrc.push_buffer(buffer) {
+        let _ = pipeline.set_state(gst::State::Null);
+        bail!(
+            "failed to prime GStreamer {} audio stream: {err:?}",
+            format.id
+        );
+    }
+    write_stream_headers(stream, format.content_type).await?;
+
     'stream: loop {
         tokio::select! {
             frame = rx.recv() => {
@@ -3511,7 +3526,10 @@ async fn stream_gstreamer_encoded(
 
 #[cfg(feature = "gstreamer-backend")]
 fn gstreamer_audio_pipeline(codec: &str) -> Result<String> {
-    let source = "appsrc name=src is-live=true block=false leaky-type=downstream do-timestamp=false max-bytes=38400 format=time stream-type=stream caps=audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=1";
+    let source = format!(
+        "appsrc name=src is-live=true block=false leaky-type=downstream do-timestamp=false max-bytes={} format=time stream-type=stream caps=audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=1",
+        FRAME_BYTES * HTTP_AUDIO_GSTREAMER_QUEUE_BUFFERS as usize
+    );
     let common = format!(
         "queue max-size-time={} max-size-buffers={} max-size-bytes=0 leaky=downstream ! audioconvert ! audioresample quality=4",
         HTTP_AUDIO_GSTREAMER_QUEUE_MS * 1_000_000,
@@ -3519,10 +3537,10 @@ fn gstreamer_audio_pipeline(codec: &str) -> Result<String> {
     );
     match codec {
         "opus" => Ok(format!(
-            "{source} ! {common} ! opusenc bitrate={OPUS_BITRATE_BPS} frame-size=20 inband-fec=true ! oggmux ! appsink name=sink emit-signals=true sync=false"
+            "{source} ! {common} ! opusenc bitrate={OPUS_BITRATE_BPS} frame-size=20 inband-fec=true ! oggmux max-delay=20000000 max-page-delay=20000000 ! appsink name=sink emit-signals=true sync=false max-buffers={ENCODED_HTTP_QUEUE_CAPACITY} drop=true wait-on-eos=false"
         )),
         "aac" => Ok(format!(
-            "{source} ! {common} ! avenc_aac bitrate=96000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=adts ! appsink name=sink emit-signals=true sync=false"
+            "{source} ! {common} ! avenc_aac bitrate=96000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=adts ! appsink name=sink emit-signals=true sync=false max-buffers={ENCODED_HTTP_QUEUE_CAPACITY} drop=true wait-on-eos=false"
         )),
         _ => bail!("unsupported GStreamer audio codec {codec}"),
     }
@@ -3566,7 +3584,7 @@ async fn run_icecast_output(runtime: Arc<FeedRuntime>, config: IcecastOutput) {
         match build_icecast_encoder_pipeline(&config, &feed_id) {
             Ok((pipeline, appsrc, appsink)) => {
                 let (encoded_tx, mut encoded_rx) =
-                    mpsc::channel::<Vec<u8>>(ENCODED_HTTP_QUEUE_CAPACITY);
+                    mpsc::channel::<Vec<u8>>(ENCODED_ICECAST_QUEUE_CAPACITY);
                 let encoder_backpressured = Arc::new(AtomicBool::new(false));
                 let callback_encoder_backpressured = Arc::clone(&encoder_backpressured);
                 appsink.set_callbacks(
@@ -5213,10 +5231,15 @@ mod tests {
     #[test]
     fn gstreamer_opus_pipeline_uses_clean_broadcast_bitrate() {
         let pipeline = gstreamer_audio_pipeline("opus").unwrap();
-        assert!(pipeline.contains("bitrate=24000"));
+        assert!(pipeline.contains("bitrate=32000"));
         assert!(pipeline.contains("frame-size=20"));
-        assert!(pipeline.contains("max-size-time=1900000000"));
-        assert!(pipeline.contains("max-size-buffers=95"));
+        assert!(pipeline.contains("max-bytes=11520"));
+        assert!(pipeline.contains("max-size-time=120000000"));
+        assert!(pipeline.contains("max-size-buffers=6"));
+        assert!(pipeline.contains("max-delay=20000000"));
+        assert!(pipeline.contains("max-page-delay=20000000"));
+        assert!(pipeline.contains("max-buffers=8"));
+        assert!(pipeline.contains("drop=true"));
     }
 
     #[cfg(feature = "gstreamer-backend")]

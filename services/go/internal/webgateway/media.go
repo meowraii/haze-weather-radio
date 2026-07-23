@@ -29,7 +29,7 @@ import (
 const (
 	opusSampleRate             = 48000
 	opusFrameSamples           = opusSampleRate / 50
-	opusBitrateBPS             = 24000
+	opusBitrateBPS             = 32000
 	g722SampleRate             = 16000
 	webrtcRTPClockRate         = 8000
 	pcmuSampleRate             = 8000
@@ -1075,7 +1075,6 @@ func (h *MediaHub) Subscribe(feedID string) (<-chan PCMChunk, func()) {
 				}
 			}
 			h.mu.Unlock()
-			close(ch)
 		})
 	}
 }

@@ -27,7 +27,7 @@ const (
 	httpAudioMaxCodecID     = 64
 	httpAudioDrainLimit     = 64
 	httpAudioProxyBuffer    = httpWAVFrameSamples * httpWAVChannels * (httpWAVBitsPerSample / 8) * 16
-	httpOpusBitrate         = "24k"
+	httpOpusBitrate         = "32k"
 )
 
 type httpAudioFormat struct {
@@ -391,26 +391,7 @@ func (h *MediaHub) StreamEncodedAudio(ctx context.Context, feedID string, writer
 	if format.SampleRate <= 0 {
 		format.SampleRate = httpWAVSampleRate
 	}
-	args := []string{
-		"-hide_banner",
-		"-loglevel", "error",
-		"-nostdin",
-		"-f", "s16le",
-		"-ar", fmt.Sprintf("%d", httpWAVSampleRate),
-		"-ac", "1",
-		"-i", "pipe:0",
-		"-vn",
-		"-sn",
-		"-dn",
-		"-ar", fmt.Sprintf("%d", format.SampleRate),
-		"-ac", fmt.Sprintf("%d", format.Channels),
-		"-c:a", format.FFmpegCodec,
-	}
-	if format.Bitrate != "" {
-		args = append(args, "-b:a", format.Bitrate)
-	}
-	args = append(args, format.ExtraOutputArg...)
-	args = append(args, "-flush_packets", "1", "-f", format.FFmpegFormat, "pipe:1")
+	args := ffmpegHTTPAudioArgs(format)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -495,6 +476,33 @@ func (h *MediaHub) StreamEncodedAudio(ctx context.Context, feedID string, writer
 			}
 		}
 	}
+}
+
+func ffmpegHTTPAudioArgs(format httpAudioFormat) []string {
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-nostdin",
+		"-fflags", "nobuffer",
+		"-probesize", "32",
+		"-analyzeduration", "0",
+		"-f", "s16le",
+		"-ar", fmt.Sprintf("%d", httpWAVSampleRate),
+		"-ac", "1",
+		"-i", "pipe:0",
+		"-vn",
+		"-sn",
+		"-dn",
+		"-ar", fmt.Sprintf("%d", format.SampleRate),
+		"-ac", fmt.Sprintf("%d", format.Channels),
+		"-c:a", format.FFmpegCodec,
+	}
+	if format.Bitrate != "" {
+		args = append(args, "-b:a", format.Bitrate)
+	}
+	args = append(args, format.ExtraOutputArg...)
+	args = append(args, "-flush_packets", "1", "-f", format.FFmpegFormat, "pipe:1")
+	return args
 }
 
 func drainHTTPAudioUpdates(updates <-chan PCMChunk, queue []int16) ([]int16, bool) {
