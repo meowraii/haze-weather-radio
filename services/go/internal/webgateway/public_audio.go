@@ -310,7 +310,7 @@ func httpAudioFormatByID(raw string) (httpAudioFormat, bool) {
 	case "aac", "adts":
 		return httpAudioFormat{ID: "aac", ContentType: "audio/aac", Extension: "aac", FFmpegFormat: "adts", FFmpegCodec: "aac", Bitrate: "96k", Channels: 1, SampleRate: 48000}, true
 	case "m4a", "mp4_aac", "fmp4_aac":
-		return httpAudioFormat{ID: "m4a", ContentType: "audio/mp4", Extension: "m4a", FFmpegFormat: "mp4", FFmpegCodec: "aac", Bitrate: "96k", Channels: 1, SampleRate: 48000, ExtraOutputArg: []string{"-movflags", "frag_keyframe+empty_moov+default_base_moof"}}, true
+		return httpAudioFormat{ID: "m4a", ContentType: "audio/mp4", Extension: "m4a", FFmpegFormat: "mp4", FFmpegCodec: "aac", Bitrate: "96k", Channels: 1, SampleRate: 48000, ExtraOutputArg: []string{"-movflags", "frag_keyframe+empty_moov+default_base_moof", "-frag_duration", "100000"}}, true
 	case "opus", "ogg_opus", "opus_ogg":
 		return httpAudioFormat{ID: "opus", ContentType: "audio/ogg; codecs=opus", Extension: "opus", FFmpegFormat: "ogg", FFmpegCodec: "libopus", Bitrate: httpOpusBitrate, Channels: 1, SampleRate: 48000, ExtraOutputArg: []string{"-page_duration", "20000"}}, true
 	case "webm_opus", "opus_webm", "webm":

@@ -1351,6 +1351,18 @@ func TestFFmpegHTTPAudioArgsDisableLiveInputAnalysis(t *testing.T) {
 	}
 }
 
+func TestM4AHTTPAudioFlushesTimedFragments(t *testing.T) {
+	format, ok := httpAudioFormatByID("m4a")
+	if !ok {
+		t.Fatal("m4a format was not accepted")
+	}
+	args := ffmpegHTTPAudioArgs(format)
+	fragmentDurationIndex := slices.Index(args, "-frag_duration")
+	if fragmentDurationIndex < 0 || fragmentDurationIndex+1 >= len(args) || args[fragmentDurationIndex+1] != "100000" {
+		t.Fatalf("m4a ffmpeg arguments do not contain a 100 ms fragment duration: %#v", args)
+	}
+}
+
 func TestMediaSafeID(t *testing.T) {
 	if got := mediaSafeID("sk-0001 / XLF322"); got != "sk-0001XLF322" || strings.ContainsAny(got, " /") {
 		t.Fatalf("mediaSafeID = %q", got)
