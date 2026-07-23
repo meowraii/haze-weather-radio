@@ -151,10 +151,7 @@ func run() error {
 
 	if tlsRuntime.Enabled {
 		log.Printf("haze-web %s HTTPS listening on %s", *surface, *addr)
-		if tlsRuntime.Mode == "acme" {
-			return server.ListenAndServeTLS("", "")
-		}
-		return server.ListenAndServeTLS(tlsRuntime.CertFile, tlsRuntime.KeyFile)
+		return tlsRuntime.ListenAndServeTLS(server)
 	}
 	log.Printf("haze-web %s HTTP listening on %s", *surface, *addr)
 	return server.ListenAndServe()
@@ -247,12 +244,7 @@ func servePublicHTTP(server *http.Server) {
 
 func servePublicHTTPS(server *http.Server, tlsRuntime *webgateway.TLSRuntime) {
 	log.Printf("haze-web public HTTPS listening on %s", server.Addr)
-	var err error
-	if tlsRuntime.Mode == "acme" {
-		err = server.ListenAndServeTLS("", "")
-	} else {
-		err = server.ListenAndServeTLS(tlsRuntime.CertFile, tlsRuntime.KeyFile)
-	}
+	err := tlsRuntime.ListenAndServeTLS(server)
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("public HTTPS listener failed: %v", err)
 	}

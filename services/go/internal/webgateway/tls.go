@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -113,18 +114,40 @@ func (t *TLSRuntime) HTTPChallengeEnabled(surface WebSurface) bool {
 // HTTPChallengeHandler serves ACME HTTP-01 challenges and optionally redirects
 // ordinary HTTP requests to the HTTPS listener.
 func (t *TLSRuntime) HTTPChallengeHandler(httpsAddr string) http.Handler {
-	fallback := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if t == nil || !t.RedirectHTTP {
-			http.NotFound(writer, request)
-			return
-		}
-		target := "https://" + redirectHTTPSHost(request.Host, httpsAddr) + request.URL.RequestURI()
-		http.Redirect(writer, request, target, http.StatusPermanentRedirect)
-	})
+	fallback := http.NotFoundHandler()
+	if t != nil && t.RedirectHTTP {
+		fallback = t.HTTPSRedirectHandler(httpsAddr)
+	}
 	if t == nil || t.Manager == nil {
 		return fallback
 	}
 	return t.Manager.HTTPHandler(fallback)
+}
+
+// HTTPSRedirectHandler upgrades a plaintext request to the corresponding HTTPS
+// URL. The authority is limited to configured domains or the accepted socket's
+// local address so an arbitrary Host header cannot create an open redirect.
+func (t *TLSRuntime) HTTPSRedirectHandler(httpsAddr string) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		authority, err := t.redirectHTTPSAuthority(request, httpsAddr)
+		if err != nil {
+			http.Error(writer, "invalid HTTP Host header", http.StatusBadRequest)
+			return
+		}
+		path := request.URL.Path
+		if path == "" {
+			path = "/"
+		}
+		target := (&url.URL{
+			Scheme:     "https",
+			Host:       authority,
+			Path:       path,
+			RawPath:    request.URL.RawPath,
+			RawQuery:   request.URL.RawQuery,
+			ForceQuery: request.URL.ForceQuery,
+		}).String()
+		http.Redirect(writer, request, target, http.StatusPermanentRedirect)
+	})
 }
 
 func normalizeTLSMode(mode string) string {
@@ -192,20 +215,154 @@ func httpChallengeAddress(config Config) string {
 	return net.JoinHostPort(host, strconv.Itoa(port.Int()))
 }
 
-func redirectHTTPSHost(requestHost string, httpsAddr string) string {
-	host := strings.TrimSpace(requestHost)
-	if host == "" {
-		return host
+func (t *TLSRuntime) redirectHTTPSAuthority(request *http.Request, httpsAddr string) (string, error) {
+	requestHost, err := validRedirectHost(request.Host)
+	if err != nil {
+		return "", err
 	}
-	name, _, err := net.SplitHostPort(host)
+	port, err := redirectHTTPSPort(httpsAddr)
+	if err != nil {
+		return "", err
+	}
+	if requestHost != "" && t.redirectHostAllowed(requestHost, request, httpsAddr) {
+		return joinRedirectAuthority(requestHost, port), nil
+	}
+
+	for _, domain := range t.Domains {
+		host, domainErr := validRedirectHost(domain)
+		if domainErr == nil && host != "" {
+			return joinRedirectAuthority(host, port), nil
+		}
+	}
+	if localHost := redirectLocalHost(request, httpsAddr); localHost != "" {
+		return joinRedirectAuthority(localHost, port), nil
+	}
+	return "", fmt.Errorf("no safe HTTPS redirect authority is available")
+}
+
+func (t *TLSRuntime) redirectHostAllowed(host string, request *http.Request, httpsAddr string) bool {
+	if containsDomain(t.Domains, host) {
+		return true
+	}
+	if localHost := redirectLocalHost(request, httpsAddr); localHost != "" && sameRedirectHost(host, localHost) {
+		return true
+	}
+	hostname, err := os.Hostname()
 	if err == nil {
-		host = name
+		hostname = normalizeDomain(hostname)
+		if sameRedirectHost(host, hostname) ||
+			sameRedirectHost(host, hostname+".local") ||
+			sameRedirectHost(host, hostname+".lan") {
+			return true
+		}
 	}
-	_, httpsPort, err := net.SplitHostPort(httpsAddr)
-	if err != nil || httpsPort == "" || httpsPort == "443" {
+	return false
+}
+
+func redirectLocalHost(request *http.Request, httpsAddr string) string {
+	if request != nil {
+		if addr, ok := request.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && addr != nil {
+			if host, err := validRedirectHost(addr.String()); err == nil && !redirectHostIsUnspecified(host) {
+				return host
+			}
+		}
+	}
+	host, err := validRedirectHost(httpsAddr)
+	if err == nil && !redirectHostIsUnspecified(host) {
 		return host
 	}
-	return net.JoinHostPort(host, httpsPort)
+	return ""
+}
+
+func validRedirectHost(authority string) (string, error) {
+	authority = strings.TrimSpace(authority)
+	if authority == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(authority, "/\\@?#") {
+		return "", fmt.Errorf("invalid host authority")
+	}
+	for _, character := range authority {
+		if character <= 0x20 || character == 0x7f {
+			return "", fmt.Errorf("invalid host authority")
+		}
+	}
+
+	host := authority
+	if parsedHost, port, err := net.SplitHostPort(authority); err == nil {
+		if err := validateRedirectPort(port); err != nil {
+			return "", err
+		}
+		host = parsedHost
+	} else if strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(authority, "["), "]")
+	} else if strings.Contains(authority, ":") {
+		if net.ParseIP(authority) == nil {
+			return "", fmt.Errorf("invalid host authority")
+		}
+	}
+
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if host == "" {
+		return "", fmt.Errorf("empty host authority")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String(), nil
+	}
+	if len(host) > 253 {
+		return "", fmt.Errorf("host authority is too long")
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", fmt.Errorf("invalid host authority")
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') &&
+				(character < '0' || character > '9') &&
+				character != '-' {
+				return "", fmt.Errorf("invalid host authority")
+			}
+		}
+	}
+	return host, nil
+}
+
+func redirectHTTPSPort(httpsAddr string) (string, error) {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(httpsAddr))
+	if err != nil {
+		return "", fmt.Errorf("invalid HTTPS listener address: %w", err)
+	}
+	if err := validateRedirectPort(port); err != nil {
+		return "", err
+	}
+	return port, nil
+}
+
+func validateRedirectPort(port string) error {
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 1 || number > 65535 {
+		return fmt.Errorf("invalid HTTPS listener port")
+	}
+	return nil
+}
+
+func joinRedirectAuthority(host string, port string) string {
+	if port == "443" {
+		if strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func redirectHostIsUnspecified(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
+}
+
+func sameRedirectHost(left string, right string) bool {
+	return normalizeDomain(left) == normalizeDomain(right)
 }
 
 func tlsStatus(config Config, request *http.Request) map[string]any {
